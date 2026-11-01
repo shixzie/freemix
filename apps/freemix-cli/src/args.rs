@@ -51,6 +51,30 @@ pub enum MediaTarget {
     Remote(SocketAddr),
 }
 
+/// One item edit of a saved media list (IN-006).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MediaListItemEdit {
+    /// Appends an item for `asset_uri`; `title` is `None` when `-`.
+    Add {
+        asset_uri: String,
+        title: Option<String>,
+    },
+    /// Removes the item with this id.
+    Remove { item: u32 },
+    /// Replaces the item's display title; `None` clears it.
+    SetTitle { item: u32, title: Option<String> },
+    /// Replaces the item's in and out marks; `mark_out` of `None` plays to
+    /// the end of the file.
+    SetMarks {
+        item: u32,
+        mark_in: u64,
+        mark_out: Option<u64>,
+    },
+    /// Moves the item with this id to a zero-based position, clamped to the
+    /// end of the list.
+    Move { item: u32, position: usize },
+}
+
 /// The automatic mix a CLI token names.
 pub fn transition_kind(value: &str) -> Result<TransitionKind, ArgsError> {
     TransitionKind::from_token(&value.replace('-', "_")).ok_or_else(|| ArgsError::InvalidChoice {
@@ -146,6 +170,27 @@ pub enum AudioMixerArgs {
     OutputAux {
         output: u128,
         bus: Option<fm_model::AuxBusNumber>,
+    },
+    /// `audio-output-mix-minus <output> <input|none>`: the input an
+    /// output's aux feed leaves out (AU-002).
+    OutputMixMinus { output: u128, input: Option<u128> },
+    /// `audio-aux-dsp <A-G> <preset|chain code>`: an aux bus's DSP chain
+    /// (AU-002).
+    AuxDsp {
+        bus: fm_model::AuxBusNumber,
+        chain: fm_types::strip_dsp::StripDsp,
+    },
+    /// `audio-aux-device <A-G> <device|none>`: the local audio output bus A–G
+    /// plays on (AU-002).
+    AuxDevice {
+        bus: fm_model::AuxBusNumber,
+        device: Option<String>,
+    },
+    /// `audio-aux-omt <A-G> on|off`: publishes the bus as an OMT audio
+    /// sender on its fixed port (AU-002).
+    AuxOmt {
+        bus: fm_model::AuxBusNumber,
+        omt: bool,
     },
 }
 
@@ -813,6 +858,50 @@ pub enum Command {
     InputMediaList {
         path: PathBuf,
     },
+    /// Steps a media list input in a saved project (IN-006); a running
+    /// server takes `remote-input-media-list-navigate`.
+    InputMediaListNavigate {
+        target: MediaTarget,
+        input: u128,
+        navigation: fm_protocol::MediaListNavigation,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Replaces a saved media list's options (IN-006).
+    InputMediaListOptions {
+        path: PathBuf,
+        input: u128,
+        auto_next: bool,
+        auto_first: bool,
+        loop_list: bool,
+        shuffle_seed: Option<u64>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Replaces a saved media list's per-list transition (IN-006).
+    InputMediaListTransition {
+        path: PathBuf,
+        input: u128,
+        kind: fm_model::MediaListTransitionKind,
+        frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Appends or removes one item of a saved media list (IN-006).
+    InputMediaListItem {
+        path: PathBuf,
+        input: u128,
+        operation: MediaListItemEdit,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Imports every local file an M3U/M3U8 playlist names into the bundle
+    /// and appends it to a media list (IN-006).
+    InputMediaListImport {
+        path: PathBuf,
+        input: u128,
+        playlist: PathBuf,
+    },
     /// One input lifecycle edit (IN-026), locally (category list,
     /// category, colour label, pause, close) or on a server (also
     /// duplicate, source replacement, and batch import).
@@ -894,8 +983,159 @@ pub enum Command {
     Scenes {
         path: PathBuf,
     },
+    /// `as-run <project>`: print the daemon's as-run log beside the project
+    /// (OR-015).
+    AsRun {
+        path: PathBuf,
+    },
     AssetAudit {
         path: PathBuf,
+    },
+    /// `settings-export <project> <file>`: write the secret-free settings
+    /// export document (RC-013).
+    SettingsExport {
+        path: PathBuf,
+        output: PathBuf,
+    },
+    /// `settings-import <project> <file>`: preview an exported settings
+    /// document against the project, or apply its format and restart policy
+    /// with `--apply` (RC-013).
+    SettingsImport {
+        path: PathBuf,
+        input: PathBuf,
+        apply: bool,
+        /// Stream keys for keyed stream targets the import adds, by id.
+        stream_keys: Vec<(u128, String)>,
+    },
+    /// Adds or replaces one project-level production clock definition
+    /// (SW-013).
+    ClockAdd {
+        path: PathBuf,
+        clock: fm_types::ProjectClock,
+    },
+    /// Removes one project-level production clock by name (SW-013).
+    ClockRemove {
+        path: PathBuf,
+        name: String,
+    },
+    /// Prints the project's production clock definitions (SW-013).
+    ClockList {
+        path: PathBuf,
+    },
+    /// Validates a scoreboard document file (GX-003).
+    ScoreboardCheck {
+        path: PathBuf,
+    },
+    /// Validates a moderation desk document file (GX-010).
+    SocialDeskCheck {
+        path: PathBuf,
+    },
+    /// Writes a canonical moderation desk document (GX-010).
+    SocialDeskExport {
+        path: PathBuf,
+        output: PathBuf,
+    },
+    /// Validates a recorder track-map document file (AU-010).
+    TrackMapCheck {
+        path: PathBuf,
+    },
+    /// Writes a canonical recorder track-map document (AU-010).
+    TrackMapExport {
+        path: PathBuf,
+        output: PathBuf,
+    },
+    /// Stores a recorder track-map document in the project bundle (AU-010).
+    RecordTrackMapImport {
+        path: PathBuf,
+        slot: fm_model::RecorderSlot,
+        document: PathBuf,
+    },
+    /// Prints a recorder track map stored in the project bundle (AU-010).
+    RecordTrackMapExport {
+        path: PathBuf,
+        slot: fm_model::RecorderSlot,
+    },
+    /// Stores a canonical scoreboard document on a title input (GX-003).
+    ScoreboardImport {
+        path: PathBuf,
+        input: u128,
+        document: PathBuf,
+    },
+    /// Prints a title input's stored scoreboard document (GX-003).
+    ScoreboardExport {
+        path: PathBuf,
+        input: u128,
+    },
+    /// Validates a crawl document file (GX-003).
+    CrawlCheck {
+        path: PathBuf,
+    },
+    /// Stores a canonical crawl document on a title input (GX-003).
+    CrawlImport {
+        path: PathBuf,
+        input: u128,
+        document: PathBuf,
+    },
+    /// Prints a title input's stored crawl document (GX-003).
+    CrawlExport {
+        path: PathBuf,
+        input: u128,
+    },
+    /// Validates a preview-state document file (GX-005).
+    PreviewCheck {
+        path: PathBuf,
+    },
+    /// Stores a canonical preview-state document on a title input (GX-005).
+    PreviewImport {
+        path: PathBuf,
+        input: u128,
+        document: PathBuf,
+    },
+    /// Prints a title input's stored preview-state document (GX-005).
+    PreviewExport {
+        path: PathBuf,
+        input: u128,
+    },
+    /// Validates a PTZ preset virtual-input document (IN-028).
+    PtzPresetsCheck {
+        path: PathBuf,
+    },
+    /// Stores a canonical PTZ preset virtual-input document (IN-028).
+    PtzPresetsImport {
+        path: PathBuf,
+        document: PathBuf,
+    },
+    /// Prints the project's PTZ preset virtual-input document (IN-028).
+    PtzPresetsExport {
+        path: PathBuf,
+    },
+    /// `title-design-check <file.fmdesign>`: validate a designer document
+    /// (GX-002).
+    TitleDesignCheck {
+        path: PathBuf,
+    },
+    /// `title-apply-row <project> <input> <row.json>`: coerce a flat JSON
+    /// row onto a title input's template fields and save it (GX-005).
+    TitleApplyRow {
+        path: PathBuf,
+        input: u128,
+        row: PathBuf,
+        /// Apply the fields that mapped and keep the live value of any field
+        /// that failed instead of refusing the whole row.
+        keep_live: bool,
+        /// Print the per-field changes without saving anything.
+        preview: bool,
+    },
+    /// `title-design-import <project> <design.fmdesign> --id <input>
+    /// --name <name> [--font <Family=path>]`: flattens a validated designer
+    /// document into a stored template and adds a title input (GX-002).
+    TitleDesignImport {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        design: PathBuf,
+        /// `(family, font file)` pairs in command-line order.
+        fonts: Vec<(String, PathBuf)>,
     },
     AudioStrip {
         path: PathBuf,
@@ -907,7 +1147,14 @@ pub enum Command {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
-        buses: fm_model::AudioBusMask,
+        sends: fm_model::AudioSends,
+    },
+    /// Replaces a strip's or the Master bus's persisted plugin chain
+    /// (AU-006, schema 91); no slots clears it.
+    AudioPluginChain {
+        path: PathBuf,
+        target: PluginChainTarget,
+        slots: Vec<fm_protocol::PluginChainSlot>,
     },
     Rename {
         path: PathBuf,
@@ -1117,6 +1364,14 @@ pub enum Command {
     RemoteDiagnostics {
         address: SocketAddr,
     },
+    /// Operates one production clock on the daemon (SW-013, Protocol
+    /// 2.150): start, pause, or reset it, set or adjust its value, or set
+    /// its preset.
+    RemoteClockControl {
+        address: SocketAddr,
+        name: String,
+        operation: fm_protocol::ClockControlOperation,
+    },
     /// Prints every daemon alert rule's setting for the show (RC-015,
     /// Protocol 2.112).
     RemoteAlertRules {
@@ -1298,7 +1553,7 @@ pub enum Command {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
-        buses: fm_model::AudioBusMask,
+        sends: fm_model::AudioSends,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -1884,11 +2139,12 @@ pub enum ScriptCommand {
     Run {
         script: ScriptRef,
     },
-    /// Stops run `run` paused at a wait, or clears its failed run's
-    /// report; with no `run`, stops every run and clears every report
-    /// (`script_stop`, Protocol 2.62; `--run` since 2.69).
+    /// Stops the runs paused at a wait in `runs`, or clears their failed
+    /// runs' reports; with no run, stops every run and clears every report
+    /// (`script_stop`, Protocol 2.62; `--run` since 2.69; a selection since
+    /// 2.147). `--run` may repeat or take a comma-separated list.
     Stop {
-        run: Option<u64>,
+        runs: Vec<u64>,
     },
 }
 
@@ -2204,6 +2460,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-scene-layer-auto-key" => parse_remote_scene_layer_auto_key(arguments),
         "remote-replay-multiview" => parse_remote_replay_multiview(arguments),
         "remote-audio-plugin-chain" => parse_remote_audio_plugin_chain(arguments),
+        "audio-plugin-chain" => parse_audio_plugin_chain(arguments),
         "remote-scene-layer-effects" => parse_remote_scene_layer_effects(arguments),
         "input-remove" => parse_input_remove(arguments),
         "input-duplicate" => parse_input_duplicate(arguments),
@@ -2308,10 +2565,141 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             reject_extra(&mut arguments)?;
             Ok(Command::Scenes { path })
         }
+        "as-run" => {
+            let path = required_path(&mut arguments, "project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::AsRun { path })
+        }
         "asset-audit" => {
             let path = required_path(&mut arguments, "project path")?;
             reject_extra(&mut arguments)?;
             Ok(Command::AssetAudit { path })
+        }
+        "settings-export" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let output = required_path(&mut arguments, "output path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::SettingsExport { path, output })
+        }
+        "settings-import" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = required_path(&mut arguments, "export path")?;
+            let mut apply = false;
+            let mut stream_keys = Vec::new();
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--apply" => apply = true,
+                    "--stream-key" => {
+                        let value = required(&mut arguments, "stream key")?;
+                        let Some((id, key)) = value.split_once('=') else {
+                            return Err(ArgsError::InvalidChoice {
+                                field: "stream key (expected <id>=<key>)",
+                                value,
+                            });
+                        };
+                        let id: u128 = number(id, "stream id")?;
+                        if id == 0 {
+                            return Err(ArgsError::InvalidChoice {
+                                field: "stream id",
+                                value: id.to_string(),
+                            });
+                        }
+                        let key = secret("--stream-key", key.to_owned())?;
+                        stream_keys.push((id, key));
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::SettingsImport {
+                path,
+                input,
+                apply,
+                stream_keys,
+            })
+        }
+        "clock-add" => parse_clock_add(arguments),
+        "clock-remove" => parse_clock_remove(arguments),
+        "clock-list" => parse_clock_list(arguments),
+        "scoreboard-check" => parse_scoreboard_check(arguments),
+        "social-desk-check" => parse_social_desk_check(arguments),
+        "social-desk-export" => parse_social_desk_export(arguments),
+        "track-map-check" => parse_track_map_check(arguments),
+        "track-map-export" => parse_track_map_export(arguments),
+        "record-track-map-import" => parse_record_track_map_import(arguments),
+        "record-track-map-export" => parse_record_track_map_export(arguments),
+        "scoreboard-import" => parse_scoreboard_import(arguments),
+        "scoreboard-export" => parse_scoreboard_export(arguments),
+        "crawl-check" => parse_crawl_check(arguments),
+        "crawl-import" => parse_crawl_import(arguments),
+        "crawl-export" => parse_crawl_export(arguments),
+        "preview-check" => parse_preview_check(arguments),
+        "preview-import" => parse_preview_import(arguments),
+        "preview-export" => parse_preview_export(arguments),
+        "ptz-presets-check" => parse_ptz_presets_check(arguments),
+        "ptz-presets-import" => parse_ptz_presets_import(arguments),
+        "ptz-presets-export" => parse_ptz_presets_export(arguments),
+        "title-design-check" => {
+            let path = required_path(&mut arguments, "design path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::TitleDesignCheck { path })
+        }
+        "title-design-import" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let design = required_path(&mut arguments, "design path")?;
+            let mut input = None;
+            let mut name = None;
+            let mut fonts = Vec::new();
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--id" => input = Some(number(&required(&mut arguments, "input")?, "input")?),
+                    "--name" => name = Some(nonblank(&mut arguments, "input name")?),
+                    "--font" => {
+                        let value = required(&mut arguments, "font")?;
+                        let Some((family, file)) = value.split_once('=') else {
+                            return Err(ArgsError::InvalidChoice {
+                                field: "font (expected Family=path)",
+                                value,
+                            });
+                        };
+                        if family.trim().is_empty() {
+                            return Err(ArgsError::BlankValue("font family"));
+                        }
+                        if file.is_empty() {
+                            return Err(ArgsError::BlankValue("font path"));
+                        }
+                        fonts.push((family.to_owned(), PathBuf::from(file)));
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::TitleDesignImport {
+                path,
+                input: input.ok_or(ArgsError::MissingValue("--id"))?,
+                name: name.ok_or(ArgsError::MissingValue("--name"))?,
+                design,
+                fonts,
+            })
+        }
+        "title-apply-row" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let row = required_path(&mut arguments, "row path")?;
+            let mut keep_live = false;
+            let mut preview = false;
+            for option in arguments.by_ref() {
+                match option.as_str() {
+                    "--keep-live" => keep_live = true,
+                    "--preview" => preview = true,
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::TitleApplyRow {
+                path,
+                input,
+                row,
+                keep_live,
+                preview,
+            })
         }
         "audio-strip" => parse_audio_strip(arguments),
         mixer @ ("audio-label"
@@ -2327,7 +2715,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-loudness-reset"
         | "audio-aux-name"
         | "audio-aux-level"
+        | "audio-aux-dsp"
+        | "audio-aux-device"
+        | "audio-aux-omt"
         | "audio-output-aux"
+        | "audio-output-mix-minus"
         | "remote-audio-label"
         | "remote-audio-group"
         | "remote-audio-group-name"
@@ -2341,7 +2733,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-loudness-reset"
         | "remote-audio-aux-name"
         | "remote-audio-aux-level"
-        | "remote-audio-output-aux") => parse_audio_mixer(mixer, arguments),
+        | "remote-audio-aux-dsp"
+        | "remote-audio-aux-device"
+        | "remote-audio-aux-omt"
+        | "remote-audio-output-aux"
+        | "remote-audio-output-mix-minus") => parse_audio_mixer(mixer, arguments),
         "remote-audio-output-devices" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;
             reject_extra(&mut arguments)?;
@@ -2392,6 +2788,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "ftb" => parse_local_fade_to_black(arguments),
         "remote-status" => parse_remote_status(arguments),
         "remote-diagnostics" => parse_remote_diagnostics(arguments),
+        "remote-clock-control" => parse_remote_clock_control(arguments),
         "remote-alert" => parse_remote_alert(arguments),
         "remote-alert-rules" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;
@@ -2680,6 +3077,144 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "project path")?;
             reject_extra(&mut arguments)?;
             Ok(Command::InputPages { path })
+        }
+        "input-media-list-navigate" => parse_input_media_list_navigate(
+            MediaTarget::Local(required_path(&mut arguments, "project path")?),
+            arguments,
+        ),
+        "remote-input-media-list-navigate" => parse_input_media_list_navigate(
+            MediaTarget::Remote(socket_address(&required(&mut arguments, "address")?)?),
+            arguments,
+        ),
+        "input-media-list-options" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let auto_next = boolean_choice(&required(&mut arguments, "auto-next")?, "auto-next")?;
+            let auto_first =
+                boolean_choice(&required(&mut arguments, "auto-first")?, "auto-first")?;
+            let loop_list = boolean_choice(&required(&mut arguments, "loop")?, "loop")?;
+            let shuffle = required(&mut arguments, "shuffle seed")?;
+            let shuffle_seed = if shuffle == "off" {
+                None
+            } else {
+                Some(
+                    shuffle
+                        .parse::<u64>()
+                        .map_err(|_| ArgsError::InvalidNumber {
+                            field: "shuffle seed",
+                            value: shuffle.clone(),
+                        })?,
+                )
+            };
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::InputMediaListOptions {
+                path,
+                input,
+                auto_next,
+                auto_first,
+                loop_list,
+                shuffle_seed,
+                key,
+                expected_revision,
+            })
+        }
+        "input-media-list-transition" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let token = required(&mut arguments, "transition kind")?;
+            let kind = fm_model::MediaListTransitionKind::from_token(&token).ok_or(
+                ArgsError::InvalidChoice {
+                    field: "transition kind (cut, fade, dip, or wipe)",
+                    value: token,
+                },
+            )?;
+            let frames = number(&required(&mut arguments, "frames")?, "frames")?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::InputMediaListTransition {
+                path,
+                input,
+                kind,
+                frames,
+                key,
+                expected_revision,
+            })
+        }
+        "input-media-list-import" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let playlist = required_path(&mut arguments, "playlist path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::InputMediaListImport {
+                path,
+                input,
+                playlist,
+            })
+        }
+        "input-media-list-item" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let action = required(&mut arguments, "item action")?;
+            let operation = match action.as_str() {
+                "add" => {
+                    let asset_uri = required(&mut arguments, "asset URI")?;
+                    if !asset_uri.starts_with("asset://") {
+                        return Err(ArgsError::InvalidChoice {
+                            field: "asset URI (asset://<key>)",
+                            value: asset_uri,
+                        });
+                    }
+                    let title = required(&mut arguments, "title or -")?;
+                    MediaListItemEdit::Add {
+                        asset_uri,
+                        title: (title != "-").then_some(title),
+                    }
+                }
+                "remove" => MediaListItemEdit::Remove {
+                    item: number(&required(&mut arguments, "item")?, "item")?,
+                },
+                "title" => {
+                    let item = number(&required(&mut arguments, "item")?, "item")?;
+                    let title = required(&mut arguments, "title or -")?;
+                    MediaListItemEdit::SetTitle {
+                        item,
+                        title: (title != "-").then_some(title),
+                    }
+                }
+                "move" => {
+                    let item = number(&required(&mut arguments, "item")?, "item")?;
+                    let position = number(&required(&mut arguments, "position")?, "position")?;
+                    MediaListItemEdit::Move { item, position }
+                }
+                "marks" => {
+                    let item = number(&required(&mut arguments, "item")?, "item")?;
+                    let mark_in = number(&required(&mut arguments, "mark in")?, "mark in")?;
+                    let out = required(&mut arguments, "mark out or end")?;
+                    let mark_out = if out == "end" {
+                        None
+                    } else {
+                        Some(number(&out, "mark out")?)
+                    };
+                    MediaListItemEdit::SetMarks {
+                        item,
+                        mark_in,
+                        mark_out,
+                    }
+                }
+                _ => {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "item action (add, remove, title, or marks)",
+                        value: action,
+                    });
+                }
+            };
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::InputMediaListItem {
+                path,
+                input,
+                operation,
+                key,
+                expected_revision,
+            })
         }
         "help" | "--help" | "-h" => Ok(Command::Help),
         _ => {
@@ -3296,7 +3831,7 @@ fn parse_audio_strip(mut arguments: impl Iterator<Item = String>) -> Result<Comm
     let delay_samples = number(&required(&mut arguments, "delay samples")?, "delay samples")?;
     let mut arguments = arguments.peekable();
     let pan_basis_points = pan_option(&mut arguments)?;
-    let buses = buses_option(&mut arguments)?;
+    let sends = sends_option(&mut arguments)?;
     reject_extra(&mut arguments)?;
     Ok(Command::AudioStrip {
         path,
@@ -3308,7 +3843,7 @@ fn parse_audio_strip(mut arguments: impl Iterator<Item = String>) -> Result<Comm
         soloed,
         follow_video,
         delay_samples,
-        buses,
+        sends,
     })
 }
 
@@ -3342,21 +3877,35 @@ fn aux_bus(value: &str) -> Result<fm_model::AuxBusNumber, ArgsError> {
 
 /// An optional trailing `--buses <M then letters A-G, or ->` (AU-002);
 /// Master only otherwise.
-fn buses_option(
+/// `--sends <token>` sets each send's level and tap (`M,A@-6000p`); the
+/// older `--buses <token>` sets only which buses the strip feeds, at unity
+/// and post-fader. Neither leaves the new strip's sends.
+fn sends_option(
     arguments: &mut std::iter::Peekable<impl Iterator<Item = String>>,
-) -> Result<fm_model::AudioBusMask, ArgsError> {
+) -> Result<fm_model::AudioSends, ArgsError> {
     if arguments
+        .peek()
+        .is_some_and(|argument| argument == "--sends")
+    {
+        arguments.next();
+        let value = required(arguments, "sends")?;
+        fm_model::AudioSends::from_token(&value).ok_or(ArgsError::InvalidChoice {
+            field: "sends",
+            value,
+        })
+    } else if arguments
         .peek()
         .is_some_and(|argument| argument == "--buses")
     {
         arguments.next();
         let value = required(arguments, "buses")?;
-        fm_model::AudioBusMask::from_token(&value).ok_or(ArgsError::InvalidChoice {
+        let mask = fm_model::AudioBusMask::from_token(&value).ok_or(ArgsError::InvalidChoice {
             field: "buses",
             value,
-        })
+        })?;
+        Ok(fm_model::AudioSends::from_mask(mask))
     } else {
-        Ok(fm_model::AudioBusMask::MASTER)
+        Ok(fm_model::AudioSends::MASTER)
     }
 }
 
@@ -3383,6 +3932,17 @@ fn parse_dsp_target(
     })
 }
 
+/// A DSP preset name or canonical chain code (AU-005, AU-002).
+fn parse_dsp_chain(value: &str) -> Result<fm_types::strip_dsp::StripDsp, ArgsError> {
+    fm_types::strip_dsp::StripDspPreset::from_token(value)
+        .map(fm_types::strip_dsp::StripDspPreset::chain)
+        .or_else(|| fm_types::strip_dsp::StripDsp::from_code(value).ok())
+        .ok_or_else(|| ArgsError::InvalidChoice {
+            field: "DSP preset or chain code",
+            value: value.to_owned(),
+        })
+}
+
 /// `<input|master> <preset|chain code>` of `audio-strip-dsp` (AU-005).
 fn parse_strip_dsp(
     arguments: &mut impl Iterator<Item = String>,
@@ -3391,13 +3951,7 @@ fn parse_strip_dsp(
     let chain = required(arguments, "DSP preset or chain code")?;
     Ok(AudioMixerArgs::StripDsp {
         input,
-        chain: fm_types::strip_dsp::StripDspPreset::from_token(&chain)
-            .map(fm_types::strip_dsp::StripDspPreset::chain)
-            .or_else(|| fm_types::strip_dsp::StripDsp::from_code(&chain).ok())
-            .ok_or(ArgsError::InvalidChoice {
-                field: "DSP preset or chain code",
-                value: chain,
-            })?,
+        chain: parse_dsp_chain(&chain)?,
     })
 }
 
@@ -3487,6 +4041,22 @@ fn parse_audio_mixer(
             gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
             muted: boolean_choice(&required(&mut arguments, "muted")?, "muted")?,
         },
+        "audio-aux-dsp" => AudioMixerArgs::AuxDsp {
+            bus: aux_bus(&required(&mut arguments, "aux bus")?)?,
+            chain: parse_dsp_chain(&required(&mut arguments, "DSP preset or chain code")?)?,
+        },
+        "audio-aux-device" => {
+            let bus = aux_bus(&required(&mut arguments, "aux bus")?)?;
+            let device = required(&mut arguments, "output device")?;
+            AudioMixerArgs::AuxDevice {
+                bus,
+                device: (device != "none").then_some(device),
+            }
+        }
+        "audio-aux-omt" => AudioMixerArgs::AuxOmt {
+            bus: aux_bus(&required(&mut arguments, "aux bus")?)?,
+            omt: boolean_choice(&required(&mut arguments, "OMT on|off")?, "OMT on|off")?,
+        },
         "audio-output-aux" => {
             let output = number(&required(&mut arguments, "output")?, "output")?;
             let bus = required(&mut arguments, "aux bus")?;
@@ -3496,6 +4066,18 @@ fn parse_audio_mixer(
                     None
                 } else {
                     Some(aux_bus(&bus)?)
+                },
+            }
+        }
+        "audio-output-mix-minus" => {
+            let output = number(&required(&mut arguments, "output")?, "output")?;
+            let input = required(&mut arguments, "input")?;
+            AudioMixerArgs::OutputMixMinus {
+                output,
+                input: if input == "none" {
+                    None
+                } else {
+                    Some(number(&input, "input")?)
                 },
             }
         }
@@ -4069,6 +4651,361 @@ fn parse_media_input_relink(
         input,
         asset_uri,
     })
+}
+
+fn project_duration_format(value: &str) -> Option<fm_types::ProjectDurationFormat> {
+    if let Some(rest) = value.strip_prefix("hours_minutes_seconds_drop_frame:") {
+        let (numerator, denominator) = rest.split_once('/')?;
+        return Some(
+            fm_types::ProjectDurationFormat::HoursMinutesSecondsDropFrame {
+                numerator: numerator.parse().ok()?,
+                denominator: denominator.parse().ok()?,
+            },
+        );
+    }
+    if let Some(rest) = value.strip_prefix("hours_minutes_seconds_frames:") {
+        let (numerator, denominator) = rest.split_once('/')?;
+        return Some(fm_types::ProjectDurationFormat::HoursMinutesSecondsFrames {
+            numerator: numerator.parse().ok()?,
+            denominator: denominator.parse().ok()?,
+        });
+    }
+    fm_types::ProjectDurationFormat::from_token(value)
+}
+
+#[allow(clippy::too_many_lines)]
+fn parse_clock_add(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let mut name = None;
+    let mut kind_token = None;
+    let mut zone = None;
+    let mut time_format = fm_types::ProjectTimeFormat::Hours24;
+    let mut preset = 300_000_000_000_i64;
+    let mut direction = fm_types::ProjectClockDirection::CountDown;
+    let mut limit = None;
+    let mut overrun = fm_types::ProjectClockOverrun::StopAtTarget;
+    let mut format = fm_types::ProjectDurationFormat::MinutesSeconds;
+    let mut media_input = None;
+    let mut session = fm_types::ProjectSessionKind::Stream;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--name" => name = Some(nonblank(&mut arguments, "clock name")?),
+            "--kind" => {
+                let value = required(&mut arguments, "clock kind")?;
+                if !matches!(
+                    value.as_str(),
+                    "timer" | "time-of-day" | "media-remaining" | "session"
+                ) {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "clock kind (timer, time-of-day, media-remaining, or session)",
+                        value,
+                    });
+                }
+                kind_token = Some(value);
+            }
+            "--zone" => zone = Some(required(&mut arguments, "time zone")?),
+            "--time-format" => {
+                let value = required(&mut arguments, "time format")?;
+                time_format = fm_types::ProjectTimeFormat::from_token(&value).ok_or(ArgsError::InvalidChoice {
+                    field: "time format (hours_24, hours_24_minutes, hours_12, hours_12_minutes, date, or rfc3339)",
+                    value,
+                })?;
+            }
+            "--input" => {
+                media_input = Some(number(
+                    &required(&mut arguments, "media input")?,
+                    "media input",
+                )?);
+            }
+            "--preset" => preset = clock_value(&mut arguments, "preset")?,
+            "--direction" => {
+                let value = required(&mut arguments, "clock direction")?;
+                direction = fm_types::ProjectClockDirection::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "clock direction (count_up or count_down)",
+                        value,
+                    },
+                )?;
+            }
+            "--limit" => limit = Some(clock_value(&mut arguments, "limit")?),
+            "--overrun" => {
+                let value = required(&mut arguments, "overrun policy")?;
+                overrun = fm_types::ProjectClockOverrun::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "overrun (stop_at_target or continue)",
+                        value,
+                    },
+                )?;
+            }
+            "--format" => {
+                let value = required(&mut arguments, "duration format")?;
+                format = project_duration_format(&value).ok_or(ArgsError::InvalidChoice {
+                    field: "duration format (hours_minutes_seconds, minutes_seconds, seconds, hours_minutes_seconds_tenths, minutes_seconds_tenths, hours_minutes_seconds_millis, compact, hours_minutes_seconds_frames:<num>/<den>, or hours_minutes_seconds_drop_frame:<num>/<den>)",
+                    value,
+                })?;
+            }
+            "--session" => {
+                let value = required(&mut arguments, "session kind")?;
+                session = fm_types::ProjectSessionKind::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "session kind (stream, recording, replay, multicorder, or external)",
+                        value,
+                    },
+                )?;
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    let name = name.ok_or(ArgsError::MissingValue("--name"))?;
+    if media_input.is_some() && kind_token.as_deref() != Some("media-remaining") {
+        return Err(ArgsError::InvalidChoice {
+            field: "--input (only media-remaining clocks follow an input)",
+            value: kind_token.unwrap_or_else(|| "timer".to_owned()),
+        });
+    }
+    let kind = match kind_token.as_deref().unwrap_or("timer") {
+        "timer" => fm_types::ProjectClockKind::Timer {
+            direction,
+            preset_nanos: preset,
+            limit_nanos: limit,
+            overrun,
+            format,
+        },
+        "time-of-day" => {
+            let zone = zone.ok_or(ArgsError::MissingValue("--zone"))?;
+            let parsed = fm_clock::production::TimeZone::parse_posix(&zone).map_err(|_| {
+                ArgsError::InvalidChoice {
+                    field: "canonical POSIX time zone",
+                    value: zone.clone(),
+                }
+            })?;
+            if parsed.to_string() != zone {
+                return Err(ArgsError::InvalidChoice {
+                    field: "canonical POSIX time zone",
+                    value: zone,
+                });
+            }
+            fm_types::ProjectClockKind::TimeOfDay {
+                zone,
+                format: time_format,
+            }
+        }
+        "media-remaining" => {
+            let input = media_input
+                .map(|id| {
+                    core::num::NonZeroU128::new(id)
+                        .map(fm_types::InputId::new)
+                        .ok_or(ArgsError::InvalidChoice {
+                            field: "media input id (nonzero)",
+                            value: id.to_string(),
+                        })
+                })
+                .transpose()?;
+            fm_types::ProjectClockKind::MediaRemaining { input, format }
+        }
+        "session" => fm_types::ProjectClockKind::Session {
+            kind: session,
+            format,
+        },
+        _ => unreachable!("the kind token is validated above"),
+    };
+    Ok(Command::ClockAdd {
+        path,
+        clock: fm_types::ProjectClock { name, kind },
+    })
+}
+
+fn parse_clock_remove(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let name = nonblank(&mut arguments, "clock name")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ClockRemove { path, name })
+}
+
+fn parse_clock_list(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ClockList { path })
+}
+
+fn clock_value(
+    arguments: &mut impl Iterator<Item = String>,
+    field: &'static str,
+) -> Result<i64, ArgsError> {
+    let value = required(arguments, field)?;
+    fm_clock::production::parse_clock_value(&value)
+        .map(fm_clock::production::ClockValue::as_nanos)
+        .map_err(|_| ArgsError::InvalidChoice {
+            field: "clock value (HH:MM:SS or seconds)",
+            value,
+        })
+}
+
+fn parse_scoreboard_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "scoreboard document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ScoreboardCheck { path })
+}
+
+fn parse_social_desk_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "desk document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::SocialDeskCheck { path })
+}
+
+fn parse_social_desk_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "desk document")?;
+    let output = required_path(&mut arguments, "output")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::SocialDeskExport { path, output })
+}
+
+fn parse_track_map_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "track-map document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::TrackMapCheck { path })
+}
+
+fn parse_track_map_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "track-map document")?;
+    let output = required_path(&mut arguments, "output")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::TrackMapExport { path, output })
+}
+
+fn parse_record_track_map_import(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let slot = recorder_slot(&required(&mut arguments, "recorder slot")?)?;
+    let slot = fm_model::RecorderSlot::new(slot)
+        .map_err(|_| ArgsError::InvalidRecorder(slot.to_string()))?;
+    let document = required_path(&mut arguments, "track-map document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::RecordTrackMapImport {
+        path,
+        slot,
+        document,
+    })
+}
+
+fn parse_record_track_map_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let slot = recorder_slot(&required(&mut arguments, "recorder slot")?)?;
+    let slot = fm_model::RecorderSlot::new(slot)
+        .map_err(|_| ArgsError::InvalidRecorder(slot.to_string()))?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::RecordTrackMapExport { path, slot })
+}
+
+fn parse_scoreboard_import(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let document = required_path(&mut arguments, "scoreboard document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ScoreboardImport {
+        path,
+        input,
+        document,
+    })
+}
+
+fn parse_scoreboard_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ScoreboardExport { path, input })
+}
+
+fn parse_crawl_check(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "crawl document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::CrawlCheck { path })
+}
+
+fn parse_crawl_import(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let document = required_path(&mut arguments, "crawl document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::CrawlImport {
+        path,
+        input,
+        document,
+    })
+}
+
+fn parse_crawl_export(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::CrawlExport { path, input })
+}
+
+fn parse_preview_check(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "preview document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PreviewCheck { path })
+}
+
+fn parse_preview_import(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let document = required_path(&mut arguments, "preview document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PreviewImport {
+        path,
+        input,
+        document,
+    })
+}
+
+fn parse_preview_export(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PreviewExport { path, input })
+}
+
+fn parse_ptz_presets_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "PTZ preset document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PtzPresetsCheck { path })
+}
+
+fn parse_ptz_presets_import(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let document = required_path(&mut arguments, "PTZ preset document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PtzPresetsImport { path, document })
+}
+
+fn parse_ptz_presets_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PtzPresetsExport { path })
 }
 
 fn parse_title_input_add(
@@ -5338,6 +6275,32 @@ fn parse_scene_layer_auto_key(
     })
 }
 
+/// A persisted plugin chain's target (AU-006): Master or one input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PluginChainTarget {
+    Master,
+    Input(u128),
+}
+
+/// `audio-plugin-chain <project.freemix> <input|master> [<plugin>[:<bypass
+/// 0|1>][:<latency>[:<state-hex>]] ...]` (AU-006, schema 91): replaces one
+/// strip's or the Master bus's persisted chain; no slots clears it.
+fn parse_audio_plugin_chain(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let target = match required(&mut arguments, "target")?.as_str() {
+        "master" => PluginChainTarget::Master,
+        value => PluginChainTarget::Input(number(value, "input")?),
+    };
+    let slots = plugin_slots(arguments)?;
+    Ok(Command::AudioPluginChain {
+        path,
+        target,
+        slots,
+    })
+}
+
 /// `remote-audio-plugin-chain <address> <input> [<plugin>[:<bypass 0|1>]
 /// [:<latency>[:<state-hex>]] ...]` (AU-006): replaces one strip's ordered
 /// plugin chain; no slots clears it. `state-hex` is the slot's opaque state.
@@ -5346,11 +6309,27 @@ fn parse_remote_audio_plugin_chain(
 ) -> Result<Command, ArgsError> {
     let address = socket_address(&required(&mut arguments, "address")?)?;
     let input = replay_input(&required(&mut arguments, "input")?)?;
+    let slots = plugin_slots(arguments)?;
+    Ok(Command::RemoteAudioPluginChain {
+        address,
+        input,
+        slots,
+    })
+}
+
+/// The shared `[<plugin>[=<name>=<value>,...][:<bypass>][:<latency>
+/// [:<state-hex>]] ...]` slots.
+fn plugin_slots(
+    arguments: impl Iterator<Item = String>,
+) -> Result<Vec<fm_protocol::PluginChainSlot>, ArgsError> {
     let mut slots = Vec::new();
     let mut plugins = std::collections::BTreeSet::new();
     for entry in arguments {
         let fields: Vec<&str> = entry.split(':').collect();
-        let plugin = fields[0];
+        let (plugin, parameters) = match fields[0].split_once('=') {
+            Some((plugin, parameters)) => (plugin, plugin_parameters(Some(parameters))?),
+            None => (fields[0], Vec::new()),
+        };
         let rest = &fields[1..];
         if !fm_protocol::PluginChainSlot::plugin_id_is_valid(plugin) {
             return Err(ArgsError::InvalidChoice {
@@ -5401,6 +6380,7 @@ fn parse_remote_audio_plugin_chain(
             bypassed,
             latency_frames,
             state,
+            parameters,
         });
     }
     if slots.len() > fm_protocol::MAX_PROTOCOL_PLUGIN_SLOTS {
@@ -5409,11 +6389,52 @@ fn parse_remote_audio_plugin_chain(
             value: format!("{} slots", slots.len()),
         });
     }
-    Ok(Command::RemoteAudioPluginChain {
-        address,
-        input,
-        slots,
-    })
+    Ok(slots)
+}
+
+/// Parses `name=value,name=value` plugin parameter values, sorted by name.
+fn plugin_parameters(value: Option<&str>) -> Result<Vec<fm_protocol::PluginParameter>, ArgsError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let mut parameters = Vec::new();
+    for entry in value.split(',') {
+        let Some((name, text)) = entry.split_once('=') else {
+            return Err(ArgsError::InvalidChoice {
+                field: "plugin parameter (expected name=value)",
+                value: entry.to_owned(),
+            });
+        };
+        if !fm_protocol::PluginParameter::name_is_valid(name)
+            || parameters
+                .iter()
+                .any(|parameter: &fm_protocol::PluginParameter| parameter.name == name)
+        {
+            return Err(ArgsError::InvalidChoice {
+                field: "plugin parameter",
+                value: name.to_owned(),
+            });
+        }
+        let parsed: f32 = text.parse().map_err(|_| ArgsError::InvalidChoice {
+            field: "plugin parameter value",
+            value: text.to_owned(),
+        })?;
+        if !parsed.is_finite() {
+            return Err(ArgsError::InvalidChoice {
+                field: "plugin parameter value",
+                value: text.to_owned(),
+            });
+        }
+        parameters.push(fm_protocol::PluginParameter::new(name, parsed));
+    }
+    if parameters.len() > fm_protocol::MAX_PLUGIN_PARAMETERS {
+        return Err(ArgsError::InvalidChoice {
+            field: "plugin parameters",
+            value: format!("{} values", parameters.len()),
+        });
+    }
+    parameters.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(parameters)
 }
 
 /// `state-hex`: an even number of hexadecimal digits.
@@ -5964,6 +6985,9 @@ pub struct ReplayEdit {
     /// the mix's frames (Protocol 2.116).
     #[allow(clippy::option_option)] // keep, off, or a mix
     pub auto_return: Option<Option<u32>>,
+    /// How a Replay take enters Program (`--transition cut|fade:<frames>`,
+    /// Protocol 2.137).
+    pub transition: Option<fm_types::replay::ReplayTransition>,
 }
 
 /// The inputs `--sources` names, in angle order (OR-012): distinct, nonzero,
@@ -6019,6 +7043,26 @@ fn replay_retention(value: &str) -> Result<u32, ArgsError> {
     Ok(u32::from(seconds))
 }
 
+/// The `--transition` a Replay take uses (OR-012, Protocol 2.137): `cut` or
+/// `fade:<frames>`.
+fn replay_transition(value: &str) -> Result<fm_types::replay::ReplayTransition, ArgsError> {
+    if value == "cut" {
+        return Ok(fm_types::replay::ReplayTransition::CUT);
+    }
+    let Some(frames) = value.strip_prefix("fade:") else {
+        return Err(ArgsError::InvalidChoice {
+            field: "replay transition",
+            value: value.to_owned(),
+        });
+    };
+    let frames: u32 = number(frames, "replay transition frames")?;
+    fm_types::replay::ReplayTransition::new(fm_types::replay::ReplayTransitionKind::Fade, frames)
+        .map_err(|_| ArgsError::InvalidChoice {
+            field: "replay transition",
+            value: value.to_owned(),
+        })
+}
+
 /// The `--root` storage directory (OR-012): absolute and within the
 /// documented length.
 fn replay_root(value: String) -> Result<String, ArgsError> {
@@ -6031,6 +7075,7 @@ fn replay_root(value: String) -> Result<String, ArgsError> {
 }
 
 /// `replay`, `replay-set`, and their `remote-` forms (OR-012).
+#[allow(clippy::too_many_lines)] // one replay subcommand per arm
 fn parse_replay(
     command: &str,
     mut arguments: impl Iterator<Item = String>,
@@ -6092,6 +7137,12 @@ fn parse_replay(
                     }
                     Some(frames)
                 });
+            }
+            "--transition" => {
+                edit.transition = Some(replay_transition(&required(
+                    &mut arguments,
+                    "replay transition",
+                )?)?);
             }
             "--default-root" => {
                 if matches!(edit.storage_root, Some(Some(_))) {
@@ -6275,6 +7326,19 @@ fn parse_remote_replay_do(
                 }
             })?,
         },
+        ("shuttle", [input, rate]) => {
+            let rate_milli: i32 = number(rate, "shuttle rate")?;
+            if !(-16_000..=16_000).contains(&rate_milli) {
+                return Err(ArgsError::InvalidChoice {
+                    field: "shuttle rate",
+                    value: rate.clone(),
+                });
+            }
+            ReplayOperation::Shuttle {
+                input: replay_input(input)?,
+                rate_milli,
+            }
+        }
         ("pause", [input]) => ReplayOperation::Pause {
             input: replay_input(input)?,
         },
@@ -6366,12 +7430,12 @@ fn reel_destination(value: String) -> Result<String, ArgsError> {
 }
 
 /// The `--clips` list (OR-013): 1 to [`fm_protocol::MAX_REEL_CLIPS`]
-/// `<event>/<angle>/<trim-in>/<trim-out>/<speed>[/<dissolve>]` records,
+/// `<event>/<angle>/<trim-in>/<trim-out>/<speed>[r][/<dissolve>]` records,
 /// comma separated. Each event and angle is nonzero, each trim is at most
 /// [`fm_protocol::MAX_REEL_TRIM_FRAMES`], each speed is 25, 50, 75, or 100
-/// percent, and `dissolve` (frames, 0 or absent for a cut) is at most
-/// [`fm_protocol::MAX_REEL_DISSOLVE_FRAMES`] and absent or 0 on the first
-/// clip.
+/// percent (`r` plays the clip backward), and `dissolve` (frames, 0 or
+/// absent for a cut) is at most [`fm_protocol::MAX_REEL_DISSOLVE_FRAMES`]
+/// and absent or 0 on the first clip.
 fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
     let mut clips = Vec::new();
     for record in value.split(',') {
@@ -6384,6 +7448,10 @@ fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
                 (event, angle, trim_in, trim_out, speed, Some(dissolve))
             }
             _ => return Err(ArgsError::InvalidReelClip(record.to_owned())),
+        };
+        let (speed, reverse) = match speed.strip_suffix('r') {
+            Some(forward_speed) => (forward_speed, true),
+            None => (*speed, false),
         };
         let event: u32 = number(event, "reel clip event")?;
         if event == 0 {
@@ -6425,6 +7493,7 @@ fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
             trim_in_frames: trim_in,
             trim_out_frames: trim_out,
             speed_percent: speed,
+            reverse,
             dissolve_frames: dissolve,
         });
     }
@@ -6859,6 +7928,44 @@ fn parse_remote_diagnostics(
     Ok(Command::RemoteDiagnostics { address })
 }
 
+/// `remote-clock-control <address> <name> start|pause|reset` or
+/// `... set|adjust|preset <HH:MM:SS or seconds>` (SW-013, Protocol 2.150).
+fn parse_remote_clock_control(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let name = nonblank(&mut arguments, "clock name")?;
+    let token = required(&mut arguments, "clock operation")?;
+    let operation = match token.as_str() {
+        "start" => fm_protocol::ClockControlOperation::Start,
+        "pause" => fm_protocol::ClockControlOperation::Pause,
+        "reset" => fm_protocol::ClockControlOperation::Reset,
+        "set" => fm_protocol::ClockControlOperation::SetValue(clock_value(
+            &mut arguments,
+            "clock value",
+        )?),
+        "adjust" => {
+            fm_protocol::ClockControlOperation::Adjust(clock_value(&mut arguments, "clock value")?)
+        }
+        "preset" => fm_protocol::ClockControlOperation::SetPreset(clock_value(
+            &mut arguments,
+            "clock value",
+        )?),
+        _ => {
+            return Err(ArgsError::InvalidChoice {
+                field: "clock operation (start, pause, reset, set, adjust, or preset)",
+                value: token,
+            });
+        }
+    };
+    reject_extra(&mut arguments)?;
+    Ok(Command::RemoteClockControl {
+        address,
+        name,
+        operation,
+    })
+}
+
 /// Longest acknowledgement or silence `remote-alert` sets, in minutes: the
 /// protocol's day.
 const MAX_ALERT_HOLD_MINUTES: u64 = fm_protocol::MAX_HEALTH_ALERT_HOLD_MS / 60_000;
@@ -6915,6 +8022,7 @@ fn parse_remote_alert(mut arguments: impl Iterator<Item = String>) -> Result<Com
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AlertRuleEdit {
     pub enabled: Option<bool>,
+    pub severity: Option<fm_protocol::AlertSeverity>,
     pub trigger_milli: Option<i64>,
     pub clear_milli: Option<i64>,
     pub hold_ms: Option<u32>,
@@ -6931,6 +8039,7 @@ impl AlertRuleEdit {
         }
         fm_protocol::AlertRuleSetting {
             enabled: self.enabled.unwrap_or(current.enabled),
+            severity: self.severity.unwrap_or(current.severity),
             trigger_milli: self.trigger_milli.unwrap_or(current.trigger_milli),
             clear_milli: self.clear_milli.unwrap_or(current.clear_milli),
             hold_ms: self.hold_ms.unwrap_or(current.hold_ms),
@@ -6948,9 +8057,9 @@ fn threshold(field: &'static str, value: String) -> Result<f64, ArgsError> {
         .ok_or(ArgsError::InvalidChoice { field, value })
 }
 
-/// `remote-alert-rule <address> <rule> [--on|--off] [--fires-at <value>]
-/// [--clears-at <value>] [--hold <seconds>] | --defaults [--key <key>]
-/// [--expect <revision>]` (RC-015, Protocol 2.112).
+/// `remote-alert-rule <address> <rule> [--on|--off] [--severity <severity>]
+/// [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] | --defaults
+/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.147).
 fn parse_remote_alert_rule(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -6982,6 +8091,15 @@ fn parse_remote_alert_rule(
                     required(&mut arguments, "alert threshold")?,
                 )?;
                 edit.trigger_milli = Some(rule.reading().milli(shown));
+            }
+            "--severity" => {
+                let value = required(&mut arguments, "alert severity")?;
+                edit.severity = Some(fm_protocol::AlertSeverity::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "alert severity",
+                        value,
+                    },
+                )?);
             }
             "--clears-at" => {
                 let shown = threshold(
@@ -7021,13 +8139,14 @@ fn parse_remote_alert_rule(
         }
     }
     let changes = edit.enabled.is_some()
+        || edit.severity.is_some()
         || edit.trigger_milli.is_some()
         || edit.clear_milli.is_some()
         || edit.hold_ms.is_some();
     if edit.defaults && changes {
         return Err(ArgsError::ConflictingOptions {
             option: "--defaults",
-            conflicts: "--on, --off, --fires-at, --clears-at, and --hold",
+            conflicts: "--on, --off, --severity, --fires-at, --clears-at, and --hold",
         });
     }
     if !edit.defaults && !changes {
@@ -7058,7 +8177,7 @@ fn parse_remote_audio_strip(
     let delay_samples = number(&required(&mut arguments, "delay samples")?, "delay samples")?;
     let mut arguments = arguments.peekable();
     let pan_basis_points = pan_option(&mut arguments)?;
-    let buses = buses_option(&mut arguments)?;
+    let sends = sends_option(&mut arguments)?;
     let (key, expected_revision) = command_options(arguments)?;
     Ok(Command::RemoteAudioStrip {
         address,
@@ -7070,7 +8189,7 @@ fn parse_remote_audio_strip(
         soloed,
         follow_video,
         delay_samples,
-        buses,
+        sends,
         key,
         expected_revision,
     })
@@ -8547,20 +9666,31 @@ fn parse_script(
         "script-run" => ScriptCommand::Run {
             script: ScriptRef::parse(required(&mut arguments, "script")?),
         },
-        "script-stop" => ScriptCommand::Stop {
-            run: if arguments.next_if(|argument| argument == "--run").is_some() {
-                let run = number(&required(&mut arguments, "run")?, "run")?;
-                if run == 0 {
-                    return Err(ArgsError::InvalidChoice {
-                        field: "run",
-                        value: "0".to_owned(),
-                    });
+        "script-stop" => {
+            let mut runs = Vec::new();
+            while arguments.next_if(|argument| argument == "--run").is_some() {
+                let value = required(&mut arguments, "run")?;
+                for token in value.split(',') {
+                    let run = number(token, "run")?;
+                    if run == 0 {
+                        return Err(ArgsError::InvalidChoice {
+                            field: "run",
+                            value: "0".to_owned(),
+                        });
+                    }
+                    runs.push(run);
                 }
-                Some(run)
-            } else {
-                None
-            },
-        },
+            }
+            runs.sort_unstable();
+            runs.dedup();
+            if runs.len() > 8 {
+                return Err(ArgsError::InvalidChoice {
+                    field: "runs",
+                    value: format!("{} runs", runs.len()),
+                });
+            }
+            ScriptCommand::Stop { runs }
+        }
         other => return Err(ArgsError::UnknownCommand(other.to_owned())),
     };
     let (key, expected_revision) = command_options(arguments)?;
@@ -8654,7 +9784,17 @@ fn playlist_entries(value: &str) -> Result<Vec<fm_protocol::PlaylistEntrySpec>, 
                 value: item.to_owned(),
             };
             let parts: Vec<_> = item.split(':').collect();
-            let [id, input, frames, transition, transition_frames, enabled] = parts[..] else {
+            let [
+                id,
+                input,
+                frames,
+                transition,
+                transition_frames,
+                enabled,
+                follow_media,
+                stinger_slot,
+            ] = parts[..]
+            else {
                 return Err(invalid());
             };
             Ok(fm_protocol::PlaylistEntrySpec {
@@ -8673,10 +9813,25 @@ fn playlist_entries(value: &str) -> Result<Vec<fm_protocol::PlaylistEntrySpec>, 
                     "wipe" => PlaylistTransitionKind::Wipe,
                     "slide" => PlaylistTransitionKind::Slide,
                     "zoom" => PlaylistTransitionKind::Zoom,
+                    "stinger" => PlaylistTransitionKind::Stinger,
                     _ => return Err(invalid()),
                 },
                 transition_frames: transition_frames.parse().map_err(|_| invalid())?,
+                stinger_slot: match stinger_slot {
+                    "-" => None,
+                    slot => Some(
+                        slot.parse::<u8>()
+                            .ok()
+                            .filter(|slot| (1..=8).contains(slot))
+                            .ok_or_else(invalid)?,
+                    ),
+                },
                 enabled: match enabled {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(invalid()),
+                },
+                follow_media: match follow_media {
                     "0" => false,
                     "1" => true,
                     _ => return Err(invalid()),
@@ -8948,6 +10103,42 @@ fn parse_input_page(
     let (key, expected_revision) = command_options(arguments)?;
     Ok(Command::InputPage {
         path,
+        input,
+        navigation,
+        key,
+        expected_revision,
+    })
+}
+
+/// `<input> next|previous|first|last|goto <position>|item <id>`, the
+/// position one-based (IN-006).
+fn parse_input_media_list_navigate(
+    target: MediaTarget,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let value = required(&mut arguments, "list action")?;
+    let index = match value.as_str() {
+        "goto" => {
+            let position: u32 =
+                number(&required(&mut arguments, "item position")?, "item position")?;
+            Some(position.checked_sub(1).ok_or(ArgsError::InvalidNumber {
+                field: "item position (counted from 1)",
+                value: position.to_string(),
+            })?)
+        }
+        "item" => Some(number(&required(&mut arguments, "item")?, "item")?),
+        _ => None,
+    };
+    let navigation = fm_protocol::MediaListNavigation::from_token(&value, index).ok_or(
+        ArgsError::InvalidChoice {
+            field: "list action (next, previous, first, last, goto <position>, or item <id>)",
+            value,
+        },
+    )?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::InputMediaListNavigate {
+        target,
         input,
         navigation,
         key,
@@ -10513,12 +11704,13 @@ mod tests {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 48_000,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one case per mixer command
     fn monitor_output_commands_parse() {
         assert_eq!(
             parse(strings(&[
@@ -10573,6 +11765,36 @@ mod tests {
                 expected_revision: None,
             })
         );
+        assert_eq!(
+            parse(strings(&["audio-aux-dsp", "show.freemix", "B", "voice"])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::AuxDsp {
+                    bus: fm_model::AuxBusNumber::from_letter('B').unwrap(),
+                    chain: fm_types::strip_dsp::StripDspPreset::Voice.chain(),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-audio-aux-dsp",
+                "127.0.0.1:9123",
+                "G",
+                "podcast",
+            ])),
+            Ok(Command::RemoteAudioMixer {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                edit: AudioMixerArgs::AuxDsp {
+                    bus: fm_model::AuxBusNumber::from_letter('G').unwrap(),
+                    chain: fm_types::strip_dsp::StripDspPreset::Podcast.chain(),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert!(parse(strings(&["audio-aux-dsp", "show.freemix", "H", "voice"])).is_err());
         let code = fm_types::strip_dsp::StripDspPreset::Master.chain().code();
         assert_eq!(
             parse(strings(&[
@@ -10813,7 +12035,7 @@ mod tests {
                 delay_samples: 2_400,
                 key: Some("delay".into()),
                 expected_revision: Some(3),
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
     }
@@ -11384,7 +12606,7 @@ mod tests {
                 "127.0.0.1:9123",
                 "set",
                 "all",
-                "1:2:250:cut:0:1,2:3:100:fade:12:0",
+                "1:2:250:cut:0:1:0:-,2:3:100:fade:12:0:0:-",
             ])),
             playlist(
                 CommandPayload::SetPlaylist {
@@ -11394,16 +12616,20 @@ mod tests {
                             id: 1,
                             input: wire(2),
                             duration_frames: 250,
+                            follow_media: false,
                             transition: PlaylistTransitionKind::Cut,
                             transition_frames: 0,
+                            stinger_slot: None,
                             enabled: true,
                         },
                         PlaylistEntrySpec {
                             id: 2,
                             input: wire(3),
                             duration_frames: 100,
+                            follow_media: false,
                             transition: PlaylistTransitionKind::Fade,
                             transition_frames: 12,
+                            stinger_slot: None,
                             enabled: false,
                         },
                     ],
@@ -11676,7 +12902,7 @@ mod tests {
         assert_eq!(
             parse_chain(&[
                 "freemix.reference.trim:0:0:20d1ffff",
-                "freemix.reference.polarity:1:2",
+                "freemix.reference.polarity=amount=0.5:1:2",
             ]),
             Ok(Command::RemoteAudioPluginChain {
                 address: "127.0.0.1:9123".parse().unwrap(),
@@ -11687,12 +12913,14 @@ mod tests {
                         bypassed: false,
                         latency_frames: 0,
                         state: vec![0x20, 0xd1, 0xff, 0xff],
+                        parameters: Vec::new(),
                     },
                     PluginChainSlot {
                         plugin: "freemix.reference.polarity".to_owned(),
                         bypassed: true,
                         latency_frames: 2,
                         state: Vec::new(),
+                        parameters: vec![fm_protocol::PluginParameter::new("amount", 0.5)],
                     },
                 ],
             })
@@ -11710,6 +12938,9 @@ mod tests {
             &["freemix.reference.trim:2"][..],
             &["freemix.reference.trim:0:0:xyz"][..],
             &["freemix.reference.trim:0:0:abc"][..],
+            &["freemix.reference.trim=bad name=1"][..],
+            &["freemix.reference.trim=amount=nan"][..],
+            &["freemix.reference.trim=a=1,a=2"][..],
             &["freemix.reference.trim", "freemix.reference.trim"][..],
             &["a", "b", "c", "d", "e", "f", "g", "h", "i"][..],
         ] {
@@ -11717,6 +12948,60 @@ mod tests {
         }
         let too_late = format!("freemix.reference.trim:0:{}", MAX_PLUGIN_LATENCY_FRAMES + 1);
         assert!(parse_chain(&[&too_late]).is_err());
+    }
+
+    /// AU-006 / schema 91: the local chain edit targets one input or Master
+    /// and shares the remote command's slot grammar.
+    #[test]
+    fn audio_plugin_chain_local_commands_parse_into_typed_slots() {
+        fn parse_local(words: &[&str]) -> Result<Command, super::ArgsError> {
+            super::parse(
+                words
+                    .iter()
+                    .map(|word| (*word).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        }
+        assert_eq!(
+            parse_local(&[
+                "audio-plugin-chain",
+                "show.freemix",
+                "master",
+                "freemix.reference.trim:1:7:20d1",
+            ]),
+            Ok(Command::AudioPluginChain {
+                path: "show.freemix".into(),
+                target: super::PluginChainTarget::Master,
+                slots: vec![fm_protocol::PluginChainSlot {
+                    plugin: "freemix.reference.trim".to_owned(),
+                    bypassed: true,
+                    latency_frames: 7,
+                    state: vec![0x20, 0xd1],
+                    parameters: Vec::new(),
+                }],
+            })
+        );
+        assert_eq!(
+            parse_local(&["audio-plugin-chain", "show.freemix", "11"]),
+            Ok(Command::AudioPluginChain {
+                path: "show.freemix".into(),
+                target: super::PluginChainTarget::Input(11),
+                slots: Vec::new(),
+            })
+        );
+        for words in [
+            &["audio-plugin-chain", "show.freemix"][..],
+            &["audio-plugin-chain", "show.freemix", "zero"][..],
+            &["audio-plugin-chain", "show.freemix", "11", "bad/id"][..],
+            &[
+                "audio-plugin-chain",
+                "show.freemix",
+                "11",
+                "freemix.reference.trim:2",
+            ][..],
+        ] {
+            assert!(parse_local(words).is_err(), "{words:?}");
+        }
     }
 
     /// OR-012: replay settings edits and live replay operations parse
@@ -11748,6 +13033,7 @@ mod tests {
                     retention_seconds: Some(30),
                     storage_root: Some(None),
                     auto_return: None,
+                    transition: None,
                 },
                 key: None,
                 expected_revision: None,
@@ -11835,6 +13121,16 @@ mod tests {
                 speed: ReplaySpeed::Half,
             })
         );
+        assert_eq!(
+            remote(&["shuttle", "7", "-2000"]),
+            Ok(ReplayOperation::Shuttle {
+                input: input(7),
+                rate_milli: -2_000,
+            })
+        );
+        for rate in ["16001", "-16001", "x"] {
+            assert!(remote(&["shuttle", "7", rate]).is_err(), "{rate}");
+        }
         assert_eq!(
             remote(&["cue", "7", "2", "--angle", "3"]),
             Ok(ReplayOperation::Cue {
@@ -11984,6 +13280,7 @@ mod tests {
             trim_in_frames: trim_in,
             trim_out_frames: trim_out,
             speed_percent: speed,
+            reverse: false,
             dissolve_frames: 0,
         };
         let spec = Box::new(fm_protocol::ReelSpec {

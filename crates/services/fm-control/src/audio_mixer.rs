@@ -14,8 +14,9 @@ use fm_plugin_host_api::{
 use fm_protocol::AuxBusStatus;
 use fm_protocol::{
     AudioDspTarget, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
-    AudioPluginStatusMessage, AudioPluginStatusRequest, AudioStripDspStateMessage, CommandPayload,
-    EventPayload, InputAudioLabel, PluginChainSlot, ServerIdentity, WireInputId, WireOutputId,
+    AudioPluginStatusMessage, AudioPluginStatusRequest, AudioStripDspStateMessage,
+    AudioStripSendStateMessage, CommandPayload, EventPayload, InputAudioLabel, PluginChainSlot,
+    PluginParameter, ServerIdentity, WireInputId, WireOutputId,
 };
 use fm_types::strip_dsp::StripDspTarget;
 
@@ -27,6 +28,7 @@ pub(super) const fn dsp_target(target: AudioDspTarget) -> StripDspTarget {
     match target {
         AudioDspTarget::Master => StripDspTarget::Master,
         AudioDspTarget::Input(input) => StripDspTarget::Input(input.to_domain()),
+        AudioDspTarget::Aux(bus) => StripDspTarget::Aux(bus),
     }
 }
 
@@ -36,6 +38,7 @@ pub(super) const fn wire_dsp_target(target: StripDspTarget) -> AudioDspTarget {
     match target {
         StripDspTarget::Master => AudioDspTarget::Master,
         StripDspTarget::Input(input) => AudioDspTarget::Input(WireInputId::from_domain(input)),
+        StripDspTarget::Aux(bus) => AudioDspTarget::Aux(bus),
     }
 }
 
@@ -55,6 +58,35 @@ pub(super) fn strip_dsp_states(engine: &Engine) -> Vec<AudioStripDspStateMessage
         .collect()
 }
 
+/// How many strips carry sends beyond the plain enable mask (2.130).
+fn strip_send_states_len(show: &ShowState) -> usize {
+    show.input_audio_strips()
+        .values()
+        .filter(|state| {
+            state.sends != fm_types::audio_bus::AudioSends::from_mask(state.sends.mask())
+        })
+        .count()
+}
+
+/// One `audio_strip_send_state` per input whose sends are not the plain
+/// enable mask, ascending (2.130, AU-002).
+pub(super) fn strip_send_states(engine: &Engine) -> Vec<AudioStripSendStateMessage> {
+    let revision = engine.revision().get();
+    engine
+        .show()
+        .input_audio_strips()
+        .iter()
+        .filter(|(_, state)| {
+            state.sends != fm_types::audio_bus::AudioSends::from_mask(state.sends.mask())
+        })
+        .map(|(&input, state)| AudioStripSendStateMessage {
+            revision,
+            input: WireInputId::from_domain(input),
+            sends: state.sends,
+        })
+        .collect()
+}
+
 /// One target's chain and the installed plugins, answering a status request
 /// (2.129, AU-006).
 pub(super) fn plugin_status(
@@ -64,18 +96,17 @@ pub(super) fn plugin_status(
 ) -> AudioPluginStatusMessage {
     let target = dsp_target(request.target);
     let chain = match target {
-        StripDspTarget::Master => engine.show().master_audio_plugins(),
-        StripDspTarget::Input(input) => engine.show().input_audio_plugins(input),
+        StripDspTarget::Master => engine.show().master_audio_plugins().clone(),
+        StripDspTarget::Input(input) => engine.show().input_audio_plugins(input).clone(),
+        // Aux buses carry a DSP chain but no plugin chain.
+        StripDspTarget::Aux(_) => fm_plugin_host_api::PluginChain::default(),
     };
     AudioPluginStatusMessage {
         server: authority.clone(),
         request_id: request.request_id.clone(),
         target: request.target,
-        available: fm_plugin_host_api::REFERENCE_PLUGINS
-            .iter()
-            .map(|plugin| (*plugin).to_owned())
-            .collect(),
-        slots: wire_plugin_chain(chain),
+        available: engine.installed_audio_plugins().to_vec(),
+        slots: wire_plugin_chain(&chain),
     }
 }
 
@@ -98,6 +129,11 @@ fn engine_plugin_chain(slots: &[PluginChainSlot]) -> PluginChain {
                 .store_snapshot(snapshot)
                 .expect("the snapshot names the slot's plugin");
         }
+        for parameter in &slot.parameters {
+            engine_slot
+                .set_parameter(&parameter.name, parameter.value())
+                .expect("the codec bounds a slot's parameters");
+        }
         chain
             .push(engine_slot)
             .expect("the codec bounds a chain's slots and identifiers");
@@ -117,6 +153,10 @@ fn wire_plugin_chain(chain: &PluginChain) -> Vec<PluginChainSlot> {
             state: slot
                 .snapshot()
                 .map_or_else(Vec::new, |snapshot| snapshot.data().to_vec()),
+            parameters: slot
+                .parameters()
+                .map(|(name, value)| PluginParameter::new(name, value))
+                .collect(),
         })
         .collect()
 }
@@ -146,6 +186,7 @@ pub(super) const fn wire_solo_mode(mode: AudioSoloMode) -> fm_protocol::AudioSol
 }
 
 /// The engine command for a wire mixer operation.
+#[allow(clippy::too_many_lines)] // one arm per wire mixer operation
 pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
     EngineCommand::AudioMixer(match operation {
         AudioMixerOperation::SetLabel { input, label } => EngineAudioMixerEdit::SetLabel {
@@ -225,10 +266,30 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
                 muted: *muted,
             },
         },
+        AudioMixerOperation::SetAuxBusDsp { bus, chain } => EngineAudioMixerEdit::SetAuxBusDsp {
+            bus: *bus,
+            chain: chain.clone(),
+        },
+        AudioMixerOperation::SetAuxBusDevice { bus, device } => {
+            EngineAudioMixerEdit::SetAuxBusDevice {
+                bus: *bus,
+                device: device.clone(),
+            }
+        }
+        AudioMixerOperation::SetAuxBusOmt { bus, omt } => EngineAudioMixerEdit::SetAuxBusOmt {
+            bus: *bus,
+            omt: *omt,
+        },
         AudioMixerOperation::SetOutputBus { output, bus } => {
             EngineAudioMixerEdit::SetOutputAuxBus {
                 output: output.to_domain(),
                 bus: *bus,
+            }
+        }
+        AudioMixerOperation::SetOutputMixMinus { output, input } => {
+            EngineAudioMixerEdit::SetOutputMixMinus {
+                output: output.to_domain(),
+                input: input.map(fm_protocol::WireInputId::to_domain),
             }
         }
         AudioMixerOperation::SetPluginChain { target, slots } => {
@@ -313,10 +374,30 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
                 muted: state.muted,
             }
         }
+        EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => AudioMixerOperation::SetAuxBusDsp {
+            bus: *bus,
+            chain: chain.clone(),
+        },
+        EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => {
+            AudioMixerOperation::SetAuxBusDevice {
+                bus: *bus,
+                device: device.clone(),
+            }
+        }
+        EngineAudioMixerEdit::SetAuxBusOmt { bus, omt } => AudioMixerOperation::SetAuxBusOmt {
+            bus: *bus,
+            omt: *omt,
+        },
         EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
             AudioMixerOperation::SetOutputBus {
                 output: WireOutputId::from_domain(*output),
                 bus: *bus,
+            }
+        }
+        EngineAudioMixerEdit::SetOutputMixMinus { output, input } => {
+            AudioMixerOperation::SetOutputMixMinus {
+                output: WireOutputId::from_domain(*output),
+                input: input.map(WireInputId::from_domain),
             }
         }
     }
@@ -400,10 +481,15 @@ pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
         master_dsp: *show.master_audio_dsp(),
         strip_dsp_states: u16::try_from(show.input_audio_dsps().len())
             .expect("one chain per input, at most the input bound"),
+        send_states: u16::try_from(strip_send_states_len(show))
+            .expect("one send record per input, at most the input bound"),
         aux_buses: show.aux_buses().clone().map(|bus| AuxBusStatus {
             name: bus.name,
             gain_millidb: bus.state.gain_millidb,
             muted: bus.state.muted,
+            dsp: bus.dsp,
+            device: bus.device,
+            omt: bus.omt,
         }),
     }
 }

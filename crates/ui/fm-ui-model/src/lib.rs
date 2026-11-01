@@ -203,8 +203,9 @@ pub struct InputAudioStripStatus {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
-    /// Master and the aux buses the strip feeds (Protocol 2.118).
-    pub buses: fm_types::audio_bus::AudioBusMask,
+    /// Master and each aux bus the strip feeds, with its level and tap
+    /// (Protocol 2.130).
+    pub sends: fm_types::audio_bus::AudioSends,
 }
 
 /// Replicated desired and last-confirmed realized state of one stream target.
@@ -223,6 +224,9 @@ pub struct OutputStatus {
     pub name: String,
     /// The aux bus the output hears, or `None` for Master (Protocol 2.118).
     pub aux_bus: Option<fm_types::audio_bus::AuxBusNumber>,
+    /// The input the output's aux feed leaves out (Protocol 2.134), or
+    /// `None` for a full mix.
+    pub mix_minus: Option<InputId>,
 }
 
 /// One replicated title input.
@@ -436,6 +440,9 @@ impl EditLocks {
 pub struct ProjectSnapshot {
     pub cursor: ProjectCursor,
     pub show_name: String,
+    /// Every project production clock's name, in project order (SW-013,
+    /// Protocol 2.152).
+    pub production_clocks: Vec<String>,
     pub inputs: Vec<InputId>,
     pub input_names: Vec<String>,
     pub outputs: Vec<OutputStatus>,
@@ -555,6 +562,7 @@ impl ProjectSnapshot {
                 output: output.output.to_domain(),
                 name: output.name,
                 aux_bus: output.aux_bus,
+                mix_minus: output.mix_minus.map(fm_protocol::WireInputId::to_domain),
             })
             .collect();
         Self {
@@ -564,6 +572,7 @@ impl ProjectSnapshot {
                 revision: Revision::new(message.revision),
             },
             show_name: message.show_name,
+            production_clocks: message.production_clocks,
             inputs,
             input_names,
             outputs,
@@ -1236,6 +1245,7 @@ pub struct RuntimeRealization {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectState {
     show_name: String,
+    production_clocks: Vec<String>,
     inputs: Vec<InputId>,
     input_names: Vec<String>,
     outputs: Vec<OutputStatus>,
@@ -1318,6 +1328,12 @@ pub struct ProjectState {
     /// `audio_strip_dsp_state` records the snapshot announced that have not
     /// arrived.
     audio_strip_dsp_states_pending: u16,
+    /// `audio_strip_send_state` records the snapshot announced that have not
+    /// arrived (Protocol 2.130).
+    audio_send_states_pending: u16,
+    /// The last input whose `audio_strip_send_state` arrived, keeping the
+    /// announced order.
+    audio_send_last: Option<InputId>,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     fade_to_black_excluded_outputs: Vec<OutputId>,
     /// The outputs with their own Fade-to-Black duration (Protocol 2.48).
@@ -1477,7 +1493,7 @@ impl ProjectState {
         &self.audio_mixer.master_dsp
     }
 
-    /// Returns the DSP chain `target` names (Protocol 2.75).
+    /// Returns the DSP chain `target` names (Protocol 2.75; aux buses 2.133).
     #[must_use]
     pub fn audio_dsp(
         &self,
@@ -1486,6 +1502,9 @@ impl ProjectState {
         match target {
             fm_types::strip_dsp::StripDspTarget::Master => self.audio_mixer.master_dsp,
             fm_types::strip_dsp::StripDspTarget::Input(input) => self.input_audio_dsp(input),
+            fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                self.audio_mixer.aux_buses[bus.index()].dsp
+            }
         }
     }
 
@@ -1494,6 +1513,13 @@ impl ProjectState {
     #[must_use]
     pub const fn audio_strip_dsps_complete(&self) -> bool {
         self.audio_strip_dsp_states_pending == 0
+    }
+
+    /// Returns whether every `audio_strip_send_state` the snapshot announced
+    /// arrived (Protocol 2.130).
+    #[must_use]
+    pub const fn audio_send_states_complete(&self) -> bool {
+        self.audio_send_states_pending == 0
     }
 
     /// Returns the outputs Fade to Black leaves live, ascending.
@@ -1840,6 +1866,12 @@ impl ProjectState {
         &self.show_name
     }
 
+    /// Every project production clock's name, in project order (SW-013).
+    #[must_use]
+    pub fn production_clocks(&self) -> &[String] {
+        &self.production_clocks
+    }
+
     #[must_use]
     pub fn inputs(&self) -> &[InputId] {
         &self.inputs
@@ -1978,6 +2010,9 @@ pub struct ClientView {
     /// Every image and slideshow input's source, slide on air, and fetched
     /// listing, ascending by input (IN-008, IN-009).
     pub still_inputs: BTreeMap<InputId, StillInputStatus>,
+    /// Every paged document input's page, page count, and state (IN-014),
+    /// ascending by input.
+    pub paged: BTreeMap<InputId, fm_protocol::PagedStatus>,
     /// Every screen capture input, ascending, with its configuration and
     /// latest status (IN-011).
     pub screen_capture_inputs: Vec<fm_protocol::ScreenCaptureEntry>,
@@ -2029,6 +2064,12 @@ impl ClientView {
     #[must_use]
     pub fn still_input(&self, input: InputId) -> Option<&StillInputStatus> {
         self.still_inputs.get(&input)
+    }
+
+    /// Paged document input `input`'s replicated page and count (IN-014).
+    #[must_use]
+    pub fn paged_status(&self, input: InputId) -> Option<&fm_protocol::PagedStatus> {
+        self.paged.get(&input)
     }
 
     /// System audio input `input`'s device and latest status (Protocol
@@ -2422,6 +2463,10 @@ pub enum ModelError {
     /// announce, at another revision, out of order, for an unknown input, or
     /// with a default or invalid chain (Protocol 2.75).
     AudioStripDspStateMismatch,
+    /// An `audio_strip_send_state` arrived that the snapshot did not
+    /// announce, at another revision, out of order, for an unknown input, or
+    /// with the plain enable mask (Protocol 2.130).
+    AudioStripSendStateMismatch,
 }
 
 impl fmt::Display for ModelError {
@@ -2591,6 +2636,8 @@ impl fmt::Display for ModelError {
             }
             Self::AudioStripDspStateMismatch => formatter
                 .write_str("audio strip DSP state does not match the snapshot it follows"),
+            Self::AudioStripSendStateMismatch => formatter
+                .write_str("audio strip send state does not match the snapshot it follows"),
         }
     }
 }
@@ -3154,6 +3201,12 @@ impl ClientModel {
                 .filter(|(input, _)| state.inputs.contains(input))
                 .map(|(input, entry)| (*input, entry.clone()))
                 .collect(),
+            paged: state
+                .paged
+                .iter()
+                .filter(|(input, _)| state.inputs.contains(input))
+                .map(|(input, status)| (*input, status.clone()))
+                .collect(),
             screen_capture_inventory: self.screen_capture_inventory.clone(),
             screen_capture_inputs: state
                 .screen_capture_inputs
@@ -3358,6 +3411,7 @@ impl ClientModel {
             .collect();
         self.state = Some(ProjectState {
             show_name: snapshot.show_name,
+            production_clocks: snapshot.production_clocks,
             inputs: snapshot.inputs,
             input_names: snapshot.input_names,
             outputs: snapshot.outputs,
@@ -3401,6 +3455,8 @@ impl ClientModel {
             input_categories: snapshot.input_categories,
             audio_strip_dsp: BTreeMap::new(),
             audio_strip_dsp_states_pending: snapshot.audio_mixer.strip_dsp_states,
+            audio_send_states_pending: snapshot.audio_mixer.send_states,
+            audio_send_last: None,
             audio_mixer: snapshot.audio_mixer,
             fade_to_black_excluded_outputs: snapshot.fade_to_black_excluded_outputs,
             fade_to_black_output_durations: snapshot.fade_to_black_output_durations,
@@ -3947,6 +4003,45 @@ impl ClientModel {
         }
         state.audio_strip_dsp.insert(input, message.chain);
         state.audio_strip_dsp_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Applies one `audio_strip_send_state` follow-on record (Protocol
+    /// 2.130): the strip's aux send levels and taps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::AudioStripSendStateMismatch`] when the record is at
+    /// another revision, unannounced, out of order, or for an unknown input.
+    pub fn apply_audio_strip_send_state(
+        &mut self,
+        message: fm_protocol::AudioStripSendStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        if Revision::new(message.revision) != revision
+            || state.audio_send_states_pending == 0
+            || !state.inputs.contains(&input)
+            || state.audio_send_last.is_some_and(|last| last >= input)
+            || message.sends.validate().is_err()
+            || message.sends == fm_types::audio_bus::AudioSends::from_mask(message.sends.mask())
+        {
+            return Err(ModelError::AudioStripSendStateMismatch);
+        }
+        let strip = state
+            .input_audio_strips
+            .iter_mut()
+            .find(|strip| strip.input == input)
+            .ok_or(ModelError::AudioStripSendStateMismatch)?;
+        strip.sends = message.sends;
+        state.audio_send_last = Some(input);
+        state.audio_send_states_pending -= 1;
         Ok(())
     }
 
@@ -5302,7 +5397,7 @@ fn apply_input_added(state: &mut ProjectState, input: InputId, name: String) {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         },
     );
 }
@@ -5631,6 +5726,15 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             {
                 status.aux_bus = *bus;
             }
+            if let fm_protocol::AudioMixerOperation::SetOutputMixMinus { output, input } =
+                &operation
+                && let Some(status) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|status| status.output == output.to_domain())
+            {
+                status.mix_minus = input.map(fm_protocol::WireInputId::to_domain);
+            }
             state.audio_mixer.apply(&operation);
         }
         DurableChange::DisplayOutputChanged { slot, config } => match config {
@@ -5922,8 +6026,10 @@ fn validate_audio_mixer_change(
                 && parent.is_none_or(fm_protocol::audio_group_is_valid)
                 && state.audio_mixer.parent_is_acyclic(*group, *parent)
         }
-        fm_protocol::AudioMixerOperation::SetSoloMode { .. } => true,
-        fm_protocol::AudioMixerOperation::SetMonitorDevice { device } => device
+        fm_protocol::AudioMixerOperation::SetSoloMode { .. }
+        | fm_protocol::AudioMixerOperation::SetAuxBusOmt { .. } => true,
+        fm_protocol::AudioMixerOperation::SetMonitorDevice { device }
+        | fm_protocol::AudioMixerOperation::SetAuxBusDevice { device, .. } => device
             .as_deref()
             .is_none_or(fm_protocol::audio_monitor_device_is_valid),
         fm_protocol::AudioMixerOperation::SetMonitorLevel { gain_millidb, .. }
@@ -5933,25 +6039,37 @@ fn validate_audio_mixer_change(
         fm_protocol::AudioMixerOperation::SetStripDsp { target, chain, .. } => {
             chain.validate().is_ok()
                 && match target {
-                    fm_protocol::AudioDspTarget::Master => true,
+                    fm_protocol::AudioDspTarget::Master | fm_protocol::AudioDspTarget::Aux(_) => {
+                        true
+                    }
                     fm_protocol::AudioDspTarget::Input(input) => known(input),
                 }
         }
         fm_protocol::AudioMixerOperation::ResetLoudness { target } => match target {
-            fm_protocol::AudioDspTarget::Master => true,
+            fm_protocol::AudioDspTarget::Master | fm_protocol::AudioDspTarget::Aux(_) => true,
             fm_protocol::AudioDspTarget::Input(input) => known(input),
         },
         fm_protocol::AudioMixerOperation::RenameAuxBus { name, .. } => {
             fm_protocol::audio_label_is_valid(name, false)
         }
+        fm_protocol::AudioMixerOperation::SetAuxBusDsp { chain, .. } => chain.validate().is_ok(),
         fm_protocol::AudioMixerOperation::SetOutputBus { output, .. } => state
             .outputs
             .iter()
             .any(|candidate| candidate.output == output.to_domain()),
+        fm_protocol::AudioMixerOperation::SetOutputMixMinus { output, input } => {
+            state
+                .outputs
+                .iter()
+                .any(|candidate| candidate.output == output.to_domain())
+                && input.as_ref().is_none_or(&known)
+        }
         fm_protocol::AudioMixerOperation::SetPluginChain { target, slots } => {
             let target_known = match target {
                 fm_protocol::AudioDspTarget::Master => true,
                 fm_protocol::AudioDspTarget::Input(input) => known(input),
+                // Aux buses carry no plugin chain.
+                fm_protocol::AudioDspTarget::Aux(_) => false,
             };
             let mut ids = std::collections::BTreeSet::new();
             target_known
@@ -5984,7 +6102,7 @@ fn protocol_input_audio_strips(
             soloed: status.soloed,
             follow_video: status.follow_video,
             delay_samples: status.delay_samples,
-            buses: status.buses,
+            sends: status.sends,
         })
         .collect()
 }

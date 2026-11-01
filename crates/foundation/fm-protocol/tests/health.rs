@@ -92,6 +92,7 @@ fn diagnostics(health: DaemonHealth) -> WireMessage {
         subscriber_limit: 16,
         subscriber_queue_limit: 64,
         source_sync: Vec::new(),
+        production_clocks: Vec::new(),
         health,
     })
 }
@@ -208,7 +209,7 @@ fn diagnostics_response_carries_the_health_fields() {
     let line = encode_line(&full).unwrap();
     assert!(
         line.ends_with(&format!(
-            "\tsource_sync=\tuptime_ms=60000\tcpu_permille=925\tgpu_permille=0\talerts={ALERTS}\tnotifications={NOTIFICATIONS}\tsilences=\n"
+            "\tsource_sync=\tuptime_ms=60000\tcpu_permille=925\tgpu_permille=0\talerts={ALERTS}\tnotifications={NOTIFICATIONS}\tsilences=\tproduction_clocks=\n"
         )),
         "{line}"
     );
@@ -216,7 +217,9 @@ fn diagnostics_response_carries_the_health_fields() {
     let quiet = diagnostics(DaemonHealth::default());
     let line = encode_line(&quiet).unwrap();
     assert!(
-        line.ends_with("\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\n"),
+        line.ends_with(
+            "\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\tproduction_clocks=\n"
+        ),
         "{line}"
     );
     assert_eq!(decode_line(&line).unwrap(), quiet);
@@ -347,7 +350,7 @@ fn health_status_and_diagnostics_carry_the_new_alert_rules() {
     let line = encode_line(&full).unwrap();
     assert!(
         line.ends_with(&format!(
-            "\tsource_sync=\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\tsilences=\n"
+            "\tsource_sync=\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\tsilences=\tproduction_clocks=\n"
         )),
         "{line}"
     );
@@ -382,7 +385,7 @@ fn alerts_carry_one_entry_per_rule_up_to_nine() {
 
 #[test]
 fn protocol_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 129));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 152));
 }
 
 /// Protocol 2.109: an acknowledged alert carries its end, silences are
@@ -592,8 +595,8 @@ fn alert_rule_settings_have_an_exact_wire_form() {
         line,
         format!(
             "command\tprotocol={CURRENT_PROTOCOL_VERSION}\tid=a\tidempotency_key=k\t\
-             payload=alert_rule_set\trule=cpu_saturated\tenabled=1\ttrigger=800\tclear=600\t\
-             hold_ms=5000\n"
+             payload=alert_rule_set\trule=cpu_saturated\tenabled=1\tseverity=warning\t\
+             trigger=800\tclear=600\thold_ms=5000\n"
         )
     );
     assert_eq!(decode_line(&line).unwrap(), command);
@@ -618,6 +621,8 @@ fn alert_rule_settings_have_an_exact_wire_form() {
     for (from, to) in [
         ("rule=cpu_saturated", "rule=cpu_hot"),
         ("enabled=1", "enabled=yes"),
+        ("severity=warning", "severity=fatal"),
+        ("severity=warning", "severity="),
         ("trigger=800", "trigger=0800"),
         ("trigger=800", "trigger=+800"),
         ("clear=600", "clear=900"),
@@ -664,8 +669,8 @@ fn alert_rule_settings_have_an_exact_wire_form() {
     let line = encode_line(&changed).unwrap();
     assert!(
         line.contains(
-            "\tevent=alert_rules_changed\talert_rules=cpu_saturated%3A1%3A800%3A600%3A5000%3B\
-             output_failed%3A0%3A1000%3A0%3A0\t"
+            "\tevent=alert_rules_changed\talert_rules=cpu_saturated%3A1%3Awarning%3A800%3A600%3A5000%3B\
+             output_failed%3A0%3Acritical%3A1000%3A0%3A0\t"
         ),
         "{line}"
     );
@@ -683,12 +688,16 @@ fn alert_rule_settings_have_an_exact_wire_form() {
     }
     for (from, to) in [
         (
-            "alert_rules=cpu_saturated%3A1%3A800%3A600%3A5000%3B",
+            "alert_rules=cpu_saturated%3A1%3Awarning%3A800%3A600%3A5000%3B",
             "alert_rules=",
         ),
         (
-            "output_failed%3A0%3A1000%3A0%3A0",
-            "output_failed%3A1%3A1000%3A0%3A0",
+            "output_failed%3A0%3Acritical%3A1000%3A0%3A0",
+            "output_failed%3A1%3Acritical%3A1000%3A0%3A0",
+        ),
+        (
+            "output_failed%3A0%3Acritical%3A1000%3A0%3A0",
+            "output_failed%3A0%3Afatal%3A1000%3A0%3A0",
         ),
         ("%3A5000%3B", "%3A5000%3A1%3B"),
     ] {

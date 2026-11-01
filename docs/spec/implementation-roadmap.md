@@ -5,8 +5,8 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.129 / schema 90 (2026-10-30,
-at `8497393`). Every parity row is still `planned` (or `blocked`); these are
+(2026-10-19); items refreshed through protocol 2.152 / schema 106 (2026-10-31,
+at `7e139b72`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
 frame loop) is ranked separately in [Structural work before more
@@ -81,9 +81,10 @@ there come before any new breadth below.
    RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
-   Studio), and the native daemon prefetches each list's next item so Auto
-   Next and Next switch files gaplessly, Studio's list card shows each
-   item's own picture, and each list has its own transition between items
+   Studio), and the native daemon prefetches each list's next, previous,
+   first, and last items so Auto Next, Next, Previous, First, and Last
+   switch files gaplessly, Studio's list card shows each item's own picture, and each
+   list has its own transition between items
    (cut, fade, dip to black, or wipe, with a length; Protocol 2.95, schema
    77) that both daemons run on Auto Next and Next, the native one
    compositing the two items; it still lacks Windows/macOS evidence. (The slideshow,
@@ -97,9 +98,10 @@ there come before any new breadth below.
    picture of the input up to 640x360 that Studio asks the server for
    (Protocol 2.97), which the CLI's remote auto key now asks for too
    (keeping the layer's matte refinement unless given new options). What
-   remains: key/fill is not tied to paired SDI/OMT fill and key inputs,
-   and mattes are not animatable (they feather since Protocol 2.115,
-   exactly alike on the GPU and the CPU reference).
+   remains: key/fill is not tied to paired SDI/OMT fill and key inputs.
+   The matte's points, invert flag, and feather animate as scene properties
+   (Protocol 2.145, schema 102), and animation may add points up to the
+   eight-point bound.
 7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
    live source the native daemon ingests (V4L2/ALSA capture, network
    streams, system audio) runs its audio through a drift-correcting
@@ -157,16 +159,29 @@ there come before any new breadth below.
     wire. Two Replay inputs can now be linked for A/B playback (Protocol
     2.124): cueing, playing, pausing, cue-in, and stepping one moves both at
     the same instant while each keeps its own angle, and their playlists
-    advance only together. Remaining: the recorder takes a source's last
-    decoded picture rather than a genlocked one, segment files from a
-    previous run are removed rather than reloaded, and shuttle (a player
-    now jogs frame by frame, Protocol 2.114, and a finished replay returns
-    Program to the live source, Protocol 2.116),
-    transitions and controller wiring, and certification are absent; Studio's
+    advance only together. A player now shuttles at any rate from -16x to
+    +16x in thousandths of real time, forwards or backwards, pausing at its
+    event's ends, with the rate and shuttling state on the wire (Protocol
+    2.131) and `remote-replay-do shuttle`; a player also jogs frame by frame
+    (Protocol 2.114) and a finished replay returns Program to the live
+    source (Protocol 2.116). Studio's Replay panel has 2x shuttle buttons and
+    console keys play or pause the Replay player on Preview (else Program),
+    step it a frame each way, and shuttle it at 2x each way, next to the
+    marks and capture keys, and the Key profiles window binds a controller's
+    transport (channel 1 notes 36–43) to the replay marks, capture,
+    play/pause, stepping, and shuttling in one click. A Replay take now uses
+    the show's configured transition — a cut or a fade of its own length
+    (Protocol 2.137, schema 97), set in Studio's Replay panel and the CLI.
+    Remaining: the
+    recorder takes a source's last
+    decoded picture rather than a genlocked one, the
+    full typed two-profile replay controller surface (the console's MIDI
+    transport now has a second profile for the second Replay input), and
+    certification are absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
-    in an adaptive grid (Protocol 2.127); the A/B channel tiles of the full
-    multiview are not wired; storage health reaches Studio and the CLI (Protocol 2.125),
-    without SMART queries or `fm-record` low-space integration (see the
+    in an adaptive grid (Protocol 2.127), now led by the input and its linked
+    A/B partner as channel tiles; storage health reaches Studio and the CLI (Protocol 2.125,
+    now with the drive's SMART health, Protocol 2.139; see the
     Phase 7 boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
     reels of up to 64 clips (Protocol 2.107, schema 83), the engine compiles
@@ -188,33 +203,68 @@ there come before any new breadth below.
     FreeMix's own OMT 1.0 implementation: the native daemon reads an
     `omt://` network stream input (Protocol 2.121) and a stream destination
     with `stream_protocol=omt` publishes the Program pair (Protocol 2.122),
-    with `_omt._tcp` DNS-SD advertisement and browsing. Remaining: no
-    discovery catalogue entry is wired into the input catalogue, no
-    VMX-compressed frames, no corrupt-frame recovery, no alpha or tally
-    round trip proven against another OMT implementation, and no hardware
-    certification (see the Phase 8 boundary).
+    with `_omt._tcp` DNS-SD advertisement and browsing. A receiver now
+    skips a frame whose payload is corrupt while its declared length is
+    intact, so one bad frame never ends the stream; the skipped frames
+    count as dropped. Studio browses `_omt._tcp` and lists the senders it
+    finds in the Add Input network form when the URL is an `omt://` one, so
+    a discovered source fills the URL instead of being typed. Remaining: no
+    VMX-compressed frames, no alpha or tally round trip proven against
+    another OMT implementation, and no hardware certification (see the
+    Phase 8 boundary).
 13. **Aux buses through the show (`AU-002`).** Master plus aux buses A-G
     are live (Protocol 2.118, schema 90), metered on the wire (Protocol
     2.120), edited in Studio's BUSES window and the CLI, and a project
-    output can hear a bus instead of Master. Remaining: sends are unity
-    post-fader only through the show (per-send level and pre-fader taps
-    exist in `fm-audio`), `BusMatrix` bus processing, mix-minus feeds, and
-    device or network destinations are not wired, and the legacy project
-    audio bus graph is unchanged (see the Phase 3 `AU-002` boundary).
+    output can hear a bus instead of Master. Every aux send now carries its
+    own level and pre- or post-fader tap through the project (schema 92),
+    the wire (Protocol 2.130), the native mixer, the CLI (`--sends`), and
+    Studio's BUSES window. Each bus now carries a persisted DSP chain that
+    the native mixer processes after its fader, the snapshot reports it, and
+    Studio's BUSES window opens the FX editor on it (Protocol 2.133); the
+    Web operator page lists the seven buses with their level and mute and
+    edits each chain in place. A project output that hears an aux bus can
+    now leave one input out of its feed (mix-minus, Protocol 2.134, schema
+    94), chosen in Studio's BUSES window and the CLI, and the native mixer
+    re-sums the feed without that strip exactly as the bus with the send
+    disabled, chain processing included. Each bus can now play on its own
+    local audio output device (Protocol 2.135, schema 95), chosen in
+    Studio's BUSES window and the CLI (`audio-aux-device`), with the
+    device reopened on its own after a failure. Remaining: network
+    destinations are not wired, and the legacy
+    project audio bus graph is unchanged (see the Phase 3 `AU-002`
+    boundary).
 14. **Audio plugin chains (`AU-006`).** `fm-plugin-host-api` models an
     ordered chain of up to eight bypassable, latency-reporting plugins, the
     native daemon renders the `freemix.reference.*` processors on input
-    strips and Master (Protocol 2.128), the CLI sends a chain, and Studio's
-    FX window reads and edits it (Protocol 2.129). Remaining: scanning,
-    parameters beyond the reference trim, persistence of the chain,
-    crash quarantine in the render path, and a real sandboxed plugin in the
-    chain (see the Phase 8 boundary).
+    strips and Master (Protocol 2.128), the CLI sends a chain and edits a
+    project's persisted chain offline, and Studio's FX window reads and
+    edits it (Protocol 2.129). A chain is now a
+    padlocked, undoable project edit persisted since schema 91 (now 92) for every strip
+    and Master, so it survives a save, a restart, and a journal replay.
+    Studio edits each reference plugin's saved parameter (the trim's gain,
+    the soft clipper's threshold, and the polarity inverter's fixed action),
+    and a Master plugin stage that panics is quarantined: the mixer keeps the
+    summed Program bus and the next render is clean. A native daemon now
+    scans `<bundle>/plugins/<id>/plugin.ini` manifests and lists their ids
+    (with the built-in reference processors) in `audio_plugin_status`, so
+    Studio shows what is installed. A plugin slot now keeps up to 64
+    bounded, finite parameter values at the API level (name-addressed, in
+    name order); they persist in `project.json` (schema 105) and travel on
+    the wire as exact `f32` bit patterns (Protocol 2.148), strictly
+    validated and canonically ordered in both forms. The reference trim and
+    soft clipper read their named `gain_millidb` and `threshold_millidb`
+    parameters as whole millidB when present, falling back to their opaque
+    state; parameters for plugins beyond the reference set are still stored
+    without an effect, and a real sandboxed plugin in the chain is still
+    absent (see the Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
-    ports on Linux and binds notes and controls to console actions with
-    `fm-automation`'s parser and control map, with LED and motor-fader
-    feedback through the router. Remaining: no MIDI on macOS or Windows,
-    no binding reaches `freemixd` or the project, no HID or X-keys input,
-    and no NRPN/RPN, MIDI 2.0, or GPIO (see the Phase 5 boundary).
+    ports on Linux, `CoreMIDI` on macOS, and `WinMM` on Windows, and binds
+    notes, controls, and NRPN/RPN parameters to console actions, with LED
+    and motor-fader feedback through the router. On Linux it also reads
+    X-keys-style HID button panels from `/dev/input`, binds each button by
+    Learn, and saves the bindings with the key profile.
+    Remaining: no MIDI 2.0 or GPIO (see
+    the Phase 5 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -231,8 +281,8 @@ both daemons with CPU and GPU-proxy utilization, default alert rules, and a
 `health_status` view in Studio and `remote-diagnostics` (`RC-015`), and
 operators acknowledge and silence alerts (Protocol 2.109) from Studio, the
 CLI, and the Web operator page, which shows the daemon's health too
-(Protocol 2.110), and a show sets each rule's thresholds and hold or
-switches it off (Protocol 2.112, schema 85). Native daemons now group commit the
+(Protocol 2.110), and a show sets each rule's thresholds, hold, and severity or
+switches it off (Protocol 2.142, schema 99). Native daemons now group commit the
 commands queued at a command turn (see Native group commit below), but the
 group's disk sync still runs in front of its frame.
 
@@ -259,6 +309,155 @@ per week of work; items 1 and 2 land before any new feature breadth.
    the existing `pacing_trace` so the win is shown, not assumed. The
    spec's "dedicated media threads" decision then holds for compose,
    readback, and mix, not only for decoders, cameras, and recorder pipes.
+
+   **Measurement (2026-10-30, 25 s run, `native_pacing`'s ignored
+   measurement test with a recording, two HLS streams, and about 7.5 cuts/s
+   from two sessions):** on an Apple M5 (Metal), after the first 2 s, 583
+   frames, p50 Program-lateness 1.76 ms, p95 5.84 ms, p99 6.38 ms, max
+   6.57 ms, and no frame a frame late (40 ms interval); command frames p50
+   0.69 ms, idle frames p50 2.58 ms; cut round trip p50 32.75 ms, p95
+   49.81 ms. The first 2 s (50 frames) had p95 5.35 ms. On a Linux sandbox
+   (Vulkan through `llvmpipe`, software rasterization) the same run after
+   the first 2 s had 575 frames, p50 2.45 ms, p95 333 ms, p99 984 ms, max
+   1,204 ms, and 43 frames a frame or more late; the first 2 s were still
+   p95 5.19 ms with no late frame. So the frame loop is not yet the
+   bottleneck on an idle host, while a software adapter competing with the
+   encoders for the CPU shows the kind of stall the split must remove; the
+   split must be shown on a loaded or peer-heavy run rather than assumed
+   from the idle numbers. The startup pacing gate passes on both hosts (the
+   software adapter's first-frame pipeline compilation is exempt from its
+   wall-clock bounds; the frame loop's own CPU time and startup stalls are
+   still checked there).
+
+   **First stage (landed).** The Preview composite and its monitor tap are
+   deferred out of the frame: a due composite becomes a
+   `native_realizer::NativePreviewJob` in a one-slot latest-wins queue, and
+   after the pass's peer work `service_deferred_preview` renders it only when
+   at least 2 ms remain before the next Program deadline; otherwise the job
+   stays queued and a display that shows Preview keeps its last picture.
+   This removes the composite from between Program and its deadline without
+   a thread yet, and establishes the bounded latest-wins handoff the
+   realizer thread will consume. The native display, Preview-tap,
+   transition, and pacing suites stay green.
+
+   **Second stage (landed).** The audio mixer now runs on its own thread:
+   `native_audio_realizer::NativeAudioHandle` owns the `NativeMasterRuntime`
+   (mixer, decode workers, plugin racks, meters, stinger playback) behind one
+   bounded, ordered channel for pushed live audio, the pre-frame coverage
+   wait, catalogue and Stinger-audio commands, and one outstanding render
+   reply. A frame applies its strip and mixer updates to the plan, submits
+   the audio job, composes video on the control thread, then collects the
+   block, live/override audio, owned meters, replay angles' rendered audio,
+   and counters. The control thread reads the mixer's retention and sink
+   counters from a shared snapshot instead of touching the mixer. Native
+   pacing, transitions, audio-only media, strip DSP, replay, and display
+   suites stay green on the M5 and the startup pacing gate passes on the
+   Linux `llvmpipe` sandbox. The frame and plan are cloned per job for now;
+   moving them behind an `Arc` is part of the GPU/plan stage.
+
+   **Third stage (landed).** The Program/Preview GPU compose now runs on a
+   video realizer thread (`native_video_realizer::NativeVideoHandle`): a
+   bounded job carries the engine frame, the plan, and the playback and
+   stinger registries; the reply returns the registries with the Program
+   texture or every project output. The control thread keeps ingesting
+   sources, uploading grades, tapping monitors, and presenting displays on
+   the shared `Arc<NativeMediaRuntime>` while the compose runs on the
+   realizer thread; the compose is still collected synchronously, so
+   overlapping it with peer work is the next stage, together with moving
+   ingestion, grades, and the monitor/display consumers behind the same
+   handoff. Native pacing, transitions, display, Preview-tap, audio-only,
+   strip-DSP, replay, and media-file suites stay green on the M5 and the
+   Linux startup pacing gate passes.
+
+   **Fourth stage (landed).** The frame is now split into begin and finish:
+   `begin_frame_if_due` applies source reports and playback coverage, ticks
+   `fm-control`, applies the frame's plan updates, and submits the audio and
+   video jobs before returning to the pass loop; the loop then serves peer
+   reads/writes, thumbnails, and shutdown checks, and `finish_frame`
+   collects both realizers and runs the frame's consumers. Only the
+   realization span (submission to collect plus consumers) is traced, so a
+   peer wait shows as overlap rather than frame-lateness. Media-list end
+   triggers now run before the frame begins, since a command between the
+   two would see the playback registries held by the compose. The native
+   pacing, transition, display, Preview-tap, audio-only, strip-DSP, replay,
+   media-file, and media-list suites stay green on the M5; the pacing gate
+   and transitions pass on the Linux sandbox (transitions alone; the
+   combined run starves lavapipe when two suites run at once). Source
+   ingestion and grade uploads still run on the control thread, and the
+   monitor/display/stream/recorder consumers run in `finish_frame` on the
+   control thread; moving them, and moving `NativeMediaRuntime` ownership,
+   is the remaining stage.
+
+   **Fifth stage (landed).** Grade uploads and the Preview composite moved
+   to the video realizer. The control thread still compiles grades
+   (`GradeCache::at`) but no longer uploads them: the worker caches the
+   prepared `NativeProjectGrades` by the engine's compiled revision and sets
+   them on each job's plan, so Program and Preview share one prepared set.
+   `refresh_grades` and the control-side `prepared_grades` are gone. The
+   deferred Preview job now carries its frame, plan, and grades, is submitted
+   to the video realizer at the end of the pass, and is collected at the
+   start of the next pass before any command or ingestion
+   (`poll_deferred_preview`), so its composite and monitor tap are fully off
+   the Program deadline. The native pacing, transition, Preview-tap, display
+   (macOS), strip-DSP, replay, audio-only, media-file, and media-list suites
+   stay green; the Linux pacing gate passes. Source ingestion,
+   monitor/display/stream/recorder consumers, and single-owner
+   `NativeMediaRuntime` remain.
+
+   **Sixth stage (landed).** Slideshow slide composition (IN-009) moved to
+   the video realizer: the control thread builds the projected frame's slide
+   list and the ahead decodes from the engine's statuses, and the worker owns
+   the `NativeSlides` cache, composes each slide with the runtime before the
+   Program render, and drops a removed input's slides through the same
+   bounded channel. `present_slideshows` and the control-side `slides` field
+   are gone. Native stills (slideshow), pacing, transitions, display,
+   Preview-tap, strip-DSP, replay, audio-only, media-file, and media-list
+   suites pass.
+
+   **Seventh stage (landed).** Replay playback moved to the video realizer.
+   `NativeReplay` keeps recording, session, and retention; a new
+   `ReplayPlayers` owns the per-Replay-input decode players and their wait.
+   The control thread sends the projected frame and deadline through
+   `present_replay` before the frame's audio render; the worker presents each
+   player's recorded picture into the playback registry and returns the
+   recorded audio for the control thread to push to the audio realizer before
+   it renders, plus the coverage answer. Native replay, stills (slideshow),
+   pacing, transitions, display, Preview-tap, strip-DSP, audio-only,
+   media-file, and media-list suites pass. `NativeSourcePlayback` is still
+   passed to the worker per request rather than owned by it; making that
+   ownership permanent is the next stage.
+
+   **Eighth stage (landed).** `NativeSourcePlayback` (both the source
+   playback registry and the stinger registry) is now owned permanently by
+   the video realizer. Control no longer holds either: live source pictures
+   from titles, documents, media files, network streams, system audio,
+   screen capture, capture devices, cameras, and stills travel as `ingest`
+   commands; the per-frame coverage wait, replay presentation, catalogue
+   insertion/removal, retained-byte limits, stinger replacement, and the
+   playback budget are request/response commands over the same bounded
+   channel. Control keeps only a shared `NativeLatestFrames` handle for
+   thumbnails and replay recording. Cameras ingest through the worker too.
+   Native pacing, transitions, replay, stills, display, Preview-tap,
+   strip-DSP, audio-only, media-file, and media-list suites pass on the M5;
+   the Linux pacing gate and transitions pass. `NativeMediaRuntime` is still
+   shared with the monitor tap and display presentation, which are the
+   remaining consumers.
+
+   **Split plan.** The bounded channel carries a `NativeFrameJob` (the
+   engine's `FrameResult`, which is plain data, plus the plan deltas the
+   media side applies) to a `NativeRealizer` thread that owns `runtime`
+   (already an `Arc<NativeMediaRuntime>`), `project_plan`, `master`, the
+   playback and stinger registries, the output textures, and the
+   stream/recorder/monitor/display consumers that read those textures.
+   It returns `NativeFrameOutcome` (meters and status records, the latest
+   CPU pictures for replay, and typed failures) over a single-slot result
+   channel. The control thread keeps `ControlService`, peers, commands,
+   the journal, and the durable project; it sends a job after
+   `engine.tick()` and collects the previous outcome while peers are
+   serviced. `fm-control` stays on the control thread, as required. The
+   thread is being introduced in stages; the first stage must keep every
+   existing native test (`native_pacing`, `native_sessions`,
+   `native_transitions`, recorders, streams, displays) green.
 2. **Break `freemixd` into library crates.** `apps/freemixd/src` is 157k
    lines, `main.rs` 30k and `native_media.rs` 16k, with 1,178
    `unwrap`/`expect`/`panic` sites in `main.rs` alone; any daemon change
@@ -267,16 +466,42 @@ per week of work; items 1 and 2 land before any new feature breadth.
    `fm-daemon-journal` (recovery and checkpoints), and an arguments crate,
    as mechanical moves with no behaviour change, verified by the 43 daemon
    test targets. Target: no file over 5k lines, `main.rs` under 1k.
-3. **Burn down panics on the frame path.** Add `clippy::unwrap_used` and
-   `expect_used` as warnings for `freemixd` only and convert the realizer's
-   sites first into typed errors routed through `output_failure`; a panic
-   on the pass loop ends the show.
-4. **Tier the CI matrix and cache builds.** CI runs the all-features
-   workspace tests on three OSes with no build cache, a toolchain pinned
-   only in the workflow, 51 process-spawning daemon tests, and 40 s
-   timeouts. Add a Rust build cache and a `rust-toolchain.toml`, run the
-   Linux workspace job per pull request and the macOS and Windows jobs on
-   merge or nightly, and label soak and process tests to run on a schedule.
+
+   **Progress (2026-10-31).** The journal and durable document pages, the
+   command-line arguments and web settings, the web gateway (with the web
+   title bridge, status feed, and LiveLAN viewer server), the native media
+   runtime, source clock sync, and overlay layout, the shared renderers
+   (grades, stills, the CPU scene reference, title rendering, and the
+   simulated monitor tap), and the daemon's statistics, CPU, disk, status,
+   and recorder helpers are now the library crates `fm-daemon-journal`,
+   `fm-daemon-arguments`, `fm-daemon-web`, `fm-daemon-native`,
+   `fm-overlay-layout`, `fm-daemon-render`, `fm-daemon-statistics`, and
+   `fm-daemon-status`. Inside the binary, `NativeDaemon` moved to
+   `native_daemon.rs`; the macOS cameras, recorder, stream targets, source
+   resolution, telemetry, monitor taps, audio meters, recovery, restore and
+   sync, command window, serve loop, client path, lifecycle, native
+   startup, and transport each have their own module, and the scheduler's
+   I/O is `sessions/io.rs`. `main.rs` is now 1.0k lines (from 30k) and no
+   file but the 12.7k-line `tests.rs` is over 5k. `xtask deps check`
+   allows a service crate to depend on the simulation composition root,
+   which the extracted daemon libraries need. What remains in `main.rs` is
+   the composition root: the argument-to-run wiring, capabilities, and the
+   control-plane handle.
+3. **Burn down panics on the frame path.** `fm-daemon-render`,
+   `fm-daemon-native`, and the `freemixd` binary deny
+   `clippy::unwrap_used` and `clippy::expect_used` outside tests. The
+   realizer, the native-gated stream, camera, and replay paths, the session
+   scheduler's dispatch and outbound paths, and the daemon's state restores
+   now return typed errors or clamp a value the model already bounds; the
+   metric and alert tables name their static invariants in one documented
+   expectation.
+4. ~~**Tier the CI matrix and cache builds.**~~ Landed: `rust-toolchain.toml`
+   pins 1.97.0 for local builds and CI, `Swatinem/rust-cache` caches each OS
+   target, pull requests run the Linux workspace job only, and macOS and
+   Windows run on merge, nightly, and manual dispatch. A scheduled `soak` job
+   installs FFmpeg and Vulkan, runs the ignored `native_soak` diagnostic, and
+   runs the process target; no per-test label mechanism was needed because the
+   soak test is already `#[ignore]` and the process target is a separate file.
 5. **Spike one zero-copy or hardware encode path.** Every native output is
    composed on wgpu, read back to a `CpuVideoFrame`, and piped as rawvideo
    to an FFmpeg child; there is no shared-texture encode and no hardware
@@ -284,19 +509,21 @@ per week of work; items 1 and 2 land before any new feature breadth.
    (VideoToolbox through `fm-io-macos`, or VA-API on Linux) and measure
    1080p60 with two outputs before and after; the CPU path stays the
    portable fallback.
-6. **Mark model-only crates and rows.** `fm-io-srt`, `fm-io-webrtc`,
-   `fm-browser-input`, `fm-guest`, `fm-social`, `fm-vmix-compat`, and
-   `fm-ptz` open no socket, embed no browser, and drive no device by their
-   own module docs. Add a `kind = "model" | "adapter"` field to each
-   `parity.toml` feature so the generated matrix and the site's features
-   page stop reading a `present` test as a usable feature.
-7. **Record the runtime decisions the spec still contradicts.** `docs/spec`
-   describes Tokio for the service runtime, a Rust/Wasm web client, an
-   `fm-ui-widgets` crate, and native `fm-gpu-dx12`/`metal`/`vulkan` crates;
-   the code is synchronous with std threads, the web surface is four served
-   HTML pages, and the only wgpu backend is the portable one. One pass over
-   `README.md`, `crates.md`, `architecture.md`, and
-   `server-client-protocol.md` records those as decisions.
+6. ~~**Mark model-only crates and rows.**~~ Landed: every `parity.toml`
+   feature carries `kind = "model" | "adapter"`, `xtask` validates it, and the
+   generated matrix prints a Kind column plus a legend. Eight rows are `model`
+   today because their implemented surface is one of the contract-only crates
+   (`fm-browser-input` IN-013; `fm-ptz` IN-028; `fm-guest`/`fm-io-webrtc`
+   IN-029, RC-001, RC-002, RC-003; `fm-vmix-compat` RC-009; `fm-social`
+   GX-010); the rest carry `adapter`. `crates.md` names the same crates as
+   contract-only. The repository has no separate site features page, so the
+   generated capability matrix is the published surface.
+7. ~~**Record the runtime decisions the spec still contradicts.**~~ Landed:
+   `README.md`, `architecture.md` §7.1, `crates.md`, and
+   `server-client-protocol.md` now record the synchronous `std`-thread
+   runtime (no Tokio), the four served HTML pages (no Rust/Wasm client), the
+   absence of `fm-ui-widgets`, and the single portable wgpu backend (no
+   `fm-gpu-dx12`/`metal`/`vulkan` crates).
 8. **Generate the hand-written codec pairs.** Each new field touches the
    model, the protocol DTO, the persistence encoder and decoder, and their
    tests. Keep the no-serde policy (it is paying off in build time and
@@ -1108,9 +1335,12 @@ Remaining gaps: presentation is SDR-only and winit exposes no HDR capability,
 so `hdr=auto` reports `sdr-capability-unknown` or `sdr-presenter-limited`
 rather than driving HDR; window placement happens on one event-loop thread
 polled every 500 ms rather than on platform hot-plug notifications; the
-Preview composite is rendered on the realization thread rather than off the
-Program critical path; and no multi-monitor hardware, Windows, or macOS
-evidence has been recorded. `OR-011` remains planned.
+Preview composite now runs after the pass's peer work in the slack before the
+next Program deadline (a one-slot latest-wins job, at most one frame late)
+rather than between Program and that deadline, though it still runs on the
+realization thread until the media-thread split lands; and no multi-monitor
+hardware, Windows, or macOS evidence has been recorded. `OR-011` remains
+planned.
 
 Exit: a useful offline/file-based switcher, with no engine dependency on UI
 lifecycle.
@@ -2407,13 +2637,12 @@ so a portrait Program is not distorted in a landscape multiview. The simulated
 pipeline and WebRTC 1080p ladder caps are orientation-independent, and project
 validation requires even dimensions for 4:2:0 and 4:2:2 formats. Pixel-exact
 CPU tests cover portrait, square, and odd canvases with letterbox, fill crops,
-rotations, masks, safe areas, and multiview. Remaining gaps: model crops are
-validated against project rather than source size, so a vertical crop of a
-landscape camera on a portrait project is refused; no model, protocol, or UI
-fit setting (Studio monitor wells now follow the frame's shape); 8K stream
-ladders refuse
-portrait rungs; and the native GPU path is untested. `SW-015` remains
-planned.
+rotations, masks, safe areas, and multiview. Remaining gaps: a source crop
+is validated against a 16384-pixel source bound rather than the actual
+decoded source size, so an oversized crop reaches the compositor and shows
+black beyond the picture; no model, protocol, or UI fit setting (Studio
+monitor wells now follow the frame's shape); and the native GPU path is
+untested. `SW-015` remains planned.
 
 
 Current implementation boundary for IN-008 and IN-010: `fm-video::test_signal` generates 75%, 100%, and EBU bars plus a bars/ramp/PLUGE layout with exact BT.709/BT.601 narrow-range 8/10-bit Y'CbCr and full-range RGBA codes, and a static generator renders solid colour or bars once per setting instead of per frame. `fm-playback::image_sequence` discovers numbered sequences (padding, duplicate detection, reject/hold/skip gap policies), maps time or output frames to sequence frames exactly with Once/Loop/Hold ends, and bounds a prefetch cache; `fm-codec-image::ImageSequenceSource` decodes bounded PNG/JPEG frames of one size, preloads and pins a sequence, and suggests the first opaque frame as a stinger cut point. Still pictures as inputs (decode, ICC, fit/fill, reload) now have their own boundary under item 5 slideshows below; GPU-side generation, RP 219 raster geometry, daemon/CLI/model wiring, asynchronous decode, alpha video, and Studio controls are not implemented, so `IN-008` and `IN-010` remain planned.
@@ -2460,12 +2689,19 @@ pan, or transition envelope) or post-fader (exactly its Program
 contribution); strip and group mute and follow-video cut every send while
 solo never does; each bus has its own ramped fader, mute, clipping, and
 peak/RMS meters (`tests/aux_buses.rs`), and the Master allocation test
-renders every bus. The live show uses them (Protocol 2.118, schema 90):
-every strip carries Master and A–G bus assignment as a live control (vMix
-style `M`/`A`–`G` keys in Studio, `--buses` in the CLI), the project keeps
-seven named aux buses with live faders and mutes, and a project output can
-hear an aux bus instead of Master, so its recordings, streams, and LiveLAN
-take that bus with the output's own Fade-to-Black trajectory. The daemon
+renders every bus. The live show uses them (Protocol 2.118, schema 90; per-send
+level and tap since Protocol 2.130, schema 92): every strip carries Master
+and A–G bus assignment as a live control (vMix style `M`/`A`–`G` keys in
+Studio, `--buses` in the CLI), each aux send has its own milli-dB level and
+pre- or post-fader tap (`--sends M,A@-6000p` in the CLI and the BUSES
+window's Send levels section in Studio), the project keeps seven named aux
+buses with live faders and mutes, and a project output can hear an aux bus
+instead of Master, so its recordings, streams, and LiveLAN take that bus
+with the output's own Fade-to-Black trajectory. A snapshot carries each
+strip's enable mask and announces one `audio_strip_send_state` record per
+strip whose sends go beyond it, so the 64 KiB line budget holds; a native
+test proves a −6 dB pre-fader send ignores a −6 dB strip fader while the
+post-fader send hears both. The daemon
 renders the buses beside Master every frame and a native test proves an
 output on bus B hears an aux-only strip while Program stays silent.
 Studio's BUSES window edits every bus's name, fader, and mute,
@@ -2473,12 +2709,33 @@ shows its level meter, and chooses which bus each project output hears,
 with English and Spanish help; the CLI does the same from the shell. The
 native daemon meters all seven buses on the wire (Protocol 2.120): each
 lossy `audio_meters` record carries every bus's channels, and the
-simulated daemon reports none. Remaining gaps: sends are unity
-post-fader only through the show (per-send level and pre-fader taps exist
-in the mixer); `BusMatrix` bus processing, mix-minus feeds, and device or
-network destinations are not wired; the legacy project audio bus graph
-and each output's `audio_source` are unchanged. `AU-002` remains
-planned.
+simulated daemon reports none. The live `MasterMixer` now gives each aux bus an optional DSP chain,
+processed after its fader and mute and before its meters, and the chain
+reaches clients in the snapshot's `audio_aux_buses` (Protocol 2.133):
+Studio's BUSES window opens the FX editor on a bus (`audio_strip_dsp`
+target `aux:a`..`aux:g`, a drag folding into one undo step), loads a
+preset chain, and the CLI sets it. An output that hears an aux bus can
+leave one input out of its feed (AU-002 mix-minus, Protocol 2.134, schema
+94): the snapshot's output records name the excluded input, Studio's
+BUSES window and the CLI choose it, and the native daemon renders a
+separate feed per such output in the same mixer pass, re-summing the bus
+without the strip — bit-identical to the bus with that send disabled,
+through its DSP chain — and gives that feed the output's own Fade-to-Black
+trajectory. Each bus also names an optional local output device (Protocol
+2.135, schema 95): the native daemon's per-bus output slot plays the
+rendered bus after its fader, mute, and chain on `ffmpeg`'s ALSA output,
+with the same lazy open, retry, and hot-plug behavior as the monitor bus,
+and Studio's BUSES window and the CLI choose it. A bus can also be published
+as an OMT audio sender (Protocol 2.138, schema 98): the native daemon binds
+one `fm_io_omt::Sender` per published bus on `0.0.0.0:9300`–`9306` (bus A
+through G), feeds it the rendered bus's samples at every audio-meter
+interval with the interval's start sample as the OMT timestamp, and starts
+or stops the sender from the live mixer update; Studio's BUSES window has
+the OMT toggle and the CLI has `audio-aux-omt <A-G> on|off`. Remaining gaps:
+network destinations other than OMT, and
+the legacy
+project audio bus graph and each output's `audio_source` are unchanged.
+`AU-002` remains planned.
 
 Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
 provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16
@@ -2497,12 +2754,16 @@ Master mixer, including gain-matrix downmixes to a stereo Master. The project
 JSON contract names them `left_rear_surround`, `right_rear_surround`, and
 `discrete_1`..`discrete_16`; recordings map them to exact ffmpeg layouts
 (7.1 as `FL FR FC LFE BL BR SL SR`, discrete as unspecified-order `{n}C`).
-Remaining gaps: project settings still allow at most 8 audio channels;
-the daemon uses the standard downmix matrices only for pushed media and
-stream audio, and nothing reaches persisted strips, protocol, or Studio; streaming
-outputs refuse 7.1 and discrete layouts; there is no device ancillary-data
-extraction, composite or Lt/Rt downmix, or hardware evidence. `AU-003`
-remains planned.
+Remaining gaps: the daemon uses the standard downmix matrices only for pushed media and
+stream audio, and nothing reaches persisted strips, protocol, or Studio; RTMP's
+FLV carries only mono or stereo, while SRT and HLS carry 7.1 and discrete
+layouts as their exact ffmpeg names; there is no device ancillary-data
+extraction or hardware evidence, while 5.1 folds to stereo with either the
+BS.775 Lo/Ro matrix or the Dolby Surround Lt/Rt matrix (the 90° surround
+phase shift is not modelled), and to mono as the composite of the stereo
+fold. Project
+settings now accept every channel layout the model holds, 1 through 16.
+`AU-003` remains planned.
 
 Current implementation boundary for system audio inputs (`AU-011`):
 Protocol 2.55 (schema 52) adds an audio-only input kind that captures the
@@ -2551,11 +2812,13 @@ hangs, the daemon's listing worker with a fake enumerator (off the loop,
 reuse, deferral), the picker state, and the CLI output.
 
 Remaining gaps:
-- devices are listed only when asked; nothing reports a device appearing
-  or going away, and no real `PulseAudio`/`PipeWire` server listing has been
+- devices are listed only when asked (Studio's form asks again every five
+  seconds while it stays open, but nothing reports an appearance or removal
+  outside it), and no real `PulseAudio`/`PipeWire` server listing has been
   exercised;
 - there is no edit command beyond replacing the source;
-- capture is stereo only, with no channel selection or per-input delay;
+- capture is decoded to the project's channel layout rather than fixed
+  stereo, but there is no per-input channel selection or delay;
 - there is no Windows (WASAPI loopback) or macOS capture, and no
   per-application capture;
 - there is no virtual audio device publishing Program or buses;
@@ -2676,7 +2939,8 @@ drift loop (AU-004, reported as a `screen_capture` live source). The input's
 status carries the audio state (`off`, `opening`, `live`, `no_stream` while
 the application plays no stream yet, `unsupported` with the reason, such as
 an OS version without per-application capture, and `failed`) and an
-`audio_error`.
+`audio_error`. The capture child decodes its audio to the project's channel
+layout (up to sixteen channels), not fixed stereo.
 
 - **Linux** (working and tested against a private PulseAudio 16 server):
   system audio is `ffmpeg -f pulse -i @DEFAULT_MONITOR@` as the capture
@@ -2825,9 +3089,13 @@ reference; key/fill is not tied to paired SDI or OMT fill and key inputs,
 and a Scene cannot be a key input; garbage mattes feather up to 64 pixels
 to each side (Protocol 2.115, schema 87: an 81-point integer grid per
 pixel, clamped to the layer, so the native compositor matches the CPU
-reference exactly, checked by `native_keys` on llvmpipe) but are not
-animatable; light wrap on a tilted layer
-matches the CPU reference only within the bilinear sampling difference.
+reference exactly, checked by `native_keys` on llvmpipe), and their points,
+invert flag, and feather animate as scene-layer properties (Protocol 2.145,
+schema 102: point 1 x through point 8 y, normalized `0..=1000`, overriding
+the static coordinate; a track may extend the polygon up to eight points,
+and a pose that would flatten it keeps the static matte); light wrap on a
+tilted layer matches the CPU reference only within the bilinear sampling
+difference.
 `SW-008` remains planned.
 
 Current implementation boundary for freeze and snapshot (`SW-016`): `fm-video`
@@ -2837,8 +3105,10 @@ most two frames, and resumes live with output timestamps of
 `max(map(source_pts), last_output_pts + d)` on a grid anchored at the first
 source timestamp, so output never regresses. A std-only PNG encoder writes
 exact RGBA8 and RGBA16 stills with stored DEFLATE blocks, CRC32, and Adler32,
-checked by golden bytes and a structural decoder. Remaining gaps: no engine,
-scheduler, simulator, protocol, daemon, or UI calls either piece; timestamps
+checked by golden bytes and a structural decoder. The CLI's title, scene, and
+program render commands write an RGBA8 PNG when the output path ends in
+`.png` (binary PPM otherwise). Remaining gaps: no engine, scheduler,
+simulator, protocol, daemon, or UI calls the freeze controller; timestamps
 are bare ticks rather than `fm-frame` timing types; audio and clock-domain
 conversion are absent; and stills carry no color metadata or compression.
 `SW-016` remains planned.
@@ -2856,8 +3126,10 @@ re-anchor, and frame-count, byte, and duration bounds evict oldest-first and rej
 oversized frames. The effective delay converts to audio samples, aligning with
 `fm-audio` `SampleDelay` within one sample at 48 kHz. Remaining gaps: no
 engine, input, command, protocol, persistence, or UI wiring; no loop, freeze
-integration, or clip save; `SampleDelay` cannot follow live changes or exceed
-one second; no source/output clock drift compensation; and memory accounting
+integration, or clip save; `SampleDelay` can change its delay live within the
+one-second bound while preserving history (growing prepends silence), and the
+Master mixer's delay setter uses that path; it still cannot exceed one
+second; no source/output clock drift compensation; and memory accounting
 relies on caller-reported sizes. `IN-022` remains planned.
 
 Current implementation boundary for virtual and mix-feed inputs (`IN-024`,
@@ -3189,9 +3461,9 @@ Remaining gaps:
 - The simulated daemon reports every stream idle.
 - `ffmpeg` is required at runtime. Without it the input stays reconnecting
   with "ffmpeg unavailable".
-- Audio is delivered as stereo: up to eight source channels are downmixed or
-  one stereo pair is picked, but no multichannel stream audio reaches the
-  mixer.
+- Stream audio is decoded to the project's channel layout (up to sixteen
+  channels), but one source's layout is still chosen by `ffmpeg`'s `-ac`
+  downmix/upmix rather than mapped from the source labels.
 - A stream found without audio is treated as video-only until its input
   reopens.
 - The decoded-byte cap (256 MiB) can shorten the jitter target at large
@@ -3353,7 +3625,8 @@ IPv6 `/64` out for a minute after each run of five, doubling per further run
 up to an hour (with `Retry-After`). On Linux, a new daemon removes temporary
 directories left by daemons that are gone. There is no TLS, no per-viewer
 bandwidth breakdown, no measured latency class, and the supervised Studio
-daemon does not start a listener. `OR-017` therefore remains planned.
+daemon starts a listener only when given `--live-lan-listen` (Studio's own
+flag forwards it with `--native-media`). `OR-017` therefore remains planned.
 
 Current implementation boundary for item 4: native `freemixd` runs two
 independently configured program recorder destinations with per-slot project
@@ -3521,10 +3794,12 @@ record carrying the target id, the primary/backup label, and
 and never changes destination state or reconnection, because an ingest may
 legitimately come up later. This covers program recording, local HLS outputs,
 and one-shot network reachability only: there is no continuous network
-monitoring or bandwidth probe, no GPU capability preflight beyond adapter
-creation, low space never stops or fails a running recording or output on its
-own, and only local HLS destinations report their directory's free bytes in
-`stream_status` (recorder slots have no per-slot disk telemetry on the wire). `OR-001`'s space status is
+monitoring or bandwidth probe, and no GPU capability preflight beyond adapter
+creation. Low space now stops a program recorder at the 512 MiB floor
+(`storage:low_space`, reported as disk full) and a local HLS output whose
+filesystem falls below the same floor, and each recorder slot reports
+its output filesystem's free bytes in `recorder_status` (Protocol 2.140),
+beside the local HLS destinations' free bytes in `stream_status`. `OR-001`'s space status is
 now observable on the recording path, but the row still awaits its other
 acceptance items, and item 9 remains incomplete.
 
@@ -3554,8 +3829,13 @@ buffering, optional BWF `bext` metadata with exact timecode-to-sample
 references, size patching on checkpoint and finalize, and automatic RF64 past
 4 GiB through a reserved chunk; recovery rebuilds an unfinalized file's sizes
 from its data length. A track recorder writes interleaved or split per-track
-files after validating every file up front. Remaining gaps: nothing connects
-this to `fm-audio` buses, the daemon recorder slots, persistence, or UI; WAV
+files after validating every file up front. A map now round-trips as a
+canonical `freemix-record-track-map 1` document
+(`RecorderTrackMap::to_document`/`from_document`), strictly decoded against
+the same validation, and is stored per recorder slot in the project bundle as
+`recorders/<slot>.trackmap`; `freemix-cli record-track-map-import` and
+`record-track-map-export` manage it. Remaining gaps: nothing connects
+this to `fm-audio` buses, the daemon recorder slots, or UI; WAV
 output is separate from the crash-safe packet spool and has no time or size
 rollover; and metadata stops at version-1 `bext` without iXML, loudness, or
 UMID. `AU-010` remains planned.
@@ -3583,7 +3863,8 @@ bitrate and reported packet loss, aggregates the bounded source-sync records
 fullest recorder or stream queue's utilization. Each sample also
 records `cpu.process_utilization`, the daemon process's user plus system time
 from `/proc/self/stat` over wall time as a share of every logical CPU
-(unavailable off Linux; FFmpeg children are not counted), and
+(unavailable off Linux; child `FFmpeg` encoders are included when `/proc`
+lists them), and
 `gpu.utilization`, which is a proxy rather than a vendor counter: the GPU
 time of the native compositor's timestamped fullscreen render passes over
 wall time, so it omits uploads, readbacks, encoders, and other processes, is
@@ -3624,21 +3905,23 @@ checked under Node.js against the Rust codec, and a gateway test where an
 Operator page silences and unsilences a rule while a Viewer page is
 refused). Protocol 2.112 (schema 85) lets a show set its own rules: an
 undoable `alert_rule_set` project edit (needing `edit_project`) changes one
-rule's trigger, clear threshold, and hold or switches it off, the project
-keeps only rules that differ from their defaults, the snapshot and an
+rule's trigger, clear threshold, hold, or severity or switches it off, the
+project keeps only rules that differ from their defaults, the snapshot and an
 `alert_rules_changed` event carry them, and both daemons restart only the
 changed rules from their next statistics sample. Studio's Health alerts
 window edits them under each rule in natural units, and `freemix-cli`
 prints and changes them with `remote-alert-rules` and `remote-alert-rule`
 (type, persistence, codec, engine undo, statistics, and process tests).
 Remaining
-gaps: no input-health or
+gaps: input total, offline, and failed counts are sampled; there is no
 hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
-zero); a show changes each rule's thresholds, hold, and switch but not its
-severity or the reading it watches, and cannot add rules; the CPU reading
-excludes child encoders and the GPU reading is a compositor-pass proxy; and
-the Web pages show no notification history. `RC-015` remains planned.
+zero); a show changes each rule's thresholds, hold, severity, and switch but
+not the reading it watches, and cannot add rules; the GPU reading is a
+compositor-pass proxy. The
+Web operator page now lists the daemon's recent health notifications
+(firing, resolved, and reminder) with rule, severity, and age. `RC-015`
+remains planned.
 
 
 Current implementation boundary for fault-tolerant recording (`OR-003`):
@@ -3675,9 +3958,13 @@ write; the writers then rotate back to it, `FREEMIXD_RECORDER_RESTORED`
 reports the return, and read-only, missing, or forbidden roots are never
 re-enabled. Native `freemixd` samples the active directory every five seconds
 and emits a hysteretic `FREEMIXD_RECORDER_REMAINING` record when estimated
-remaining time crosses 30, 10, or 2 minutes and when it clears.
-Remaining gaps: the fallback is refused with fullscreen output; the
-remaining-time thresholds are fixed and reach no protocol or UI view; no
+remaining time crosses 30, 10, or 2 minutes and when it clears; those
+thresholds are configurable with
+`FREEMIXD_RECORDER_REMAINING_MINUTES` (a descending, comma-separated list of
+1 to 1440 whole minutes).
+`recorder_status` now carries each slot's free bytes and estimated seconds
+of recording left at its configured bitrate (Protocol 2.141), shown in
+Studio's recording row. Remaining gaps: no
 daemon test runs two `freemixd` processes against one directory (the lock is
 proven across processes in `fm-record`); repaired files are not
 re-finalized; corrupt mid-file fragments end recovery; and only fragmented MP4
@@ -3727,16 +4014,28 @@ runs it. Remaining gaps: the audit covers only the egui Studio console, not
 the web controller, CLI, or daemon messages; it relies on debug-build widget
 info; and only English and Spanish ship, so `RC-018` remains planned.
 
-The current persistence slice audits stored media asset references and
+The current persistence slice audits stored media asset references (and the
+logo and image assets that persisted crawl and preview documents name) and
 provides a secret-free settings export with an import planner (`RC-013`):
 outputs, buses, stream targets, and video/audio settings export as one exact
 contract whose secrets serialize only as placeholders, and imports preview
 per-key changes, merge by replace, prefer-incoming, prefer-current, or
 per-section choice, report secret re-entry, unknown references, and ID
 collisions, and apply atomically only when resolved against an unchanged base.
-Applied snapshots are not yet turned into project mutations or engine
-commands, nothing in the daemon, protocol, CLI, or UI calls the planner,
-secrets are excluded rather than separately encrypted. For `SW-017`,
+The CLI now writes the export document (`settings-export`), previews an
+import against a project (`settings-import`), and applies the `format` and
+`restart_policy` sections and the names, routes, startup policies, and
+existing entities of the `outputs` and `audio_buses` sections atomically with
+`settings-import --apply`; an existing stream target's exported fields are
+applied too while its stream key and unexported options stay untouched,
+and a keyless HLS destination can be added; a keyed destination is added
+when `--stream-key <id>=<key>` supplies its key. Entities absent from the
+applied snapshot are removed in reference order (stream targets, outputs,
+then buses), and a removal still referenced by cues, displays, LiveLAN, or
+a kept output or send refuses the whole import; a stream protocol change
+still refuses it. Engine commands are not emitted, nothing in the daemon,
+protocol, or UI calls the planner, and secrets are excluded rather than
+separately encrypted. For `SW-017`,
 `fm-engine` classifies commands into undoable project edits (input add,
 remove, rename, and reorder; stinger and overlay settings; grades; title and
 scene animations; scene layers; the playlist, cue lists, and scripts;
@@ -3838,10 +4137,10 @@ placeholder. The title editor core and its protocol bridge live in
 typed fields with conflict rebase/discard, previews, saves, takes on a chosen
 overlay channel, updates live, and takes titles off air. Remaining gaps: no
 grapheme shaping or bidi, no template designer persistence, titles cannot be
-stinger media, runtime-added title inputs are not rendered in simulated
-mode, tickers and scene clocks still start at frame zero rather than at the
-take (keyframe animation plays from the take frame), and template field names are not localized, so
-`GX-001` remains planned. Studio's TITLES tab shows the selected title's
+stinger media, and template field names are not localized, so
+`GX-001` remains planned. A title input added while the daemon runs now
+loads its stored template on the first engine sync, so the simulated monitor
+renders it like a startup title. Studio's TITLES tab shows the selected title's
 read-only In / Hold / Out strip from its template animation, with a playhead
 that follows the lossy `title_phases` record (Protocol 2.90) and runs on at
 the project frame rate between records, and how long the title has been on
@@ -3854,16 +4153,31 @@ rational pixels-per-second speed against the frame rate, with separator wrap,
 bounded item lists, and live updates spliced in at the next unseen item so
 visible text never jumps; crawls render above scene elements through the CPU
 reference renderer with exact pixel tests. A typed scoreboard covers team
-names, abbreviations, scores, a featured player, and the period with atomic
+names, abbreviations, scores, a featured player, the period, per-team
+rosters (atomic replacement, clearing, and jersey-number selection), and a
+shot clock whose duration and presence follow the sport (24
+seconds for basketball, 40 for football, 30 for hockey, none for soccer) and
+that operators can reset to another duration, with presets, atomic
 revision-checked action batches, saturating increment/decrement shortcuts,
-and a frame-exact count-up or count-down game clock whose expiry is reported
-once; changed values publish onto template fields in one scene revision, and
-a strict key/value parser maps external data onto actions. Remaining gaps:
-crawls are runtime overlays outside template z-order and the project schema,
-with fixed directions and no per-item styling, logos, or easing; the
-scoreboard has two teams, no rosters, sport presets, shot clocks, tenths, or
-persistence; and there are no feed transports, shortcut or control-surface
-wiring, or engine output. `GX-003` remains planned.
+runtime-selectable minute, tenths, and hour formats, and a frame-exact
+count-up or count-down game clock whose expiry is reported once; changed
+values publish onto template fields in one scene revision, and a strict
+key/value parser maps external data onto actions. A strict snapshot
+round-trips the whole operator state and serializes as a versioned text
+document. Remaining gaps:
+crawls are runtime overlays outside template z-order and no easing, although
+a crawl's configuration and items now persist per title input in
+`project.json` (schema 106) as a strict canonical document checked by
+`freemix-cli`'s crawl commands; per-item fill and logo images draw before the
+text; the
+scoreboard has two teams, and its canonical versioned document now persists
+per title input in `project.json` (schema 106), strictly parsed and
+canonicalized on load, `freemix-cli scoreboard-check`, `scoreboard-import`,
+and `scoreboard-export` validate and move one, and `freemix-cli`'s crawl
+commands do the same for crawls, but no engine or protocol publishes either;
+and there are
+no feed transports, shortcut
+or control-surface wiring, or engine output. `GX-003` remains planned.
 
 Current implementation boundary for item 2: `fm-titles` provides a designer
 document model with a bounded tree of elements and nested groups whose offsets
@@ -3878,9 +4192,14 @@ travel with the flattened template. A designer edit API maps keyframe add,
 remove, retime, phase stretch, and every other clip edit onto atomic
 `fm-animation` edits and validates the whole document, with bounded snapshot
 undo and redo. Remaining gaps: group transforms are translation and opacity
-only, mask edges are not anti-aliased, rendering is CPU-only, and there is no
-designer UI, live field editor, design persistence, protocol, or engine
-playback. `GX-002` remains planned.
+only, rendering is CPU-only, and there is no
+designer UI, live field editor, protocol, or engine playback; designs persist
+as strict `.fmdesign` documents (`fm-persistence::encode_title_design` /
+`decode_title_design`), `freemix-cli title-design-check` validates one, and
+`freemix-cli title-design-import` flattens a validated design into a stored
+`.fmtitle` template and adds a title input showing its default fields (fonts
+are supplied with `--font`, as for `title-input-add`), but no designer UI or
+protocol reads them. `GX-002` remains planned.
 
 Current implementation boundary for the keyframe animation editor (`GX-011`):
 `fm-animation` is the shared, pure model: Q16 easing presets with stable ids
@@ -4067,7 +4386,8 @@ active Advanced row, else every row of the phase. Undo and redo select only
 restored keys of the shown phase, so an edit undone from the other phase
 leaves no hidden keys for Delete to reach. Remaining
 limitations: Studio imports and exports by typed path (there is no file
-dialog), and a preset applies to one target at a time.
+dialog); a preset picked with keys selected on several targets animates all
+of them in one undo step.
 
 Current implementation boundary for the color grading suite (`SW-019`):
 `fm-grade` is the pure, all-integer grade model (white balance, exposure,
@@ -4492,10 +4812,14 @@ wildcard host allow/deny rules where deny wins, and validates bounded redirect
 chains against loops, HTTPS downgrades, and `file:` targets. Custom CSS is
 accepted only after a lexical scan rejects style breakout, imports, escapes
 outside strings, unsafe functions, and excess external `url()` references,
-which are returned for policy checks. Remaining gaps: no real browser engine,
-DNS, or sockets; the fake renderer still navigates through the older policy;
-in-page fetches are not policed; and browser audio, HTML5 media, on-disk
-profile isolation, refresh-on-activate, and zoomed input translation remain
+which are returned for policy checks. The fake renderer's fixtures may declare
+in-page fetches (`data-fetch`), and navigation refuses a page whose fetches
+the policy would block; the renderer now navigates through the full network
+policy (navigation grants, host rules, URL bounds, and redirects), and maps
+a zoomed surface's pointer events back into page space. Remaining
+gaps: no real browser engine,
+DNS, or sockets; browser audio, HTML5 media, on-disk
+profile isolation, and refresh-on-activate remain
 contracts or fakes. `IN-013` remains planned.
 
 Current implementation boundary for item 4: `fm-data` parses bounded CSV and
@@ -4507,10 +4831,26 @@ value limits fail with located errors. A row cursor navigates with stop or
 wrap edges, stays valid across refresh, and selects by exact key. A validated
 title mapper coerces values onto text, number, color, and image fields with
 explicit rounding and color rules, fallbacks, optional fields, and per-field
-diagnostics. Remaining gaps: no XML/XPath, RSS, HTML-table, spreadsheet,
-Google Sheets, chat, or database adapters, no real HTTP or file polling, and
-mapped values do not yet feed `fm-titles` templates, the project schema, or
-ticker updates. Item 4 remains incomplete and `GX-004` remains planned.
+diagnostics. `fm-data` also provides a bounded file polling source that
+re-reads one CSV or JSON file at a caller interval and emits only when its
+length or modification time changes, and a bounded XML reader that turns one
+document into nested typed elements (no DOCTYPE, entity expansion limited to
+the five named entities and numeric references), and reads RSS 2.0 and Atom
+feeds into rows of title, link, summary, published, and id, and reads an
+HTML table's header and body cells into rows. Remaining gaps:
+no XPath, spreadsheet,
+Google Sheets, chat, or database adapters, no real network polling, and
+`fm-title-render`'s `apply_title_mapping` now writes a mapped report onto a
+`TitleScene` atomically by template field name, so title text, number, color,
+image, and field-backed ticker elements update, and
+`apply_title_mapping_to_fields` writes the same report onto a standalone
+`TitleFieldSet`. `freemix-cli title-apply-row` reads one flat JSON row keyed
+by template field name, coerces each value with `fm-data`'s title rules,
+refuses unknown field names, failed fields, and non-`asset://` images before
+saving (or keeps the live value of a failed field with `--keep-live`), and
+writes the mapped values and per-field revisions into the title input's
+`project.json` fields. Mapped values do not yet feed crawl item lists, the
+daemon, or a UI. Item 4 remains incomplete and `GX-004` remains planned.
 
 Current implementation boundary for item 4 title binding (`GX-005`):
 `fm-data` binds rows onto text, integer, color, validated image URI (scheme
@@ -4523,10 +4863,21 @@ bounded strftime-like pattern. Bindings can follow the cursor-selected row. A
 preview state stages a result with a per-field change list against live values
 and commits atomically with a revision counter, stale-stage detection, and a
 choice between refusing errored results and keeping live values for failed
-fields. Remaining gaps: bound values do not reach `fm-titles`, the renderer,
-the project schema, the protocol, or a UI preview; there is no time-zone
-database or localization; image URIs are never fetched; and preview state is
-in memory only. `GX-005` remains planned.
+fields. `fm-title-render` writes mapped reports onto a `TitleScene` and a
+standalone `TitleFieldSet` by template field name, and
+`freemix-cli title-apply-row` coerces one flat JSON row (refusing unknown
+fields, failed coercions, and non-`asset://` images unless `--keep-live`
+keeps the live value of each failed field) and saves the result into the
+title input's `project.json` fields with per-field revisions; `--preview`
+prints each mapped field's current and new value without saving. Remaining gaps:
+no daemon, protocol command, or UI preview drives a mapped row; there is no
+time-zone database or localization; image URIs are never fetched; and
+preview state is in memory only. `GX-005` remains planned. Preview state now
+round-trips through a strict, versioned text document (`PreviewSnapshot`) and
+persists per title input in `project.json` (schema 106), strictly parsed and
+canonicalized on load; `freemix-cli preview-check`, `preview-import`, and
+`preview-export` validate and move one, but no protocol command or UI stages,
+inspects, or commits it yet.
 
 Current implementation boundary for item 5: `fm-playback` provides a
 fixture-backed `ListPlayer` that advances once per monotonic engine frame tick
@@ -4535,9 +4886,13 @@ durations that trim or hold, and a seeded deterministic shuffle per loop cycle.
 Programmed GO (Play, Next, Previous, First, Stop) lands at an absolute or
 relative frame, is idempotent by ID, and records executed, ignored, or
 cancelled outcomes under explicit item, pending, and history limits. Remaining
-gaps: no daemon, protocol, persistence, or vMix API wiring, no cross-input GO
-bank, no M3U or file-list import, no transitions or variable speed between
-items, and no real-media acceptance. `IN-006` and `OR-015` remain planned.
+gaps: no daemon, protocol, persistence, or vMix API wiring; a cross-input
+`ListGoBank` model exists but nothing drives it; `fm-playback` parses bounded
+M3U/M3U8 local-file playlists (`#EXTINF` titles, comments, BOM, CRLF) and
+`freemix-cli input-media-list-import` imports each named file into the bundle
+and appends it to a saved media list, but list items still have no video
+transitions beyond the per-list one and no variable speed between items, and
+there is no real-media acceptance. `IN-006` and `OR-015` remain planned.
 
 Current implementation boundary for item 5 Media List inputs (`IN-006`): a
 list input is a media input whose source is its active item's file, plus a
@@ -4551,15 +4906,16 @@ plays it when the list was playing. Both daemons journal an Auto Next
 `advance` when the active item ends, so replay is frame-exact; host paths
 are imported into the bundle; snapshots carry `media_list_state` records
 (Protocol 2.74, schema 64).
-The native daemon prefetches every open list's next item (the one Auto
-Next steps to, when it is another file): a background thread opens the
-file, decodes its in-mark picture and first audio block, and the window
-after them. A step to that item (Auto Next or Next) switches the input's
-worker to the cued player before the step's frame is projected, so that
-frame already shows the new item's in mark (`native_media_lists` records
-Program and proves both switches hold and skip no frame). A step to an
-item that was not prefetched (Previous, First, a jump, or a standby still
-opening) still holds the previous item's last picture until the file
+The native daemon prefetches every open list's next, previous, first, and
+last items (the one Auto Next steps to, the one Previous steps to, and the
+first and last of the current cycle, when each is another file): a background thread opens
+the file, decodes its in-mark picture and first audio block, and the window
+after them. A step to that item (Auto Next, Next, Previous, or First)
+switches the input's worker to the cued player before the step's frame is
+projected, so that frame already shows the new item's in mark
+(`native_media_lists` records Program and proves both switches hold and skip
+no frame). A step to an item that was not prefetched (a jump, or a standby
+still opening) still holds the previous item's last picture until the file
 opens. Studio adds lists (pasted paths and M3U
 playlists with relative entries and `#EXTINF` titles) and shows a list card in the Media
 tab with search, drag reorder, per-item marks, the active item, Previous and
@@ -4587,12 +4943,21 @@ gains (`native_media_lists` records Program through a wipe and checks
 every composited frame); a step to a file that was not prefetched still
 cuts. The simulated daemon runs the timing without compositing its
 synthetic pictures. Studio's list card edits the transition with hover
-help. Gaps: only the next item is prefetched, no CLI edit or vMix API
-verbs, no cross-input GO bank, and Linux-only native evidence. The generic
-`page_navigate` step and the cue `page` action do not drive a list yet: a
-list steps with its own `navigate` (same next/previous/first/last/goto
-tokens, but Next and Previous wrap under Loop where a page step clamps).
-`IN-006` stays `planned` until those land.
+help. Gaps: a jump to an arbitrary item is not prefetched (Last is); the CLI steps a list
+(`input-media-list-navigate` and its `remote-` form) and edits its options and
+items, including an item's title, in/out marks, and position, and each
+list's transition (`input-media-list-options`, `input-media-list-item`,
+`input-media-list-transition`); `fm-vmix-compat`
+translates vMix's `NextItem`, `PreviousItem`, `SelectIndex`, `NextPicture`,
+and `PreviousPicture` verbs onto page navigation and `Play`, `Pause`, `Stop`,
+and `PlayPause` onto media transport (no vMix HTTP/TCP server is
+wired yet); a cross-input `ListGoBank` model exists but no daemon calls it,
+and Linux-only native evidence. The generic
+`page_navigate` step and the cue `page` action drive a list too: a page step
+naming a media list is rewritten to the list's own `navigate` (same
+next/previous/first/last/goto tokens, but Next and Previous wrap under Loop
+where a document page step clamps). `IN-006` stays `planned` until the
+remaining gaps land.
 
 Current implementation boundary for item 5 playlist automation:
 `fm-automation` provides a caller-clocked playlist engine that sequences whole
@@ -4647,18 +5012,26 @@ remove, reorder, enable/skip, duration, transition, loop mode) under
 Remaining gaps: the clocks wait while either daemon's frame loop realizes a
 transition or title phase, so a boundary falling inside one is cut on the
 first frame after it (its scheduled start, and so every later boundary, is
-kept); a SIGKILL still loses up to one second of idle progress (the marker
-cadence), although marker and fold writes now run as background jobs on the
+kept); a SIGKILL still loses up to a quarter second of idle progress (the
+marker cadence), although marker and fold writes now run as background jobs on the
 persistence worker, off the frame loop; simulated pacing anchors to the wall clock when a
 boundary becomes pending, so it is approximate across commands and the catch-up frames
 render synchronously, and controls such as Pause or Next execute at the
 lagging frame cursor, so Studio's countdown is approximate on the simulated
-daemon; fixed entry durations only (an entry does not follow its media
-length), although an end trigger of the on-air media input advances a playing
-playlist with a journaled `next`; no stinger
-transitions; no enable/disable, loop change, or list editing while the
-playlist runs; no scheduled starts from Studio; no per-entry hard starts or
-calendar recurrence; no vMix API or as-run log. `OR-015` remains planned.
+daemon; entries hold a fixed duration or follow their input's media length,
+and take any transition including a Stinger slot (Protocol 2.144, schema
+101), while an end trigger of the on-air media input
+advances a playing playlist with a journaled `next`; enable/disable, loop
+changes, and list edits apply while the playlist runs, keeping the on-air
+entry's timing (an edit that removes or
+disables the on-air entry is refused); Studio's Start in field schedules a
+start a chosen number of seconds ahead; no per-entry hard starts or
+calendar recurrence; vMix's `StartPlayList`, `StopPlayList`,
+`NextPlayListEntry`, and `PreviousPlayListEntry` verbs translate, but no vMix
+server is wired. The daemon now appends every realized
+Program change to `as-run.log` beside the bundle (wall clock, engine frame,
+input, and name), and `freemix-cli as-run` prints it. `OR-015` remains
+planned.
 
 Current implementation boundary for item 5 programmed GO (`RC-017`): the
 operator cue list is implemented end to end (schema 48, Protocol 2.51). A
@@ -4768,12 +5141,10 @@ argument of 1 ms to 24 hours). Keys and messages act on the list the Cues
 panel shows and are gated exactly like the panel key (GO and arming also
 need the armed chain's permissions); an OSC cue message whose key is
 unavailable counts as rejected. A Stream Deck, X-keys, or MIDI surface can
-drive cues through an OSC bridge such as Bitfocus Companion. Studio does
-not read MIDI itself: `fm-automation`'s MIDI parser and control map have
-no device transport, and no MIDI device crate is in the dependency graph.
-`xtask deps check` only polices workspace layering, so a crate such as
-`midir` would pass it, but it needs ALSA development headers on Linux
-and is `RC-005`'s dependency decision to make.
+drive cues through an OSC bridge such as Bitfocus Companion. Studio reads
+MIDI itself: raw ALSA ports on Linux and `CoreMIDI`/`WinMM` through `midir`
+on macOS and Windows, so no ALSA development headers are needed for the
+Linux build and `RC-005`'s device transport is in place.
 Cue preview (Studio-local; no protocol or schema change): under the GO
 key a "GO will:" box lists, step by step, what firing the standby cue
 does across its waits and delays and every cue it auto-follows into
@@ -4803,8 +5174,10 @@ Preview selection. English and Spanish, with unit tests of the
 resolution and an offscreen render (`docs/progress/studio-cue-preview*.png`).
 Remaining gaps: lists are not bound to an input button, and Studio has no
 direct MIDI, HID, or X-keys input (only OSC, through a bridge); the cue
-bindings are fixed, with no rebinding or learn UI, and act only on the
-list the Cues panel shows (no per-list or per-cue key or OSC address);
+bindings are fixed, with no rebinding or learn UI, and console keys act only
+on the list the Cues panel shows (OSC can address a list by 1-based project
+order, or one cue by its 1-based position, but there is no per-cue console
+key);
 the cue preview is worked out on the console, not by the authority:
 it does not run a script step (values a script may change are left out
 after it), cannot see a
@@ -4825,10 +5198,11 @@ Current implementation boundary for sandboxed scripting (`RC-011`): the
 first slice is a purpose-built language rather than a Wasm runtime (schema
 54, Protocol 2.58). `fm-script`, a dependency-free foundation crate, parses
 and interprets `FreeMix` Script: integer, boolean, and string variables,
-`if`/`elif`/`else`, `repeat`, `while`, `stop`, and 26 action verbs that map
-onto cue actions. The language has no file, network, process,
-clock, or randomness access at all; its only host interface reads the
-Program and Preview input numbers and performs one show action at a time.
+`if`/`elif`/`else`, `repeat`, `while`, `stop`, and 32 action verbs that map
+onto cue actions, including production clock control. The language has no
+file, network, process, system-clock, or randomness access at all; its only
+host interface reads the Program and Preview input numbers and performs one
+show action at a time.
 Runs are deterministic and bounded by an instruction budget (time), an
 action budget, and variable and string budgets (memory); the parser bounds
 source size, lines, block nesting, and expression nesting. A project stores
@@ -4901,19 +5275,22 @@ never reused. Design choice: a second run of a script that already waits is
 refused `script_running` rather than allowed, because two runs of one source
 act on the same titles and inputs and would fight; the operator stops the
 first (or the script finishes) and runs it again. A run that would wait
-while 8 do is refused `bounds_exceeded:script_runs:8`. Each run is
+while 8 do is queued behind them (schema 103), oldest first, and promoted
+when an active run ends; the project's 16-script bound caps the queue at
+8, and a stop ends queued runs too. Each run is
 authorized on its own, as before. The cue clock still drives every run as
 list `0` (the earliest due, the lowest id on a tie); runs due on the same
 frame resume on that frame together, the later advance joining the frame
-the first holds. A failed part faults its own run only, and each script
-keeps its own fault. `script_stop run=<id>` ends one run or clears its
-fault; `script_stop` alone ends every run and clears every fault
-(`script_runs_stopped`). Wire `run` states name the run id and, while
-waiting, the line of the `wait` (the run's current step). Studio's Scripts
-window lists every active run with its own Stop (or Clear) and Stop all
-runs; the CLI's `script-stop` takes `--run`. Remaining gaps: runs cannot be
-queued behind the bound, and a stop of every run is one command, not a
-selection.
+the first holds; queued runs never resume until promoted. A failed part
+faults its own run only, and each script
+keeps its own fault. `script_stop runs=<run>[,<run>...]` ends the selected
+runs or clears their faults (Protocol 2.146); `script_stop` alone ends every
+run and clears every fault (`script_runs_stopped`). Wire `run` states name
+the run id and, while waiting, the line of the `wait` (the run's current
+step); a queued run reports the same waiting state. Studio's Scripts window
+lists every active run with its own Stop (or
+Clear), a checkbox selecting it for Stop selected runs, and Stop all runs;
+the CLI's `script-stop` takes `--run`, repeatable or comma separated.
 
 Document inputs (`IN-014`, Protocol 2.77, schema 66): a PDF or a
 presentation is an input shown one page at a time. Renderer choice: `hayro`,
@@ -4948,13 +5325,13 @@ source…) with a path or `asset://` URI, and the cue editor's page actions
 list documents next to slideshows. `freemix-cli` adds `input-page` and
 `input-pages` for saved projects (`remote-page-navigate` steps a document on
 a server) and document-aware
-`project-import-media` and `input-import-batch`. Remaining gaps: no
+`project-import-media` and `input-import-batch`. A document, image, or
+slideshow input used as a Scene layer draws its current page or picture in
+the simulated monitor too. Remaining gaps: no
 PowerPoint rendering without LibreOffice (no slide builds, transitions, or
-embedded media; a converted deck shows its final slide state), Keynote needs
-a PDF export, no script, OSC, or keyboard page actions yet, the
-simulated scene composer does not draw a document used as a Scene layer,
-and conversion is not cancelled when the input is removed (it finishes or
-times out). `IN-014` remains planned.
+embedded media; a converted deck shows its final slide state) and Keynote
+needs a PDF export; removing the input cancels a running conversion.
+`IN-014` remains planned.
 
 Deferred fault reasons (Protocol 2.63, schema 57): a script part that fails
 after a wait, and a cue action refused when its wait ends, now keep what a
@@ -4979,7 +5356,8 @@ Current implementation boundary for still image and slideshow inputs
 - An image input names one picture asset and a fit. A slideshow names an
   asset folder (every picture file directly inside it, in natural name
   order, at most 10,000) or an explicit list of up to 64 pictures with
-  optional captions, a per-slide hold in frames, a cut or a fade, Ken Burns,
+  optional captions, a per-slide hold in frames, a cut, fade, wipe, or
+  slide, Ken Burns,
   ordered or seeded-random order, loop, and auto-advance; a show holds at
   most 8 slideshows. Both persist exactly (schema 63), are undoable adds,
   replaceable sources, and duplicable.
@@ -5025,18 +5403,18 @@ Current implementation boundary for still image and slideshow inputs
   and the Studio forms and panel.
 
 Remaining gaps:
-- Studio has no per-slide picture thumbnails in the strip (numbered names
-  only) and no native file or folder dialog;
+- Studio's slide strip now shows picture thumbnails around the slide on air
+  (read through the paged page worker) but still has no native file or
+  folder dialog;
 - captions are metadata and labels only; nothing draws them on the picture;
-- only cut and fade transitions exist; OSC and keyboard shortcuts do not step
-  slides, and scripts cannot;
 - a host folder is copied once, so live edits follow the project's copy,
   not the original folder; there is no filesystem watch, only a 2 s rescan;
-- portable bundle export, asset audit, and relink do not yet treat a
-  slideshow folder as an asset;
-- native Ken Burns crops are whole source pixels, a random order's next
-  slide is prefetched approximately, and the slideshow textures are outside
-  the media registry's retained-byte accounting;
+- portable bundle export copies a slideshow folder's pictures, the asset
+  audit resolves the folder itself, and relink finds and imports a same-named
+  folder with pictures;
+- native Ken Burns crops are whole source pixels; the slideshow textures are
+  reported as a statistics gauge rather than inside the media registry's
+  accounting;
 - animated GIF and WebP show their first frame; there are no solid colour
   or bars changes here (`IN-010` remains separate);
 - no Windows or macOS native run has been exercised (the code is portable
@@ -5085,14 +5463,50 @@ moves between air and Preview or is taken again, is identical under journal
 replay because it is derived from realized engine state per frame, and is
 saved in `project.json` `title_timelines` so a restored daemon continues it;
 clock titles refresh at the bounded title rate. `freemix-cli title-input-add`
-imports clock templates. Remaining gaps: no shared project or engine clock
-registry, so title clocks are per title, not operator-controllable timers,
-and not exposed through the protocol, CLI commands, or UI; no project-level
-time zone (each time-of-day clock names its zone); templates cannot show
-media remaining, session, or playlist clocks; designer compositions and crawls take no clock
-source; no IANA tz database, leap seconds, drop-frame timecode,
-playback-speed-aware media remaining, or locale formats. `SW-013` remains
-planned.
+imports clock templates. A show now defines its own named production clocks
+(SW-013, schema 106): timer (count up or down, preset, optional count-up
+limit, stop or overrun, duration format), time of day (canonical POSIX zone
+and preset), media remaining, or stream/record/replay/MultiCorder/external
+session timer, persisted strictly in `project.json` and canonicalized on
+load; `freemix-cli clock-add`, `clock-remove`, and `clock-list` author them
+offline. The engine builds a live `fm-clock` registry from those definitions
+on start and restore, advances timers on its monotonic frame clock, and
+exposes the readings plus start, pause, reset, set, adjust, preset, zone, and
+format controls to callers. The registry now reaches clients as read-only readings in
+`diagnostics_response` (Protocol 2.149, printed by
+`freemix-cli remote-diagnostics`), and an Operator can operate a timer over
+the wire with `clock_control_request`/`clock_control_response` (Protocol
+2.150, requested by `freemix-cli remote-clock-control`, which accepts
+`start`, `pause`, `reset`, `set`, `adjust`, and `preset`); the answer carries
+the clock's reading afterwards or the registry's refusal. A cue action
+operates a clock too (Protocol 2.151, schema 106): `clock.<name>.<operation>`
+(with a canonical nanosecond value for `set`, `adjust`, and `preset`) runs
+as one step of a cue or shortcut, is validated and persisted with the list,
+and faults the cue when the show does not define the clock or the clock's
+kind refuses the operation; the snapshot carries the show's clock names
+(Protocol 2.152), so Studio lists them and authors the step's clock and
+operation in the cue editor. A script's `clock NAME, OPERATION[,
+VALUE]` action performs the same operation under the same permission.
+Remaining gaps:
+there is no full clock UI; a title element may name a project production
+clock, which a caller-supplied shared registry resolves at render time (the
+template's own time-of-day, countdown-to, and since-take clocks still work
+too); the simulated daemon's title thumbnails, the native title worker, and
+the monitor tap all pass the live registry; a media clock can name an input
+and follows its playback
+through the engine, and stream, recording, replay, and MultiCorder session
+clocks start and stop with their source's activity (an external session clock
+stays stopped); no project-level
+time zone (each time-of-day clock names its zone); a template clock may be a
+`reference` to a show clock by name, so media remaining, session, and playlist
+clocks can appear without redefining them; designer compositions and
+crawls take no clock source; an IANA `TZif` parser exists
+(`fm_clock::production::TzifZone`) but title clocks still name POSIX rules;
+drop-frame timecode is available at 29.97 and 59.94 fps (project clocks and
+title templates encode the `hours_minutes_seconds_drop_frame` preset, and
+`clock-add --format hours_minutes_seconds_drop_frame:<num>/<den>` accepts it);
+there are no leap seconds, playback-speed-aware media remaining,
+or locale formats. `SW-013` remains planned.
 
 
 Current implementation boundary for item 8: `fm-automation` provides a
@@ -5115,11 +5529,33 @@ the controllers and binds each action by Learn (the next press) or Unbind,
 and the bindings are saved with the console's preferences
 (`keymap.midi.note.<channel>.<number> = <action>`), at most 64 (unit tests
 of the bindings and the dispatch, the reader against a FIFO port, and the
-preferences round trip). Remaining gaps: no MIDI on macOS or Windows, no
-feedback to controller LEDs, no fader or encoder value mapping (a
-controller acts as a button), no UDP transport or raw HID parsing; nothing
-reaches `freemixd` or the project; and NRPN/RPN, MIDI 2.0, and GPIO or
-network tally adapters are absent. `RC-005` and `RC-006` remain planned.
+preferences round trip). The same reader uses `CoreMIDI` on macOS and
+`WinMM` on Windows through `midir`, so all three Tier-1 platforms list and
+read MIDI controllers; the Linux raw-port path keeps no ALSA development
+dependency. The same reader drives lamp feedback to bound controls: the
+selected Preview and Program inputs, Fade to Black, overlays, and the Replay
+player's transport light their LEDs, writes going through the raw ALSA port
+on Linux and `midir` on macOS and Windows. A controller bound to a value
+maps its 0–127 range onto that value (the monitor bus level), and the
+console sends the current level back, so a fader or knob is no longer only a
+button and a motor fader follows the console. An NRPN or RPN is learned and
+driven by its 14-bit parameter number: the parser keeps each channel's
+selected parameter from the select controllers (99/98 and 101/100), reports
+the data entry (6) as that parameter's press, and sends a lamp state back as
+the parameter select followed by the data entry. A Linux host also reads
+X-keys-style HID button panels from `/dev/input`: the panel's name and key
+code identify a button, Learn binds it to a console action, and the
+bindings are saved with the key profile as
+`keymap.hid.<len>:<device>.<code> = <action>`. `fm-automation` now has a
+bounded nonblocking UDP OSC endpoint (`OscUdpTransport`): it decodes
+strictly with the codec limits, drops and counts malformed datagrams, refuses
+oversized sends, and keeps send/receive counters. Remaining gaps: nothing
+binds that endpoint to a running daemon or Studio's OSC listener yet; the
+bindings drive console
+actions (and so reach `freemixd` through them) but are not persisted in the
+project; HID panels are not read on macOS or Windows; and MIDI 2.0 and GPIO
+or network tally adapters are absent.
+`RC-005` and `RC-006` remain planned.
 
 Current implementation boundary for item 8 fader feedback (`AU-009`):
 `fm-automation` adds a bounded per-control `ControlCoalescer` that keeps the
@@ -5128,13 +5564,18 @@ pairs same-tick 14-bit MSB/LSB updates, and refuses rather than drops new
 controls when full; coalesced ticks feed the existing soft-takeover pickup.
 `FeedbackRouter` now schedules outbound feedback per tick with per-device
 budgets, round-robin fairness, per-binding minimum intervals, touch
-suppression with a forced resync on release, and acknowledged-level echo
-suppression. `fm-audio` adds a `GainSmoother` whose per-sample linear ramps
+suppression with a forced resync on release, a post-release settle hold, and
+a per-device byte-rate limit of encoded feedback bytes per second, and
+acknowledged-level echo suppression. `fm-audio` adds a `GainSmoother` whose
+per-sample ramps
 have a guaranteed step bound and land bit-exactly on target across block
-splits and retargets. Remaining gaps: no daemon, Studio, CLI, or real-time
-mixer wiring; cross-tick 14-bit glitches are only smoothed, not held; ramps are
-linear in gain with no fader taper; and there is no release-settle hold,
-per-device byte-rate limit, end-to-end device-to-audio test, or motor-fader
+splits and retargets; its `GainTaper` selects a ramp that is linear in gain or
+linear in decibels, the decibel ramp lengthening itself so the same linear
+step bound and settling bound still hold. A 14-bit controller's MSB is now held until its LSB
+arrives, so a pair that straddles a tick boundary never surfaces the
+intermediate value. Remaining gaps: no daemon, Studio, CLI, or real-time
+mixer wiring; and there is no end-to-end
+device-to-audio test or motor-fader
 hardware evidence. `AU-009` remains planned.
 
 
@@ -5143,8 +5584,21 @@ commands, inquiries, and replies for pan/tilt, zoom, focus, presets, and
 system control with explicit range errors, translates each PTZ intent into a
 complete drive set so zero components stop prior motion, frames VISCA-over-IP
 payloads and control messages with a wrapping sequencer, and maps joystick and
-mouse input to axis speeds through deadzones and response curves. Remaining
-gaps: no serial or UDP transport, retransmit, timeout, or reply correlation,
+mouse input to axis speeds through deadzones and response curves.
+`ViscaUdpTransport` now provides a connected UDP path with bounded
+retransmission, per-attempt timeouts, reply correlation by sequence, and
+recovery from an abnormal-sequence control reply, with counters.
+`ViscaUdpAdapter` implements the `PtzAdapter` contract over that transport:
+it validates and clamps an intent, encodes and acknowledges every VISCA
+command, updates telemetry and presets only after the wire succeeds, and
+marks the camera disconnected on a lost transport. `PresetVirtualInputs`
+now models camera presets as bounded, named, thumbnail-carrying virtual
+inputs, resolves an enabled one to its camera and recall intent, and
+persists as a strict canonical document in `project.json` (schema 106);
+`freemix-cli ptz-presets-check`, `ptz-presets-import`, and
+`ptz-presets-export` validate and move it. Remaining gaps: no serial
+transport, no hardware validation of the UDP adapter, and nothing binds the
+virtual inputs to the engine, protocol, or UI yet,
 no camera adapter or hardware validation, presets are not yet switchable
 virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic, or
 digital PTZ. `IN-028` remains planned.
@@ -5157,7 +5611,14 @@ removes coverage from earlier strokes only, per-author laser pointers expire
 against a caller-supplied clock outside the undoable operation log, an author
 limit bounds participants, and ten fixed shortcut slots carry validated tool
 presets. Deterministic CPU rendering exports straight or premultiplied RGBA.
-Remaining gaps: no text primitives or custom image stamps, no GPU renderer or
+An image stamp places up to a 4096-pixel-side RGBA picture into the
+rectangle between its first and last points, nearest-neighbor sampled and
+alpha-blended like every other stroke. A text stamp carries up to 512 bytes of
+control-free UTF-8 plus a caller-rasterized 8-bit coverage mask (at most
+4096 pixels a side), tinted by the stroke color and opacity and sampled into
+the same rectangle; the model never parses fonts. Remaining gaps: no font
+rasterizer inside the model,
+no GPU renderer or
 persistence, no protocol, browser, or device input integration, no
 low-latency program/input preview, no web monitor, and no routing of the layer
 into the compositor. Laser pointers are not replicated, so item 10 remains
@@ -5359,11 +5820,14 @@ Screenshots against a native daemon recording and streaming a media clip:
 The operator page now draws each strip's share of Program as a peak bar
 (green, amber past -6 dBFS, red past -1 dBFS) from the Web meter record,
 which carries the first 32 inputs' meters (no wire change; the page's
-parser is checked under Node.js against the Rust codec's record).
-Remaining gaps: no audio tally on the pages, the tally
-receives meters it only draws as a thin level (there is no per-session
-opt-out), and the simulated daemon sends no meters or realized recorder
-state.
+parser is checked under Node.js against the Rust codec's record). The tally
+page draws a small per-input peak bar from those same meters; a tally
+session opened with `#meters=off` keeps the bars off for that session
+(remembered in session storage; `on` turns them back on), so a wall mount
+can show its tally without the per-input audio. The simulated daemon
+publishes meters from its simulated audio plane and reports both recorder
+slots as unavailable, so its pages show realized state instead of only the
+requested badge.
 
 Readable output failures (Protocol 2.67, no schema change): a stream
 destination's or recorder's failure now reaches every client as a stable
@@ -5421,8 +5885,9 @@ order; they hold a third raw peer and refuse the seventeenth Web client until
 a slot frees; and they show a Studio peer that never reads delaying neither
 the other sessions (round trips under a second) nor the Program (median
 host lateness under half a frame, a recording holding every paced frame).
-Remaining gaps: the windowed program daemon (`--fullscreen-program`,
-`--display-presenter`) still serves no Web gateway.
+Remaining gaps: none in the session path; the windowed program daemon
+(`--fullscreen-program`, `--display-presenter`) serves the same Web gateway
+as the headless daemon (`serve_inner` binds it for either mode).
 
 Multi-session hardening (no protocol or schema change): both modes now serve
 up to eight raw sessions, and a raw connection beyond them is refused at once
@@ -5702,13 +6167,21 @@ bitrates into per-camera and per-root byte rates and predicts remaining
 recording time with warning, critical, and full levels that worsen
 immediately and recover only past a hysteresis margin. Remaining gaps: Studio's
 Replay panel and the CLI render up to eight recorded angles in an adaptive
-grid (Protocol 2.127, decoded and composed by the native daemon), but the A/B
-channel tiles of the full multiview are not wired; controller bindings have no real device
-input, persistence, or jog acceleration; the native daemon now samples
+grid (Protocol 2.127, decoded and composed by the native daemon), led by the
+requested Replay input and its linked A/B partner as channel tiles; controller
+bindings are MIDI (real device input) and persist with the key profile, and a
+second transport profile drives the second Replay input from channel 2, and
+repeated jog keys accelerate from one frame to thirty, though the full typed
+controller surface remains; the native daemon samples
 its replay root's free space and reports the predicted recording time at the
-observed write rate (Protocol 2.125, shown in Studio and the CLI), but there
-are no SMART queries or `fm-record` low-space wiring; and no storage profile
-is certified. `OR-014` remains planned.
+observed write rate (Protocol 2.125, shown in Studio and the CLI), and a
+root below the recorder's 512 MiB floor pauses recording (`storage:low_space`)
+until a later sample clears it, and a program recorder whose output filesystem
+crosses the same floor stops its segment cleanly with `storage:low_space`
+(reported as a disk-full failure); the daemon samples the root drive's SMART
+verdict, temperature, and endurance used on a worker thread once a minute and
+reports them in the same storage record (Protocol 2.139), shown in Studio and
+the CLI; and no storage profile is certified. `OR-014` remains planned.
 
 Current end-to-end slice for item 7: the show persists up to eight highlight
 reels of up to 64 clips (Protocol 2.107, schema 83); each clip names a captured
@@ -5756,8 +6229,11 @@ and silent once the file ends; an export keeps the bed it was accepted
 with, and an unreadable bed fails it `music:open` (the native test mixes a
 mono 44.1 kHz bed under a real-time clip and a slow-motion one and hears it
 ducked, alone, and faded). Studio's reel editor sets the bed and its two
-levels, and `reel-set --music` does in the CLI. Remaining gaps: clips play
-forward only; and nothing is certified.
+levels, and `reel-set --music` does in the CLI. A clip can now play its
+trimmed range backward (Protocol 2.136, schema 96): the compiled timeline
+walks from the range's last frame to its first, Studio's clip row has a
+Reverse toggle, and `--clips` appends `r` to the speed; reverse clips
+carry no clip audio. Remaining: nothing is certified.
 `OR-013` remains planned.
 
 Current end-to-end slice for items 1, 3, and 4: the show persists replay
@@ -5791,15 +6267,22 @@ video frame, which the B-frame delay starts 80 ms after its sound, so
 replays and reel exports keep lip sync, and a run's first segment, whose
 AAC priming packet ffmpeg's fragmented MP4 muxer leaves ahead of that shift,
 decodes from its second packet (the adapter skips a leading packet that
-does not run into the next). Remaining gaps: slow motion has no audio; the recorder captures
+does not run into the next). Closed segments from a previous run are now
+reloaded: a session writes `manifest.tsv` with every segment's input,
+engine-frame and stream-frame origins, frame count, byte count, and file;
+on startup the daemon restores the newest compatible session's segments
+(observing every frame so they resolve exactly), continues each source's
+stream frames after them, marks its manifest restored, and removes the
+other stale sessions. Remaining gaps: slow motion has no audio; the recorder captures
 what the source last decoded rather than a genlocked frame, so a stalled
-source repeats its picture; segment files from a previous run are removed
-rather than reloaded; a cued player jogs any number of frames up to 600
+source repeats its picture; a cued player jogs any number of frames up to 600
 either way, paused (Protocol 2.114, Studio's ◀ and ▶ keys and `remote-replay-do
-step`), and with auto return on a Replay input that plays its event to the
-end on Program hands Program back to the last live source with a cut or a
-mix (Protocol 2.116, schema 88; the daemon's cue clock issues it on a
-reserved list, and the native test hears the return on the wire), but
+step`) or shuttles at a signed rate (Protocol 2.131), and with auto return
+on a Replay input that plays its event to the end on Program hands Program
+back to the last live source with a cut or a mix (Protocol 2.116, schema
+88; the daemon's cue clock issues it on a reserved list, and the native
+test hears the return on the wire); console keys play or pause the Replay
+player on Preview (else Program), step it, and shuttle it at 2x each way, but
 each Replay input carries a playlist of up to sixteen
 events, each with its own angle and speed (Protocol 2.119): a playing
 player that reaches the end of its event moves on to the next listed entry
@@ -5807,10 +6290,17 @@ that still exists, keeping Program on the replay until the last entry
 ends, and Studio's Replay panel and `remote-replay-do playlist`,
 `playlist-next`, and `playlist-prev` edit and step it. Two Replay inputs can
 be linked for A/B playback (Protocol 2.124), sharing cue, play, pause,
-cue-in, and step while keeping their own angles. There is no shuttle,
-replay transition, multiview, or controller wiring; storage health reaches
-Studio and the CLI (Protocol 2.125), but not SMART or `fm-record` low-space
-behavior, and nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
+cue-in, and step while keeping their own angles. A player shuttles at a
+signed rate from -16x to +16x in thousandths of real time (Protocol 2.131,
+`remote-replay-do shuttle`), pausing at either end without auto return, and
+reports its rate and shuttling state on the wire; a Replay take now uses the
+show's configured transition — a cut or a fade of its own length (Protocol
+2.137, schema 97), set in Studio's Replay panel and the CLI — and multiview
+and controller wiring remain; storage health reaches
+Studio and the CLI (Protocol 2.125), now with the root drive's SMART health
+on a worker-thread probe (Protocol 2.139) and a program recorder stopping at
+the 512 MiB floor (`storage:low_space`, reported as disk full), and nothing
+is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 
 
 Exit: Sports Show scenario passes on certified storage/hardware.
@@ -5855,18 +6345,26 @@ network stream input through the receiver and converts BGRA, UYVY, or NV12
 pictures to program RGBA and stereo audio (Protocol 2.121); a stream
 destination with `stream_protocol=omt` binds an OMT sender and publishes the
 same raw Program pair after converting it to BGRA and planar audio
-(Protocol 2.122); no discovery catalogue entry is wired yet; VMX-compressed
-frames, corrupt-frame recovery, and hardware certification remain. FreeMix's plugin
+(Protocol 2.122); no discovery catalogue entry is wired yet; a corrupt
+payload with an intact declared length is skipped as a dropped frame so the
+stream continues; VMX-compressed frames and hardware certification remain. FreeMix's plugin
 SDK is `fm-plugin-api` with the `fm-plugin-host` sandbox (manifest,
 versioned ABI, capability grants, state snapshots, quarantine); the host API
 now also models an ordered plugin chain (up to eight unique plugins, bypass,
 per-slot latency and its effective sum, per-plugin state snapshots), and the
 native daemon renders a chain's `freemix.reference.*` processors on input
-strips and the summed Master bus (Protocol 2.128), the CLI sends a chain,
-and Studio's FX window reads the open target's chain (Protocol 2.129) and
-edits its PLUGINS section. There is no VST3 host; scanning, parameters for
-plugins beyond the reference trim, persistence, crash quarantine in the render
-path, and plugging a real sandboxed plugin into the chain remain. Vendor capture and output adapters keep their SDKs out of the
+strips and the summed Master bus (Protocol 2.128), the CLI sends a chain or
+edits a project's chain offline (`audio-plugin-chain <project>
+<input|master> ...`), and Studio's FX window reads the open target's chain
+(Protocol 2.129) and edits its PLUGINS section. Chains are padlocked, undoable project edits
+persisted since schema 91 (now 92) on every strip and on Master, so a show carries them
+through a save, a restart, and a journal replay; Studio edits the trim gain
+and soft-clip threshold of each reference slot, and a Master plugin stage
+that panics mid-render is quarantined while the Program bus keeps its sum.
+There is no VST3 host; a native daemon scans `<bundle>/plugins` manifests and
+lists them in `audio_plugin_status`, but parameters for plugins beyond the
+reference set, loading, and plugging a real sandboxed plugin into the chain
+remain. Vendor capture and output adapters keep their SDKs out of the
 portable workspace and implement the in-tree `fm-io-api` contracts.
 
 Exit: each adapter ships only with a platform-specific conformance report.
@@ -5893,11 +6391,36 @@ bounded set of HTTP functions and now frames the persistent TCP API:
 FUNCTION with a server-acknowledged completion handshake, TALLY, XML with an
 exact UTF-8 byte length, XMLTEXT through a bounded `vmix`-rooted XPath subset,
 SUBSCRIBE/UNSUBSCRIBE for TALLY and ACTS, VERSION, and QUIT. A hub of at most
-64 sessions fans out per-session change events in deterministic order.
-Remaining gaps: no sockets or running-server wiring, a partial function and
-state-document surface, no descendant or wildcard XPath, a partial ACTS set,
-no authentication, and no byte comparison against a real vMix 29 instance.
-`RC-009` remains planned.
+64 sessions fans out per-session change events in deterministic order. The
+function surface now includes list and picture navigation, media transport
+(play, pause, stop, restart, seek, volume, and mute), overlay in/off/out/last/all-off,
+outputs 1-4 and the configured transition in the XML/XPath state, the
+`SetOutput` and fullscreen-output functions, Fade to Black, a configured
+transition duration and effect that a `Fade`
+without them uses (a configured `Cut` turns it into a cut), and
+recording/streaming toggles, input renaming, adding network-stream inputs,
+setting still images, input playback state/position/duration and mute/volume
+in the XML and XPath state, and
+playlist start/stop/next/previous in addition to the switcher, title,
+recording, and streaming verbs. A nonblocking `VmixTcpServer` now binds a listener, accepts bounded
+sessions, reads capped lines, writes responses and subscription events, and
+calls a caller-supplied translation executor. The daemon now serves it with
+`--vmix-listen` (loopback only until authentication exists): each session-loop
+pass builds `CompatState` from the authoritative snapshot and submits every
+`Translation::Protocol` through the control service under the daemon's Admin
+development principal, keeping compat-only transition settings between passes;
+fade, overlay, recording, streaming, rename, and fade-to-black intents are
+dispatched the same way, and only an intent with no native translation is
+refused by name. Remaining
+gaps: no authentication, a partial function and state-document surface, XPath
+supports a bounded subset (unions of up to four paths, integer arithmetic
+and numeric attribute, `position()`, `last()`, `count()`, or
+`string-length()` comparisons, the child, descendant, self, parent, ancestor,
+and sibling axes, a final `text()` step, and `contains`/`starts-with`
+attribute predicates) but not the full language,
+a partial ACTS set, and no byte
+comparison
+against a real vMix 29 instance. `RC-009` remains planned.
 
 Current implementation boundary for item 3 (social moderation): `fm-social`
 provides a deterministic moderation desk over its in-memory aggregator.
@@ -5907,9 +6430,16 @@ messages can be hidden, pinned on air, or rotated round-robin on a
 caller-supplied clock, and the on-air message is written into typed
 `fm-titles` fields atomically at a scene revision. Remaining gaps: no real
 provider adapters, transport, or authorization flows, no browser approval UI
-or control-protocol wiring, no persistence of desk, audit, or operator state,
-no cross-provider de-duplication, no unbounded-store limits in the
-aggregator, and no authenticated operator identity. `GX-010` remains blocked
+or control-protocol wiring, no persistence of provider rate and backoff state
+(the config, operator roles, messages, blocked authors, hidden keys, rotation,
+cursor, on-air state, observed clock, audit counters, and the bounded audit log
+now round-trip as a canonical version-4 desk document, which
+`freemix-cli social-desk-check` validates and `social-desk-export` rewrites;
+restored hidden, rotation, and on-air keys resolve against the document's own
+messages), cross-provider de-duplication is opt-in and scans a bounded in-memory
+window keyed by normalized author and body rather than a persistent index, no
+unbounded-store limits in the aggregator, and no authenticated operator
+identity. `GX-010` remains blocked
 on exact authorized integrations.
 
 Current implementation boundary for virtual sets (`IN-021`): `fm-virtual-set`
@@ -5919,10 +6449,12 @@ background, keyed-talent, and foreground desk layers at independent parallax
 depths into output-pixel rectangles. Reflections and shadows are emitted as
 derived layer entries (a mirrored rectangle with fade rows, or an offset matte
 with zoom-scaled blur), and a bounded preset store recalls snapshots atomically
-at a scheduled frame. Remaining gaps: no compositor draws the plan, presets
+at a scheduled frame and now round-trips as a canonical
+`freemix-virtual-set-presets 1` document. Remaining gaps: no compositor draws
+the plan, presets
 hold only camera pose and timing, the planner is separate from the existing
 `VirtualSetScene` model, layers are axis-aligned rather than four-corner
-planes, and nothing reaches the engine, commands, persistence, or UI.
+planes, and nothing reaches the engine, commands, project persistence, or UI.
 `IN-021` remains planned.
 
 Current implementation boundary for item 4 (localization, `RC-016`):

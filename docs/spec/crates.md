@@ -81,12 +81,11 @@ still giving frames explicit lifetime and fence semantics.
 | `fm-color` | Color transforms, transfer functions, tone mapping, LUT representation, test vectors |
 | `fm-compositor` | Layers, overlays, keys, masks, transforms, transitions, DVE, multiview |
 | `fm-scopes` | Waveforms, parade, vectorscope, histograms, pixel probe |
-| `fm-gpu-dx12` | D3D12 shared resources and Media Foundation/NVENC/QSV/AMF interop |
-| `fm-gpu-metal` | IOSurface/Metal/CoreVideo/VideoToolbox interop |
-| `fm-gpu-vulkan` | DMA-BUF/Vulkan/VA-API/NVENC interop |
 
-Native GPU crates contain the smallest possible audited `unsafe` boundary.
-They are target-specific leaves; portable crates never depend on them.
+One portable `wgpu` backend is built. The per-platform shared-resource and
+hardware-encoder crates the original design proposed (`fm-gpu-dx12`,
+`fm-gpu-metal`, `fm-gpu-vulkan`) do not exist; a platform bridge and hardware
+encode path remain future work (see the roadmap's structural list).
 
 ## 5. I/O and codec crates
 
@@ -148,7 +147,7 @@ do not own devices.
 | `fm-vmix-compat` | Complete documented vMix 29 HTTP/XML/TCP/tally compatibility surface |
 | `fm-persistence` | Current-schema projects, journal, asset relink/bundle, secrets references |
 | `fm-auth` | Pairing, users, roles, token/certificate lifecycle |
-| `fm-plugin-host` | Native/Wasm discovery, isolation, IPC, crash handling |
+| `fm-plugin-host` | Native process discovery, isolation, IPC, crash handling (no Wasm sandbox) |
 | `fm-dsp-host` | Shared-memory real-time DSP hosting, one-block latency contract, deadline and bypass ramp |
 | `fm-observability` | Tracing, metrics, health, support bundles, redaction |
 
@@ -160,19 +159,19 @@ adapters into narrow registries and owns process lifecycle.
 | Package | Responsibility |
 |---|---|
 | `fm-ui-model` | Replicated snapshot, ordered event reduction, drafts, optimistic state, command intents |
-| `fm-ui-widgets` | Theme-independent switcher/mixer/replay/scope view models |
 | `fm-ui-egui` | Native immediate-mode panels, docking, input handling, GPU preview widgets |
 | `freemix-studio` | Windowing, native menu/dialog integration, engine supervision/connect flow |
-| `freemix-web` | Rust/Wasm semantic DOM control surface and PWA |
-| `freemixd` | Headless composition and service lifecycle |
+| `freemix-web` | Transport-free semantic control model used by the served pages and tests |
+| `freemixd` | Headless composition and service lifecycle, including the served HTML pages |
 | `freemix-cli` | Discovery, project validation, commands, diagnostics, support bundles |
 | `freemix-plugin-host` | Restricted child process for native plugin loading |
 | `freemix-dsp-host` | Dedicated real-time shared-memory audio plugin process |
 | `freemix-capture-node` | Per-user-session permission broker and camera/screen/application-audio publisher |
 
 Native previews share GPU resources with the local engine where supported.
-Remote/web previews are decoded WebRTC renditions. UI crates never link capture
-card SDKs or FFmpeg.
+Remote/web previews are decoded or encoded monitor renditions. UI crates never
+link capture card SDKs or FFmpeg. There is no `fm-ui-widgets` crate: shared
+view state lives in `fm-ui-model` and `fm-ui-egui` owns presentation.
 
 ## 9. Dependency direction
 
@@ -219,11 +218,14 @@ Example binary feature sets:
 ```text
 freemixd --features ffmpeg,srt,webrtc,vulkan,pipewire
 freemix-studio --features local-preview-dx12
-freemix-plugin-host --features native-device-plugins,wasm-plugins
+freemix-plugin-host --features native-device-plugins
 freemix-dsp-host --features vst3
 freemix-capture-node --features media-foundation,wasapi,screen-capture
-freemix-web --target wasm32-unknown-unknown
 ```
+
+These are target feature sets, not current ones. The workspace builds no Wasm
+target and no per-platform GPU crate; `freemix-web` is a native library used
+by the served pages' semantics and by tests.
 
 Use additive features. Avoid `full`, mutually exclusive hidden defaults, and
 features that alter public type layout. `cfg(target_os)` belongs in adapter

@@ -14,11 +14,22 @@
 //! Sample positions are computed from the ramp start rather than accumulated,
 //! so a ramp is identical however it is split across blocks.
 
-use crate::{Gain, MAX_CHANNELS, MAX_GAIN_DB, MAX_SAMPLES_PER_BLOCK};
+use crate::{Gain, MAX_CHANNELS, MAX_GAIN_DB, MAX_SAMPLES_PER_BLOCK, MIN_GAIN_DB};
 use core::fmt;
 
 /// Largest `max_ramp_samples` accepted (one second at 48 kHz).
 pub const MAX_GAIN_SMOOTHER_RAMP_SAMPLES: u32 = 48_000;
+
+/// How the smoother interpolates between two gains.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GainTaper {
+    /// Linear in amplitude (the default).
+    #[default]
+    Linear,
+    /// Linear in decibels, for a natural fader feel; the ramp is lengthened
+    /// so the linear step bound still holds.
+    Decibel,
+}
 
 /// Smoothing limits.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -31,6 +42,8 @@ pub struct GainSmootherConfig {
     /// Longest ramp; a change too large to respect `max_step` within it is
     /// spread evenly over exactly this many samples.
     pub max_ramp_samples: u32,
+    /// How the ramp interpolates between gains.
+    pub taper: GainTaper,
 }
 
 impl Default for GainSmootherConfig {
@@ -40,6 +53,7 @@ impl Default for GainSmootherConfig {
             max_step: 1.0 / 480.0,
             min_ramp_samples: 48,
             max_ramp_samples: 2_400,
+            taper: GainTaper::Linear,
         }
     }
 }
@@ -109,12 +123,15 @@ pub struct GainSmootherTelemetry {
     pub jumps: u64,
 }
 
-/// A per-sample linear gain ramp toward the latest target.
+/// A per-sample gain ramp toward the latest target, linear in amplitude or
+/// in decibels.
 #[derive(Clone, Debug)]
 pub struct GainSmoother {
     config: GainSmootherConfig,
     start: f64,
+    start_db: f64,
     target: f32,
+    target_db: f64,
     current: f32,
     position: u32,
     length: u32,
@@ -123,6 +140,21 @@ pub struct GainSmoother {
 
 fn max_linear_gain() -> f64 {
     10.0_f64.powf(f64::from(MAX_GAIN_DB) / 20.0)
+}
+
+/// The loudness of `gain` in dB, with silence at [`MIN_GAIN_DB`].
+fn gain_db(gain: f32) -> f64 {
+    if gain > 0.0 {
+        20.0 * f64::from(gain).log10()
+    } else {
+        f64::from(MIN_GAIN_DB)
+    }
+}
+
+fn gain_from_db(db: f64) -> f32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let gain = 10.0_f64.powf(db / 20.0) as f32;
+    gain
 }
 
 impl GainSmoother {
@@ -148,7 +180,9 @@ impl GainSmoother {
         Ok(Self {
             config,
             start: f64::from(initial.linear()),
+            start_db: gain_db(initial.linear()),
             target: initial.linear(),
+            target_db: gain_db(initial.linear()),
             current: initial.linear(),
             position: 0,
             length: 0,
@@ -167,8 +201,21 @@ impl GainSmoother {
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn max_step_bound(&self) -> f32 {
-        let clamped = max_linear_gain() / f64::from(self.config.max_ramp_samples);
-        f64::from(self.config.max_step).max(clamped) as f32
+        let step = f64::from(self.config.max_step);
+        match self.config.taper {
+            GainTaper::Linear => {
+                let clamped = max_linear_gain() / f64::from(self.config.max_ramp_samples);
+                step.max(clamped) as f32
+            }
+            GainTaper::Decibel => {
+                // A ramp over the whole dB range is steepest at the loud end.
+                let range = f64::from(MAX_GAIN_DB) - f64::from(MIN_GAIN_DB);
+                let worst = max_linear_gain()
+                    * (1.0
+                        - 10.0_f64.powf(-range / (20.0 * f64::from(self.config.max_ramp_samples))));
+                step.max(worst) as f32
+            }
+        }
     }
 
     /// The gain of the most recently produced sample.
@@ -209,15 +256,36 @@ impl GainSmoother {
             return self.remaining();
         }
         self.target = target;
+        self.target_db = gain_db(target);
+        self.start = f64::from(self.current);
+        self.start_db = gain_db(self.current);
         let distance = (f64::from(target) - f64::from(self.current)).abs();
         if distance == 0.0 {
-            self.start = f64::from(target);
             self.position = 0;
             self.length = 0;
             return 0;
         }
-        let ideal = (distance / f64::from(self.config.max_step)).ceil();
         let maximum = self.config.max_ramp_samples;
+        let step = f64::from(self.config.max_step);
+        let ideal = match self.config.taper {
+            GainTaper::Linear => (distance / step).ceil(),
+            GainTaper::Decibel => {
+                // The worst linear step of a dB ramp is at the loud end:
+                // solve g_end * (1 - 10^(-range / (20 N))) <= step.
+                let range = (self.target_db - self.start_db).abs();
+                let loud = f64::from(target.max(self.current));
+                if loud <= step {
+                    1.0
+                } else {
+                    let per_sample = -(1.0 - step / loud).log10();
+                    if per_sample <= 0.0 {
+                        f64::INFINITY
+                    } else {
+                        (range / (20.0 * per_sample)).ceil()
+                    }
+                }
+            }
+        };
         let length = if ideal > f64::from(maximum) {
             self.telemetry.clamped_ramps += 1;
             maximum
@@ -225,7 +293,6 @@ impl GainSmoother {
             // `ideal` is a positive integer no larger than `maximum` (u32).
             (ideal as u32).max(self.config.min_ramp_samples)
         };
-        self.start = f64::from(self.current);
         self.position = 0;
         self.length = length;
         self.telemetry.retargets += 1;
@@ -238,6 +305,8 @@ impl GainSmoother {
         self.current = gain.linear();
         self.target = gain.linear();
         self.start = f64::from(gain.linear());
+        self.start_db = gain_db(gain.linear());
+        self.target_db = gain_db(gain.linear());
         self.position = 0;
         self.length = 0;
         self.telemetry.jumps += 1;
@@ -249,7 +318,16 @@ impl GainSmoother {
             return self.target;
         }
         let fraction = f64::from(position) / f64::from(self.length);
-        (self.start + (f64::from(self.target) - self.start) * fraction) as f32
+        match self.config.taper {
+            GainTaper::Linear => {
+                #[allow(clippy::cast_possible_truncation)]
+                let gain = (self.start + (f64::from(self.target) - self.start) * fraction) as f32;
+                gain
+            }
+            GainTaper::Decibel => {
+                gain_from_db(self.start_db + (self.target_db - self.start_db) * fraction)
+            }
+        }
     }
 
     /// Produces the gain for the next sample.

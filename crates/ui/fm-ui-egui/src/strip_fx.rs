@@ -141,7 +141,7 @@ impl StripFxPanel {
 }
 
 /// The name of a preset in the console language.
-fn preset_name(l: Locale, preset: StripDspPreset) -> &'static str {
+pub(crate) fn preset_name(l: Locale, preset: StripDspPreset) -> &'static str {
     l.text(match preset {
         StripDspPreset::Flat => Msg::FxPresetFlat,
         StripDspPreset::Voice => Msg::FxPresetVoice,
@@ -149,6 +149,45 @@ fn preset_name(l: Locale, preset: StripDspPreset) -> &'static str {
         StripDspPreset::Music => Msg::FxPresetMusic,
         StripDspPreset::Master => Msg::FxPresetMaster,
     })
+}
+
+/// The chain's engaged stages in processing order: `DLY`, `POL`, `HPF`,
+/// `EQ`, `GATE`, `EXP`, `COMP`, and `LIM`, space separated, `BYPASS` for a
+/// bypassed chain, or `-` when every stage is off.
+pub(crate) fn stage_summary(chain: &StripDsp) -> String {
+    if chain.bypass {
+        return "BYPASS".to_owned();
+    }
+    let mut stages = Vec::new();
+    if chain.delay.enabled {
+        stages.push("DLY");
+    }
+    if chain.invert_polarity {
+        stages.push("POL");
+    }
+    if chain.high_pass.enabled {
+        stages.push("HPF");
+    }
+    if chain.eq.enabled {
+        stages.push("EQ");
+    }
+    if chain.gate.enabled {
+        stages.push("GATE");
+    }
+    if chain.expander.enabled {
+        stages.push("EXP");
+    }
+    if chain.compressor.enabled {
+        stages.push("COMP");
+    }
+    if chain.limiter.enabled {
+        stages.push("LIM");
+    }
+    if stages.is_empty() {
+        "-".to_owned()
+    } else {
+        stages.join(" ")
+    }
 }
 
 fn kind_name(l: Locale, kind: EqBandKind) -> &'static str {
@@ -163,6 +202,15 @@ fn kind_name(l: Locale, kind: EqBandKind) -> &'static str {
 fn target_name(l: Locale, state: &StudioUiState, target: StripDspTarget) -> String {
     match target {
         StripDspTarget::Master => l.text(Msg::FxMasterName).to_owned(),
+        StripDspTarget::Aux(bus) => state.view.as_ref().map_or_else(
+            || {
+                l.format(
+                    Msg::BusMixerBus,
+                    &[("bus", Arg::Str(&bus.letter().to_string()))],
+                )
+            },
+            |view| view.audio_mixer.aux_buses[bus.index()].name.clone(),
+        ),
         StripDspTarget::Input(input) => state.view.as_ref().map_or_else(
             || input.get().to_string(),
             |view| {
@@ -180,7 +228,7 @@ fn target_name(l: Locale, state: &StudioUiState, target: StripDspTarget) -> Stri
 /// Whether `target` still names a chain of the replicated show.
 fn target_exists(state: &StudioUiState, target: StripDspTarget) -> bool {
     match target {
-        StripDspTarget::Master => state.view.is_some(),
+        StripDspTarget::Master | StripDspTarget::Aux(_) => state.view.is_some(),
         StripDspTarget::Input(input) => state
             .view
             .as_ref()
@@ -288,8 +336,12 @@ impl StudioShell {
                             .max_height(body_height)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
-                                draw_plugins(ui, state, target, (enabled, reason), intents);
-                                ui.separator();
+                                // A plugin chain targets strips and Master;
+                                // an aux bus carries only its DSP chain.
+                                if !matches!(target, StripDspTarget::Aux(_)) {
+                                    draw_plugins(ui, state, target, (enabled, reason), intents);
+                                    ui.separator();
+                                }
                                 draw_curve(ui, &mut chain, (enabled, reason));
                                 ui.add_space(6.0);
                                 draw_bands(ui, &mut chain, (enabled, reason));
@@ -455,12 +507,26 @@ fn plugin_status_request_id(target: StripDspTarget) -> String {
     match target {
         StripDspTarget::Master => "plugin-status-master".to_owned(),
         StripDspTarget::Input(input) => format!("plugin-status-{input}"),
+        StripDspTarget::Aux(bus) => format!("plugin-status-aux-{}", bus.letter()),
     }
 }
 
 /// The saved trim level in a reference slot, when the slot is a trim.
 fn trim_millidb(slot: &fm_protocol::PluginChainSlot) -> Option<i32> {
     if slot.plugin != fm_plugin_host_api_ids::TRIM {
+        return None;
+    }
+    match slot.state.as_slice() {
+        [] => Some(0),
+        [a, b, c, d] => Some(i32::from_le_bytes([*a, *b, *c, *d])),
+        _ => None,
+    }
+}
+
+/// A soft clipper's saved threshold in millidB, or `None` when the slot is
+/// another plugin or its state is not one little-endian `i32`.
+fn softclip_millidb(slot: &fm_protocol::PluginChainSlot) -> Option<i32> {
+    if slot.plugin != fm_plugin_host_api_ids::SOFTCLIP {
         return None;
     }
     match slot.state.as_slice() {
@@ -543,6 +609,7 @@ fn draw_plugins(
                                 bypassed: false,
                                 latency_frames: 0,
                                 state: Vec::new(),
+                                parameters: Vec::new(),
                             });
                             send_plugin_chain(target, slots, intents);
                         }
@@ -618,6 +685,33 @@ fn draw_plugins(
                     slots[index].state = (millidb + 1_000).min(24_000).to_le_bytes().to_vec();
                     send_plugin_chain(target, slots, intents);
                 }
+            } else if let Some(millidb) = softclip_millidb(slot) {
+                #[allow(clippy::cast_precision_loss)] // display only
+                let db = millidb as f32 / 1_000.0;
+                if ui
+                    .add_enabled(enabled, small_button(l.text(Msg::FxPluginSoftClipDown)))
+                    .hint(l.text(Msg::FxPluginSoftClipDownHover), reason)
+                    .clicked()
+                {
+                    let mut slots = status.slots.clone();
+                    slots[index].state = millidb
+                        .saturating_sub(1_000)
+                        .max(-60_000)
+                        .to_le_bytes()
+                        .to_vec();
+                    send_plugin_chain(target, slots, intents);
+                }
+                ui.label(RichText::new(format!("{db:+.1} dBFS")).monospace())
+                    .on_hover_text(l.text(Msg::FxPluginSoftClipHover));
+                if ui
+                    .add_enabled(enabled, small_button(l.text(Msg::FxPluginSoftClipUp)))
+                    .hint(l.text(Msg::FxPluginSoftClipUpHover), reason)
+                    .clicked()
+                {
+                    let mut slots = status.slots.clone();
+                    slots[index].state = (millidb + 1_000).min(0).to_le_bytes().to_vec();
+                    send_plugin_chain(target, slots, intents);
+                }
             } else if slot.latency_frames > 0 {
                 ui.label(crate::theme::caption(l.format(
                     Msg::FxPluginLatency,
@@ -672,6 +766,7 @@ fn draw_plugins(
 /// wire names (the daemon reports the authoritative list beside the chain).
 mod fm_plugin_host_api_ids {
     pub(super) const TRIM: &str = "freemix.reference.trim";
+    pub(super) const SOFTCLIP: &str = "freemix.reference.softclip";
 }
 
 #[allow(clippy::too_many_lines)] // one curve, its bands, and its keys
@@ -1483,6 +1578,21 @@ fn loudness_readout(ui: &mut Ui, scale: &str, value: &str, unit: &str) -> egui::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chain_summarizes_its_engaged_stages() {
+        assert_eq!(stage_summary(&StripDsp::DEFAULT), "-");
+        let mut chain = StripDspPreset::Voice.chain();
+        assert_eq!(stage_summary(&chain), "HPF EQ GATE COMP");
+        chain.bypass = true;
+        assert_eq!(stage_summary(&chain), "BYPASS");
+        chain.bypass = false;
+        chain.delay.enabled = true;
+        chain.invert_polarity = true;
+        chain.expander.enabled = true;
+        chain.limiter.enabled = true;
+        assert_eq!(stage_summary(&chain), "DLY POL HPF EQ GATE EXP COMP LIM");
+    }
 
     #[test]
     fn the_response_display_maps_frequency_and_gain_both_ways() {

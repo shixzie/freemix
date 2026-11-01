@@ -51,6 +51,7 @@ mod fade_to_black;
 mod gating;
 mod health;
 mod health_alerts;
+mod hid_bindings;
 #[doc(hidden)]
 pub mod hover_audit;
 mod input_bank;
@@ -126,6 +127,7 @@ pub use edit_history::{
     stinger_edit_lock_reason,
 };
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
+pub use hid_bindings::{HidBindings, HidInput, HidTrigger, MAX_HID_BINDINGS};
 pub use input_catalogue::{
     CatalogueAvailability, CatalogueRefusal, CatalogueRequest, MAX_LIVE_INPUTS, NewInputKind,
     add_input_availability, catalogue_refusal_code, catalogue_refusal_message, input_name_problem,
@@ -136,7 +138,11 @@ pub use media_transport::{
     MEDIA_SPEEDS, media_settings_block, media_transport_block, speed_label as media_speed_label,
 };
 pub use menu::ConsoleLayout;
-pub use midi_bindings::{MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiInput, MidiTrigger};
+pub use midi_bindings::{
+    MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiFeedback, MidiInput, MidiTrigger,
+    MidiValueTarget,
+};
+pub use network_stream_ui::OmtSource;
 pub use playlist::{
     Countdown, EntryForm, EntryRole, ListEdit, PlaylistIntent, PlaylistPhase,
     TransportAvailability, control_block as playlist_control_block,
@@ -184,8 +190,9 @@ pub struct InputAudioStripUpdate {
     pub soloed: Option<bool>,
     pub follow_video: Option<bool>,
     pub delay_samples: Option<u32>,
-    /// Master and the aux buses the strip feeds (AU-002).
-    pub buses: Option<fm_types::audio_bus::AudioBusMask>,
+    /// Master and each aux bus the strip feeds, with its level and tap
+    /// (AU-002, Protocol 2.130).
+    pub sends: Option<fm_types::audio_bus::AudioSends>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1224,12 +1231,24 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 35] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 45] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
         action: Msg::ShortcutSelectPreview.en(),
         key: Some(Key::Num1),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Switching,
+        keys: "Shift+Left",
+        action: Msg::CueActSlidePrevious.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Switching,
+        keys: "Shift+Right",
+        action: Msg::CueActSlideNext.en(),
+        key: None,
     },
     ShortcutEntry {
         group: ShortcutGroup::Switching,
@@ -1442,6 +1461,54 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 35] = [
         action: Msg::ShortcutUiScaleReset.en(),
         key: None,
     },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "I",
+        action: Msg::ConsoleActionReplayMarkIn.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "O",
+        action: Msg::ConsoleActionReplayMarkOut.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "E",
+        action: Msg::ConsoleActionReplayCapture.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "K",
+        action: Msg::ConsoleActionReplayPlayPause.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "Left",
+        action: Msg::ConsoleActionReplayStepBack.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "Right",
+        action: Msg::ConsoleActionReplayStepForward.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "J",
+        action: Msg::ConsoleActionReplayShuttleBack.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "L",
+        action: Msg::ConsoleActionReplayShuttleForward.en(),
+        key: None,
+    },
 ];
 
 /// Whether a key press toggles the keyboard reference: `?` (any Shift
@@ -1462,6 +1529,70 @@ struct TBarKeys {
     desired: ManualTransitionStatus,
     availability: ManualTransitionAvailability,
     kind: ManualTransitionKind,
+}
+
+/// The intent one continuous MIDI control sends for `target`: its value
+/// maps onto the target's range.
+fn value_intent(state: &StudioUiState, target: MidiValueTarget, input: MidiInput) -> StudioIntent {
+    match target {
+        MidiValueTarget::MonitorLevel => {
+            let muted = state
+                .view
+                .as_ref()
+                .is_some_and(|view| view.audio_mixer.monitor.muted);
+            let gain_millidb = -96_000 + i32::from(input.value) * 120_000 / 127;
+            StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::SetMonitorLevel {
+                gain_millidb,
+                muted,
+            })
+        }
+    }
+}
+
+/// The 0-127 lamp or motor position one continuous value shows for `state`.
+fn value_feedback(state: &StudioUiState, target: MidiValueTarget) -> Option<u8> {
+    match target {
+        MidiValueTarget::MonitorLevel => {
+            let gain = state.view.as_ref()?.audio_mixer.monitor.gain_millidb;
+            let clamped = gain.clamp(-96_000, 24_000);
+            u8::try_from((clamped + 96_000) * 127 / 120_000).ok()
+        }
+    }
+}
+
+/// The lamp state of one console action: `Some(true)` while it shows an
+/// active state, `Some(false)` while it shows an inactive one, `None` when
+/// the action has no visible state.
+fn action_led(state: &StudioUiState, action: ConsoleAction) -> Option<bool> {
+    let view = state.view.as_ref()?;
+    let input = |n: u8| view.inputs.get(usize::from(n).checked_sub(1)?).copied();
+    match action {
+        ConsoleAction::Preview(n) => input(n).map(|input| input == view.switcher.desired.preview),
+        ConsoleAction::Take(n) | ConsoleAction::QuickPlay(n) => {
+            input(n).map(|input| input == view.switcher.desired.program)
+        }
+        ConsoleAction::FadeToBlack => Some(view.switcher.desired_fade_to_black.target_active),
+        ConsoleAction::Overlay(n) => view
+            .desired_overlays
+            .iter()
+            .find(|overlay| overlay.channel == n)
+            .map(|overlay| overlay.active),
+        ConsoleAction::ReplayPlayPause => {
+            replay_ui::transport_player(state).map(|player| player.playing)
+        }
+        ConsoleAction::ReplayShuttleBack => replay_ui::transport_player(state)
+            .map(|player| player.shuttling && player.rate_milli < 0),
+        ConsoleAction::ReplayShuttleForward => replay_ui::transport_player(state)
+            .map(|player| player.shuttling && player.rate_milli > 0),
+        ConsoleAction::ReplayPlayPauseB => {
+            replay_ui::transport_player_for(state, true).map(|player| player.playing)
+        }
+        ConsoleAction::ReplayShuttleBackB => replay_ui::transport_player_for(state, true)
+            .map(|player| player.shuttling && player.rate_milli < 0),
+        ConsoleAction::ReplayShuttleForwardB => replay_ui::transport_player_for(state, true)
+            .map(|player| player.shuttling && player.rate_milli > 0),
+        _ => None,
+    }
 }
 
 /// What a console action sends, given which controls are available: none
@@ -1511,9 +1642,21 @@ fn console_action_intents(
         // The overlay toggles and replay marks read the session's state,
         // gated like their panels' keys.
         ConsoleAction::Overlay(_)
+        | ConsoleAction::SlideNext
+        | ConsoleAction::SlidePrevious
         | ConsoleAction::ReplayMarkIn
         | ConsoleAction::ReplayMarkOut
         | ConsoleAction::ReplayCapture
+        | ConsoleAction::ReplayPlayPause
+        | ConsoleAction::ReplayStepBack
+        | ConsoleAction::ReplayStepForward
+        | ConsoleAction::ReplayShuttleBack
+        | ConsoleAction::ReplayShuttleForward
+        | ConsoleAction::ReplayPlayPauseB
+        | ConsoleAction::ReplayStepBackB
+        | ConsoleAction::ReplayStepForwardB
+        | ConsoleAction::ReplayShuttleBackB
+        | ConsoleAction::ReplayShuttleForwardB
             if transition_available =>
         {
             live_key(action)
@@ -1532,6 +1675,7 @@ type StateKeys<'a> = (
 
 /// The intents of a profile action that reads the session's state: an
 /// overlay channel's toggle, or a replay mark or capture.
+#[allow(clippy::too_many_lines)] // one arm per state-reading console action
 fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<StudioIntent> {
     let replay = |operation| replay_ui::key_intent(state, operation);
     match action {
@@ -1541,10 +1685,146 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
         ConsoleAction::ReplayCapture => {
             replay(fm_protocol::ReplayOperation::CaptureMarks { name: None })
         }
+        ConsoleAction::ReplayPlayPause => replay_ui::transport_player(state).and_then(|player| {
+            let operation = if player.playing {
+                fm_protocol::ReplayOperation::Pause {
+                    input: player.input,
+                }
+            } else {
+                fm_protocol::ReplayOperation::Play {
+                    input: player.input,
+                    speed: fm_protocol::ReplaySpeed::Full,
+                }
+            };
+            replay_ui::transport_intent(state, operation)
+        }),
+        ConsoleAction::ReplayStepBack => replay_ui::transport_player(state).and_then(|player| {
+            replay_ui::transport_intent(
+                state,
+                fm_protocol::ReplayOperation::Step {
+                    input: player.input,
+                    frames: replay_ui::jog_frames(action, -1),
+                },
+            )
+        }),
+        ConsoleAction::ReplayStepForward => replay_ui::transport_player(state).and_then(|player| {
+            replay_ui::transport_intent(
+                state,
+                fm_protocol::ReplayOperation::Step {
+                    input: player.input,
+                    frames: replay_ui::jog_frames(action, 1),
+                },
+            )
+        }),
+        ConsoleAction::ReplayShuttleBack => replay_ui::transport_player(state).and_then(|player| {
+            replay_ui::transport_intent(
+                state,
+                fm_protocol::ReplayOperation::Shuttle {
+                    input: player.input,
+                    rate_milli: -2_000,
+                },
+            )
+        }),
+        ConsoleAction::ReplayShuttleForward => {
+            replay_ui::transport_player(state).and_then(|player| {
+                replay_ui::transport_intent(
+                    state,
+                    fm_protocol::ReplayOperation::Shuttle {
+                        input: player.input,
+                        rate_milli: 2_000,
+                    },
+                )
+            })
+        }
+        ConsoleAction::ReplayPlayPauseB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                let operation = if player.playing {
+                    fm_protocol::ReplayOperation::Pause {
+                        input: player.input,
+                    }
+                } else {
+                    fm_protocol::ReplayOperation::Play {
+                        input: player.input,
+                        speed: fm_protocol::ReplaySpeed::Full,
+                    }
+                };
+                replay_ui::transport_intent_for(state, true, operation)
+            })
+        }
+        ConsoleAction::ReplayStepBackB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
+                    fm_protocol::ReplayOperation::Step {
+                        input: player.input,
+                        frames: replay_ui::jog_frames(action, -1),
+                    },
+                )
+            })
+        }
+        ConsoleAction::ReplayStepForwardB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
+                    fm_protocol::ReplayOperation::Step {
+                        input: player.input,
+                        frames: replay_ui::jog_frames(action, 1),
+                    },
+                )
+            })
+        }
+        ConsoleAction::ReplayShuttleBackB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
+                    fm_protocol::ReplayOperation::Shuttle {
+                        input: player.input,
+                        rate_milli: -2_000,
+                    },
+                )
+            })
+        }
+        ConsoleAction::ReplayShuttleForwardB => replay_ui::transport_player_for(state, true)
+            .and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
+                    fm_protocol::ReplayOperation::Shuttle {
+                        input: player.input,
+                        rate_milli: 2_000,
+                    },
+                )
+            }),
+        ConsoleAction::SlideNext => slideshow_step(state, fm_protocol::PagedNavigation::Next),
+        ConsoleAction::SlidePrevious => {
+            slideshow_step(state, fm_protocol::PagedNavigation::Previous)
+        }
         _ => None,
     }
     .into_iter()
     .collect()
+}
+
+/// Steps the paged input on Program, else Preview, one page (IN-009,
+/// IN-014): a document or a slideshow.
+fn slideshow_step(
+    state: &StudioUiState,
+    navigation: fm_protocol::PagedNavigation,
+) -> Option<StudioIntent> {
+    let view = state.view.as_ref()?;
+    let input = [view.switcher.desired.program, view.switcher.desired.preview]
+        .into_iter()
+        .find(|input| {
+            view.paged_status(*input)
+                .is_some_and(|paged| paged.count > 1)
+                || view
+                    .still_input(*input)
+                    .is_some_and(|still| still.status.page.count > 1)
+        })?;
+    Some(StudioIntent::PageNavigate { input, navigation })
 }
 
 #[allow(clippy::too_many_arguments)] // the console keys' gates and parameters
@@ -1784,6 +2064,9 @@ pub struct StudioShell {
     canvas: (u16, u16),
     /// The open Add input dialog.
     add_input: Option<input_catalogue::AddInputDraft>,
+    /// OMT sources the host's `_omt._tcp` browse found (IN-019), for the
+    /// Add Input network form.
+    omt_sources: Vec<network_stream_ui::OmtSource>,
     /// The open Remove input confirmation.
     remove_input: Option<input_catalogue::RemoveConfirm>,
     /// Sent input adds and removes awaiting their outcome.
@@ -1830,6 +2113,8 @@ pub struct StudioShell {
     bus_mixer_open: bool,
     /// The MIDI controllers the host reads (RC-005), by name.
     midi_devices: Vec<String>,
+    /// The HID button panels the host reads (RC-005), by name.
+    hid_devices: Vec<String>,
     /// The panel the operator last clicked, which scoped project shortcut
     /// keys answer in (RC-004).
     focused_panel: Option<dock::PanelId>,
@@ -1972,6 +2257,12 @@ impl StudioShell {
         }
     }
 
+    /// Shows the OMT sources the host's LAN browse found in the Add Input
+    /// network form (IN-019).
+    pub fn set_omt_sources(&mut self, sources: Vec<network_stream_ui::OmtSource>) {
+        self.omt_sources = sources;
+    }
+
     /// Returns to the Default layout and default sizes, docking every
     /// panel and tool window back; saved layouts are kept.
     pub(crate) fn reset_layout(&mut self, _context: &egui::Context) {
@@ -2003,8 +2294,25 @@ impl StudioShell {
         state: &StudioUiState,
         inputs: &[MidiInput],
     ) -> Vec<StudioIntent> {
-        let presses = self.key_profiles.midi.presses(inputs);
         let mut intents = Vec::new();
+        let mut action_inputs = Vec::new();
+        for input in inputs {
+            if let Some(target) = self.key_profiles_window.midi_value_learning {
+                // A continuous value is learned from a controller change,
+                // not from a note.
+                if input.trigger.kind == MidiControlKind::Control {
+                    self.key_profiles.midi.bind_value(input.trigger, target);
+                    self.key_profiles_window.midi_value_learning = None;
+                }
+                continue;
+            }
+            if let Some(target) = self.key_profiles.midi.value_target(input.trigger) {
+                intents.push(value_intent(state, target, *input));
+                continue;
+            }
+            action_inputs.push(*input);
+        }
+        let presses = self.key_profiles.midi.presses(&action_inputs);
         for trigger in presses {
             if let Some(action) = self.key_profiles_window.midi_learning.take() {
                 self.key_profiles.midi.bind(trigger, action);
@@ -2017,9 +2325,65 @@ impl StudioShell {
         intents
     }
 
+    /// The MIDI lamps the console's bindings should show for `state`
+    /// (RC-005): the selected Preview and Program inputs, an active Fade to
+    /// Black or overlay, and the Replay player's transport. Bindings whose
+    /// action has no visible state report nothing.
+    #[must_use]
+    pub fn midi_feedback(&self, state: &StudioUiState) -> Vec<MidiFeedback> {
+        let mut feedback: Vec<MidiFeedback> = self
+            .key_profiles
+            .midi
+            .bindings()
+            .filter_map(|(trigger, action)| {
+                action_led(state, action).map(|lit| MidiFeedback {
+                    trigger,
+                    value: if lit { 127 } else { 0 },
+                })
+            })
+            .collect();
+        feedback.extend(
+            self.key_profiles
+                .midi
+                .value_bindings()
+                .filter_map(|(trigger, target)| {
+                    value_feedback(state, target).map(|value| MidiFeedback { trigger, value })
+                }),
+        );
+        feedback
+    }
+
     /// Tells the console which MIDI controllers the host reads, by name.
     pub fn set_midi_devices(&mut self, devices: Vec<String>) {
         self.midi_devices = devices;
+    }
+
+    /// Tells the console which HID button panels the host reads, by name.
+    pub fn set_hid_devices(&mut self, devices: Vec<String>) {
+        self.hid_devices = devices;
+    }
+
+    /// The intents this console's HID button panels' `inputs` press
+    /// (RC-005): each press drives its binding's console action under the
+    /// same gates as the action's key. While an action learns (the Key
+    /// profiles window's Learn), the first press binds it instead.
+    pub fn receive_hid(
+        &mut self,
+        state: &StudioUiState,
+        inputs: &[crate::hid_bindings::HidInput],
+    ) -> Vec<StudioIntent> {
+        let presses = self.key_profiles.hid.presses(inputs);
+        let mut intents = Vec::new();
+        for trigger in presses {
+            if let Some(action) = self.key_profiles_window.hid_learning.take() {
+                self.key_profiles.hid.bind(trigger, action);
+                continue;
+            }
+            if let Some(action) = self.key_profiles.hid.action(&trigger) {
+                intents.extend(self.console_action(state, action));
+            }
+        }
+        intents
     }
 
     /// The intents console action `action` sends now, gated as its key.
@@ -2131,6 +2495,40 @@ impl StudioShell {
     #[must_use]
     pub fn cue_key_intent(&self, state: &StudioUiState, key: CueKey) -> Option<StudioIntent> {
         let mut intent = StudioIntent::Cue(self.cues.key_intent(state, key)?);
+        selection::bind(self.selected_input, core::slice::from_mut(&mut intent));
+        Some(intent)
+    }
+
+    /// The intent an external control's `key` sends for cue list `list` by
+    /// its id (RC-017's `/freemix/cue/list/<n>/<key>`), whether or not the
+    /// Cues panel shows it, gated exactly like the panel's keys. A GO or arm
+    /// carries this console's selected input, as the panel's does (RC-004).
+    #[must_use]
+    pub fn cue_list_key_intent(
+        &self,
+        state: &StudioUiState,
+        list: u64,
+        key: CueKey,
+    ) -> Option<StudioIntent> {
+        let mut intent = StudioIntent::Cue(self.cues.list_key_intent(state, list, key)?);
+        selection::bind(self.selected_input, core::slice::from_mut(&mut intent));
+        Some(intent)
+    }
+
+    /// The intent an external control's `key` sends for cue `cue` (1-based
+    /// position) of list `list` (RC-017's
+    /// `/freemix/cue/list/<n>/cue/<m>/<key>`), firing or arming that cue
+    /// directly, gated exactly like the panel's keys. A GO or arm carries
+    /// this console's selected input, as the panel's does (RC-004).
+    #[must_use]
+    pub fn cue_at_key_intent(
+        &self,
+        state: &StudioUiState,
+        list: u64,
+        cue: usize,
+        key: CueKey,
+    ) -> Option<StudioIntent> {
+        let mut intent = StudioIntent::Cue(self.cues.cue_at_index_intent(state, list, cue, key)?);
         selection::bind(self.selected_input, core::slice::from_mut(&mut intent));
         Some(intent)
     }
@@ -2336,7 +2734,11 @@ impl StudioShell {
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
         self.draw_key_profiles_window(ui.ctx());
-        mixer::draw_bus_mixer_window(&mut self.bus_mixer_open, ui.ctx(), state, &mut intents);
+        if let Some(target) =
+            mixer::draw_bus_mixer_window(&mut self.bus_mixer_open, ui.ctx(), state, &mut intents)
+        {
+            self.strip_fx.open(target);
+        }
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_web_access_window(ui.ctx(), state, &mut intents);
@@ -2490,6 +2892,7 @@ impl Default for StudioShell {
             input_thumbnails_requested: false,
             canvas: monitors::DEFAULT_CANVAS,
             add_input: None,
+            omt_sources: Vec::new(),
             remove_input: None,
             catalogue: input_catalogue::CatalogueTracker::default(),
             lifecycle: input_lifecycle::LifecyclePanel::default(),
@@ -2515,6 +2918,7 @@ impl Default for StudioShell {
             key_profiles_window: key_profiles_ui::KeyProfilesWindow::default(),
             bus_mixer_open: false,
             midi_devices: Vec::new(),
+            hid_devices: Vec::new(),
             focused_panel: None,
             focused_window: None,
             chord: None,
@@ -3516,6 +3920,7 @@ mod tests {
             screen_capture_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             still_inputs: std::collections::BTreeMap::new(),
+            paged: std::collections::BTreeMap::new(),
             capture_inventory: None,
             system_audio_inventory: None,
             audio_output_inventory: None,
@@ -4181,7 +4586,7 @@ mod tests {
                     soloed: Some(true),
                     follow_video: Some(false),
                     delay_samples: Some(2_400),
-                    buses: None,
+                    sends: None,
                 },
             },
             StudioIntent::SetInputAudioStrip {
@@ -4194,7 +4599,7 @@ mod tests {
                     soloed: Some(true),
                     follow_video: Some(false),
                     delay_samples: Some(2_400),
-                    buses: None,
+                    sends: None,
                 },
             }
         );
@@ -4976,5 +5381,110 @@ mod tests {
         shell.show_shortcuts = false;
         shell.show_about = true;
         assert_eq!(run(&shell), (Vec::new(), 1));
+    }
+    /// RC-005: bound MIDI controls light the selected Preview and Program
+    /// inputs, and report nothing for actions without a visible state.
+    #[test]
+    fn midi_feedback_lights_bound_controls() {
+        let mut shell = StudioShell::default();
+        let mut state = crate::hover_audit::bank_fixture();
+        let trigger = MidiTrigger::new(MidiControlKind::Note, 1, 60).unwrap();
+        assert!(
+            shell
+                .key_profiles
+                .midi
+                .bind(trigger, ConsoleAction::Preview(1))
+        );
+        let first = state.view.as_ref().unwrap().inputs[0];
+        let second = state.view.as_ref().unwrap().inputs[1];
+        state.view.as_mut().unwrap().switcher.desired.preview = second;
+        assert_eq!(
+            shell.midi_feedback(&state),
+            [MidiFeedback { trigger, value: 0 }]
+        );
+        state.view.as_mut().unwrap().switcher.desired.preview = first;
+        assert_eq!(
+            shell.midi_feedback(&state),
+            [MidiFeedback {
+                trigger,
+                value: 127
+            }]
+        );
+        assert!(shell.key_profiles.midi.bind(trigger, ConsoleAction::Cut));
+        assert!(shell.midi_feedback(&state).is_empty());
+    }
+    /// RC-005: a controller bound to a value maps its 0-127 range onto the
+    /// monitor level and sends the matching live mixer operation.
+    #[test]
+    fn a_bound_midi_controller_drives_the_monitor_level() {
+        let mut shell = StudioShell::default();
+        let state = crate::hover_audit::bank_fixture();
+        let trigger = MidiTrigger::new(MidiControlKind::Control, 1, 7).unwrap();
+        assert!(
+            shell
+                .key_profiles
+                .midi
+                .bind_value(trigger, MidiValueTarget::MonitorLevel)
+        );
+        let intents = shell.receive_midi(
+            &state,
+            &[MidiInput {
+                trigger,
+                value: 127,
+            }],
+        );
+        match &intents[..] {
+            [
+                StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::SetMonitorLevel {
+                    gain_millidb,
+                    ..
+                }),
+            ] => assert_eq!(*gain_millidb, 24_000),
+            other => panic!("unexpected intents: {other:?}"),
+        }
+    }
+    /// RC-005: a controller bound to the monitor level receives the current
+    /// level as a 0-127 value, so a motor fader follows the console.
+    #[test]
+    fn midi_value_feedback_maps_the_monitor_level() {
+        let mut shell = StudioShell::default();
+        let mut state = crate::hover_audit::bank_fixture();
+        let trigger = MidiTrigger::new(MidiControlKind::Control, 1, 7).unwrap();
+        assert!(
+            shell
+                .key_profiles
+                .midi
+                .bind_value(trigger, MidiValueTarget::MonitorLevel)
+        );
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .audio_mixer
+            .monitor
+            .gain_millidb = 0;
+        assert_eq!(
+            shell.midi_feedback(&state),
+            [MidiFeedback {
+                trigger,
+                value: 101
+            }]
+        );
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .audio_mixer
+            .monitor
+            .gain_millidb = 24_000;
+        assert_eq!(shell.midi_feedback(&state)[0].value, 127);
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .audio_mixer
+            .monitor
+            .gain_millidb = -96_000;
+        assert_eq!(shell.midi_feedback(&state)[0].value, 0);
     }
 }

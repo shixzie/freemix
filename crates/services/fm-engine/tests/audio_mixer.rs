@@ -1021,10 +1021,19 @@ fn aux_bus_refusals_name_the_problem_and_strip_buses_are_live() {
         &fm_engine::EngineAuxBus::default_for(aux('A'))
     );
 
-    // A strip's buses ride its live strip state: off Master, onto C and G.
-    let buses = fm_model::AudioBusMask::from_token("CG").unwrap();
+    // A strip's sends ride its live strip state: off Master, onto C and G,
+    // with G at -6 dB pre-fader.
+    let sends = fm_model::AudioSends::from_mask(fm_model::AudioBusMask::from_token("CG").unwrap())
+        .with_aux_send(
+            aux('G'),
+            fm_model::BusSendState {
+                enabled: true,
+                level_millidb: -6_000,
+                tap: fm_model::SendTap::PreFader,
+            },
+        );
     let state = EngineInputAudioStripState {
-        buses,
+        sends,
         ..EngineInputAudioStripState::default()
     };
     let strip = EngineCommand::SetInputAudioStrip {
@@ -1036,4 +1045,136 @@ fn aux_bus_refusals_name_the_problem_and_strip_buses_are_live() {
     assert_eq!(engine.show().input_audio_strip(input(2)), Some(state));
     let frame = engine.tick().unwrap();
     assert!(frame.input_audio_strip_updates.contains(&(input(2), state)));
+}
+
+#[test]
+fn output_mix_minus_names_a_known_input_and_undoes_exactly() {
+    let mut engine = engine();
+    assert_eq!(engine.show().output_mix_minus_input(output(2)), None);
+    accept(
+        &mut engine,
+        "mix-minus",
+        mixer(EngineAudioMixerEdit::SetOutputMixMinus {
+            output: output(2),
+            input: Some(input(3)),
+        }),
+    );
+    assert_eq!(
+        engine.show().output_mix_minus_input(output(2)),
+        Some(input(3))
+    );
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![EngineAudioMixerUpdate::OutputMixMinus {
+            output: output(2),
+            input: Some(input(3)),
+        }]
+    );
+    undo(&mut engine, "undo-mix-minus");
+    assert_eq!(engine.show().output_mix_minus_input(output(2)), None);
+    redo(&mut engine, "redo-mix-minus");
+    assert_eq!(
+        engine.show().output_mix_minus_input(output(2)),
+        Some(input(3))
+    );
+    // Unknown outputs and inputs are refused without changing the show.
+    for (key, edit) in [
+        (
+            "unknown-output",
+            EngineAudioMixerEdit::SetOutputMixMinus {
+                output: output(9),
+                input: Some(input(3)),
+            },
+        ),
+        (
+            "unknown-input",
+            EngineAudioMixerEdit::SetOutputMixMinus {
+                output: output(2),
+                input: Some(input(9)),
+            },
+        ),
+    ] {
+        let outcome = execute(&mut engine, key, mixer(edit));
+        assert_eq!(rejection(&outcome).code, RejectionCode::NotFound);
+    }
+    assert_eq!(
+        engine.show().output_mix_minus_input(output(2)),
+        Some(input(3))
+    );
+    // Clearing the feed is its own undoable edit.
+    accept(
+        &mut engine,
+        "clear-mix-minus",
+        mixer(EngineAudioMixerEdit::SetOutputMixMinus {
+            output: output(2),
+            input: None,
+        }),
+    );
+    assert_eq!(engine.show().output_mix_minus_input(output(2)), None);
+    undo(&mut engine, "undo-clear-mix-minus");
+    assert_eq!(
+        engine.show().output_mix_minus_input(output(2)),
+        Some(input(3))
+    );
+}
+
+#[test]
+fn aux_bus_devices_are_project_edits_that_undo_and_refuse_unusable_names() {
+    let mut engine = engine();
+    assert_eq!(engine.show().aux_bus(aux('B')).device, None);
+    accept(
+        &mut engine,
+        "aux-device",
+        mixer(EngineAudioMixerEdit::SetAuxBusDevice {
+            bus: aux('B'),
+            device: Some("plughw:CARD=Headset,DEV=0".into()),
+        }),
+    );
+    assert_eq!(
+        engine.show().aux_bus(aux('B')).device.as_deref(),
+        Some("plughw:CARD=Headset,DEV=0")
+    );
+    let frame = engine.tick().unwrap();
+    assert!(
+        frame
+            .audio_mixer_updates
+            .contains(&EngineAudioMixerUpdate::AuxBusDevice {
+                bus: aux('B'),
+                device: Some("plughw:CARD=Headset,DEV=0".into()),
+            })
+    );
+    undo(&mut engine, "undo-aux-device");
+    assert_eq!(engine.show().aux_bus(aux('B')).device, None);
+    redo(&mut engine, "redo-aux-device");
+    assert_eq!(
+        engine.show().aux_bus(aux('B')).device.as_deref(),
+        Some("plughw:CARD=Headset,DEV=0")
+    );
+    // An unusable device is refused without changing the show.
+    for bad in ["two words", "-report", ""] {
+        let outcome = execute(
+            &mut engine,
+            "bad-aux-device",
+            mixer(EngineAudioMixerEdit::SetAuxBusDevice {
+                bus: aux('B'),
+                device: Some(bad.into()),
+            }),
+        );
+        assert_eq!(rejection(&outcome).code, RejectionCode::InvalidCommand);
+    }
+    assert_eq!(
+        engine.show().aux_bus(aux('B')).device.as_deref(),
+        Some("plughw:CARD=Headset,DEV=0")
+    );
+    // Clearing it is its own undoable edit.
+    accept(
+        &mut engine,
+        "clear-aux-device",
+        mixer(EngineAudioMixerEdit::SetAuxBusDevice {
+            bus: aux('B'),
+            device: None,
+        }),
+    );
+    assert_eq!(engine.show().aux_bus(aux('B')).device, None);
 }

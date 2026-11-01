@@ -316,6 +316,10 @@ fn clips_list() -> CueList {
                     operation: CueMediaOperation::Play,
                 },
                 CueAction::RunScript { script: 5 },
+                CueAction::Clock {
+                    name: "Countdown".to_owned(),
+                    operation: fm_model::CueClockOperation::SetValue(5_000_000_000),
+                },
             ],
             auto_follow: false,
         }],
@@ -346,7 +350,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 90"));
+    assert!(text.contains("\"schema_version\": 106"));
     assert!(text.contains("\"cue_lists\": ["), "{text}");
     assert!(
         text.contains("{\"type\": \"wait\", \"frames\": 30}"),
@@ -367,6 +371,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
         "{\"type\": \"media_pause\", \"input\": 12}",
         "{\"type\": \"media_play\", \"input\": 12}",
         "{\"type\": \"run_script\", \"script\": 5}",
+        "{\"type\": \"clock\", \"name\": \"Countdown\", \"operation\": \"set\", \"value_ns\": 5000000000}",
         "\"pending\": {\"cue\": 1, \"action\": 2, \"due_frame\": 45}",
         "\"armed\": {\"cue\": 4, \"due_frame\": 300, \"targets\": null}, \"targets\": null}",
         "\"fault\": null, \"armed\": null, \"targets\": null}",

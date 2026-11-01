@@ -93,6 +93,12 @@ pub enum ParseErrorKind {
     NumberOutOfRange,
     DuplicateKey(String),
     TrailingData,
+    /// XML parsing: the document must not carry a DOCTYPE.
+    UnsupportedXmlDoctype,
+    /// XML parsing: the document is malformed for this reason.
+    InvalidXml {
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -135,6 +141,10 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::DuplicateKey(key) => write!(formatter, "duplicate object key `{key}`"),
             Self::TrailingData => formatter.write_str("trailing data after document"),
+            Self::UnsupportedXmlDoctype => {
+                formatter.write_str("XML documents must not carry a DOCTYPE")
+            }
+            Self::InvalidXml { reason } => write!(formatter, "invalid XML: {reason}"),
         }
     }
 }
@@ -152,7 +162,7 @@ pub struct ParseError {
 }
 
 impl ParseError {
-    fn at(text: &str, offset: usize, kind: ParseErrorKind) -> Self {
+    pub(crate) fn at(text: &str, offset: usize, kind: ParseErrorKind) -> Self {
         let mut offset = offset.min(text.len());
         while !text.is_char_boundary(offset) {
             offset -= 1;
@@ -182,7 +192,7 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-fn decode<'a>(bytes: &'a [u8], limits: &ParseLimits) -> Result<&'a str, ParseError> {
+pub(crate) fn decode<'a>(bytes: &'a [u8], limits: &ParseLimits) -> Result<&'a str, ParseError> {
     if bytes.len() > limits.max_input_bytes {
         return Err(ParseError {
             kind: ParseErrorKind::InputTooLarge {

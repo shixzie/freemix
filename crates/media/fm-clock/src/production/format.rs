@@ -31,6 +31,9 @@ pub enum DurationFormat {
     /// `floor(rate)` or `ceil(rate)` frames, so the seconds always agree
     /// with the other presets; this is not drop-frame SMPTE timecode.
     HoursMinutesSecondsFrames(FrameRate),
+    /// `HH:MM:SS:FF` drop-frame SMPTE timecode at 29.97 or 59.94 frames per
+    /// second. At other rates it falls back to the non-drop frame format.
+    HoursMinutesSecondsDropFrame(FrameRate),
     /// `H:MM:SS` from one hour upward, otherwise `M:SS`.
     Compact,
 }
@@ -79,10 +82,12 @@ impl DurationFormat {
             }
             Self::HoursMinutesSecondsTenths | Self::MinutesSecondsTenths => Grid::Decimal(10),
             Self::HoursMinutesSecondsMillis => Grid::Decimal(1_000),
-            Self::HoursMinutesSecondsFrames(rate) => Grid::Frames {
-                numerator: i128::from(rate.numerator()),
-                denominator: i128::from(rate.denominator()),
-            },
+            Self::HoursMinutesSecondsFrames(rate) | Self::HoursMinutesSecondsDropFrame(rate) => {
+                Grid::Frames {
+                    numerator: i128::from(rate.numerator()),
+                    denominator: i128::from(rate.denominator()),
+                }
+            }
         }
     }
 }
@@ -110,6 +115,36 @@ fn divide(numerator: i128, denominator: i128, rounding: Rounding) -> i128 {
         Rounding::Floor => div_floor(numerator, denominator),
         Rounding::Ceil => div_ceil(numerator, denominator),
     }
+}
+
+/// The nominal frame rate and dropped frame numbers per minute for the two
+/// SMPTE drop-frame rates.
+fn drop_frame_parameters(rate: FrameRate) -> Option<(u128, u128)> {
+    match (rate.numerator(), rate.denominator()) {
+        (30_000, 1_001) => Some((30, 2)),
+        (60_000, 1_001) => Some((60, 4)),
+        _ => None,
+    }
+}
+
+/// Converts an actual frame index at a drop-frame rate into the displayed
+/// `(hours, minutes, seconds, frames)` timecode.
+fn drop_frame_parts(frame: u128, nominal: u128, drop: u128) -> (u128, u128, u128, u128) {
+    let frames_per_10_minutes = nominal * 600 - drop * 9;
+    let frames_per_minute = nominal * 60 - drop;
+    let ten_minutes = frame / frames_per_10_minutes;
+    let remainder = frame % frames_per_10_minutes;
+    let extra_minutes = if remainder > drop {
+        (remainder - drop) / frames_per_minute
+    } else {
+        0
+    };
+    let count = frame + drop * 9 * ten_minutes + drop * extra_minutes;
+    let frames = count % nominal;
+    let seconds = (count / nominal) % 60;
+    let minutes = (count / (nominal * 60)) % 60;
+    let hours = count / (nominal * 3_600);
+    (hours, minutes, seconds, frames)
 }
 
 /// Rounds non-negative `nanos` to a count of grid units.
@@ -154,6 +189,18 @@ pub fn format_duration(value: ClockValue, format: DurationFormat, rounding: Roun
         grid_units(&grid, magnitude_nanos, rounding)
     };
     let magnitude = units.unsigned_abs();
+    if let DurationFormat::HoursMinutesSecondsDropFrame(rate) = format
+        && let Some((nominal, drop)) = drop_frame_parameters(rate)
+    {
+        let (hours, minutes, secs, frames) = drop_frame_parts(magnitude, nominal, drop);
+        let mut text = String::new();
+        if units < 0 {
+            text.push('-');
+        }
+        write!(text, "{hours:02}:{minutes:02}:{secs:02}:{frames:02}")
+            .expect("writing to a String cannot fail");
+        return text;
+    }
     let (seconds, sub) = match grid {
         Grid::Decimal(per_second) => {
             let per_second = per_second.unsigned_abs();
@@ -189,7 +236,8 @@ pub fn format_duration(value: ClockValue, format: DurationFormat, rounding: Roun
         DurationFormat::HoursMinutesSecondsMillis => {
             write!(text, "{hours:02}:{minutes:02}:{secs:02}.{sub:03}")
         }
-        DurationFormat::HoursMinutesSecondsFrames(_) => {
+        DurationFormat::HoursMinutesSecondsFrames(_)
+        | DurationFormat::HoursMinutesSecondsDropFrame(_) => {
             write!(text, "{hours:02}:{minutes:02}:{secs:02}:{sub:02}")
         }
         DurationFormat::Compact if hours > 0 => write!(text, "{hours}:{minutes:02}:{secs:02}"),
@@ -249,5 +297,71 @@ mod tests {
         assert_eq!(div_ceil(-7, 2), -3);
         assert_eq!(div_ceil(8, 2), 4);
         assert_eq!(div_ceil(0, 2), 0);
+    }
+
+    fn frame_value(frame: u128, numerator: u32, denominator: u32) -> ClockValue {
+        let nanos = frame * u128::from(denominator) * 1_000_000_000 / u128::from(numerator);
+        ClockValue::from_nanos(i64::try_from(nanos).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn drop_frame_timecode_skips_two_frames_each_minute_but_not_every_tenth() {
+        let ntsc = FrameRate::new(30_000, 1_001).unwrap();
+        let format = DurationFormat::HoursMinutesSecondsDropFrame(ntsc);
+        for (frame, text) in [
+            (0, "00:00:00:00"),
+            (1_799, "00:00:59:29"),
+            (1_800, "00:01:00:02"),
+            (3_597, "00:01:59:29"),
+            (3_598, "00:02:00:02"),
+            (17_982, "00:10:00:00"),
+            (107_892, "01:00:00:00"),
+        ] {
+            assert_eq!(
+                format_duration(frame_value(frame, 30_000, 1_001), format, Rounding::Floor),
+                text,
+                "frame {frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn drop_frame_timecode_drops_four_frames_at_59_94() {
+        let rate = FrameRate::new(60_000, 1_001).unwrap();
+        let format = DurationFormat::HoursMinutesSecondsDropFrame(rate);
+        for (frame, text) in [
+            (0, "00:00:00:00"),
+            (3_599, "00:00:59:59"),
+            (3_600, "00:01:00:04"),
+            (35_964, "00:10:00:00"),
+        ] {
+            assert_eq!(
+                format_duration(frame_value(frame, 60_000, 1_001), format, Rounding::Floor),
+                text,
+                "frame {frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn drop_frame_falls_back_to_non_drop_at_other_rates() {
+        let rate = FrameRate::new(25, 1).unwrap();
+        let format = DurationFormat::HoursMinutesSecondsDropFrame(rate);
+        assert_eq!(
+            format_duration(frame_value(25, 25, 1), format, Rounding::Floor),
+            "00:00:01:00"
+        );
+    }
+
+    #[test]
+    fn drop_frame_negative_values_mirror_positive_ones() {
+        let ntsc = FrameRate::new(30_000, 1_001).unwrap();
+        let format = DurationFormat::HoursMinutesSecondsDropFrame(ntsc);
+        let nanos = i64::try_from(1_799_u128 * 1_001 * 1_000_000_000 / 30_000).unwrap();
+        let value = ClockValue::from_nanos(-nanos).unwrap();
+        assert_eq!(
+            format_duration(value, format, Rounding::Floor),
+            "-00:00:59:29"
+        );
     }
 }

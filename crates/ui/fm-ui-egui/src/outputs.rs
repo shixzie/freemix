@@ -3,9 +3,10 @@
 //!
 //! Every row is a lamp, a name, a one-line detail, a status chip, and exactly
 //! one Start/Stop key. Rows are derived only from replicated state: the
-//! recorder's authoritative desired flag (the protocol reports no realized
-//! recorder telemetry), and each stream target's desired flag plus its latest
-//! lossy transport sample or last-confirmed realized state.
+//! recorder's authoritative desired flag plus its latest lossy realized
+//! sample (Protocol 2.66, including the slot's free space since 2.140), and
+//! each stream target's desired flag plus its latest lossy transport sample
+//! or last-confirmed realized state.
 
 use core::fmt::Write as _;
 
@@ -118,10 +119,28 @@ pub(crate) fn recorder_row(
         };
     }
     if desired {
+        let mut detail = l.text(Msg::RowRecordingProgram).to_owned();
+        if let Some(free) = realized.and_then(|sample| sample.free_bytes) {
+            detail.push_str(" · ");
+            detail.push_str(&l.format(
+                Msg::RecorderFreeSpace,
+                &[("free", Arg::Str(&l.bytes(free)))],
+            ));
+        }
+        if let Some(seconds) = realized.and_then(|sample| sample.remaining_seconds) {
+            detail.push_str(" · ");
+            detail.push_str(&l.format(
+                Msg::RecorderRemaining,
+                &[(
+                    "time",
+                    Arg::Str(&l.seconds_tenths(seconds.saturating_mul(1_000))),
+                )],
+            ));
+        }
         OutputRow {
             status,
             tone: Tone::OnAir,
-            detail: l.text(Msg::RowRecordingProgram).to_owned(),
+            detail,
         }
     } else {
         OutputRow {
@@ -834,6 +853,8 @@ mod tests {
             realized,
             elapsed_ms: 0,
             failure,
+            free_bytes: None,
+            remaining_seconds: None,
         };
         let unconfigured = sample(RecorderRealizedState::Unavailable, None);
         let row = recorder_row(Locale::ENGLISH, true, false, false, Some(&unconfigured));

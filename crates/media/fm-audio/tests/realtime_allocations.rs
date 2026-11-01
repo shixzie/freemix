@@ -207,6 +207,7 @@ fn the_master_mix_with_every_dsp_stage_renders_without_allocating() {
                 Some(AuxBusOutput {
                     planes: &mut aux,
                     meters: &mut aux_meters,
+                    mix_minus: None,
                 }),
             )
             .unwrap();

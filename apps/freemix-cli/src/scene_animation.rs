@@ -21,7 +21,7 @@ use fm_persistence::{ProjectStore, StoredProject};
 use fm_types::SceneId;
 
 use crate::{
-    app::{AppFailure, AppResult, inspect_stored_project, load_stored_project, write_title_ppm},
+    app::{AppFailure, AppResult, inspect_stored_project, load_stored_project, write_title_frame},
     args::{ScenePhase, TitlePhase},
 };
 
@@ -157,7 +157,7 @@ pub fn render_frame(
     let rendered = crate::scene_render::render_scene(
         project, id, state, &pipeline, &grades, None, 0, width, height,
     )?;
-    write_title_ppm(output, &rendered)?;
+    write_title_frame(output, &rendered)?;
     println!(
         "scene-render-frame: scene {id} phase={name} frame={frame} {width}x{height} to {}",
         output.display()

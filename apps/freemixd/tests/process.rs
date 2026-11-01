@@ -5025,6 +5025,7 @@ fn viewer_diagnostics_query_is_read_only_and_correlated() {
         subscriber_limit,
         subscriber_queue_limit,
         source_sync,
+        production_clocks: _,
         health,
     }) = response
     else {
@@ -7917,7 +7918,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let daemon = Daemon::start_without_once(&project_path);
 
     // The previous protocol is refused; the current one is 2.118.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 129));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 132));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
         protocol: ProtocolVersion::new(2, 117),
@@ -7936,7 +7937,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 129)
+        ProtocolVersion::new(2, 132)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -8293,16 +8294,20 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
             id: 1,
             input: input(2),
             duration_frames: 10,
+            follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: 0,
+            stinger_slot: None,
             enabled: true,
         },
         PlaylistEntrySpec {
             id: 2,
             input: input(1),
             duration_frames: 10,
+            follow_media: false,
             transition: PlaylistTransitionKind::Fade,
             transition_frames: 5,
+            stinger_slot: None,
             enabled: true,
         },
     ];
@@ -8497,8 +8502,10 @@ fn simulated_playlist_pause_holds_the_wall_clock_position_across_recovery() {
                 id: 1,
                 input: input(2),
                 duration_frames: 500,
+                follow_media: false,
                 transition: PlaylistTransitionKind::Slide,
                 transition_frames: 24,
+                stinger_slot: None,
                 enabled: true,
             }],
         },
@@ -10250,7 +10257,7 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
     admin.send(&command(
         "stop",
         "stop-key",
-        CommandPayload::StopScript { run: Some(1) },
+        CommandPayload::StopScript { runs: vec![1] },
     ));
     assert_eq!(accepted_revision(&mut admin, "stop"), 4);
     match durable_event_at(&mut admin, 4).payload {
@@ -10262,7 +10269,7 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
     admin.send(&command(
         "stop-again",
         "stop-again-key",
-        CommandPayload::StopScript { run: None },
+        CommandPayload::StopScript { runs: Vec::new() },
     ));
     assert!(matches!(
         admin.next_result(),
@@ -10437,7 +10444,7 @@ fn two_waiting_scripts_interleave_replay_and_stop_one_or_all() {
     admin.send(&command(
         "stop-2",
         "stop-2-key",
-        CommandPayload::StopScript { run: Some(2) },
+        CommandPayload::StopScript { runs: vec![2] },
     ));
     assert_eq!(accepted_revision(&mut admin, "stop-2"), 7);
     match durable_event_at(&mut admin, 7).payload {
@@ -10454,7 +10461,7 @@ fn two_waiting_scripts_interleave_replay_and_stop_one_or_all() {
     admin.send(&command(
         "stop-all",
         "stop-all-key",
-        CommandPayload::StopScript { run: None },
+        CommandPayload::StopScript { runs: Vec::new() },
     ));
     assert_eq!(accepted_revision(&mut admin, "stop-all"), 8);
     match durable_event_at(&mut admin, 8).payload {

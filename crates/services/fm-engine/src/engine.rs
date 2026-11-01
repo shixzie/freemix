@@ -350,6 +350,13 @@ pub enum EngineCommand {
     RecordStop {
         recorder: RecorderSlot,
     },
+    /// Starts, pauses, resets, sets, adjusts, or presets production clock
+    /// `name` (SW-013). A live operation like [`Self::RecordStart`]: the
+    /// clock's live value is runtime state, not project state.
+    ControlClock {
+        name: String,
+        operation: fm_model::CueClockOperation,
+    },
     /// Reverts the most recent project edit in the shared history.
     ///
     /// `expected_edit` names the [`EditHistoryEntry::edit`] the caller means
@@ -573,11 +580,12 @@ pub enum EngineCommand {
     RunScript {
         script: u64,
     },
-    /// Ends waiting script run `run`, or clears that run's fault, on the
-    /// command's target frame (RC-011, schema 56); with no `run`, ends every
-    /// waiting run and clears every fault (schema 60). A live operation.
+    /// Ends the waiting script runs in `runs`, or clears their faults, on
+    /// the command's target frame (RC-011, schema 56); with no run, ends
+    /// every waiting run and clears every fault (schema 60). A live
+    /// operation.
     StopScript {
-        run: Option<u64>,
+        runs: Vec<u64>,
     },
     /// Creates or replaces (`Some`) or removes (`None`) user shortcut
     /// `shortcut` (RC-004). A project edit honouring the project padlock,
@@ -1120,6 +1128,22 @@ pub struct FrameResult {
     pub runtime_generation: RuntimeGeneration,
 }
 
+/// One realized Program change the engine keeps for the daemon's as-run log
+/// (OR-015).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineAsRunEntry {
+    /// The frame the change was realized on.
+    pub frame: u64,
+    /// The input that went to Program.
+    pub input: InputId,
+    /// Its name when the change was realized.
+    pub name: String,
+}
+
+/// Most realized Program changes the engine keeps for the as-run log; older
+/// entries drop first.
+pub const MAX_AS_RUN_ENTRIES: usize = 4_096;
+
 impl FrameResult {
     /// This frame's Fade-to-Black interval as `output` shows it: the shared
     /// interval when Fade to Black affects the output, otherwise live.
@@ -1279,6 +1303,18 @@ pub struct Engine {
     /// the frame its timeline started (GX-001). Snapshotted, so a restored
     /// title's tickers and clocks continue.
     title_shown: BTreeMap<InputId, crate::title_timeline::TitleShown>,
+    /// The live project production clock registry (SW-013). Rebuilt from
+    /// the show's definitions on construction and restore.
+    production_clocks: fm_clock::production::ProductionClocks,
+    /// The media input each media-remaining clock follows, by clock name.
+    media_clock_inputs: BTreeMap<fm_clock::production::ClockName, InputId>,
+    /// The session clocks a project defines, by name and followed source.
+    session_clocks: Vec<(
+        fm_clock::production::ClockName,
+        fm_types::ProjectSessionKind,
+    )>,
+    /// Whether each session clock's source was active on the previous frame.
+    session_clock_states: BTreeMap<fm_clock::production::ClockName, bool>,
     /// Whether a scene clip can be carried to clients (see
     /// [`Self::set_scene_clip_bound`]); `None` bounds nothing.
     scene_clip_bound: Option<crate::SceneClipBound>,
@@ -1292,12 +1328,23 @@ pub struct Engine {
     /// The replay recording, events, and players (OR-012). Runtime state:
     /// never snapshotted, so a restored engine starts a new recording.
     replay: crate::replay::ReplayRuntime,
+    /// The audio plugin identifiers this daemon can install (AU-006): the
+    /// built-in reference processors plus every scanned plugin.
+    installed_audio_plugins: Vec<String>,
+    /// Every realized Program change since the engine started (OR-015),
+    /// oldest first, at most [`MAX_AS_RUN_ENTRIES`].
+    as_run: Vec<EngineAsRunEntry>,
 }
 
 impl Engine {
     #[must_use]
     pub fn new(show: ShowState, frame_rate: FrameRate, clock_domain: ClockDomainId) -> Self {
         let realized_switcher = show.desired_switcher().clone();
+        let production_clocks =
+            crate::production_clock::registry_from_definitions(show.production_clocks());
+        let media_clock_inputs =
+            crate::production_clock::media_clock_inputs(show.production_clocks());
+        let session_clocks = crate::production_clock::session_clocks(show.production_clocks());
         Self {
             commands: CommandState::new(show, StateEpoch::new(1)).with_receipt_limit(RECEIPT_LIMIT),
             receipts_recorded: 0,
@@ -1316,11 +1363,20 @@ impl Engine {
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
             title_shown: BTreeMap::new(),
+            production_clocks,
+            media_clock_inputs,
+            session_clocks,
+            session_clock_states: BTreeMap::new(),
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
             paged_counts: BTreeMap::new(),
             replay: crate::replay::ReplayRuntime::new(frame_rate),
+            installed_audio_plugins: fm_plugin_host_api::REFERENCE_PLUGINS
+                .iter()
+                .map(|plugin| (*plugin).to_owned())
+                .collect(),
+            as_run: Vec::new(),
         }
     }
 
@@ -1684,6 +1740,119 @@ impl Engine {
     #[must_use]
     pub fn title_timelines(&self) -> BTreeMap<InputId, fm_model::TitleTimeline> {
         crate::title_timeline::saved(&self.title_shown)
+    }
+
+    /// The live production clock registry (SW-013).
+    #[must_use]
+    pub const fn production_clock_registry(&self) -> &fm_clock::production::ProductionClocks {
+        &self.production_clocks
+    }
+
+    /// Updates every media-remaining clock from its input's playback.
+    fn update_media_clocks(&mut self) {
+        use fm_clock::production::{ClockCommand, MediaProgress};
+        let entries: Vec<_> = self
+            .media_clock_inputs
+            .iter()
+            .map(|(name, input)| (name.clone(), *input))
+            .collect();
+        for (name, input) in entries {
+            let progress = self.media_status(input).and_then(|status| {
+                let rate = status.source_rate.unwrap_or(self.frame_rate);
+                let position = rational_nanos(
+                    status.position_time.numerator(),
+                    status.position_time.denominator(),
+                )?;
+                let duration = rational_nanos(
+                    u128::from(status.playable_end) * u128::from(rate.denominator()),
+                    u128::from(rate.numerator()),
+                )?;
+                MediaProgress::new(u64::try_from(position).ok()?, u64::try_from(duration).ok()?)
+                    .ok()
+            });
+            let _ = self.production_clocks.apply(
+                &name,
+                ClockCommand::UpdateMedia(progress),
+                self.clock.now(),
+            );
+        }
+    }
+
+    /// Starts or stops session clocks whose source changed activity.
+    fn update_session_clocks(&mut self) {
+        use fm_clock::production::ClockCommand;
+        let desired = self.commands.state().desired_switcher();
+        let streaming = !desired.running_stream_targets().is_empty();
+        let recording = RecorderSlot::ALL
+            .iter()
+            .any(|slot| desired.recording_desired(*slot));
+        let replay = self.replay.recording_active();
+        let entries = self.session_clocks.clone();
+        for (name, kind) in entries {
+            let active = match kind {
+                fm_types::ProjectSessionKind::Stream => streaming,
+                fm_types::ProjectSessionKind::Recording
+                | fm_types::ProjectSessionKind::MultiCorder => recording,
+                fm_types::ProjectSessionKind::Replay => replay,
+                fm_types::ProjectSessionKind::External => false,
+            };
+            let previous = self
+                .session_clock_states
+                .get(&name)
+                .copied()
+                .unwrap_or(false);
+            if active == previous {
+                continue;
+            }
+            let command = if active {
+                ClockCommand::SessionStarted
+            } else {
+                ClockCommand::SessionStopped
+            };
+            let _ = self
+                .production_clocks
+                .apply(&name, command, self.clock.now());
+            self.session_clock_states.insert(name, active);
+        }
+    }
+
+    /// Every live production clock's reading at `at`, in name order.
+    #[must_use]
+    pub fn production_clock_readings(
+        &self,
+        at: fm_clock::production::TimeReading,
+    ) -> Vec<fm_clock::production::ClockReading> {
+        self.production_clocks.readings(at)
+    }
+
+    /// Applies `command` to the named production clock at the engine's
+    /// current monotonic time (SW-013).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineProductionClockError`] for an invalid or
+    /// unknown name or a command the clock's kind does not accept; nothing
+    /// changes then.
+    pub fn control_production_clock(
+        &mut self,
+        name: &str,
+        command: fm_clock::production::ClockCommand,
+    ) -> Result<(), crate::EngineProductionClockError> {
+        use fm_clock::production::ClockName;
+        let name = ClockName::new(name)?;
+        self.production_clocks
+            .apply(&name, command, self.clock.now())?;
+        Ok(())
+    }
+
+    /// Rebuilds the production clock registry from `definitions`, dropping
+    /// every live value (SW-013). Called after a project edit changes the
+    /// show's clock definitions.
+    pub fn restore_production_clocks(&mut self, definitions: &[fm_types::ProjectClock]) {
+        self.production_clocks = crate::production_clock::registry_from_definitions(definitions);
+        self.media_clock_inputs = crate::production_clock::media_clock_inputs(definitions);
+        self.session_clocks = crate::production_clock::session_clocks(definitions);
+        self.session_clock_states.clear();
     }
 
     /// Whether any title is playing an In or Out phase on Program or
@@ -2528,6 +2697,10 @@ impl Engine {
     ) -> Result<EngineCommandOutcome, EngineError> {
         let key = envelope.idempotency_key.clone();
         let command_id = envelope.id.clone();
+        // A page step naming a media list is a list navigation (IN-006): a
+        // cue's `page` action and the generic page command then step a list
+        // with the list's own wrap rules.
+        let envelope = rewrite_page_navigate(envelope, self.commands.state());
         let next_frame = self.scheduler.pacer().next_frame();
         // A playlist advance is accepted ahead of its boundary and realized
         // on it; every other command targets the next frame.
@@ -2583,8 +2756,8 @@ impl Engine {
             Ok(EngineCommand::RunScript { script }) => {
                 Some(crate::script::plan(self, *script, target_frame))
             }
-            Ok(EngineCommand::StopScript { run }) => {
-                Some(crate::script::plan_stop(self, *run, target_frame))
+            Ok(EngineCommand::StopScript { runs }) => {
+                Some(crate::script::plan_stop(self, runs, target_frame))
             }
             // A shortcut's cue actions are planned the same way (RC-004).
             Ok(EngineCommand::FireShortcut {
@@ -3014,6 +3187,8 @@ impl Engine {
             .next_deadline()
             .map_err(|error| EngineError::Tick(fm_scheduler::TickError::Pacing(error)))?;
         self.clock.set(ClockTime::from_nanos(deadline.at_ns))?;
+        self.update_media_clocks();
+        self.update_session_clocks();
         let tick = self.scheduler.tick(deadline.at_ns)?;
         self.pending_actions = self.pending_actions.saturating_sub(tick.actions.len());
         if self
@@ -3096,8 +3271,21 @@ impl Engine {
             self.frame_rate,
         );
         for event in self.realized_switcher.advance_frame_events() {
-            if matches!(event, SwitcherEvent::ProgramChanged { .. }) {
+            if let SwitcherEvent::ProgramChanged { program, .. } = &event {
                 self.transition_in_flight = None;
+                if self.as_run.len() >= MAX_AS_RUN_ENTRIES {
+                    self.as_run.remove(0);
+                }
+                self.as_run.push(EngineAsRunEntry {
+                    frame,
+                    input: *program,
+                    name: self
+                        .commands
+                        .state()
+                        .input_name(*program)
+                        .unwrap_or_default()
+                        .to_owned(),
+                });
             }
             events.push(event);
         }
@@ -3169,6 +3357,9 @@ impl Engine {
         }
         let command_events = if let EngineCommand::Replay(operation) = &action {
             self.replay.realize(self.commands.state(), operation, frame);
+            Vec::new()
+        } else if let EngineCommand::ControlClock { name, operation } = &action {
+            self.control_production_clock(name, cue_clock_command(*operation))?;
             Vec::new()
         } else if let EngineCommand::Media(command) = action {
             *realized.media_operations.entry(command.input).or_default() += 1;
@@ -3266,6 +3457,12 @@ impl Engine {
         self.replay.set_storage_free(free);
     }
 
+    /// Records the replay root drive's SMART status, as the media plane last
+    /// sampled it (OR-014, 2.139).
+    pub fn set_replay_storage_smart(&mut self, smart: Option<crate::EngineReplaySmartStatus>) {
+        self.replay.set_storage_smart(smart);
+    }
+
     /// Reports that an external replay recording recorded engine frame
     /// `frame` of source `input` as stream frame `stream_frame` (OR-012).
     /// Returns whether it was taken: the input is recorded and the frame
@@ -3310,6 +3507,28 @@ impl Engine {
     #[must_use]
     pub const fn audio_plugin_generation(&self) -> u64 {
         self.commands.state().audio_plugin_generation()
+    }
+
+    /// The audio plugin identifiers this daemon can install (AU-006),
+    /// ascending.
+    #[must_use]
+    pub fn installed_audio_plugins(&self) -> &[String] {
+        &self.installed_audio_plugins
+    }
+
+    /// Every realized Program change since the engine started (OR-015),
+    /// oldest first, at most [`MAX_AS_RUN_ENTRIES`].
+    #[must_use]
+    pub fn as_run(&self) -> &[EngineAsRunEntry] {
+        &self.as_run
+    }
+
+    /// Replaces the list of audio plugin identifiers this daemon can
+    /// install, as a scanned plugin catalog reports them (AU-006).
+    pub fn set_installed_audio_plugins(&mut self, mut plugins: Vec<String>) {
+        plugins.sort();
+        plugins.dedup();
+        self.installed_audio_plugins = plugins;
     }
 
     /// The up-to-eight-angle view of Replay input `input` at its current
@@ -3480,6 +3699,11 @@ impl Engine {
         restore_state: EngineRestoreState,
     ) -> Result<Self, SnapshotError> {
         validate_idle_restore(&show, &realized_switcher, &restore_state, frame_rate)?;
+        let production_clocks =
+            crate::production_clock::registry_from_definitions(show.production_clocks());
+        let media_clock_inputs =
+            crate::production_clock::media_clock_inputs(show.production_clocks());
+        let session_clocks = crate::production_clock::session_clocks(show.production_clocks());
         let scheduler = RuntimeScheduler::restore(
             frame_rate,
             0,
@@ -3513,11 +3737,20 @@ impl Engine {
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
             title_shown: BTreeMap::new(),
+            production_clocks,
+            media_clock_inputs,
+            session_clocks,
+            session_clock_states: BTreeMap::new(),
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
             paged_counts: BTreeMap::new(),
             replay: crate::replay::ReplayRuntime::new(frame_rate),
+            installed_audio_plugins: fm_plugin_host_api::REFERENCE_PLUGINS
+                .iter()
+                .map(|plugin| (*plugin).to_owned())
+                .collect(),
+            as_run: Vec::new(),
         })
     }
 }
@@ -3893,6 +4126,11 @@ impl EngineMutation {
             return apply_edit_lock_mutation(state, events, scope, locked, self.target_frame);
         }
         check_edit_locks(state, &self.command).map_err(crate::EditRejection::into_rejection)?;
+        if matches!(&self.command, EngineCommand::ControlClock { .. }) {
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if is_playlist_command(&self.command)
             || matches!(&self.command, EngineCommand::RealizePlaylistCue(_))
         {
@@ -4623,6 +4861,7 @@ impl EngineMutation {
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
             | EngineCommand::MediaList(_)
+            | EngineCommand::ControlClock { .. }
             | EngineCommand::InputLifecycle(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
@@ -5219,6 +5458,29 @@ fn apply_stinger_mutation(
     Ok(EngineAcceptance { target_frame })
 }
 
+fn rational_nanos(numerator: u128, denominator: u128) -> Option<u128> {
+    if denominator == 0 {
+        return None;
+    }
+    Some(numerator.checked_mul(1_000_000_000)? / denominator)
+}
+
+/// The clock command a validated cue clock action runs (SW-013).
+fn cue_clock_command(operation: fm_model::CueClockOperation) -> fm_clock::production::ClockCommand {
+    use fm_clock::production::{ClockCommand, ClockValue};
+    let value = |nanos: i64| {
+        ClockValue::from_nanos(nanos).expect("validated cue clock values are in range")
+    };
+    match operation {
+        fm_model::CueClockOperation::Start => ClockCommand::Start,
+        fm_model::CueClockOperation::Pause => ClockCommand::Pause,
+        fm_model::CueClockOperation::Reset => ClockCommand::Reset,
+        fm_model::CueClockOperation::SetValue(nanos) => ClockCommand::SetValue(value(nanos)),
+        fm_model::CueClockOperation::Adjust(nanos) => ClockCommand::Adjust(value(nanos)),
+        fm_model::CueClockOperation::SetPreset(nanos) => ClockCommand::SetPreset(value(nanos)),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn apply_runtime(
     switcher: &mut SwitcherState,
@@ -5251,6 +5513,7 @@ fn apply_runtime(
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
             | EngineCommand::MediaList(_)
+            | EngineCommand::ControlClock { .. }
     ) {
         return Ok(Vec::new());
     }
@@ -5449,6 +5712,7 @@ fn apply_runtime(
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
         | EngineCommand::MediaList(_)
+        | EngineCommand::ControlClock { .. }
         | EngineCommand::InputLifecycle(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
@@ -5650,6 +5914,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
         | EngineCommand::MediaList(_)
+        | EngineCommand::ControlClock { .. }
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SetCueList { .. }
         | EngineCommand::CueControl { .. }
@@ -6194,4 +6459,32 @@ fn switcher_rejection(error: SwitcherError) -> Rejection {
         }
         _ => rejection,
     }
+}
+
+/// Rewrites a `PageNavigate` that names a media list into the list's own
+/// navigation (IN-006), leaving every other paged input alone.
+fn rewrite_page_navigate(
+    mut envelope: CommandEnvelope<EngineCommand>,
+    state: &ShowState,
+) -> CommandEnvelope<EngineCommand> {
+    if let EngineCommand::PageNavigate { input, navigation } = envelope.command
+        && state.media_list(input).is_some()
+    {
+        let navigation = match navigation {
+            fm_types::paged::PagedNavigation::Next => crate::EngineMediaListNavigation::Next,
+            fm_types::paged::PagedNavigation::Previous => {
+                crate::EngineMediaListNavigation::Previous
+            }
+            fm_types::paged::PagedNavigation::First => crate::EngineMediaListNavigation::First,
+            fm_types::paged::PagedNavigation::Last => crate::EngineMediaListNavigation::Last,
+            fm_types::paged::PagedNavigation::Goto(position) => {
+                crate::EngineMediaListNavigation::Goto(position)
+            }
+        };
+        envelope.command = EngineCommand::MediaList(crate::EngineMediaListCommand {
+            input,
+            operation: crate::EngineMediaListOperation::Navigate(navigation),
+        });
+    }
+    envelope
 }

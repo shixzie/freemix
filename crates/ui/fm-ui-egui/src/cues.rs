@@ -395,6 +395,51 @@ pub enum CueKey {
     Disarm,
 }
 
+/// The intent `key` sends for the cue at 1-based position `cue` of `list`,
+/// firing or arming that cue directly instead of the list's standby cue
+/// (RC-017). Only Go and Arm apply to one cue; the same gates as the panel's
+/// keys apply, with the chain starting at that cue.
+#[must_use]
+pub fn cue_key_intent(
+    state: &StudioUiState,
+    scripts: &[ScriptStatus],
+    list: &CueListStatus,
+    cue: usize,
+    typed_delay: &str,
+    key: CueKey,
+) -> Option<CueIntent> {
+    if control_block(state).is_some() {
+        return None;
+    }
+    let cue = list.spec.cues.get(cue.checked_sub(1)?)?;
+    if chain_block(state, scripts, list, cue.id).is_some() {
+        return None;
+    }
+    let operation = match key {
+        CueKey::Go => CueOperation::Go {
+            cue: Some(cue.id),
+            targets: WireTargetBindings::default(),
+        },
+        CueKey::Arm => CueOperation::Arm {
+            cue: Some(cue.id),
+            in_ms: parse_arm_delay(typed_delay)?,
+            targets: WireTargetBindings::default(),
+        },
+        CueKey::ArmIn(in_ms) => CueOperation::Arm {
+            cue: Some(cue.id),
+            in_ms: Some(in_ms).filter(|in_ms| (1..=MAX_CUE_ARM_MS).contains(in_ms))?,
+            targets: WireTargetBindings::default(),
+        },
+        CueKey::Previous | CueKey::Next | CueKey::Stop | CueKey::Reset | CueKey::Disarm => {
+            return None;
+        }
+    };
+    Some(CueIntent::Control {
+        list: list.id,
+        operation,
+    })
+}
+
 /// The intent `key` sends for `list`, with the panel keys' gates: every
 /// key needs [`control_block`] clear; GO and arming also need a cue on
 /// standby whose chain the session may fire ([`go_key_list`]); arming
@@ -576,10 +621,11 @@ pub enum ActionKind {
     Wait,
     Delay,
     RunScript,
+    Clock,
 }
 
 impl ActionKind {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Preview,
         Self::Take,
         Self::OverlayOn,
@@ -607,6 +653,7 @@ impl ActionKind {
         Self::Wait,
         Self::Delay,
         Self::RunScript,
+        Self::Clock,
     ];
 
     #[must_use]
@@ -647,6 +694,7 @@ impl ActionKind {
             WireCueAction::Wait { .. } => Self::Wait,
             WireCueAction::Delay { .. } => Self::Delay,
             WireCueAction::RunScript { .. } => Self::RunScript,
+            WireCueAction::Clock { .. } => Self::Clock,
         }
     }
 
@@ -681,6 +729,7 @@ impl ActionKind {
             Self::Wait => Msg::CueActWait.en(),
             Self::Delay => Msg::CueActDelay.en(),
             Self::RunScript => Msg::CueActRunScript.en(),
+            Self::Clock => Msg::CueActClock.en(),
         }
     }
 
@@ -791,6 +840,10 @@ impl ActionKind {
             Self::Delay => WireCueAction::Delay { millis: 1_000 },
             Self::RunScript => WireCueAction::RunScript {
                 script: project.scripts().first()?.id,
+            },
+            Self::Clock => WireCueAction::Clock {
+                name: project.production_clocks().first()?.clone(),
+                operation: fm_protocol::WireCueClockOperation::Start,
             },
         })
     }
@@ -907,6 +960,48 @@ impl CuePanel {
             state,
             project.scripts(),
             self.shown(project)?,
+            self.arm_delay.as_deref().unwrap_or(DEFAULT_ARM_DELAY),
+            key,
+        )
+    }
+
+    /// The intent an external binding's `key` sends for list `list` by its
+    /// id, whether or not the panel shows it (RC-017), with the panel's
+    /// "Fire in" delay for arming.
+    pub(crate) fn list_key_intent(
+        &self,
+        state: &StudioUiState,
+        list: u64,
+        key: CueKey,
+    ) -> Option<CueIntent> {
+        let project = state.project_state.as_ref()?;
+        let list = project.cue_lists().iter().find(|found| found.id == list)?;
+        key_intent(
+            state,
+            project.scripts(),
+            list,
+            self.arm_delay.as_deref().unwrap_or(DEFAULT_ARM_DELAY),
+            key,
+        )
+    }
+
+    /// The intent an external binding's `key` sends for the cue at 1-based
+    /// position `cue` of list `list` (RC-017), firing or arming that cue
+    /// directly.
+    pub(crate) fn cue_at_index_intent(
+        &self,
+        state: &StudioUiState,
+        list: u64,
+        cue: usize,
+        key: CueKey,
+    ) -> Option<CueIntent> {
+        let project = state.project_state.as_ref()?;
+        let list = project.cue_lists().iter().find(|found| found.id == list)?;
+        cue_key_intent(
+            state,
+            project.scripts(),
+            list,
+            cue,
             self.arm_delay.as_deref().unwrap_or(DEFAULT_ARM_DELAY),
             key,
         )
@@ -2890,6 +2985,92 @@ fn draw_params(
                 (l.text(Msg::CueParamDelayHover), &unit),
                 enabled,
             )
+        }
+        WireCueAction::Clock { name, operation } => {
+            let clocks = names.project.production_clocks();
+            let mut change = None;
+            let width = fit_width(ui, 120.0);
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("clock-name")
+                    .width(width)
+                    .truncate()
+                    .selected_text(RichText::new(name.as_str()).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for clock in clocks {
+                            if ui.selectable_label(clock == name, clock).clicked() && clock != name
+                            {
+                                *name = clock.clone();
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    });
+            });
+            let mut selected = operation.token().to_owned();
+            let value = operation.value_ns();
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("clock-operation")
+                    .width(width)
+                    .selected_text(RichText::new(selected.as_str()).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for (token, op) in [
+                            ("start", fm_protocol::WireCueClockOperation::Start),
+                            ("pause", fm_protocol::WireCueClockOperation::Pause),
+                            ("reset", fm_protocol::WireCueClockOperation::Reset),
+                        ] {
+                            if ui.selectable_label(selected == token, token).clicked() {
+                                *operation = op;
+                                selected = token.to_owned();
+                                change = Some(Change::Commit);
+                            }
+                        }
+                        for (token, with_value) in [
+                            (
+                                "set",
+                                fm_protocol::WireCueClockOperation::SetValue
+                                    as fn(i64) -> fm_protocol::WireCueClockOperation,
+                            ),
+                            (
+                                "adjust",
+                                fm_protocol::WireCueClockOperation::Adjust
+                                    as fn(i64) -> fm_protocol::WireCueClockOperation,
+                            ),
+                            (
+                                "preset",
+                                fm_protocol::WireCueClockOperation::SetPreset
+                                    as fn(i64) -> fm_protocol::WireCueClockOperation,
+                            ),
+                        ] {
+                            if ui.selectable_label(selected == token, token).clicked() {
+                                *operation = with_value(value.unwrap_or(0));
+                                selected = token.to_owned();
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    });
+            });
+            if let Some(mut nanos) = operation.value_ns() {
+                let response = ui.add(
+                    DragValue::new(&mut nanos)
+                        .speed(1_000_000.0)
+                        .range(i64::MIN..=i64::MAX),
+                );
+                if response.changed() {
+                    *operation = match *operation {
+                        fm_protocol::WireCueClockOperation::SetValue(_) => {
+                            fm_protocol::WireCueClockOperation::SetValue(nanos)
+                        }
+                        fm_protocol::WireCueClockOperation::Adjust(_) => {
+                            fm_protocol::WireCueClockOperation::Adjust(nanos)
+                        }
+                        fm_protocol::WireCueClockOperation::SetPreset(_) => {
+                            fm_protocol::WireCueClockOperation::SetPreset(nanos)
+                        }
+                        other => other,
+                    };
+                    change = Some(Change::Commit);
+                }
+            }
+            change
         }
         WireCueAction::RunScript { script } => {
             let scripts = names.project.scripts();

@@ -182,9 +182,14 @@ fn daemon_command(config: &SupervisedConfig) -> Command {
         // the daemon build has a presenter; otherwise, or without a
         // window system or GPU, it serves as before and the slots wait
         // with `no-presenter`.
-        .arg("--display-presenter-if-available")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
+        .arg("--display-presenter-if-available");
+    if let Some(address) = config.live_lan_listen {
+        // LiveLAN streams the native daemon's rendered output, so the
+        // supervised daemon must run with native media.
+        command.arg("--native-media");
+        command.arg("--live-lan-listen").arg(address.to_string());
+    }
+    command.stdin(Stdio::piped()).stdout(Stdio::piped());
     // Phones and tablets pair with the web pages over TLS (RC-007):
     // the operator's own certificate, else one from the daemon's local
     // CA, kept in its state directory so phones that installed the CA
@@ -693,6 +698,15 @@ mod tests {
             .map(OsStr::to_string_lossy)
             .map(String::from)
             .collect()
+    }
+
+    #[test]
+    fn a_live_lan_listener_reaches_the_windowed_daemon() {
+        let mut config = SupervisedConfig::new("show.freemix");
+        config.live_lan_listen = Some("0.0.0.0:8090".parse().unwrap());
+        assert!(
+            arguments(&config).ends_with(&["--live-lan-listen".into(), "0.0.0.0:8090".into(),])
+        );
     }
 
     #[test]

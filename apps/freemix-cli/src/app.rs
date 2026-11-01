@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Write as _},
     num::NonZeroU128,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -14,9 +14,9 @@ use fm_command::{
     RejectedReceipt, Rejection, RejectionCode, Revision, RuntimeGeneration, StateEpoch,
 };
 use fm_engine::{
-    Engine, EngineAcceptance, EngineCommand, EngineFadeToBlackState, EngineInputAudioStripState,
-    EngineManualTransitionKind, EngineManualTransitionPosition, EngineRestoreState,
-    EngineStreamControl, ShowState,
+    Engine, EngineAcceptance, EngineAudioMixerEdit, EngineCommand, EngineFadeToBlackState,
+    EngineInputAudioStripState, EngineManualTransitionKind, EngineManualTransitionPosition,
+    EngineRestoreState, EngineStreamControl, ShowState,
 };
 use fm_model::{
     AudioBus, CropRect, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
@@ -29,12 +29,12 @@ use fm_model::{
 };
 use fm_persistence::validate_asset_uri;
 use fm_persistence::{
-    FadeToBlackState as PersistedFadeToBlackState, IdempotencyReceipt,
-    ManualTransitionKind as PersistedManualTransitionKind,
-    ManualTransitionState as PersistedManualTransitionState, ProjectPosition, ProjectStore,
-    ReceiptOutcome, RuntimeFadeToBlack, RuntimeManualTransitions, RuntimeOverlayBorder,
-    RuntimeOverlayChannel, RuntimeOverlayPosition, RuntimeOverlayTransition, RuntimeOverlays,
-    RuntimeRouting, StoredProject,
+    ChangeKind, ContentInventory, FadeToBlackState as PersistedFadeToBlackState,
+    IdempotencyReceipt, ImportPlan, ManualTransitionKind as PersistedManualTransitionKind,
+    ManualTransitionState as PersistedManualTransitionState, MergeStrategy, ProjectPosition,
+    ProjectStore, ReceiptOutcome, RuntimeFadeToBlack, RuntimeManualTransitions,
+    RuntimeOverlayBorder, RuntimeOverlayChannel, RuntimeOverlayPosition, RuntimeOverlayTransition,
+    RuntimeOverlays, RuntimeRouting, SettingsSnapshot, StoredProject,
 };
 use fm_sim::{Rgba8, SimulatedPipeline, SimulatedSource, SourcePattern};
 use fm_switcher::{
@@ -53,8 +53,8 @@ use crate::{
     args::{
         AudioMixerArgs, Command, ManualTransitionKind, OverlayBorder as CliOverlayBorder,
         OverlayPosition as CliOverlayPosition, OverlayTransition as CliOverlayTransition,
-        StingerAudioPolicy as CliStingerAudioPolicy, StingerFallback as CliStingerFallback,
-        StreamSpec, TBarAction,
+        PluginChainTarget, StingerAudioPolicy as CliStingerAudioPolicy,
+        StingerFallback as CliStingerFallback, StreamSpec, TBarAction,
     },
     project_bundle, remote, scene_animation, title_animation,
 };
@@ -72,9 +72,9 @@ static PROJECT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PPM_OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
-struct ProjectEngine {
+pub(crate) struct ProjectEngine {
     project: Project,
-    engine: Engine,
+    pub(crate) engine: Engine,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -688,6 +688,212 @@ pub fn run(command: Command) -> AppResult<()> {
                 );
             }
         }
+        Command::InputMediaListNavigate {
+            target,
+            input,
+            navigation,
+            key,
+            expected_revision,
+        } => {
+            let payload = fm_protocol::CommandPayload::MediaList {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                operation: fm_protocol::MediaListOperation::Navigate(navigation),
+            };
+            match target {
+                crate::args::MediaTarget::Local(path) => mutate(
+                    &path,
+                    fm_control::media_list_engine_command(&payload),
+                    1,
+                    key,
+                    expected_revision,
+                )?,
+                crate::args::MediaTarget::Remote(address) => {
+                    remote::execute(address, payload, key, expected_revision)?;
+                }
+            }
+        }
+        Command::InputMediaListOptions {
+            path,
+            input,
+            auto_next,
+            auto_first,
+            loop_list,
+            shuffle_seed,
+            key,
+            expected_revision,
+        } => {
+            let project = inspect_engine(&path)?;
+            let input = input_id(input)?;
+            let list = project
+                .engine
+                .show()
+                .media_list(input)
+                .cloned()
+                .ok_or_else(|| AppFailure(format!("input {input} is not a media list")))?;
+            let mut options = list.options;
+            options.auto_next = auto_next;
+            options.auto_first = auto_first;
+            options.loop_list = loop_list;
+            options.shuffle_seed = shuffle_seed;
+            mutate(
+                &path,
+                EngineCommand::MediaList(fm_engine::EngineMediaListCommand {
+                    input,
+                    operation: fm_engine::EngineMediaListOperation::Set {
+                        items: list.items,
+                        options,
+                        active: Some(list.active),
+                    },
+                }),
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::InputMediaListTransition {
+            path,
+            input,
+            kind,
+            frames,
+            key,
+            expected_revision,
+        } => {
+            let project = inspect_engine(&path)?;
+            let input = input_id(input)?;
+            let list = project
+                .engine
+                .show()
+                .media_list(input)
+                .cloned()
+                .ok_or_else(|| AppFailure(format!("input {input} is not a media list")))?;
+            let mut options = list.options;
+            options.transition = fm_model::MediaListTransition {
+                kind,
+                duration_frames: frames,
+            };
+            mutate(
+                &path,
+                EngineCommand::MediaList(fm_engine::EngineMediaListCommand {
+                    input,
+                    operation: fm_engine::EngineMediaListOperation::Set {
+                        items: list.items,
+                        options,
+                        active: Some(list.active),
+                    },
+                }),
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::InputMediaListItem {
+            path,
+            input,
+            operation,
+            key,
+            expected_revision,
+        } => {
+            let project = inspect_engine(&path)?;
+            let input = input_id(input)?;
+            let mut list = project
+                .engine
+                .show()
+                .media_list(input)
+                .cloned()
+                .ok_or_else(|| AppFailure(format!("input {input} is not a media list")))?;
+            let active = list.active;
+            let mut keep_active = true;
+            match operation {
+                crate::args::MediaListItemEdit::Add { asset_uri, title } => {
+                    let id = list
+                        .items
+                        .iter()
+                        .map(|item| item.id)
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(1);
+                    list.items.push(fm_model::MediaListItem {
+                        id,
+                        asset_uri,
+                        title,
+                        mark_in: 0,
+                        mark_out: None,
+                    });
+                }
+                crate::args::MediaListItemEdit::Remove { item } => {
+                    if !list.items.iter().any(|candidate| candidate.id == item) {
+                        return Err(
+                            AppFailure(format!("media list {input} has no item {item}")).into()
+                        );
+                    }
+                    list.items.retain(|candidate| candidate.id != item);
+                    if list.items.is_empty() {
+                        return Err(
+                            AppFailure("a media list keeps at least one item".into()).into()
+                        );
+                    }
+                    if item == active {
+                        keep_active = false;
+                    }
+                }
+                crate::args::MediaListItemEdit::SetTitle { item, title } => {
+                    let target = list
+                        .items
+                        .iter_mut()
+                        .find(|candidate| candidate.id == item)
+                        .ok_or_else(|| {
+                            AppFailure(format!("media list {input} has no item {item}"))
+                        })?;
+                    target.title = title;
+                }
+                crate::args::MediaListItemEdit::SetMarks {
+                    item,
+                    mark_in,
+                    mark_out,
+                } => {
+                    let target = list
+                        .items
+                        .iter_mut()
+                        .find(|candidate| candidate.id == item)
+                        .ok_or_else(|| {
+                            AppFailure(format!("media list {input} has no item {item}"))
+                        })?;
+                    target.mark_in = mark_in;
+                    target.mark_out = mark_out;
+                }
+                crate::args::MediaListItemEdit::Move { item, position } => {
+                    let index = list
+                        .items
+                        .iter()
+                        .position(|candidate| candidate.id == item)
+                        .ok_or_else(|| {
+                            AppFailure(format!("media list {input} has no item {item}"))
+                        })?;
+                    let moved = list.items.remove(index);
+                    let position = position.min(list.items.len());
+                    list.items.insert(position, moved);
+                }
+            }
+            mutate(
+                &path,
+                EngineCommand::MediaList(fm_engine::EngineMediaListCommand {
+                    input,
+                    operation: fm_engine::EngineMediaListOperation::Set {
+                        items: list.items,
+                        options: list.options,
+                        active: keep_active.then_some(active),
+                    },
+                }),
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::InputMediaListImport {
+            path,
+            input,
+            playlist,
+        } => crate::media_list_import::import(&path, input, &playlist)?,
         Command::InputLifecycle {
             target,
             operation,
@@ -876,7 +1082,70 @@ pub fn run(command: Command) -> AppResult<()> {
             let stored = inspect_stored_project(&path)?;
             print_scenes(stored.project());
         }
+        Command::AsRun { path } => print_as_run(&path)?,
         Command::AssetAudit { path } => audit_assets(&path)?,
+        Command::SettingsExport { path, output } => settings_export(&path, &output)?,
+        Command::ClockAdd { path, clock } => clock_add(&path, clock)?,
+        Command::ClockRemove { path, name } => clock_remove(&path, &name)?,
+        Command::ClockList { path } => clock_list(&path)?,
+        Command::ScoreboardCheck { path } => scoreboard_check(&path)?,
+        Command::SocialDeskCheck { path } => social_desk_check(&path)?,
+        Command::SocialDeskExport { path, output } => social_desk_export(&path, &output)?,
+        Command::TrackMapCheck { path } => track_map_check(&path)?,
+        Command::TrackMapExport { path, output } => track_map_export(&path, &output)?,
+        Command::RecordTrackMapImport {
+            path,
+            slot,
+            document,
+        } => record_track_map_import(&path, slot, &document)?,
+        Command::RecordTrackMapExport { path, slot } => record_track_map_export(&path, slot)?,
+        Command::ScoreboardImport {
+            path,
+            input,
+            document,
+        } => scoreboard_import(&path, input, &document)?,
+        Command::ScoreboardExport { path, input } => scoreboard_export(&path, input)?,
+        Command::CrawlCheck { path } => crawl_check(&path)?,
+        Command::CrawlImport {
+            path,
+            input,
+            document,
+        } => crawl_import(&path, input, &document)?,
+        Command::CrawlExport { path, input } => crawl_export(&path, input)?,
+        Command::PreviewCheck { path } => preview_check(&path)?,
+        Command::PreviewImport {
+            path,
+            input,
+            document,
+        } => preview_import(&path, input, &document)?,
+        Command::PreviewExport { path, input } => preview_export(&path, input)?,
+        Command::PtzPresetsCheck { path } => ptz_presets_check(&path)?,
+        Command::PtzPresetsImport { path, document } => ptz_presets_import(&path, &document)?,
+        Command::PtzPresetsExport { path } => ptz_presets_export(&path)?,
+        Command::SettingsImport {
+            path,
+            input,
+            apply,
+            stream_keys,
+        } => {
+            let stream_keys = stream_keys.into_iter().collect();
+            settings_import(&path, &input, apply, &stream_keys)?;
+        }
+        Command::TitleDesignCheck { path } => title_design_check(&path)?,
+        Command::TitleApplyRow {
+            path,
+            input,
+            row,
+            keep_live,
+            preview,
+        } => crate::title_row::apply_row(&path, input, &row, keep_live, preview)?,
+        Command::TitleDesignImport {
+            path,
+            input,
+            name,
+            design,
+            fonts,
+        } => project_bundle::title_design_import(&path, input, name, &design, &fonts)?,
         Command::AudioStrip {
             path,
             input,
@@ -887,13 +1156,13 @@ pub fn run(command: Command) -> AppResult<()> {
             soloed,
             follow_video,
             delay_samples,
-            buses,
+            sends,
         } => mutate(
             &path,
             EngineCommand::SetInputAudioStrip {
                 input: input_id(input)?,
                 state: EngineInputAudioStripState {
-                    buses,
+                    sends,
                     ..engine_audio_strip_state(
                         gain_millidb,
                         balance_basis_points,
@@ -909,6 +1178,29 @@ pub fn run(command: Command) -> AppResult<()> {
             None,
             None,
         )?,
+        Command::AudioPluginChain {
+            path,
+            target,
+            slots,
+        } => {
+            let chain = local_plugin_chain(&slots)?;
+            let target = match target {
+                PluginChainTarget::Master => fm_types::strip_dsp::StripDspTarget::Master,
+                PluginChainTarget::Input(input) => {
+                    fm_types::strip_dsp::StripDspTarget::Input(input_id(input)?)
+                }
+            };
+            mutate(
+                &path,
+                EngineCommand::AudioMixer(EngineAudioMixerEdit::SetPluginChain {
+                    target,
+                    chain: Box::new(chain),
+                }),
+                1,
+                None,
+                None,
+            )?;
+        }
         Command::Rename {
             path,
             input,
@@ -1343,6 +1635,11 @@ pub fn run(command: Command) -> AppResult<()> {
         )?,
         Command::RemoteStatus { address } => remote::status(address)?,
         Command::RemoteDiagnostics { address } => remote::diagnostics(address)?,
+        Command::RemoteClockControl {
+            address,
+            name,
+            operation,
+        } => remote::clock_control(address, &name, operation)?,
         Command::RemoteAlert {
             address,
             rule,
@@ -1995,7 +2292,7 @@ pub fn run(command: Command) -> AppResult<()> {
             soloed,
             follow_video,
             delay_samples,
-            buses,
+            sends,
             key,
             expected_revision,
         } => remote::execute(
@@ -2022,7 +2319,7 @@ pub fn run(command: Command) -> AppResult<()> {
                 delay_samples: InputDelaySamples::new(delay_samples)
                     .ok_or_else(|| AppFailure("delay samples must be in 0..=48000".into()))?
                     .get(),
-                buses,
+                sends,
             },
             key,
             expected_revision,
@@ -2854,7 +3151,7 @@ fn engine_from_project(project: Project) -> AppResult<ProjectEngine> {
     Ok(ProjectEngine { project, engine })
 }
 
-fn mutate(
+pub(crate) fn mutate(
     path: &Path,
     command: EngineCommand,
     ticks: u32,
@@ -2979,7 +3276,7 @@ pub(crate) fn script_payload(
         } => CommandPayload::RunScript {
             script: resolve(&name)?,
         },
-        ScriptCommand::Stop { run } => CommandPayload::StopScript { run },
+        ScriptCommand::Stop { runs } => CommandPayload::StopScript { runs },
     })
 }
 
@@ -4719,7 +5016,7 @@ fn load_engine(path: &Path) -> AppResult<ProjectEngine> {
 }
 
 /// Restores an engine for reporting only, without opening the journal.
-fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
+pub(crate) fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
     restore_project_engine(path, &inspect_stored_project(path)?)
 }
 
@@ -4761,6 +5058,7 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
     // A run paused at a wait, or a failed part's report (schema 56).
     show.set_script_run(project.script_run().clone(), project.settings().frame_rate)?;
     show.set_shortcuts(project.shortcuts().to_vec())?;
+    show.restore_production_clocks(project.production_clocks().to_vec());
     // Each list input's active item is its media source (IN-006).
     show.restore_media_lists(project.media_lists().clone())?;
     Ok(())
@@ -4903,6 +5201,103 @@ fn document_page_count(store: &ProjectStore, asset_uri: &str) -> Option<u32> {
         .map(|info| info.page_count)
 }
 
+/// The persisted form of the engine's plugin chain (AU-006, schema 91).
+fn model_plugin_chain(
+    chain: &fm_plugin_host_api::PluginChain,
+) -> AppResult<fm_types::audio_plugins::PluginChainState> {
+    let mut state = fm_types::audio_plugins::PluginChainState::new();
+    for slot in chain.slots() {
+        let mut model = fm_types::audio_plugins::PluginSlotState::new(slot.plugin().as_str());
+        model.set_bypassed(slot.is_bypassed());
+        model
+            .set_latency(slot.latency_frames())
+            .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
+        if let Some(snapshot) = slot.snapshot() {
+            model
+                .set_state(snapshot.data().to_vec())
+                .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
+        }
+        for (name, value) in slot.parameters() {
+            model
+                .set_parameter(name, value)
+                .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
+        }
+        state
+            .push(model)
+            .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
+    }
+    Ok(state)
+}
+
+/// The engine plugin chain for a persisted one (AU-006, schema 91).
+fn engine_plugin_chain(
+    state: &fm_types::audio_plugins::PluginChainState,
+) -> AppResult<fm_plugin_host_api::PluginChain> {
+    let limits = fm_plugin_host_api::ProtocolLimits::default();
+    let mut chain = fm_plugin_host_api::PluginChain::new();
+    for slot in state.slots() {
+        let plugin = fm_plugin_host_api::PluginId::new(slot.plugin());
+        let mut engine_slot = fm_plugin_host_api::PluginSlot::new(plugin.clone());
+        engine_slot.set_bypassed(slot.is_bypassed());
+        engine_slot
+            .set_latency(slot.latency_frames())
+            .map_err(|error| {
+                AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+            })?;
+        if !slot.state().is_empty() {
+            let snapshot = fm_plugin_host_api::StateSnapshot::new(
+                plugin,
+                fm_plugin_host_api::StateVersion::new(0),
+                slot.state().to_vec(),
+                &limits,
+            )
+            .map_err(|error| {
+                AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+            })?;
+            engine_slot.store_snapshot(snapshot).map_err(|error| {
+                AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+            })?;
+        }
+        for (name, value) in slot.parameters() {
+            engine_slot.set_parameter(name, value).map_err(|error| {
+                AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+            })?;
+        }
+        chain.push(engine_slot).map_err(|error| {
+            AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+        })?;
+    }
+    Ok(chain)
+}
+
+/// The engine plugin chain for typed CLI slots (AU-006).
+fn local_plugin_chain(
+    slots: &[fm_protocol::PluginChainSlot],
+) -> AppResult<fm_plugin_host_api::PluginChain> {
+    let mut state = fm_types::audio_plugins::PluginChainState::new();
+    for slot in slots {
+        let mut model = fm_types::audio_plugins::PluginSlotState::new(slot.plugin.as_str());
+        model.set_bypassed(slot.bypassed);
+        model.set_latency(slot.latency_frames).map_err(|error| {
+            AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
+        })?;
+        model.set_state(slot.state.clone()).map_err(|error| {
+            AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
+        })?;
+        for parameter in &slot.parameters {
+            model
+                .set_parameter(&parameter.name, parameter.value())
+                .map_err(|error| {
+                    AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
+                })?;
+        }
+        state.push(model).map_err(|error| {
+            AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
+        })?;
+    }
+    engine_plugin_chain(&state)
+}
+
 fn engine_audio_strip_state(
     gain_millidb: i32,
     balance_basis_points: i32,
@@ -4928,7 +5323,7 @@ fn engine_audio_strip_state(
         delay_samples: InputDelaySamples::new(delay_samples)
             .ok_or_else(|| AppFailure("delay samples must be in 0..=48000".into()))?
             .get(),
-        buses: fm_types::audio_bus::AudioBusMask::MASTER,
+        sends: fm_types::audio_bus::AudioSends::MASTER,
     })
 }
 
@@ -5004,6 +5399,10 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
                 muted,
             },
         },
+        AudioMixerArgs::AuxDsp { bus, chain } => fm_engine::EngineAudioMixerEdit::SetAuxBusDsp {
+            bus,
+            chain: Box::new(chain),
+        },
         AudioMixerArgs::StripDsp { input, chain } => fm_engine::EngineAudioMixerEdit::SetStripDsp {
             target: match input {
                 Some(input) => fm_types::strip_dsp::StripDspTarget::Input(input_id(input)?),
@@ -5044,6 +5443,27 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
                 ),
                 bus,
             }
+        }
+        AudioMixerArgs::OutputMixMinus { output, input } => {
+            fm_engine::EngineAudioMixerEdit::SetOutputMixMinus {
+                output: fm_types::OutputId::new(
+                    NonZeroU128::new(output)
+                        .ok_or_else(|| AppFailure("output ID must be nonzero".into()))?,
+                ),
+                input: input
+                    .map(|input| {
+                        NonZeroU128::new(input)
+                            .map(fm_types::InputId::new)
+                            .ok_or_else(|| AppFailure("input ID must be nonzero".into()))
+                    })
+                    .transpose()?,
+            }
+        }
+        AudioMixerArgs::AuxDevice { bus, device } => {
+            fm_engine::EngineAudioMixerEdit::SetAuxBusDevice { bus, device }
+        }
+        AudioMixerArgs::AuxOmt { bus, omt } => {
+            fm_engine::EngineAudioMixerEdit::SetAuxBusOmt { bus, omt }
         }
     })
 }
@@ -5113,6 +5533,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                     fm_types::strip_dsp::StripDspTarget::Master => {
                         fm_protocol::AudioDspTarget::Master
                     }
+                    fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                        fm_protocol::AudioDspTarget::Aux(bus)
+                    }
                     fm_types::strip_dsp::StripDspTarget::Input(input) => {
                         fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(
                             input,
@@ -5133,10 +5556,25 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 muted: state.muted,
             }
         }
+        fm_engine::EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => {
+            fm_protocol::AudioMixerOperation::SetAuxBusDsp { bus, chain }
+        }
+        fm_engine::EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => {
+            fm_protocol::AudioMixerOperation::SetAuxBusDevice { bus, device }
+        }
+        fm_engine::EngineAudioMixerEdit::SetAuxBusOmt { bus, omt } => {
+            fm_protocol::AudioMixerOperation::SetAuxBusOmt { bus, omt }
+        }
         fm_engine::EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
             fm_protocol::AudioMixerOperation::SetOutputBus {
                 output: fm_protocol::WireOutputId::from_domain(output),
                 bus,
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::SetOutputMixMinus { output, input } => {
+            fm_protocol::AudioMixerOperation::SetOutputMixMinus {
+                output: fm_protocol::WireOutputId::from_domain(output),
+                input: input.map(fm_protocol::WireInputId::from_domain),
             }
         }
         fm_engine::EngineAudioMixerEdit::ResetLoudness { target } => {
@@ -5144,6 +5582,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 target: match target {
                     fm_types::strip_dsp::StripDspTarget::Master => {
                         fm_protocol::AudioDspTarget::Master
+                    }
+                    fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                        fm_protocol::AudioDspTarget::Aux(bus)
                     }
                     fm_types::strip_dsp::StripDspTarget::Input(input) => {
                         fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(
@@ -5158,6 +5599,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 target: match target {
                     fm_types::strip_dsp::StripDspTarget::Master => {
                         fm_protocol::AudioDspTarget::Master
+                    }
+                    fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                        fm_protocol::AudioDspTarget::Aux(bus)
                     }
                     fm_types::strip_dsp::StripDspTarget::Input(input) => {
                         fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(
@@ -5175,6 +5619,10 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                         state: slot
                             .snapshot()
                             .map_or_else(Vec::new, |snapshot| snapshot.data().to_vec()),
+                        parameters: slot
+                            .parameters()
+                            .map(|(name, value)| fm_protocol::PluginParameter::new(name, value))
+                            .collect(),
                     })
                     .collect(),
             }
@@ -5194,14 +5642,16 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                 soloed: strip.state.soloed,
                 follow_video: strip.state.follow_video,
                 delay_samples: strip.state.delay_samples.get(),
-                buses: strip.state.buses,
+                sends: strip.state.sends,
             },
         )?;
         show.set_input_audio_label(strip.input, strip.label.clone())?;
         show.set_input_audio_group(strip.input, strip.group)?;
         show.set_input_audio_dsp(strip.input, strip.dsp)?;
+        show.set_input_audio_plugins(strip.input, engine_plugin_chain(&strip.plugins)?);
     }
     show.set_master_audio_dsp(*project.master_audio_dsp());
+    show.set_master_audio_plugins(engine_plugin_chain(project.master_audio_plugins())?);
     for (group, value) in project.audio_groups().iter() {
         show.set_audio_group(
             group,
@@ -5225,11 +5675,17 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                     gain_millidb: value.gain.get(),
                     muted: value.muted,
                 },
+                dsp: value.dsp,
+                device: value.device.clone(),
+                omt: value.omt,
             },
         )?;
     }
     for (&output, &bus) in project.output_aux_buses() {
         show.set_output_aux_bus(output, Some(bus));
+    }
+    for (&output, &input) in project.output_mix_minus() {
+        show.set_output_mix_minus(output, Some(input));
     }
     show.set_audio_solo_mode(project.audio_solo_mode());
     let monitor = project.audio_monitor_output();
@@ -5321,10 +5777,16 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
         project
             .set_input_audio_dsp(input, show.input_audio_dsp(input))
             .map_err(|error| AppFailure(format!("input {input} strip DSP: {error}")))?;
+        project
+            .set_input_audio_plugins(input, model_plugin_chain(show.input_audio_plugins(input))?)
+            .map_err(|error| AppFailure(format!("input {input} plugin chain: {error}")))?;
     }
     project
         .set_master_audio_dsp(*show.master_audio_dsp())
         .map_err(|error| AppFailure(format!("Master DSP: {error}")))?;
+    project
+        .set_master_audio_plugins(model_plugin_chain(show.master_audio_plugins())?)
+        .map_err(|error| AppFailure(format!("Master plugin chain: {error}")))?;
     // Parents are cleared first so an old parent never closes a transient
     // cycle with a new one.
     for nested in [false, true] {
@@ -5359,6 +5821,9 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
                     gain: InputGainMilliDb::new(value.state.gain_millidb)
                         .expect("engine aux bus gain is bounded by the model contract"),
                     muted: value.state.muted,
+                    dsp: value.dsp,
+                    device: value.device.clone(),
+                    omt: value.omt,
                 },
             )
             .map_err(|error| AppFailure(format!("project cannot take aux {bus}: {error}")))?;
@@ -5370,6 +5835,7 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
         .collect::<Vec<_>>();
     for output in outputs {
         project.set_output_aux_bus(output, show.output_aux_bus(output));
+        project.set_output_mix_minus(output, show.output_mix_minus_input(output));
     }
     project.set_audio_solo_mode(show.audio_solo_mode());
     let monitor = show.audio_monitor();
@@ -5416,7 +5882,7 @@ fn sync_input_audio_strips(project: &mut Project, show: &ShowState) -> AppResult
             follow_video: state.follow_video,
             delay_samples: InputDelaySamples::new(state.delay_samples)
                 .expect("engine input audio delay is bounded by the model contract"),
-            buses: state.buses,
+            sends: state.sends,
         };
         if !project.set_input_audio_strip(input, strip) {
             return Err(AppFailure(format!("project is missing input {input}")).into());
@@ -5681,6 +6147,495 @@ fn audit_assets(path: &Path) -> AppResult<()> {
     }
 }
 
+fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let snapshot = SettingsSnapshot::from_project(stored.project())
+        .map_err(|error| AppFailure(format!("settings export: {error}")))?;
+    std::fs::write(output, snapshot.to_export_json())
+        .map_err(|error| AppFailure(format!("settings export: {error}")))?;
+    println!("settings-export: {} entries", snapshot.len());
+    Ok(())
+}
+
+fn ptz_presets_check(path: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("PTZ presets: {error}")))?;
+    let inputs = fm_ptz::PresetVirtualInputs::from_document(&text)
+        .map_err(|error| AppFailure(format!("PTZ presets: {error}")))?;
+    println!("ptz-presets: {} entries", inputs.len());
+    Ok(())
+}
+
+fn ptz_presets_import(path: &Path, document: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("PTZ presets import: {error}")))?;
+    let inputs = fm_ptz::PresetVirtualInputs::from_document(&text)
+        .map_err(|error| AppFailure(format!("PTZ presets import: {error}")))?;
+    let canonical = inputs.to_document();
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    project
+        .set_ptz_presets_document(canonical)
+        .map_err(|error| AppFailure(format!("PTZ presets import: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("ptz-presets-import: {} entries", inputs.len());
+    Ok(())
+}
+
+fn ptz_presets_export(path: &Path) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let document = stored
+        .project()
+        .ptz_presets_document()
+        .ok_or_else(|| AppFailure("the project has no PTZ preset document".into()))?;
+    print!("{document}");
+    Ok(())
+}
+
+fn preview_check(path: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(path).map_err(|error| AppFailure(format!("preview: {error}")))?;
+    let snapshot = fm_data::PreviewSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("preview: {error}")))?;
+    println!(
+        "preview: policy={:?} revision={} fields={}",
+        snapshot.policy,
+        snapshot.revision,
+        snapshot.live.len()
+    );
+    Ok(())
+}
+
+fn preview_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("preview import: {error}")))?;
+    let snapshot = fm_data::PreviewSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("preview import: {error}")))?;
+    let canonical = snapshot.to_document();
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let input = input_id(input)?;
+    project
+        .set_preview_document(input, canonical)
+        .map_err(|error| AppFailure(format!("preview import: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("preview-import: {input}");
+    Ok(())
+}
+
+fn preview_export(path: &Path, input: u128) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let input = input_id(input)?;
+    let document = stored
+        .project()
+        .preview_document(input)
+        .ok_or_else(|| AppFailure(format!("input {input} has no stored preview")))?;
+    print!("{document}");
+    Ok(())
+}
+
+fn crawl_check(path: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(path).map_err(|error| AppFailure(format!("crawl: {error}")))?;
+    let snapshot = fm_titles::CrawlSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("crawl: {error}")))?;
+    println!(
+        "crawl: mode={:?} items={} speed={}px/{}s gap={} font={} {}px",
+        snapshot.config.mode,
+        snapshot.items.len(),
+        snapshot.config.speed.pixels(),
+        snapshot.config.speed.seconds(),
+        snapshot.config.gap_px,
+        snapshot.config.font.family,
+        snapshot.config.font.size_px,
+    );
+    Ok(())
+}
+
+fn crawl_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("crawl import: {error}")))?;
+    let snapshot = fm_titles::CrawlSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("crawl import: {error}")))?;
+    let canonical = snapshot.to_document();
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let input = input_id(input)?;
+    project
+        .set_crawl_document(input, canonical)
+        .map_err(|error| AppFailure(format!("crawl import: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("crawl-import: {input}");
+    Ok(())
+}
+
+fn crawl_export(path: &Path, input: u128) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let input = input_id(input)?;
+    let document = stored
+        .project()
+        .crawl_document(input)
+        .ok_or_else(|| AppFailure(format!("input {input} has no stored crawl")))?;
+    print!("{document}");
+    Ok(())
+}
+
+fn scoreboard_check(path: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("scoreboard: {error}")))?;
+    let snapshot = fm_titles::ScoreboardSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("scoreboard: {error}")))?;
+    println!(
+        "scoreboard: home={} ({}) {} away={} ({}) {} period={} clock_ms={} revision={} last_frame={}",
+        snapshot.home.name,
+        snapshot.home.abbreviation,
+        snapshot.home.score,
+        snapshot.away.name,
+        snapshot.away.abbreviation,
+        snapshot.away.score,
+        snapshot.period,
+        snapshot.clock.base_ms,
+        snapshot.revision,
+        snapshot.last_frame,
+    );
+    Ok(())
+}
+
+fn social_desk_check(path: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("social desk: {error}")))?;
+    let desk =
+        fm_social::ModerationDesk::from_document(&text, fm_social::SocialAggregator::empty())
+            .map_err(|error| AppFailure(format!("social desk: {error}")))?;
+    let config = desk.config();
+    println!(
+        "SocialDesk(audit_capacity={}, rotation_capacity={}, max_operators={}, \
+         rotation_dwell_ms={})",
+        config.audit_capacity,
+        config.rotation_capacity,
+        config.max_operators,
+        config.rotation_dwell.get(),
+    );
+    for (operator, role) in desk.operators() {
+        println!(
+            "SocialDeskOperator(id={:?}, role={})",
+            operator.as_str(),
+            role.token()
+        );
+    }
+    println!(
+        "SocialDeskState(hidden={}, rotation={}, on_air={}, messages={}, pending={}, \
+         blocked_authors={}, audit={}, evicted_audit={})",
+        desk.hidden().len(),
+        desk.rotation().len(),
+        desk.on_air().map_or_else(
+            || "none".to_owned(),
+            |on_air| format!(
+                "{}:{}:{}",
+                on_air.key.provider_id.as_str(),
+                on_air.key.message_id.as_str(),
+                on_air.source.token()
+            )
+        ),
+        desk.social().message_count(),
+        desk.social().pending_len(),
+        desk.social().blocked_author_count(),
+        desk.audit().len(),
+        desk.evicted_audit_entries(),
+    );
+    Ok(())
+}
+
+fn social_desk_export(path: &Path, output: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("social desk: {error}")))?;
+    let desk =
+        fm_social::ModerationDesk::from_document(&text, fm_social::SocialAggregator::empty())
+            .map_err(|error| AppFailure(format!("social desk: {error}")))?;
+    fs::write(output, desk.to_document())
+        .map_err(|error| AppFailure(format!("social desk export: {error}")))?;
+    println!(
+        "social-desk-export: {} operators to {}",
+        desk.operators().len(),
+        output.display()
+    );
+    Ok(())
+}
+
+fn track_map_check(path: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("track map: {error}")))?;
+    let map = fm_record::RecorderTrackMap::from_document(&text)
+        .map_err(|error| AppFailure(format!("track map: {error}")))?;
+    println!(
+        "TrackMap(inventory_buses={}, tracks={}, channels={})",
+        map.inventory().buses().len(),
+        map.tracks().len(),
+        map.total_channels(),
+    );
+    for track in map.tracks() {
+        println!(
+            "TrackMapTrack(name={:?}, channels={})",
+            track.name(),
+            track.sources().len()
+        );
+    }
+    Ok(())
+}
+
+fn track_map_export(path: &Path, output: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("track map: {error}")))?;
+    let map = fm_record::RecorderTrackMap::from_document(&text)
+        .map_err(|error| AppFailure(format!("track map: {error}")))?;
+    fs::write(output, map.to_document())
+        .map_err(|error| AppFailure(format!("track map export: {error}")))?;
+    println!(
+        "track-map-export: {} tracks to {}",
+        map.tracks().len(),
+        output.display()
+    );
+    Ok(())
+}
+
+fn record_track_map_import(
+    path: &Path,
+    slot: fm_model::RecorderSlot,
+    document: &Path,
+) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    let map = fm_record::RecorderTrackMap::from_document(&text)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    let store = fm_persistence::ProjectStore::new(path)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    store
+        .save_recorder_track_map(slot, &map)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    println!(
+        "record-track-map-import: {} tracks to slot {} ({})",
+        map.tracks().len(),
+        slot.get(),
+        store.recorder_track_map_path(slot).display()
+    );
+    Ok(())
+}
+
+fn record_track_map_export(path: &Path, slot: fm_model::RecorderSlot) -> AppResult<()> {
+    let store = fm_persistence::ProjectStore::new(path)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    let Some(map) = store
+        .load_recorder_track_map(slot)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?
+    else {
+        return Err(AppFailure(format!(
+            "record-track-map-export: slot {} has no track map",
+            slot.get()
+        ))
+        .into());
+    };
+    println!("{}", map.to_document());
+    Ok(())
+}
+
+fn scoreboard_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
+    let snapshot = fm_titles::ScoreboardSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
+    let canonical = snapshot.to_document();
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let input = input_id(input)?;
+    project
+        .set_scoreboard_document(input, canonical)
+        .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("scoreboard-import: {input}");
+    Ok(())
+}
+
+fn scoreboard_export(path: &Path, input: u128) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let input = input_id(input)?;
+    let document = stored
+        .project()
+        .scoreboard_document(input)
+        .ok_or_else(|| AppFailure(format!("input {input} has no stored scoreboard")))?;
+    print!("{document}");
+    Ok(())
+}
+
+fn clock_add(path: &Path, clock: fm_types::ProjectClock) -> AppResult<()> {
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let mut clocks = project.production_clocks().to_vec();
+    if clocks.iter().any(|candidate| candidate.name == clock.name) {
+        return Err(AppFailure(format!(
+            "clock `{}` already exists; remove it first",
+            clock.name
+        ))
+        .into());
+    }
+    let name = clock.name.clone();
+    clocks.push(clock);
+    project
+        .set_production_clocks(clocks)
+        .map_err(|error| AppFailure(format!("clock-add: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("clock-add: {name}");
+    Ok(())
+}
+
+fn clock_remove(path: &Path, name: &str) -> AppResult<()> {
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let clocks = project.production_clocks().to_vec();
+    let Some(position) = clocks.iter().position(|clock| clock.name == name) else {
+        return Err(AppFailure(format!("clock `{name}` does not exist")).into());
+    };
+    let mut clocks = clocks;
+    clocks.remove(position);
+    project
+        .set_production_clocks(clocks)
+        .map_err(|error| AppFailure(format!("clock-remove: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("clock-remove: {name}");
+    Ok(())
+}
+
+fn clock_list(path: &Path) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    for clock in stored.project().production_clocks() {
+        match &clock.kind {
+            fm_types::ProjectClockKind::Timer {
+                direction,
+                preset_nanos,
+                limit_nanos,
+                overrun,
+                format,
+            } => println!(
+                "timer {} {} preset_ns={preset_nanos} limit_ns={} overrun={} format={}",
+                clock.name,
+                direction.token(),
+                limit_nanos.map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                overrun.token(),
+                format.token()
+            ),
+            fm_types::ProjectClockKind::TimeOfDay { zone, format } => println!(
+                "time_of_day {} {zone} format={}",
+                clock.name,
+                format.token()
+            ),
+            fm_types::ProjectClockKind::MediaRemaining { input, format } => {
+                println!(
+                    "media_remaining {} input={} format={}",
+                    clock.name,
+                    input.map_or_else(|| "none".to_owned(), |input| input.to_string()),
+                    format.token()
+                );
+            }
+            fm_types::ProjectClockKind::Session { kind, format } => println!(
+                "session {} {} format={}",
+                clock.name,
+                kind.token(),
+                format.token()
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn settings_import(
+    path: &Path,
+    input: &Path,
+    apply: bool,
+    stream_keys: &std::collections::BTreeMap<u128, String>,
+) -> AppResult<()> {
+    let stored = if apply {
+        load_stored_project(path)?
+    } else {
+        inspect_stored_project(path)?
+    };
+    let current = SettingsSnapshot::from_project(stored.project())
+        .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    let inventory = ContentInventory::from_project(stored.project());
+    let source = std::fs::read_to_string(input)
+        .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    let plan = ImportPlan::from_export_json(
+        &current,
+        &source,
+        inventory,
+        MergeStrategy::MergePreferIncoming,
+    )
+    .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    let preview = plan.incoming_preview();
+    for change in preview.changes() {
+        let kind = match change.kind {
+            ChangeKind::Added => "added",
+            ChangeKind::Changed => "changed",
+            ChangeKind::Removed => "removed",
+            ChangeKind::Unchanged => continue,
+        };
+        println!("{kind} {}", change.key.as_str());
+    }
+    let outcome = plan
+        .outcome()
+        .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    if apply {
+        if let Some(change) = preview.changes().iter().find(|change| {
+            change.kind != ChangeKind::Unchanged
+                && !matches!(
+                    change.key.section(),
+                    fm_persistence::SettingsSection::Format
+                        | fm_persistence::SettingsSection::RestartPolicy
+                        | fm_persistence::SettingsSection::Outputs
+                        | fm_persistence::SettingsSection::AudioBuses
+                        | fm_persistence::SettingsSection::StreamTargets
+                )
+        }) {
+            return Err(AppFailure(format!(
+                "settings-import: cannot apply {} changes yet (only format, restart_policy, outputs, audio_buses, and stream_targets); nothing was saved",
+                change.key.section()
+            ))
+            .into());
+        }
+        let mut project = stored.project().clone();
+        outcome
+            .result
+            .apply_exported_with_keys(&mut project, stream_keys)
+            .map_err(|error| AppFailure(format!("settings-import: {error}")))?;
+        let configured = stored.with_project(project)?;
+        ProjectStore::new(path)?.save(&configured)?;
+    }
+    println!(
+        "settings-import: {} added, {} changed, {} removed; {}",
+        preview.count(ChangeKind::Added),
+        preview.count(ChangeKind::Changed),
+        preview.count(ChangeKind::Removed),
+        if apply { "applied" } else { "nothing applied" },
+    );
+    for key in &outcome.retained_secrets {
+        println!("kept-secret {}", key.as_str());
+    }
+    for conflict in &outcome.conflicts {
+        println!("conflict {conflict:?}");
+    }
+    Ok(())
+}
+
+fn title_design_check(path: &Path) -> AppResult<()> {
+    let design = fm_persistence::read_title_design_file(path)
+        .map_err(|error| AppFailure(format!("title design: {error}")))?;
+    println!(
+        "title-design: id={} name={} nodes={} roots={} fields={}",
+        design.id(),
+        design.name(),
+        design.node_count(),
+        design.roots().len(),
+        design.fields().len(),
+    );
+    Ok(())
+}
+
 fn recover_journal(path: &Path) -> AppResult<()> {
     let store = ProjectStore::new(path)?;
     let scan = store.scan_journal()?;
@@ -5798,7 +6753,7 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
             None => mixed,
         }
     };
-    write_ppm_atomic(output, |file| write_ppm(&frame, file))?;
+    write_title_frame(output, &frame)?;
     println!(
         "rendered {}x{} Program input {} to {}",
         width,
@@ -5816,9 +6771,19 @@ fn is_scene_input(project: &Project, input: InputId) -> bool {
         .any(|candidate| candidate.id == input && matches!(candidate.kind, InputKind::Scene { .. }))
 }
 
-/// Writes a rendered title frame as a binary PPM, atomically.
-pub(crate) fn write_title_ppm(output: &Path, frame: &ImageFrame) -> io::Result<()> {
-    write_ppm_atomic(output, |file| write_ppm(frame, file))
+/// Writes a rendered frame atomically as an RGBA8 PNG when `output` ends in
+/// `.png`, otherwise as a binary PPM.
+pub(crate) fn write_title_frame(output: &Path, frame: &ImageFrame) -> io::Result<()> {
+    if output
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+    {
+        let png = fm_video::encode_png_rgba8(frame)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        write_ppm_atomic(output, |file| file.write_all(&png))
+    } else {
+        write_ppm_atomic(output, |file| write_ppm(frame, file))
+    }
 }
 
 fn write_ppm_atomic(
@@ -6140,6 +7105,21 @@ fn print_audio_buses(project: &Project) {
             bus.id, bus.name,
         );
     }
+    for (bus, value) in project.aux_buses().iter() {
+        let dsp = if value.dsp.is_default() {
+            "flat".to_owned()
+        } else {
+            value.dsp.code()
+        };
+        println!(
+            "audio_aux_bus bus={} name={:?} gain_millidb={} muted={} dsp={dsp} omt={}",
+            bus.letter(),
+            value.name,
+            value.gain.get(),
+            value.muted,
+            value.omt
+        );
+    }
 }
 
 /// A standalone live scene layer edit (no gesture) of layer `layer` of
@@ -6282,6 +7262,15 @@ fn format_layer_mask(mask: Option<RectMask>) -> String {
             )
         },
     )
+}
+
+/// Prints the daemon's as-run log beside the project bundle (OR-015).
+fn print_as_run(path: &Path) -> AppResult<()> {
+    let log = path.join("as-run.log");
+    let text = fs::read_to_string(&log)
+        .map_err(|error| AppFailure(format!("cannot read {}: {error}", log.display())))?;
+    print!("{text}");
+    Ok(())
 }
 
 /// Renders one layer's ordered effects as `name(parameter,...)` entries joined
@@ -6484,7 +7473,7 @@ Usage:
   freemix-cli title-animation-stretch <show.freemix> <asset://titles/...fmtitle> --phase in|out --frames <n>
       Sets a phase to n frames, scaling every key of the phase
       proportionally (frames rounded half up).
-  freemix-cli title-render-frame <show.freemix> <title-input-id> --phase in|out --frame <f> [--at <YYYY-MM-DDTHH:MM:SSZ>] <out.ppm>
+  freemix-cli title-render-frame <show.freemix> <title-input-id> --phase in|out --frame <f> [--at <YYYY-MM-DDTHH:MM:SSZ>] <out.ppm|out.png>
       Renders the title input's field values at frame f of the phase, at
       the template canvas size, with the bundle's fonts and decoded PNG or
       JPEG images, exactly as freemixd draws it. Production clocks read the
@@ -6504,7 +7493,7 @@ Usage:
   freemix-cli scene-animation-stretch <show.freemix> <scene-id> --phase in|out --frames <n>
       Sets a scene animation phase to n frames, scaling every key of the
       phase proportionally (frames rounded half up).
-  freemix-cli scene-render-frame <show.freemix> <scene-id> --phase in|hold|out [--frame <f>] <out.ppm> [--width <px>] [--height <px>]
+  freemix-cli scene-render-frame <show.freemix> <scene-id> --phase in|hold|out [--frame <f>] <out.ppm|out.png> [--width <px>] [--height <px>]
       Renders the scene posed at frame f of the In or Out phase (or held
       at the In end, which takes no --frame) from the simulated sources,
       composed at the project canvas and scaled like render.
@@ -6620,6 +7609,12 @@ Usage:
   freemix-cli input-replace-media <show.freemix> <input-id> <asset://key>
   freemix-cli input-replace-scene <show.freemix> <input-id> <existing-scene-id>
   freemix-cli input-media-list <show.freemix>
+  freemix-cli input-media-list-navigate <show.freemix> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-media-list-navigate <address> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
+  freemix-cli input-media-list-options <show.freemix> <input-id> <auto-next on|off> <auto-first on|off> <loop on|off> <shuffle seed|off> [--key <key>] [--expect <revision>]
+  freemix-cli input-media-list-transition <show.freemix> <input-id> <cut|fade|dip|wipe> <1..600 frames> [--key <key>] [--expect <revision>]
+  freemix-cli input-media-list-item <show.freemix> <input-id> add <asset://key> <title|-> | remove <item-id> | title <item-id> <title|-> | marks <item-id> <in> <out|end> | move <item-id> <zero-based-position> [--key <key>] [--expect <revision>]
+  freemix-cli input-media-list-import <show.freemix> <input-id> <playlist.m3u>
   freemix-cli input-pages <show.freemix>
   freemix-cli input-page <show.freemix> <input-id> <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]
   freemix-cli input-categories <show.freemix> [<id>=<name>...] [--key <key>] [--expect <revision>]
@@ -6638,6 +7633,33 @@ Usage:
   freemix-cli audio-buses <show.freemix>
   freemix-cli scenes <show.freemix>
   freemix-cli asset-audit <show.freemix>
+  freemix-cli settings-export <show.freemix> <settings.json>
+  freemix-cli settings-import <show.freemix> <settings.json> [--apply] [--stream-key <stream-id>=<key>]...
+  freemix-cli clock-add <show.freemix> --name <name> [--kind timer|time-of-day|media-remaining|session] [--preset HH:MM:SS] [--direction count_up|count_down] [--limit HH:MM:SS] [--overrun stop_at_target|continue] [--format <duration preset>] [--zone <POSIX zone>] [--time-format <time preset>] [--session stream|recording|replay|multicorder|external]
+  freemix-cli clock-remove <show.freemix> <name>
+  freemix-cli clock-list <show.freemix>
+  freemix-cli scoreboard-check <scoreboard.txt>
+  freemix-cli social-desk-check <desk.txt>
+  freemix-cli social-desk-export <desk.txt> <output.txt>
+  freemix-cli track-map-check <track-map.txt>
+  freemix-cli track-map-export <track-map.txt> <output.txt>
+  freemix-cli record-track-map-import <show.freemix> <slot 1|2> <track-map.txt>
+  freemix-cli record-track-map-export <show.freemix> <slot 1|2>
+    validates or rewrites a moderation desk document's config and operator roles (GX-010)
+  freemix-cli scoreboard-import <show.freemix> <title-input> <scoreboard.txt>
+  freemix-cli scoreboard-export <show.freemix> <title-input>
+  freemix-cli crawl-check <crawl.txt>
+  freemix-cli crawl-import <show.freemix> <title-input> <crawl.txt>
+  freemix-cli crawl-export <show.freemix> <title-input>
+  freemix-cli preview-check <preview.txt>
+  freemix-cli preview-import <show.freemix> <title-input> <preview.txt>
+  freemix-cli preview-export <show.freemix> <title-input>
+  freemix-cli ptz-presets-check <presets.txt>
+  freemix-cli ptz-presets-import <show.freemix> <presets.txt>
+  freemix-cli ptz-presets-export <show.freemix>
+  freemix-cli title-design-check <design.fmdesign>
+  freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live] [--preview]
+  freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...
   freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp:-10000..=10000>]
   freemix-cli audio-label <show.freemix> <input> <label (empty clears)> [--key <key>] [--expect <revision>]
   freemix-cli audio-group <show.freemix> <input> <1..4|none> [--key <key>] [--expect <revision>]
@@ -6649,6 +7671,7 @@ Usage:
   freemix-cli audio-monitor-device <show.freemix> <alsa-device|none> [--key <key>] [--expect <revision>]
   freemix-cli audio-monitor-level <show.freemix> <gain-millidb> <muted:on|off> [--key <key>] [--expect <revision>]
   freemix-cli audio-strip-dsp <show.freemix> <input|master> <flat|voice|podcast|music|master|chain-code> [--key <key>] [--expect <revision>]
+  freemix-cli audio-plugin-chain <show.freemix> <input|master> [<plugin>[:<bypass 0|1>][:<latency>[:<state-hex>]] ...]
   freemix-cli audio-loudness-reset <show.freemix> <input|master> [--key <key>] [--expect <revision>]
   freemix-cli rename <show.freemix> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli input-reorder <show.freemix> <input> [<input>...] [--key <key>] [--expect <revision>]
@@ -6734,6 +7757,8 @@ Usage:
   freemix-cli input-screen-capture-status <show.freemix>
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
+  freemix-cli remote-clock-control <127.0.0.1:port> <clock> start|pause|reset | set|adjust|preset <HH:MM:SS or seconds>
+    operates one of the show's production clocks and prints its reading (SW-013, Protocol 2.150)
   freemix-cli remote-alert <127.0.0.1:port> <rule> acknowledge|silence <1..1440 minutes> | unsilence
   freemix-cli remote-alert-rules <127.0.0.1:port>
   freemix-cli remote-alert-rule <127.0.0.1:port> <rule> [--on|--off] [--fires-at <value>] [--clears-at <value>] [--hold <0..=3600 seconds>] | --defaults [--key <key>] [--expect <revision>]
@@ -7000,7 +8025,7 @@ fn render_transition_frame(
             mix_end_numerator: numerator,
         },
     )?;
-    write_ppm_atomic(output, |file| write_ppm(&frame, file))?;
+    write_title_frame(output, &frame)?;
     println!(
         "rendered {}x{} {} {numerator}/{denominator} from input {from} to input {to} to {}",
         width,

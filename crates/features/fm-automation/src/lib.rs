@@ -17,6 +17,7 @@ mod intent;
 mod macros;
 mod midi;
 mod osc;
+mod osc_transport;
 mod playlist;
 mod playlist_codec;
 mod schedule;
@@ -70,6 +71,9 @@ pub use osc::{
     MAX_OSC_PACKET_BYTES, OSC_TIME_TAG_IMMEDIATE, OscArg, OscBundle, OscError, OscLimits,
     OscMessage, OscPacket, decode_osc_packet, encode_osc_packet, osc_address_matches,
     osc_control_events, validate_osc_address, validate_osc_pattern,
+};
+pub use osc_transport::{
+    OscDatagram, OscReceive, OscSendError, OscTransportCounters, OscUdpTransport,
 };
 pub use playlist::{
     AdvanceCause, EntryDuration, LatePolicy, LoopMode, MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_MS,

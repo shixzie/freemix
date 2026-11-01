@@ -10,7 +10,7 @@ use std::{
 };
 
 use fm_model::InputKind;
-use fm_persistence::{ProjectStore, StoredProject};
+use fm_persistence::{CURRENT_SCHEMA_VERSION, ProjectStore, StoredProject};
 use fm_types::InputId;
 
 static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -632,4 +632,591 @@ fn recent_projects_record_list_prune_and_remove() {
 
     fs::write(&recent, b"{\"contract\":\"other\"}").unwrap();
     assert!(!run(&["recent-projects", text(&recent)]).status.success());
+}
+
+#[test]
+fn settings_export_and_import_preview_the_project() {
+    let root = TempRoot::new();
+    let show = root.path("show.freemix");
+    new_project(&show, "Settings show");
+    let export = root.path("settings.json");
+    let out = assert_success(&run(&["settings-export", text(&show), text(&export)]));
+    assert_eq!(out.trim(), "settings-export: 7 entries");
+    let json = fs::read_to_string(&export).unwrap();
+    assert!(
+        json.contains("\"contract\": \"freemix.settings-export\""),
+        "{json}"
+    );
+    assert!(json.contains("\"format.frame_rate.numerator\""), "{json}");
+    let preview = assert_success(&run(&["settings-import", text(&show), text(&export)]));
+    assert_eq!(
+        preview.trim(),
+        "settings-import: 0 added, 0 changed, 0 removed; nothing applied"
+    );
+    let changed = json.replace(
+        "\"format.audio.channel_count\": {\"integer\": 2}",
+        "\"format.audio.channel_count\": {\"integer\": 3}",
+    );
+    assert_ne!(changed, json);
+    let changed_path = root.path("changed.json");
+    fs::write(&changed_path, changed).unwrap();
+    let preview = assert_success(&run(&["settings-import", text(&show), text(&changed_path)]));
+    assert!(
+        preview.contains("changed format.audio.channel_count"),
+        "{preview}"
+    );
+    assert!(
+        preview.contains("settings-import: 0 added, 1 changed, 0 removed; nothing applied"),
+        "{preview}"
+    );
+}
+
+#[test]
+fn title_design_check_validates_a_designer_document() {
+    let root = TempRoot::new();
+    let design = root.path("empty.fmdesign");
+    let document = format!(
+        r##"{{
+  "contract": "freemix.title-design",
+  "schema_version": {CURRENT_SCHEMA_VERSION},
+  "id": 1,
+  "name": "Empty",
+  "width": 64,
+  "height": 32,
+  "background": "#00000000",
+  "fields": [],
+  "nodes": [],
+  "roots": [],
+  "children": [],
+  "animation": {{"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}
+}}"##
+    );
+    fs::write(&design, document).unwrap();
+    let out = assert_success(&run(&["title-design-check", text(&design)]));
+    assert_eq!(
+        out.trim(),
+        "title-design: id=1 name=Empty nodes=0 roots=0 fields=0"
+    );
+    fs::write(&design, "{\"contract\": \"nope\"}").unwrap();
+    assert!(!run(&["title-design-check", text(&design)]).status.success());
+}
+
+/// A `.fmtitle` source document with two fields and no font: a number and a
+/// color.
+const ROW_TITLE_SOURCE: &str = r##"{
+  "schema_version": 106,
+  "template": {
+    "id": 7,
+    "name": "Score bar",
+    "width": 1920,
+    "height": 1080,
+    "background": "#00000000",
+    "fields": [
+      {"id": 2, "name": "Bar color", "default": {"type": "color", "value": "#112233FF"}},
+      {"id": 1, "name": "Score", "default": {"type": "number", "value": -4}}
+    ],
+    "elements": [
+      {"id": 1, "name": "Bar", "bounds": {"x": 0, "y": 900, "width": 1920, "height": 120}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": 2, "kind": {"type": "rectangle"}}
+    ],
+    "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}
+  },
+  "fonts": [],
+  "clocks": []
+}
+"##;
+
+fn title_fields(project: &StoredProject, id: u128) -> (u64, Vec<fm_model::TitleFieldEntry>) {
+    let input = project
+        .project()
+        .inputs()
+        .iter()
+        .find(|candidate| candidate.id == input(id))
+        .expect("title input exists");
+    match &input.kind {
+        InputKind::Title(title) => (title.field_revision, title.fields.clone()),
+        other => panic!("input {id} is {other:?}, not a title"),
+    }
+}
+
+#[test]
+fn title_apply_row_writes_a_mapped_row_into_the_project() {
+    let root = TempRoot::new();
+    let show = root.path("row.freemix");
+    new_project(&show, "Row");
+    let template = root.path("score-bar.fmtitle");
+    fs::write(&template, ROW_TITLE_SOURCE).unwrap();
+    assert_success(&run(&[
+        "title-input-add",
+        text(&show),
+        "--id",
+        "9",
+        "--name",
+        "Score bar",
+        "--template",
+        text(&template),
+    ]));
+
+    let row = root.path("row.json");
+    fs::write(&row, r##"{"Score": "12", "Bar color": "#ABCDEF"}"##).unwrap();
+    let out = assert_success(&run(&["title-apply-row", text(&show), "9", text(&row)]));
+    assert_eq!(
+        out.lines().last(),
+        Some("title-apply-row: input=9 fields=2 revision=1")
+    );
+    let (revision, fields) = title_fields(&load(&show), 9);
+    assert_eq!(revision, 1);
+    assert_eq!(fields[0].id.get().get(), 1);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(12));
+    assert_eq!(fields[0].revision, 1);
+    assert_eq!(fields[1].id.get().get(), 2);
+    assert_eq!(
+        fields[1].value,
+        fm_model::TitleFieldValue::Color(fm_model::Rgba8::new(0xab, 0xcd, 0xef, 0xff))
+    );
+
+    // --preview reports the change without saving it.
+    fs::write(&row, r#"{"Score": 13}"#).unwrap();
+    let out = assert_success(&run(&[
+        "title-apply-row",
+        text(&show),
+        "9",
+        text(&row),
+        "--preview",
+    ]));
+    assert!(out.contains("would-change \"Score\""), "{out}");
+    assert!(out.contains("title-apply-row: input=9 preview"), "{out}");
+    let (revision, fields) = title_fields(&load(&show), 9);
+    assert_eq!(revision, 1);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(12));
+
+    // A field that fails coercion refuses the whole row and saves nothing.
+    let manifest = fs::read(show.join("project.json")).unwrap();
+    fs::write(&row, r#"{"Score": "twelve"}"#).unwrap();
+    let refused = run(&["title-apply-row", text(&show), "9", text(&row)]);
+    assert_failure_contains(&refused, "field(s) failed");
+    assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
+
+    // A row key that names no template field is refused before any update.
+    fs::write(&row, r#"{"Nope": 1}"#).unwrap();
+    assert_failure_contains(
+        &run(&["title-apply-row", text(&show), "9", text(&row)]),
+        "does not define",
+    );
+
+    // --keep-live applies the fields that mapped and keeps the failed one.
+    fs::write(&row, r##"{"Score": "twelve", "Bar color": "#010203"}"##).unwrap();
+    let out = assert_success(&run(&[
+        "title-apply-row",
+        text(&show),
+        "9",
+        text(&row),
+        "--keep-live",
+    ]));
+    assert!(out.contains("field \"Score\" coercion-error"), "{out}");
+    let (revision, fields) = title_fields(&load(&show), 9);
+    assert_eq!(revision, 2);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(12));
+    assert_eq!(fields[0].revision, 1);
+    assert_eq!(
+        fields[1].value,
+        fm_model::TitleFieldValue::Color(fm_model::Rgba8::new(0x01, 0x02, 0x03, 0xff))
+    );
+    assert_eq!(fields[1].revision, 2);
+}
+
+#[test]
+fn input_media_list_import_appends_playlist_files() {
+    let root = TempRoot::new();
+    let show = root.path("list.freemix");
+    new_project(&show, "List");
+    assert_success(&run(&[
+        "media-input-add",
+        text(&show),
+        "9",
+        "Clip",
+        "asset://clip.mkv",
+    ]));
+    let store = ProjectStore::new(&show).unwrap();
+    let stored = store.load().unwrap();
+    let mut project = stored.project().clone();
+    project.set_media_lists(
+        [(
+            input(9),
+            fm_model::MediaList::new(
+                vec![fm_model::MediaListItem::new(1, "asset://clip.mkv")],
+                fm_model::MediaListOptions::default(),
+            )
+            .unwrap(),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    store.save(&stored.with_project(project).unwrap()).unwrap();
+
+    let first = root.path("first.mp4");
+    fs::write(&first, b"one").unwrap();
+    let clips = root.path("clips");
+    fs::create_dir_all(&clips).unwrap();
+    fs::write(clips.join("second.mkv"), b"two").unwrap();
+    let playlist = root.path("list.m3u");
+    fs::write(
+        &playlist,
+        "#EXTM3U\n#EXTINF:5,Second clip\nclips/second.mkv\nfirst.mp4\n",
+    )
+    .unwrap();
+
+    let out = assert_success(&run(&[
+        "input-media-list-import",
+        text(&show),
+        "9",
+        text(&playlist),
+    ]));
+    assert!(out.contains("media-list-import:"), "{out}");
+    assert_eq!(out.lines().last(), Some("input=9 items=3 added=2"));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(list.items.len(), 3);
+    assert_eq!(list.items[1].id, 2);
+    assert_eq!(list.items[1].title.as_deref(), Some("Second clip"));
+    assert_eq!(list.items[2].title.as_deref(), Some("first"));
+    assert_eq!(list.active, 1);
+    for item in &list.items[1..] {
+        let key = item.asset_uri.strip_prefix("asset://").unwrap();
+        assert!(
+            show.join("assets").join(key).is_file(),
+            "{}",
+            item.asset_uri
+        );
+    }
+
+    // A missing entry refuses the whole import before anything is copied.
+    let manifest = fs::read(show.join("project.json")).unwrap();
+    fs::write(&playlist, "missing.mp4\n").unwrap();
+    assert_failure_contains(
+        &run(&["input-media-list-import", text(&show), "9", text(&playlist)]),
+        "not a file",
+    );
+    assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
+}
+
+#[test]
+fn title_design_import_flattens_a_design_into_a_title_input() {
+    let root = TempRoot::new();
+    let show = root.path("design.freemix");
+    new_project(&show, "Design");
+    let design = root.path("score.fmdesign");
+    let document = format!(
+        r##"{{
+  "contract": "freemix.title-design",
+  "schema_version": {CURRENT_SCHEMA_VERSION},
+  "id": 4,
+  "name": "Score bug",
+  "width": 640,
+  "height": 360,
+  "background": "#00000000",
+  "fields": [{{"id": 1, "name": "Score", "default": {{"type": "number", "value": 5}}}}],
+  "nodes": [],
+  "roots": [],
+  "children": [],
+  "animation": {{"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}
+}}"##
+    );
+    fs::write(&design, document).unwrap();
+    let out = assert_success(&run(&[
+        "title-design-import",
+        text(&show),
+        text(&design),
+        "--id",
+        "9",
+        "--name",
+        "Score bug",
+    ]));
+    assert!(
+        out.starts_with(
+            "title-design-import: template asset://titles/Score bug.fmtitle copied bytes="
+        ),
+        "{out}"
+    );
+    let loaded = load(&show);
+    let (revision, fields) = title_fields(&loaded, 9);
+    assert_eq!(revision, 0);
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(5));
+    assert_eq!(
+        loaded
+            .project()
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == input(9))
+            .unwrap()
+            .name,
+        "Score bug"
+    );
+    let store = ProjectStore::new(&show).unwrap();
+    let stored = store
+        .load_title_template("asset://titles/Score bug.fmtitle")
+        .unwrap();
+    assert_eq!(stored.template.fields.len(), 1);
+    assert!(stored.template.elements.is_empty());
+    assert_eq!(store.validate_titles(&loaded), Vec::new());
+
+    // A taken input id is refused before the design is imported.
+    let manifest = fs::read(show.join("project.json")).unwrap();
+    assert_failure_contains(
+        &run(&[
+            "title-design-import",
+            text(&show),
+            text(&design),
+            "--id",
+            "9",
+            "--name",
+            "Another",
+        ]),
+        "already exists",
+    );
+    assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn input_media_list_item_edits_title_and_marks() {
+    let root = TempRoot::new();
+    let show = root.path("item-edit.freemix");
+    new_project(&show, "Item edit");
+    assert_success(&run(&[
+        "media-input-add",
+        text(&show),
+        "9",
+        "Clip",
+        "asset://clip.mkv",
+    ]));
+    let store = ProjectStore::new(&show).unwrap();
+    let stored = store.load().unwrap();
+    let mut project = stored.project().clone();
+    project.set_media_lists(
+        [(
+            input(9),
+            fm_model::MediaList::new(
+                vec![
+                    fm_model::MediaListItem::new(1, "asset://clip.mkv"),
+                    fm_model::MediaListItem::new(2, "asset://clip2.mkv"),
+                    fm_model::MediaListItem::new(3, "asset://clip3.mkv"),
+                ],
+                fm_model::MediaListOptions::default(),
+            )
+            .unwrap(),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    store.save(&stored.with_project(project).unwrap()).unwrap();
+
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "title",
+        "1",
+        "Opening",
+    ]));
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "marks",
+        "1",
+        "10",
+        "200",
+    ]));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(list.items[0].title.as_deref(), Some("Opening"));
+    assert_eq!(list.items[0].mark_in, 10);
+    assert_eq!(list.items[0].mark_out, Some(200));
+
+    // `-` clears the title and `end` clears the out mark.
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "title",
+        "1",
+        "-",
+    ]));
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "marks",
+        "1",
+        "0",
+        "end",
+    ]));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(list.items[0].title, None);
+    assert_eq!(list.items[0].mark_in, 0);
+    assert_eq!(list.items[0].mark_out, None);
+
+    // Reordering keeps the ids and the active item; the position clamps.
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "move",
+        "3",
+        "1",
+    ]));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(
+        list.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        vec![1, 3, 2]
+    );
+    assert_eq!(list.active, 1);
+
+    // The list's own transition is editable.
+    assert_success(&run(&[
+        "input-media-list-transition",
+        text(&show),
+        "9",
+        "fade",
+        "30",
+    ]));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(
+        list.options.transition.kind,
+        fm_model::MediaListTransitionKind::Fade
+    );
+    assert_eq!(list.options.transition.duration_frames, 30);
+
+    // An out mark at or before the in mark is refused and leaves the list
+    // unchanged (the rejected command's receipt still advances the project).
+    let before = load(&show);
+    let before_list = before.project().media_list(input(9)).unwrap().clone();
+    assert!(
+        !run(&[
+            "input-media-list-item",
+            text(&show),
+            "9",
+            "marks",
+            "1",
+            "200",
+            "100",
+        ])
+        .status
+        .success()
+    );
+    let after = load(&show);
+    assert_eq!(after.project().media_list(input(9)), Some(&before_list));
+}
+
+#[test]
+fn settings_import_apply_updates_format_and_restart_only() {
+    let root = TempRoot::new();
+    let show = root.path("apply-settings.freemix");
+    new_project(&show, "Apply settings");
+    assert_success(&run(&["audio-bus-add", text(&show), "1", "Program bus"]));
+    let export = root.path("settings.json");
+    assert_success(&run(&["settings-export", text(&show), text(&export)]));
+    let json = fs::read_to_string(&export).unwrap();
+    let changed = json
+        .replace(
+            "\"format.frame_rate.numerator\": {\"integer\": 60000}",
+            "\"format.frame_rate.numerator\": {\"integer\": 30000}",
+        )
+        .replace(
+            "\"format.video.width\": {\"integer\": 1920}",
+            "\"format.video.width\": {\"integer\": 1280}",
+        )
+        .replace(
+            "\"format.video.height\": {\"integer\": 1080}",
+            "\"format.video.height\": {\"integer\": 720}",
+        )
+        .replace(
+            "\"restart_policy.mode\": {\"text\": \"never\"}",
+            "\"restart_policy.mode\": {\"text\": \"always\"}",
+        );
+    assert_ne!(changed, json);
+    let changed_path = root.path("apply.json");
+    fs::write(&changed_path, changed).unwrap();
+    let out = assert_success(&run(&[
+        "settings-import",
+        text(&show),
+        text(&changed_path),
+        "--apply",
+    ]));
+    assert!(
+        out.contains("settings-import: 0 added, 4 changed, 0 removed; applied"),
+        "{out}"
+    );
+    let loaded = load(&show);
+    let settings = loaded.project().settings();
+    assert_eq!(
+        settings.frame_rate,
+        fm_types::FrameRate::new(30_000, 1_001).unwrap()
+    );
+    assert_eq!(
+        settings.video.dimensions,
+        fm_types::VideoDimensions::new(1_280, 720).unwrap()
+    );
+    assert_eq!(settings.video.frame_rate, settings.frame_rate);
+    assert_eq!(
+        loaded.project().restart_policy(),
+        fm_model::RestartPolicy::Always
+    );
+
+    // Audio bus names are applied too.
+    let first_export = root.path("settings-2.json");
+    assert_success(&run(&["settings-export", text(&show), text(&first_export)]));
+    let json = fs::read_to_string(&first_export).unwrap();
+    let changed = json.replace(
+        "\"audio_buses.1.name\": {\"text\": \"Program bus\"}",
+        "\"audio_buses.1.name\": {\"text\": \"Clean feed\"}",
+    );
+    assert_ne!(changed, json);
+    let changed_path = root.path("bus.json");
+    fs::write(&changed_path, changed).unwrap();
+    let out = assert_success(&run(&[
+        "settings-import",
+        text(&show),
+        text(&changed_path),
+        "--apply",
+    ]));
+    assert!(
+        out.contains("0 added, 1 changed, 0 removed; applied"),
+        "{out}"
+    );
+    let loaded = load(&show);
+    assert_eq!(loaded.project().audio_buses()[0].name, "Clean feed");
+
+    // A stream-target change is not applied yet, and refuses the whole
+    // import before anything is saved.
+    let second_export = root.path("settings-3.json");
+    assert_success(&run(&[
+        "settings-export",
+        text(&show),
+        text(&second_export),
+    ]));
+    let json = fs::read_to_string(&second_export).unwrap();
+    let changed = json.replace(
+        "\n  }\n}\n",
+        ",\n    \"stream_targets.1.name\": {\"text\": \"Live\"},\n    \"stream_targets.1.protocol\": {\"text\": \"rtmp\"}\n  }\n}\n",
+    );
+    assert_ne!(changed, json);
+    let changed_path = root.path("stream.json");
+    fs::write(&changed_path, changed).unwrap();
+    let refused = run(&[
+        "settings-import",
+        text(&show),
+        text(&changed_path),
+        "--apply",
+    ]);
+    assert_failure_contains(
+        &refused,
+        "adding a keyed stream target needs its stream key",
+    );
+    let loaded = load(&show);
+    assert_eq!(loaded.project().audio_buses()[0].name, "Clean feed");
 }

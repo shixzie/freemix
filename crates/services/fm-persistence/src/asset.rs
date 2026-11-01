@@ -27,6 +27,22 @@ impl ProjectStore {
     /// the resolved target escapes the assets directory, or the target is not a
     /// regular file.
     pub fn resolve_asset_uri(&self, uri: &str) -> Result<PathBuf, AssetResolveError> {
+        self.resolve_asset_path(uri, false)
+    }
+
+    /// Resolves an `asset://` URI to a canonical directory within the project
+    /// (a folder slideshow's source).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URI is invalid, either path cannot be resolved,
+    /// the resolved target escapes the assets directory, or the target is not a
+    /// directory.
+    pub fn resolve_asset_folder(&self, uri: &str) -> Result<PathBuf, AssetResolveError> {
+        self.resolve_asset_path(uri, true)
+    }
+
+    fn resolve_asset_path(&self, uri: &str, directory: bool) -> Result<PathBuf, AssetResolveError> {
         let key = asset_uri_key(uri)?;
         let assets_root = fs::canonicalize(self.assets_root())
             .map_err(AssetResolveError::AssetsRootUnavailable)?;
@@ -45,10 +61,13 @@ impl ProjectStore {
         if !candidate.starts_with(&assets_root) {
             return Err(AssetResolveError::OutsideAssetsRoot);
         }
-        if !fs::metadata(&candidate)
-            .map_err(AssetResolveError::AssetUnavailable)?
-            .is_file()
-        {
+        let metadata = fs::metadata(&candidate).map_err(AssetResolveError::AssetUnavailable)?;
+        let matches = if directory {
+            metadata.is_dir()
+        } else {
+            metadata.is_file()
+        };
+        if !matches {
             return Err(AssetResolveError::NotRegularFile);
         }
 
@@ -116,12 +135,25 @@ impl ProjectStore {
             .inputs()
             .iter()
             .filter_map(|input| {
-                let (InputKind::Media { asset_uri, .. }
-                | InputKind::Document(fm_model::DocumentInput { asset_uri, .. })) = &input.kind
-                else {
-                    return None;
+                let (asset_uri, folder) = match &input.kind {
+                    InputKind::Media { asset_uri, .. }
+                    | InputKind::Document(fm_model::DocumentInput { asset_uri, .. }) => {
+                        (asset_uri, false)
+                    }
+                    // A folder slideshow's source is a directory asset
+                    // (IN-009).
+                    InputKind::Slideshow(config) => match &config.source {
+                        fm_types::still::SlideshowSource::Folder { asset_uri } => (asset_uri, true),
+                        fm_types::still::SlideshowSource::List(_) => return None,
+                    },
+                    _ => return None,
                 };
-                let reason = match self.resolve_asset_uri(asset_uri) {
+                let resolved = if folder {
+                    self.resolve_asset_folder(asset_uri)
+                } else {
+                    self.resolve_asset_uri(asset_uri)
+                };
+                let reason = match resolved {
                     Ok(_) => return None,
                     Err(AssetResolveError::InvalidUri) => AssetAuditReason::InvalidUri,
                     Err(
@@ -144,8 +176,71 @@ impl ProjectStore {
                 .into_iter()
                 .map(|(input_id, reason)| AssetAuditIssue { input_id, reason }),
         );
+        issues.extend(self.audit_document_assets(project));
         issues.sort_by_key(|issue| issue.input_id);
         issues
+    }
+
+    /// Audits the logo and image assets a title input's persisted crawl and
+    /// preview documents name.
+    fn audit_document_assets(&self, project: &Project) -> Vec<AssetAuditIssue> {
+        let mut issues = Vec::new();
+        for (input, document) in project.crawl_documents() {
+            match fm_titles::CrawlSnapshot::from_document(document) {
+                Ok(snapshot) => {
+                    for item in &snapshot.items {
+                        let Some(logo) = &item.logo else {
+                            continue;
+                        };
+                        if let Some(reason) = self.audit_uri(&logo.asset) {
+                            issues.push(AssetAuditIssue {
+                                input_id: *input,
+                                reason,
+                            });
+                        }
+                    }
+                }
+                Err(_) => issues.push(AssetAuditIssue {
+                    input_id: *input,
+                    reason: AssetAuditReason::UnreadableCrawlDocument,
+                }),
+            }
+        }
+        for (input, document) in project.preview_documents() {
+            match fm_data::PreviewSnapshot::from_document(document) {
+                Ok(snapshot) => {
+                    for value in snapshot.live.values() {
+                        let fm_data::BoundValue::Image(uri) = value else {
+                            continue;
+                        };
+                        if let Some(reason) = self.audit_uri(uri) {
+                            issues.push(AssetAuditIssue {
+                                input_id: *input,
+                                reason,
+                            });
+                        }
+                    }
+                }
+                Err(_) => issues.push(AssetAuditIssue {
+                    input_id: *input,
+                    reason: AssetAuditReason::UnreadablePreviewDocument,
+                }),
+            }
+        }
+        issues
+    }
+
+    fn audit_uri(&self, uri: &str) -> Option<AssetAuditReason> {
+        match self.resolve_asset_uri(uri) {
+            Ok(_) => None,
+            Err(AssetResolveError::InvalidUri) => Some(AssetAuditReason::InvalidUri),
+            Err(
+                AssetResolveError::AssetsRootUnavailable(_)
+                | AssetResolveError::AssetUnavailable(_),
+            ) => Some(AssetAuditReason::MissingAsset),
+            Err(AssetResolveError::OutsideAssetsRoot) => Some(AssetAuditReason::OutsideAssetsRoot),
+            Err(AssetResolveError::NotRegularFile) => Some(AssetAuditReason::NotRegularFile),
+        }
     }
 }
 
@@ -165,6 +260,10 @@ pub enum AssetAuditReason {
     NotRegularFile,
     /// A title template resolves but is not a valid stored template.
     UnreadableTitleTemplate,
+    /// A persisted crawl document does not parse.
+    UnreadableCrawlDocument,
+    /// A persisted preview-state document does not parse.
+    UnreadablePreviewDocument,
 }
 
 /// The distinct asset folders `project`'s folder slideshows show, sorted.

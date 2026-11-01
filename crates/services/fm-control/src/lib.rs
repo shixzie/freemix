@@ -718,7 +718,7 @@ pub struct TickOutcome {
 }
 
 /// Failure from ticking the control engine or realizing its rendered frame.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TickWithRealizerError<E> {
     /// The control tick failed before or after frame realization.
     Tick(ControlError),
@@ -856,7 +856,7 @@ impl fmt::Display for SubscribeError {
 
 impl Error for SubscribeError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlError {
     Engine(EngineError),
     ServerIdentityMismatch,
@@ -1486,6 +1486,12 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.set_replay_storage_free(free);
     }
 
+    /// Records the replay root drive's SMART status, as the media plane
+    /// samples it (OR-014, 2.139).
+    pub fn set_replay_storage_smart(&mut self, smart: Option<fm_engine::EngineReplaySmartStatus>) {
+        self.engine.set_replay_storage_smart(smart);
+    }
+
     /// Reports one recorded replay frame (see [`Engine::replay_observe`]).
     pub fn replay_observe(&mut self, input: InputId, frame: u64, stream_frame: u64) -> bool {
         self.engine.replay_observe(input, frame, stream_frame)
@@ -1554,6 +1560,19 @@ impl<A: AuthorizationHook> ControlService<A> {
         request: &fm_protocol::AudioPluginStatusRequest,
     ) -> fm_protocol::AudioPluginStatusMessage {
         audio_mixer::plugin_status(&self.engine, authority, request)
+    }
+
+    /// Replaces the audio plugin identifiers this daemon can install, as a
+    /// scanned plugin catalog reports them (AU-006).
+    pub fn set_installed_audio_plugins(&mut self, plugins: Vec<String>) {
+        self.engine.set_installed_audio_plugins(plugins);
+    }
+
+    /// Every realized Program change since the engine started (OR-015),
+    /// oldest first.
+    #[must_use]
+    pub fn as_run(&self) -> &[fm_engine::EngineAsRunEntry] {
+        self.engine.as_run()
     }
 
     /// Moves whenever any audio plugin chain changed (AU-006).
@@ -1923,6 +1942,13 @@ impl<A: AuthorizationHook> ControlService<A> {
         still::slideshow_slides(&self.engine, request)
     }
 
+    /// The asset URI of zero-based slide `index` of slideshow `input`, if
+    /// it lists one (IN-009).
+    #[must_use]
+    pub fn slideshow_slide(&self, input: fm_types::InputId, index: u32) -> Option<String> {
+        still::slideshow_slide(&self.engine, input, index)
+    }
+
     /// Installs the pictures the server found in a folder slideshow's
     /// folder (see [`Engine::set_slideshow_listing`]). Runtime state; the
     /// next frame reports the change.
@@ -2088,6 +2114,30 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn input_lifecycle(&self, input: InputId) -> fm_model::InputLifecycle {
         self.engine.show().input_lifecycle(input)
+    }
+
+    /// Input health counts for statistics (RC-015): total inputs, offline
+    /// inputs (closed, or a media source that is not open), and failed
+    /// inputs (a latched media fault).
+    #[must_use]
+    pub fn input_health(&self) -> (u64, u64, u64) {
+        let show = self.engine.show();
+        let total = u64::try_from(show.inputs().len()).unwrap_or(u64::MAX);
+        let mut offline = 0_u64;
+        let mut failed = 0_u64;
+        for &input in show.inputs() {
+            if let Some(status) = self.engine.media_status(input) {
+                if status.fault.is_some() {
+                    failed = failed.saturating_add(1);
+                }
+                if !status.available {
+                    offline = offline.saturating_add(1);
+                }
+            } else if show.input_lifecycle(input).closed {
+                offline = offline.saturating_add(1);
+            }
+        }
+        (total, offline.min(total), failed.min(total))
     }
 
     /// The engine's current model of scene `scene` (layers and animation,
@@ -2481,6 +2531,14 @@ impl<A: AuthorizationHook> ControlService<A> {
         audio_mixer::strip_dsp_states(&self.engine)
     }
 
+    /// The `audio_strip_send_state` records that complete a snapshot: one
+    /// per input whose aux sends carry a level or tap beyond the plain
+    /// enable mask, ascending (Protocol 2.130, AU-002).
+    #[must_use]
+    pub fn strip_send_states(&self) -> Vec<fm_protocol::AudioStripSendStateMessage> {
+        audio_mixer::strip_send_states(&self.engine)
+    }
+
     /// The loudness resets the engine realized since the audio plane last
     /// took them, oldest first (AU-005). The simulated plane restarts those
     /// meters before its next rendered frame.
@@ -2563,6 +2621,68 @@ impl<A: AuthorizationHook> ControlService<A> {
             subscriber_count: self.subscribers.len(),
             limits: self.limits,
         }
+    }
+
+    /// The live production clock registry (SW-013).
+    #[must_use]
+    pub const fn production_clock_registry(&self) -> &fm_clock::production::ProductionClocks {
+        self.engine.production_clock_registry()
+    }
+
+    /// Every project production clock's reading at `wall` (SW-013).
+    #[must_use]
+    pub fn production_clock_statuses(
+        &self,
+        wall: fm_clock::production::UtcInstant,
+    ) -> Vec<fm_protocol::ProductionClockStatus> {
+        let at = fm_clock::production::TimeReading::new(self.engine.clock_time(), wall);
+        self.engine
+            .production_clock_readings(at)
+            .into_iter()
+            .map(wire_clock_status)
+            .collect()
+    }
+
+    /// Applies one client production-clock operation at `wall` and returns
+    /// the clock's reading afterwards (SW-013).
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's refusal text for an unknown clock, an invalid
+    /// value, or a command the clock's kind does not accept; nothing
+    /// changes then.
+    pub fn control_production_clock(
+        &mut self,
+        wall: fm_clock::production::UtcInstant,
+        name: &str,
+        operation: fm_protocol::ClockControlOperation,
+    ) -> Result<fm_protocol::ProductionClockStatus, String> {
+        use fm_clock::production::{ClockCommand, ClockValue};
+        let value = |nanos: i64| ClockValue::from_nanos(nanos).map_err(|error| error.to_string());
+        let command = match operation {
+            fm_protocol::ClockControlOperation::Start => ClockCommand::Start,
+            fm_protocol::ClockControlOperation::Pause => ClockCommand::Pause,
+            fm_protocol::ClockControlOperation::Reset => ClockCommand::Reset,
+            fm_protocol::ClockControlOperation::SetValue(nanos) => {
+                ClockCommand::SetValue(value(nanos)?)
+            }
+            fm_protocol::ClockControlOperation::Adjust(nanos) => {
+                ClockCommand::Adjust(value(nanos)?)
+            }
+            fm_protocol::ClockControlOperation::SetPreset(nanos) => {
+                ClockCommand::SetPreset(value(nanos)?)
+            }
+        };
+        self.engine
+            .control_production_clock(name, command)
+            .map_err(|error| error.to_string())?;
+        let at = fm_clock::production::TimeReading::new(self.engine.clock_time(), wall);
+        self.engine
+            .production_clock_readings(at)
+            .into_iter()
+            .find(|reading| reading.name.as_str() == name)
+            .map(wire_clock_status)
+            .ok_or_else(|| format!("clock `{name}` has no reading"))
     }
 
     /// Creates a bounded live-event subscription.
@@ -3691,7 +3811,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
         soloed,
         follow_video,
         delay_samples,
-        buses,
+        sends,
     } = payload
     else {
         unreachable!("only input audio strip commands are delegated")
@@ -3706,7 +3826,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
             soloed: *soloed,
             follow_video: *follow_video,
             delay_samples: *delay_samples,
-            buses: *buses,
+            sends: *sends,
         },
     }
 }
@@ -5053,6 +5173,12 @@ fn snapshot_record(
         engine: identity.clone(),
         revision: engine.revision().get(),
         show_name: engine.show().name().to_owned(),
+        production_clocks: engine
+            .show()
+            .production_clocks()
+            .iter()
+            .map(|clock| clock.name.clone())
+            .collect(),
         inputs: engine
             .show()
             .inputs()
@@ -5073,6 +5199,10 @@ fn snapshot_record(
                 output: WireOutputId::from_domain(*output),
                 name: name.clone(),
                 aux_bus: engine.show().output_aux_bus(*output),
+                mix_minus: engine
+                    .show()
+                    .output_mix_minus_input(*output)
+                    .map(WireInputId::from_domain),
             })
             .collect(),
         input_audio_strips: protocol_input_audio_strips(engine),
@@ -5165,7 +5295,7 @@ fn protocol_input_audio_strips(engine: &Engine) -> Vec<InputAudioStripStatus> {
             soloed: state.soloed,
             follow_video: state.follow_video,
             delay_samples: state.delay_samples,
-            buses: state.buses,
+            sends: state.sends,
         })
         .collect()
 }
@@ -5382,6 +5512,61 @@ pub fn wire_manual_kind(kind: EngineManualTransitionKind) -> ManualTransitionKin
             slot: WireStingerSlotId::new(slot.number()).expect("domain Stinger slots are bounded"),
             duration_frames,
         },
+    }
+}
+
+fn wire_clock_status(
+    reading: fm_clock::production::ClockReading,
+) -> fm_protocol::ProductionClockStatus {
+    fm_protocol::ProductionClockStatus {
+        name: reading.name.as_str().to_owned(),
+        kind: match reading.kind {
+            fm_clock::production::ClockKind::Timer => fm_protocol::ProductionClockKind::Timer,
+            fm_clock::production::ClockKind::TimeOfDay => {
+                fm_protocol::ProductionClockKind::TimeOfDay
+            }
+            fm_clock::production::ClockKind::MediaRemaining => {
+                fm_protocol::ProductionClockKind::MediaRemaining
+            }
+            fm_clock::production::ClockKind::Session(fm_clock::production::SessionKind::Stream) => {
+                fm_protocol::ProductionClockKind::Stream
+            }
+            fm_clock::production::ClockKind::Session(
+                fm_clock::production::SessionKind::Recording,
+            ) => fm_protocol::ProductionClockKind::Recording,
+            fm_clock::production::ClockKind::Session(fm_clock::production::SessionKind::Replay) => {
+                fm_protocol::ProductionClockKind::Replay
+            }
+            fm_clock::production::ClockKind::Session(
+                fm_clock::production::SessionKind::MultiCorder,
+            ) => fm_protocol::ProductionClockKind::MultiCorder,
+            fm_clock::production::ClockKind::Session(
+                fm_clock::production::SessionKind::External,
+            ) => fm_protocol::ProductionClockKind::External,
+        },
+        state: match reading.state {
+            fm_clock::production::ReadingState::Idle => fm_protocol::ProductionClockState::Idle,
+            fm_clock::production::ReadingState::Running => {
+                fm_protocol::ProductionClockState::Running
+            }
+            fm_clock::production::ReadingState::Paused => fm_protocol::ProductionClockState::Paused,
+            fm_clock::production::ReadingState::Expired => {
+                fm_protocol::ProductionClockState::Expired
+            }
+            fm_clock::production::ReadingState::Stopped => {
+                fm_protocol::ProductionClockState::Stopped
+            }
+            fm_clock::production::ReadingState::Live => fm_protocol::ProductionClockState::Live,
+            fm_clock::production::ReadingState::Unavailable => {
+                fm_protocol::ProductionClockState::Unavailable
+            }
+        },
+        text: reading.text,
+        value_ms: reading
+            .value
+            .map(fm_clock::production::ClockValue::as_millis),
+        expired: reading.expired,
+        zone: reading.zone,
     }
 }
 

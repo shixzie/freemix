@@ -31,6 +31,7 @@ use std::{
 
 use fm_auth::Principal;
 use fm_control::{LiveEvent, SubscriberFailureReason, Subscription};
+use fm_daemon_status::recorder_status;
 use fm_persistence::StoredProject;
 use fm_protocol::{
     AudioMetersMessage, ClientType, CommandPayload, CommandResult, ErrorMessage,
@@ -44,10 +45,10 @@ use fm_server::{Server, Session, SessionError, SyncPayload};
 use super::{
     AppResult, CLIENT_READ_POLL_INTERVAL, CLIENT_WRITE_TIMEOUT, CommandDelivery, ControlHandle,
     DaemonShutdownReason, GroupMember, NativeDaemon, PendingWrite, ProcessShutdown, SharedControl,
-    admit_session_command, current_handshake, diagnostics_response, error_message,
-    execute_command_group, execute_session_command, group_commit_eligible, handshake_code,
-    handshake_response, is_client_session_termination, native_group_eligible, now_millis,
-    reconciled_handshake_outcome, record_heartbeat, rejected_handshake_response,
+    admit_session_command, clock_control_response, current_handshake, diagnostics_response,
+    error_message, execute_command_group, execute_session_command, group_commit_eligible,
+    handshake_code, handshake_response, is_client_session_termination, native_group_eligible,
+    now_millis, reconciled_handshake_outcome, record_heartbeat, rejected_handshake_response,
     requested_daemon_shutdown, server_identity, shutdown_message, structured_session_error,
 };
 use crate::input_thumbnails::{ThumbnailKey, ThumbnailOutbox, ThumbnailWork, ThumbnailWorker};
@@ -55,8 +56,17 @@ use crate::journal::DurableStore;
 use crate::latest_record::LatestRecord;
 use crate::monitor_tap::SimulatedMonitorWorker;
 use crate::title_render::TitleAssets;
-use crate::web::{ClientSlot, MAX_WEB_CLIENTS, WebEvent, WebGateway};
 use crate::web_feed::{WEB_FEED_MAX_QUEUED, WebFeed, web_meters};
+use fm_daemon_web::{ClientSlot, MAX_WEB_CLIENTS, WebEvent, WebGateway};
+
+mod io;
+use io::{
+    ReelStatusPacer, ReplayStatusPacer, ShutdownQueue, WriteOutcome, close_all, close_peer,
+    drain_live, publish_audio_meters, publish_health_status, publish_monitor_frame,
+    publish_recorder_status, publish_reel_status, publish_replay_status,
+    publish_source_sync_status, publish_stream_status, publish_title_phases, reel_status_reply,
+    shutdown_for_reason, shutdown_peers, write_peer_pass,
+};
 
 /// The most raw TCP control sessions served at once, by the simulated and
 /// the native daemon alike (Studio, CLI and automation peers). A further raw
@@ -370,6 +380,21 @@ impl LossyRecords {
 }
 
 impl Peer {
+    /// The peer's control session, or a peer error when it has none.
+    fn session(&self) -> Result<&Session, DispatchError> {
+        self.session.as_ref().ok_or(DispatchError::Peer)
+    }
+
+    /// The peer's control session, mutably.
+    fn session_mut(&mut self) -> Result<&mut Session, DispatchError> {
+        self.session.as_mut().ok_or(DispatchError::Peer)
+    }
+
+    /// The server identity the peer was greeted with.
+    fn identity(&self) -> Result<&ServerIdentity, DispatchError> {
+        self.identity.as_ref().ok_or(DispatchError::Peer)
+    }
+
     fn new(
         id: u64,
         transport: Transport,
@@ -602,6 +627,12 @@ impl Peer {
         self.phase == Phase::Active && (self.audio_meters || self.web_feed.is_some())
     }
 
+    /// Whether this session takes `recorder_status` records: a raw Studio
+    /// session, or a Web page granted the lossy status feed.
+    fn wants_recorder_status(&self) -> bool {
+        self.phase == Phase::Active && (self.recorder_status || self.web_feed.is_some())
+    }
+
     /// Offers a Web peer's feed the Master meters of `web_bytes`.
     fn replace_web_meter(&mut self, web_bytes: &[u8]) {
         if self.phase == Phase::Active
@@ -763,6 +794,8 @@ pub(super) fn run(
     process_shutdown: &ProcessShutdown,
     once: bool,
     web: Option<&WebGateway>,
+    mut vmix: Option<&mut crate::vmix::VmixBridge>,
+    as_run_root: &std::path::Path,
 ) -> AppResult<DaemonShutdownReason> {
     let handshake_timeout =
         Duration::from_millis(server.config().session_limits.heartbeat_timeout_ms);
@@ -799,7 +832,7 @@ pub(super) fn run(
     )?;
     // Document pages render off this loop too (IN-014).
     let documents = store.documents().cloned().unwrap_or_default();
-    let document_pages = crate::documents::PageWorker::spawn(Arc::clone(&documents))?;
+    let document_pages = fm_daemon_journal::documents::PageWorker::spawn(Arc::clone(&documents))?;
     // What the server can capture is listed off this loop too (IN-011).
     let screen_capture_targets = crate::screen_capture_targets::ScreenCaptureTargets::spawn(
         crate::screen_capture_targets::enumerator(native.is_some()),
@@ -830,6 +863,7 @@ pub(super) fn run(
         )),
         replay_pacer: std::cell::RefCell::new(ReplayStatusPacer::default()),
         reel_pacer: std::cell::RefCell::new(ReelStatusPacer::default()),
+        as_run: std::cell::RefCell::new(crate::as_run::AsRunLog::new(as_run_root)),
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -901,10 +935,33 @@ pub(super) fn run(
         None
     };
     let mut simulated_audio_sequence = 0_u64;
+    // The simulated daemon realizes no recordings, so it reports both slots
+    // as unavailable (RC-014): its pages show realized state instead of only
+    // the requested-state badge.
+    let mut simulated_recorder_status = recorder_status::RecorderStatusTracker::default();
 
     loop {
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
+        }
+
+        // The vMix-compatible TCP API (RC-009) is polled once per pass. It
+        // never blocks, and every translated command goes through the same
+        // control service as a client command.
+        if let Some(bridge) = vmix.as_deref_mut() {
+            let now = crate::now_millis()?;
+            let mut control = control.borrow_mut();
+            bridge.poll(&mut control, principal, now);
+        }
+
+        // A Preview composite submitted at the end of the last pass is
+        // collected before this pass dispatches anything, so the playback
+        // registries are back for commands and ingestion.
+        if let Some(native) = native.as_deref_mut()
+            && let Err(error) = native.poll_deferred_preview()
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
         }
 
         if let Some(web) = web {
@@ -919,7 +976,11 @@ pub(super) fn run(
                     // to MAX_WEB_CLIENTS; this check only keeps that bound
                     // local to the scheduler too.
                     WebEvent::Connected(connection) if web_peer_count(&peers) < MAX_WEB_CLIENTS => {
-                        let web_principal = web_principal(&connection.identity, next_peer_id);
+                        let Some(web_principal) = web_principal(&connection.identity, next_peer_id)
+                        else {
+                            connection.cancel.store(true, Ordering::Release);
+                            continue;
+                        };
                         let transport = Transport::Web(WebTransport {
                             inbound: connection.inbound,
                             outbound: connection.outbound,
@@ -1002,7 +1063,9 @@ pub(super) fn run(
                 && peer.held_result.is_none()
                 && matches!(peer.inbound.front(), Some(WireMessage::Heartbeat(_)))
             {
-                let heartbeat = peer.inbound.pop_front().expect("the front is a heartbeat");
+                let Some(heartbeat) = peer.inbound.pop_front() else {
+                    break;
+                };
                 match runtime.dispatch(peer, heartbeat, durable, None) {
                     Ok(()) => {}
                     Err(DispatchError::Peer) => {
@@ -1220,7 +1283,7 @@ pub(super) fn run(
         // A document whose status changed off this loop (a conversion
         // finished, or the daemon just started) reports it (IN-014).
         if documents.take_changed() {
-            crate::documents::sync(&mut control.borrow_mut(), authority, &documents)?;
+            fm_daemon_journal::documents::sync(&mut control.borrow_mut(), authority, &documents)?;
         }
         // Media list item lengths (Protocol 2.91): the worker learns every
         // item asset after each revision, and a changed report republishes
@@ -1387,20 +1450,6 @@ pub(super) fn run(
         }
         // The control borrow ends before a failure shuts the peers down,
         // which borrows it again.
-        let ticked = match native.as_deref_mut() {
-            Some(native) => native.tick_if_due(&mut control.borrow_mut(), authority),
-            None => simulated_pacer.poll(
-                &mut control.borrow_mut(),
-                authority,
-                durable.project().settings().frame_rate,
-                durable.position().frames_rendered,
-                Instant::now(),
-            ),
-        };
-        if let Err(error) = ticked {
-            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
-            return Err(error);
-        }
         let settling = control.borrow().work_in_flight();
         if !settling
             && let Err(error) = runtime.end_triggers.borrow_mut().poll(
@@ -1414,6 +1463,20 @@ pub(super) fn run(
                 ready_turn.is_none(),
             )
         {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+        let ticked = match native.as_deref_mut() {
+            Some(native) => native.begin_frame_if_due(&mut control.borrow_mut(), authority),
+            None => simulated_pacer.poll(
+                &mut control.borrow_mut(),
+                authority,
+                durable.project().settings().frame_rate,
+                durable.position().frames_rendered,
+                Instant::now(),
+            ),
+        };
+        if let Err(error) = ticked {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
@@ -1500,6 +1563,22 @@ pub(super) fn run(
                 publish_audio_meters(&mut peers, message);
             }
         }
+        // The simulated daemon realizes no recordings, so it reports both
+        // slots as unavailable at the bounded interval while a Studio peer or
+        // Web page wants realized recorder state (RC-014): its pages show
+        // "not configured" instead of only the requested-state badge.
+        if native.is_none()
+            && peers.iter().any(Peer::wants_recorder_status)
+            && let Some(status) = simulated_recorder_status.poll(
+                authority,
+                [recorder_status::SlotView::Unconfigured; 2],
+                [None, None],
+                [None, None],
+                Instant::now(),
+            )
+        {
+            publish_recorder_status(&mut peers, status);
+        }
         // Both daemons announce their replay recording (OR-012).
         if peers.iter().any(|peer| peer.recorder_status) {
             let status = runtime.replay_pacer.borrow_mut().poll(
@@ -1526,9 +1605,13 @@ pub(super) fn run(
         let now = Instant::now();
         if runtime.statistics.borrow().due(now) {
             let diagnostics = control.borrow().diagnostics();
+            let (inputs_total, inputs_offline, inputs_failed) = control.borrow().input_health();
             let sample = crate::statistics::ControlSample {
                 subscribers: u64::try_from(diagnostics.subscriber_count).unwrap_or(u64::MAX),
                 revision: diagnostics.current_revision,
+                inputs_total,
+                inputs_offline,
+                inputs_failed,
             };
             let native_sample = native
                 .as_deref_mut()
@@ -1646,6 +1729,24 @@ pub(super) fn run(
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
+        // The frame's audio and video jobs ran while the pass served its
+        // peers; collect them and run the frame's consumers now.
+        if let Some(native) = native.as_deref_mut()
+            && let Err(error) = native.finish_frame(&mut control.borrow_mut(), authority)
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+        // Preview's composite and tap use the slack left after this pass's
+        // peer work, never the slot before the next Program frame.
+        if let Some(native) = native.as_deref_mut()
+            && let Err(error) = native.service_deferred_preview(authority)
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+        // The as-run log follows every realized Program change (OR-015).
+        runtime.as_run.borrow_mut().sync(control.borrow().as_run());
         thread::sleep(CLIENT_READ_POLL_INTERVAL);
     }
 }
@@ -1711,6 +1812,7 @@ fn thumbnail_work(
     live: Option<crate::scene_preview::LiveSourceFrames>,
 ) -> ThumbnailWork {
     let revision = control.snapshot().snapshot.revision;
+    let timelines = control.title_timelines();
     ThumbnailWork {
         revision,
         frame: control.frame_cursor(),
@@ -1724,7 +1826,15 @@ fn thumbnail_work(
         titles: control
             .titles_on_air()
             .into_iter()
-            .map(|title| (title.input, title.frame.sample))
+            .map(|title| {
+                (
+                    title.input,
+                    title.frame.sample,
+                    timelines
+                        .get(&title.input)
+                        .map(|timeline| timeline.since_frame),
+                )
+            })
             .collect(),
         media: control
             .media_statuses()
@@ -1732,6 +1842,7 @@ fn thumbnail_work(
             .map(|media| (media.input, media.position, media.playable_end))
             .collect(),
         slideshows: crate::stills::SlidesShown::all(control),
+        clocks: control.production_clock_registry().clone(),
         live,
     }
 }
@@ -1751,7 +1862,9 @@ fn release_held_results(
         if held.slot.is_some_and(&mut settling) {
             continue;
         }
-        let held = peer.held_result.take().expect("checked above");
+        let Some(held) = peer.held_result.take() else {
+            continue;
+        };
         match peer.queue(&held.message, Accounting::Session) {
             Ok(()) => {}
             Err(refusal) if refusal.transient() => {
@@ -1934,22 +2047,22 @@ fn native_group(
 }
 
 /// The principal of a Web session: the operator's `FREEMIXD_WEB_TOKEN`
-/// holds every role, a paired device only the roles of its pairing.
-fn web_principal(identity: &crate::web::WebIdentity, peer_id: u64) -> Principal {
-    let session = fm_auth::SessionId::new(format!("web-{peer_id}"))
-        .expect("scheduler web session id is valid");
-    match identity {
-        crate::web::WebIdentity::StaticToken => Principal::authenticated(
-            fm_auth::UserId::new("web-token").expect("stable web user is valid"),
+/// holds every role, a paired device only the roles of its pairing; `None`
+/// for an identity whose names the auth grammar refuses.
+fn web_principal(identity: &fm_daemon_web::WebIdentity, peer_id: u64) -> Option<Principal> {
+    let session = fm_auth::SessionId::new(format!("web-{peer_id}")).ok()?;
+    Some(match identity {
+        fm_daemon_web::WebIdentity::StaticToken => Principal::authenticated(
+            fm_auth::UserId::new("web-token").ok()?,
             session,
             [fm_auth::Role::Admin],
         ),
-        crate::web::WebIdentity::Device { id, role } => Principal::authenticated(
-            fm_auth::UserId::new(id.as_str()).expect("device ids are valid user ids"),
+        fm_daemon_web::WebIdentity::Device { id, role } => Principal::authenticated(
+            fm_auth::UserId::new(id.as_str()).ok()?,
             session,
             role.granted_roles().iter().copied(),
         ),
-    }
+    })
 }
 
 fn web_peer_count(peers: &[Peer]) -> usize {
@@ -2047,9 +2160,9 @@ struct Runtime<'a> {
     /// Lists headphone output devices off this loop (Protocol 2.102).
     audio_output_devices: &'a crate::audio_output_devices::AudioOutputDevices,
     /// The web gateway's pairing and devices (Protocol 2.71), when it runs.
-    web_access: Option<&'a std::sync::Arc<crate::web::WebAccess>>,
+    web_access: Option<&'a std::sync::Arc<fm_daemon_web::WebAccess>>,
     /// Answers document page requests off this loop (IN-014).
-    document_pages: &'a crate::documents::PageWorker,
+    document_pages: &'a fm_daemon_journal::documents::PageWorker,
     /// Lists what the server can capture off this loop (IN-011).
     screen_capture_targets: &'a crate::screen_capture_targets::ScreenCaptureTargets,
     process_shutdown: &'a ProcessShutdown,
@@ -2074,6 +2187,8 @@ struct Runtime<'a> {
     replay_pacer: std::cell::RefCell<ReplayStatusPacer>,
     /// Paces `reel_status` (OR-013).
     reel_pacer: std::cell::RefCell<ReelStatusPacer>,
+    /// Writes every realized Program change beside the project (OR-015).
+    as_run: std::cell::RefCell<crate::as_run::AsRunLog>,
 }
 
 impl Runtime<'_> {
@@ -2161,7 +2276,9 @@ impl Runtime<'_> {
     ) -> Result<(), DispatchError> {
         if let [(index, _)] = group.as_slice() {
             let index = *index;
-            let (_, command) = group.into_iter().next().expect("one command");
+            let Some((_, command)) = group.into_iter().next() else {
+                return Ok(());
+            };
             return match self.dispatch(
                 &mut peers[index],
                 WireMessage::Command(command),
@@ -2178,23 +2295,22 @@ impl Runtime<'_> {
         let simulated = native.is_none();
         let members: Vec<GroupMember> = group
             .iter()
-            .map(|(index, command)| GroupMember {
-                principal: peers[*index].principal.clone(),
-                server: peers[*index]
-                    .identity
-                    .clone()
-                    .expect("active peers have identities"),
-                // A live fire's Preview and Program are the authority's to
-                // bind (RC-004), as for a command executed alone.
-                command: fm_control::client_fire_payload(&command.payload).map_or_else(
-                    || command.clone(),
-                    |payload| fm_protocol::CommandMessage {
-                        payload,
-                        ..command.clone()
-                    },
-                ),
+            .map(|(index, command)| {
+                Ok::<_, DispatchError>(GroupMember {
+                    principal: peers[*index].principal.clone(),
+                    server: peers[*index].identity.clone().ok_or(DispatchError::Peer)?,
+                    // A live fire's Preview and Program are the authority's to
+                    // bind (RC-004), as for a command executed alone.
+                    command: fm_control::client_fire_payload(&command.payload).map_or_else(
+                        || command.clone(),
+                        |payload| fm_protocol::CommandMessage {
+                            payload,
+                            ..command.clone()
+                        },
+                    ),
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         // A command holds an in-flight slot of its session from its
         // admission until it completed. A peer with several commands in the
         // group has the slot of its previous one released before the next
@@ -2212,10 +2328,9 @@ impl Runtime<'_> {
             |member, control, staged, now| {
                 let command = &members[member].command;
                 let index = group[member].0;
-                let session = peers[index]
-                    .session
-                    .as_mut()
-                    .expect("active peers have sessions");
+                let Some(session) = peers[index].session.as_mut() else {
+                    return Err(std::io::Error::other("an active peer has no session").into());
+                };
                 if let Some(previous) = holding[index].take() {
                     session.command_completed()?;
                     released[previous] = true;
@@ -2237,19 +2352,18 @@ impl Runtime<'_> {
             if close[*index] {
                 continue;
             }
-            if outcome.admitted
-                && !released[member]
-                && let Err(error) = peer
-                    .session
-                    .as_mut()
-                    .expect("active peers have sessions")
-                    .command_completed()
-            {
-                if is_client_session_termination(&error) {
+            if outcome.admitted && !released[member] {
+                let Some(session) = peer.session.as_mut() else {
                     close[*index] = dropping(peer.id, "dispatch_refused");
                     continue;
+                };
+                if let Err(error) = session.command_completed() {
+                    if is_client_session_termination(&error) {
+                        close[*index] = dropping(peer.id, "dispatch_refused");
+                        continue;
+                    }
+                    return Err(DispatchError::Daemon(error.into()));
                 }
-                return Err(DispatchError::Daemon(error.into()));
             }
             let mut result = outcome.delivery.result;
             if peer.transport.is_web() {
@@ -2283,15 +2397,15 @@ impl Runtime<'_> {
                     peer.reply(WireMessage::CommandResult(refused))?;
                     return Ok(());
                 }
+                let principal = peer.principal.clone();
+                let identity = peer.identity()?.clone();
                 let delivery = execute_session_command(
-                    peer.session.as_mut().expect("active peers have sessions"),
+                    peer.session_mut()?,
                     self.control,
                     self.store,
                     durable,
-                    &peer.principal,
-                    peer.identity
-                        .as_ref()
-                        .expect("active peers have identities"),
+                    &principal,
+                    &identity,
                     &command,
                     native.as_deref_mut(),
                     Some(self.process_shutdown),
@@ -2323,14 +2437,11 @@ impl Runtime<'_> {
                 Ok(())
             }
             WireMessage::Heartbeat(heartbeat) => {
-                let identity = peer
-                    .identity
-                    .as_ref()
-                    .expect("active peers have identities");
+                let identity = peer.identity()?.clone();
                 let message = match record_heartbeat(
-                    peer.session.as_mut().expect("active peers have sessions"),
+                    peer.session_mut()?,
                     self.control,
-                    identity,
+                    &identity,
                     &heartbeat,
                 ) {
                     Ok(received_at_ms) => {
@@ -2349,7 +2460,7 @@ impl Runtime<'_> {
                 let encoded_bytes = encode_line(&WireMessage::DiagnosticsRequest(request.clone()))
                     .map_err(|_| ())?
                     .len();
-                let session = peer.session.as_mut().expect("active peers have sessions");
+                let session = peer.session_mut()?;
                 let response = match session.admit_diagnostics(
                     &request,
                     encoded_bytes,
@@ -2366,6 +2477,31 @@ impl Runtime<'_> {
                         )
                         .map_err(|_| ())?,
                     ),
+                    Err(error) => WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision: Some(
+                            self.control.borrow().diagnostics().current_revision,
+                        ),
+                        error: structured_session_error(&error),
+                    }),
+                };
+                peer.reply(response)?;
+                Ok(())
+            }
+            WireMessage::ClockControlRequest(request) => {
+                let encoded_bytes = encode_line(&WireMessage::ClockControlRequest(request.clone()))
+                    .map_err(|_| ())?
+                    .len();
+                let session = peer.session_mut()?;
+                let response = match session.admit_clock_control(
+                    &request,
+                    encoded_bytes,
+                    now_millis().map_err(|_| ())?,
+                ) {
+                    Ok(()) => WireMessage::ClockControlResponse(clock_control_response(
+                        self.control,
+                        request,
+                    )),
                     Err(error) => WireMessage::Error(ErrorMessage {
                         request_id: Some(request.request_id),
                         current_revision: Some(
@@ -2442,8 +2578,9 @@ impl Runtime<'_> {
             // control session holding manage_users may manage it, never a
             // session relayed by the gateway itself.
             WireMessage::WebAccessRequest(request) => {
-                let session = peer.session.as_mut().expect("active peers have sessions");
-                let (refusal, gateway) = if peer.transport.is_web() {
+                let is_web = peer.transport.is_web();
+                let session = peer.session_mut()?;
+                let (refusal, gateway) = if is_web {
                     (Some(fm_protocol::WebAccessRefusal::WebSession), None)
                 } else {
                     match session.admit_web_access(now_millis().map_err(|_| ())?) {
@@ -2497,7 +2634,7 @@ impl Runtime<'_> {
             // application and title, so only a session that may edit the
             // project (and so add a screen capture input) is answered.
             WireMessage::ScreenCaptureTargetsRequest(request) => {
-                let session = peer.session.as_ref().expect("active peers have sessions");
+                let session = peer.session()?;
                 if let Err(error) = session.admit_screen_capture_targets() {
                     let current_revision =
                         Some(self.control.borrow().diagnostics().current_revision);
@@ -2515,7 +2652,7 @@ impl Runtime<'_> {
             // A new pick of a screen capture input's target (IN-011,
             // Protocol 2.85).
             WireMessage::ScreenCapturePickRequest(request) => {
-                let session = peer.session.as_mut().expect("active peers have sessions");
+                let session = peer.session_mut()?;
                 if let Err(error) = session.admit_screen_capture_pick(now_millis().map_err(|_| ())?)
                 {
                     let current_revision =
@@ -2569,7 +2706,7 @@ impl Runtime<'_> {
                 peer.reply(WireMessage::ReplayStatus(Box::new(status)))?;
                 Ok(())
             }
-            // One audio chain's plugin slots (2.129, AU-006), to any session
+            // One audio chain's plugin slots (2.130, AU-006), to any session
             // that may view status.
             WireMessage::AudioPluginStatusRequest(request) => {
                 if self.refuse_request(peer, &request.request_id, Session::admit_view_status)? {
@@ -2696,13 +2833,21 @@ impl Runtime<'_> {
                     return Ok(());
                 }
                 let input = request.input.to_domain();
-                let uri = self
-                    .control
-                    .borrow()
+                let control = self.control.borrow();
+                let source = control
                     .document_inputs()
                     .into_iter()
-                    .find_map(|(document, uri)| (document == input).then_some(uri));
-                self.document_pages.submit(peer.id, uri, request);
+                    .find_map(|(document, uri)| {
+                        (document == input)
+                            .then_some(fm_daemon_journal::documents::PageSource::Document(uri))
+                    })
+                    .or_else(|| {
+                        control
+                            .slideshow_slide(input, request.page)
+                            .map(fm_daemon_journal::documents::PageSource::Slide)
+                    });
+                drop(control);
+                self.document_pages.submit(peer.id, source, request);
                 Ok(())
             }
             _ => {
@@ -2724,7 +2869,7 @@ impl Runtime<'_> {
         request_id: &str,
         admit: impl FnOnce(&Session) -> Result<(), SessionError>,
     ) -> Result<bool, DispatchError> {
-        let session = peer.session.as_ref().expect("active peers have sessions");
+        let session = peer.session()?;
         let Err(error) = admit(session) else {
             return Ok(false);
         };
@@ -2841,7 +2986,7 @@ impl Runtime<'_> {
             return Ok(());
         }
         let encoded_bytes = encode_line(&request.wire()).map_err(|_| ())?.len();
-        let session = peer.session.as_mut().expect("active peers have sessions");
+        let session = peer.session_mut()?;
         let now = now_millis().map_err(|_| ())?;
         let admitted = match request {
             PreviewRequest::Title(request) => {
@@ -2854,10 +2999,7 @@ impl Runtime<'_> {
                 session.admit_replay_preview(request, encoded_bytes, now)
             }
         };
-        let server = peer
-            .identity
-            .as_ref()
-            .expect("active peers have identities");
+        let server = peer.identity()?;
         let prepared = admitted
             .map_err(|error| structured_session_error(&error))
             .and_then(|()| {
@@ -3013,6 +3155,12 @@ impl Runtime<'_> {
                     .strip_dsp_states()
                     .into_iter()
                     .map(WireMessage::AudioStripDspState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .strip_send_states()
+                    .into_iter()
+                    .map(WireMessage::AudioStripSendState),
             );
             peer.initial_sync.extend(
                 control
@@ -3206,7 +3354,9 @@ impl Runtime<'_> {
             )
             .is_err()
         {
-            let subscription = peer.subscription.take().expect("set above");
+            let Some(subscription) = peer.subscription.take() else {
+                return Err(DispatchError::Peer);
+            };
             self.control.borrow_mut().unsubscribe(subscription.id());
             return Err(DispatchError::Peer);
         }
@@ -3316,622 +3466,6 @@ fn web_resync_records(
     records
 }
 
-/// Queues each active peer's live events, up to its budget. A Web peer's
-/// title records leave out the fields their titles hide (`hidden`, present
-/// whenever a Web peer is connected), and its `title_exposure_changed` event
-/// is followed by one `title_state` per title it names, as the Web session
-/// may now see it (`title_states`, Protocol 2.96), so a newly exposed
-/// field's name and value reach the page without a reconnect. A cue,
-/// script, or shortcut run that set title fields is followed the same way
-/// by each title it set, so the page's values and field revisions follow.
-/// Its cue lists, shortcuts, and scripts are redacted (Protocol 2.104), and
-/// an exposure change is also followed by the cue lists and shortcuts that
-/// set title fields. `resync` names those follow-on records (see
-/// [`web_resync`]); each is redacted as the event is.
-fn drain_live(
-    peers: &mut [Peer],
-    close: &mut [bool],
-    budgets: &mut [usize],
-    hidden: Option<&crate::web_titles::HiddenFields>,
-    resync: &mut dyn FnMut(&WireMessage) -> Vec<WireMessage>,
-) {
-    for (index, peer) in peers.iter_mut().enumerate() {
-        // A held acknowledgement precedes the events its command published.
-        if close[index] || peer.phase != Phase::Active || peer.held_result.is_some() {
-            continue;
-        }
-        while budgets[index] > 0 && peer.outbound.len() < OUTBOUND_CAPACITY - REPLY_RESERVE {
-            let message = if let Some(message) = peer.deferred_live.pop_front() {
-                message
-            } else {
-                match peer
-                    .subscription
-                    .as_ref()
-                    .expect("active peers have subscriptions")
-                    .try_recv()
-                {
-                    Ok(LiveEvent::Durable(event)) => match hidden {
-                        Some(hidden) if peer.transport.is_web() => {
-                            let message = WireMessage::Event(event);
-                            // Named before filtering: a run that set only a
-                            // hidden field still moves the field revision.
-                            peer.deferred_live.extend(
-                                resync(&message)
-                                    .into_iter()
-                                    .map(|record| crate::web_titles::web_message(record, hidden)),
-                            );
-                            crate::web_titles::web_live_message(message, hidden)
-                        }
-                        _ => WireMessage::Event(event),
-                    },
-                    Ok(LiveEvent::Runtime(event)) => WireMessage::RuntimeEvent(event),
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        close[index] = true;
-                        break;
-                    }
-                }
-            };
-            match peer.queue(&message, Accounting::Session) {
-                Ok(()) => {}
-                // Bounded: the subscription keeps (and bounds) every later
-                // event while this one waits.
-                Err(refusal) if refusal.transient() => {
-                    peer.deferred_live.push_front(message);
-                    break;
-                }
-                Err(_) => {
-                    close[index] = dropping(peer.id, "live_event_refused");
-                    break;
-                }
-            }
-            budgets[index] -= 1;
-        }
-    }
-}
-
-enum WriteOutcome {
-    Pending,
-    HandshakeResponseWritten,
-    Failed,
-}
-
-/// Serves a Web peer's queue for one pass: retires every record the relay
-/// acknowledged, then hands it every queued record not yet handed over, in
-/// order, until the relay channel is full or the session's outbound rate
-/// window is spent.
-///
-/// Records are pipelined: the relay writes them while the scheduler keeps
-/// queueing, so a Web peer's throughput is the relay's, not one record per
-/// relay poll. Handed-over records stay at the front of the queue (they still
-/// count against its bound) until acknowledged, in order, so the queue never
-/// holds more records in flight than the relay channel and its
-/// acknowledgement channel can take.
-fn write_web_peer(peer: &mut Peer) -> WriteOutcome {
-    let Peer {
-        transport,
-        outbound,
-        session,
-        handshake_written,
-        phase,
-        web_feed,
-        ..
-    } = peer;
-    let Transport::Web(web) = transport else {
-        unreachable!("only Web peers are written here")
-    };
-    let mut handshake = false;
-    loop {
-        match web.acknowledgements.try_recv() {
-            Ok(()) => {
-                // An acknowledgement always retires the oldest handed-over
-                // record; one for a record never handed over is a relay bug.
-                if !outbound.front().is_some_and(|record| record.channel_sent) {
-                    return WriteOutcome::Failed;
-                }
-                let record = outbound.pop_front().expect("checked above");
-                if record.accounted
-                    && matches!(record.accounting, Accounting::Session)
-                    && session
-                        .as_mut()
-                        .expect("accounted records have sessions")
-                        .outbound_delivered()
-                        .is_err()
-                {
-                    return WriteOutcome::Failed;
-                }
-                if record.handshake_response {
-                    *handshake_written = true;
-                    handshake = true;
-                }
-            }
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => return WriteOutcome::Failed,
-        }
-    }
-    // One lossy feed record joins the queue only while it is nearly idle
-    // and none is in flight: everything else the peer is owed goes first,
-    // and a peer that stops reading stops receiving feed records.
-    if *phase == Phase::Active
-        && outbound.len() <= WEB_FEED_MAX_QUEUED
-        && !outbound.iter().any(|record| record.feed)
-        && let Some(bytes) = web_feed.as_mut().and_then(|feed| feed.next(Instant::now()))
-    {
-        outbound.push_back(Outbound {
-            write: OutboundWrite::Web(bytes),
-            accounting: Accounting::Raw,
-            handshake_response: false,
-            command_result: false,
-            accounted: false,
-            channel_sent: false,
-            feed: true,
-        });
-    }
-    for record in outbound.iter_mut().filter(|record| !record.channel_sent) {
-        let OutboundWrite::Web(bytes) = &record.write else {
-            unreachable!("web peers only queue web writes")
-        };
-        if matches!(record.accounting, Accounting::Session) && !record.accounted {
-            let Ok(now) = now_millis() else {
-                return WriteOutcome::Failed;
-            };
-            match session
-                .as_mut()
-                .expect("session accounting has a session")
-                .queue_outbound(bytes.len(), now)
-            {
-                Ok(()) => {}
-                // Retryable and never disconnecting: send on a later pass.
-                Err(SessionError::OutboundRateLimited) => break,
-                Err(_) => return WriteOutcome::Failed,
-            }
-            record.accounted = true;
-        }
-        match web.outbound.try_send(bytes.clone()) {
-            Ok(()) => record.channel_sent = true,
-            // The relay has not taken earlier records yet; later passes
-            // hand this one over in order.
-            Err(TrySendError::Full(_)) => break,
-            Err(TrySendError::Disconnected(_)) => return WriteOutcome::Failed,
-        }
-    }
-    if handshake {
-        WriteOutcome::HandshakeResponseWritten
-    } else {
-        WriteOutcome::Pending
-    }
-}
-
-fn write_peer(peer: &mut Peer) -> WriteOutcome {
-    if peer.transport.is_web() {
-        write_web_peer(peer)
-    } else {
-        // Continue any in-flight lossy record before touching the queue; an
-        // idle queue starts at most one lossy slot per pass.
-        if peer.lossy.started() {
-            return write_lossy(peer);
-        }
-        let Some(record) = peer.outbound.front_mut() else {
-            return write_lossy(peer);
-        };
-        let Transport::Raw(stream) = &mut peer.transport else {
-            unreachable!("raw transport checked above")
-        };
-        let mut stream = Counted {
-            inner: stream,
-            written: &mut peer.written,
-        };
-        let complete = match &mut record.write {
-            OutboundWrite::Raw(write) => write.write_once(&mut stream),
-            OutboundWrite::Web(_) => unreachable!("raw peers only queue raw writes"),
-        };
-        match complete {
-            Ok(true) => finish_outbound(peer),
-            Ok(false) => WriteOutcome::Pending,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
-                ) =>
-            {
-                WriteOutcome::Pending
-            }
-            Err(_) => WriteOutcome::Failed,
-        }
-    }
-}
-
-/// Writes `peer` for one loop pass: a web peer once (see
-/// [`write_web_peer`]); a raw
-/// peer record after record (queued records first, then the lossy slots,
-/// each started record finished before another starts) until its socket
-/// would block, nothing is left, or [`WRITE_BUDGET_PER_PASS`] is spent.
-///
-/// A pass also ends as soon as the handshake response is written, so the
-/// caller always observes [`WriteOutcome::HandshakeResponseWritten`]: a later
-/// write failing in the same pass must not hide it, or a `--once` daemon never
-/// learns its one peer and keeps waiting for another after that peer closes.
-fn write_peer_pass(peer: &mut Peer) -> WriteOutcome {
-    let started = peer.written;
-    loop {
-        let before = peer.written;
-        match write_peer(peer) {
-            WriteOutcome::Pending => {}
-            outcome @ (WriteOutcome::HandshakeResponseWritten | WriteOutcome::Failed) => {
-                return outcome;
-            }
-        }
-        if peer.transport.is_web()
-            || peer.written == before
-            || peer.written - started >= WRITE_BUDGET_PER_PASS
-        {
-            return WriteOutcome::Pending;
-        }
-    }
-}
-
-fn finish_outbound(peer: &mut Peer) -> WriteOutcome {
-    let record = peer.outbound.pop_front().expect("written record exists");
-    if record.accounted
-        && matches!(record.accounting, Accounting::Session)
-        && peer
-            .session
-            .as_mut()
-            .expect("accounted records have sessions")
-            .outbound_delivered()
-            .is_err()
-    {
-        return WriteOutcome::Failed;
-    }
-    if record.handshake_response {
-        peer.handshake_written = true;
-        WriteOutcome::HandshakeResponseWritten
-    } else {
-        WriteOutcome::Pending
-    }
-}
-
-fn write_lossy(peer: &mut Peer) -> WriteOutcome {
-    let Transport::Raw(stream) = &mut peer.transport else {
-        return WriteOutcome::Failed;
-    };
-    let mut stream = Counted {
-        inner: stream,
-        written: &mut peer.written,
-    };
-    match peer.lossy.write_once(&mut stream) {
-        Ok(()) => WriteOutcome::Pending,
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
-            ) =>
-        {
-            WriteOutcome::Pending
-        }
-        Err(_) => WriteOutcome::Failed,
-    }
-}
-
-fn publish_audio_meters(peers: &mut [Peer], meters: AudioMetersMessage) {
-    // Web pages take only the Master meters, encoded once for all of them.
-    if peers.iter().any(|peer| peer.web_feed.is_some())
-        && let Ok(web) = encode_line(&WireMessage::AudioMeters(web_meters(&meters)))
-    {
-        for peer in peers.iter_mut() {
-            peer.replace_web_meter(web.as_bytes());
-        }
-    }
-    let Ok(bytes) = encode_line(&WireMessage::AudioMeters(meters)).map(String::into_bytes) else {
-        return;
-    };
-    for peer in peers {
-        peer.replace_meter(bytes.clone());
-    }
-}
-
-/// Title animation phases (Protocol 2.90) go to Web pages and raw Studio
-/// sessions, latest-wins.
-fn publish_title_phases(peers: &mut [Peer], phases: fm_protocol::TitlePhasesMessage) {
-    let Ok(bytes) = encode_line(&WireMessage::TitlePhases(phases)).map(String::into_bytes) else {
-        return;
-    };
-    for peer in peers {
-        peer.replace_title_phases(&bytes);
-    }
-}
-
-/// The replay status (OR-012) goes to raw Studio peers in its own
-/// latest-wins slot.
-fn publish_replay_status(peers: &mut [Peer], status: fm_protocol::ReplayStatusMessage) {
-    let Ok(bytes) =
-        encode_line(&WireMessage::ReplayStatus(Box::new(status))).map(String::into_bytes)
-    else {
-        return;
-    };
-    for peer in peers {
-        peer.replace_replay_status(bytes.clone());
-    }
-}
-
-/// The answer to a `reel_status_request`: the status, or an `error`
-/// (`status_too_large`) carrying the request id when the status is too long
-/// for one line, which would otherwise close the session.
-fn reel_status_reply(
-    status: fm_protocol::ReelStatusMessage,
-    request_id: String,
-    current_revision: u64,
-) -> WireMessage {
-    let message = WireMessage::ReelStatus(Box::new(status));
-    if encode_line(&message).is_ok() {
-        return message;
-    }
-    WireMessage::Error(ErrorMessage {
-        request_id: Some(request_id),
-        current_revision: Some(current_revision),
-        error: StructuredError {
-            code: "status_too_large".into(),
-            message: "the reel status is too long for one line; shorten reel names or music \
-                      paths, or remove reels"
-                .into(),
-            fields: Vec::new(),
-            retryable: false,
-        },
-    })
-}
-
-/// The highlight reel status (OR-013) goes to raw Studio peers in its own
-/// latest-wins slot.
-fn publish_reel_status(peers: &mut [Peer], status: fm_protocol::ReelStatusMessage) {
-    let Ok(bytes) = encode_line(&WireMessage::ReelStatus(Box::new(status))).map(String::into_bytes)
-    else {
-        return;
-    };
-    for peer in peers {
-        peer.replace_reel_status(bytes.clone());
-    }
-}
-
-/// Paces `replay_status` (OR-012): at most four a second while it changes,
-/// one a second otherwise (the live edge moves every frame).
-#[derive(Debug, Default)]
-pub(crate) struct ReplayStatusPacer {
-    sequence: u64,
-    generation: Option<u64>,
-    sent_at: Option<Instant>,
-}
-
-impl ReplayStatusPacer {
-    const CHANGED: std::time::Duration = std::time::Duration::from_millis(250);
-    const IDLE: std::time::Duration = std::time::Duration::from_secs(1);
-
-    /// The next status to publish, if one is due.
-    fn poll(
-        &mut self,
-        control: &fm_control::ControlService,
-        authority: &ServerIdentity,
-        now: Instant,
-    ) -> Option<fm_protocol::ReplayStatusMessage> {
-        let generation = control.replay_generation();
-        let elapsed = self.sent_at.map(|sent| now.saturating_duration_since(sent));
-        let due = match elapsed {
-            None => true,
-            Some(elapsed) if self.generation != Some(generation) => elapsed >= Self::CHANGED,
-            Some(elapsed) => elapsed >= Self::IDLE,
-        };
-        if !due {
-            return None;
-        }
-        self.generation = Some(generation);
-        self.sent_at = Some(now);
-        self.sequence = self.sequence.wrapping_add(1);
-        Some(control.replay_status(authority, self.sequence, None))
-    }
-
-    /// The sequence of a status answering a request.
-    fn next_sequence(&mut self) -> u64 {
-        self.sequence = self.sequence.wrapping_add(1);
-        self.sequence
-    }
-}
-
-/// Paces `reel_status` (OR-013): at most four a second while it changes,
-/// one a second otherwise (export progress moves while a job runs).
-#[derive(Debug, Default)]
-pub(crate) struct ReelStatusPacer {
-    sequence: u64,
-    generation: Option<u64>,
-    sent_at: Option<Instant>,
-}
-
-impl ReelStatusPacer {
-    const CHANGED: std::time::Duration = std::time::Duration::from_millis(250);
-    const IDLE: std::time::Duration = std::time::Duration::from_secs(1);
-
-    /// The next status to publish, if one is due.
-    fn poll(
-        &mut self,
-        control: &fm_control::ControlService,
-        authority: &ServerIdentity,
-        now: Instant,
-    ) -> Option<fm_protocol::ReelStatusMessage> {
-        let generation = control.reel_generation();
-        let elapsed = self.sent_at.map(|sent| now.saturating_duration_since(sent));
-        let due = match elapsed {
-            None => true,
-            Some(elapsed) if self.generation != Some(generation) => elapsed >= Self::CHANGED,
-            Some(elapsed) => elapsed >= Self::IDLE,
-        };
-        if !due {
-            return None;
-        }
-        self.generation = Some(generation);
-        self.sent_at = Some(now);
-        self.sequence = self.sequence.wrapping_add(1);
-        Some(control.reel_status(authority, self.sequence, None))
-    }
-
-    /// The sequence of a status answering a request.
-    fn next_sequence(&mut self) -> u64 {
-        self.sequence = self.sequence.wrapping_add(1);
-        self.sequence
-    }
-}
-
-fn publish_recorder_status(peers: &mut [Peer], status: RecorderStatusMessage) {
-    let Ok(bytes) = encode_line(&WireMessage::RecorderStatus(status)).map(String::into_bytes)
-    else {
-        return;
-    };
-    for peer in peers {
-        peer.replace_recorder_status(bytes.clone());
-    }
-}
-
-/// Live source drift telemetry (Protocol 2.76) goes to raw Studio peers
-/// in its own latest-wins slot and (Protocol 2.101) to Web pages' feeds.
-fn publish_source_sync_status(peers: &mut [Peer], status: &SourceSyncStatusMessage) {
-    let Ok(bytes) =
-        encode_line(&WireMessage::SourceSyncStatus(status.clone())).map(String::into_bytes)
-    else {
-        return;
-    };
-    for peer in peers {
-        peer.replace_source_sync_status(bytes.clone());
-    }
-}
-
-/// Daemon health (Protocol 2.100) goes to raw Studio peers in its own
-/// latest-wins slot, once a statistics sample, and (Protocol 2.110) to Web
-/// pages' feeds.
-fn publish_health_status(peers: &mut [Peer], status: &fm_protocol::HealthStatusMessage) {
-    let Ok(bytes) = encode_line(&WireMessage::HealthStatus(status.clone())).map(String::into_bytes)
-    else {
-        return;
-    };
-    for peer in peers {
-        peer.replace_health_status(bytes.clone());
-    }
-}
-
-fn publish_stream_status(peers: &mut [Peer], status: StreamStatusMessage) {
-    let Ok(bytes) = encode_line(&WireMessage::StreamStatus(status)).map(String::into_bytes) else {
-        return;
-    };
-    for peer in peers {
-        peer.replace_stream_status(bytes.clone());
-    }
-}
-
-/// Publishes one tap's atomic encoded frame group to every eligible peer.
-fn publish_monitor_frame(peers: &mut [Peer], tap: MonitorTap, bytes: &[u8]) {
-    for peer in peers {
-        peer.replace_monitor_frame(tap, bytes);
-    }
-}
-
-/// Drops lossy records that never reached the wire so shutdown cannot flush
-/// stale telemetry or monitor frames after its goodbye; in-flight records keep
-/// draining.
-fn discard_unstarted_lossy_records(peer: &mut Peer) {
-    peer.lossy.discard_unstarted();
-    // A Web peer's feed records not handed over yet are dropped, and no
-    // further one follows the goodbye.
-    peer.web_feed = None;
-}
-
-enum ShutdownQueue {
-    Replace,
-    PreserveCommandResult,
-}
-
-fn shutdown_peers(peers: &mut Vec<Peer>, control: &SharedControl, queue: &ShutdownQueue) {
-    for index in (0..peers.len()).rev() {
-        if peers[index].session.is_none() || !peers[index].handshake_written {
-            close_peer(peers.swap_remove(index), control);
-        }
-    }
-    if peers.is_empty() {
-        return;
-    }
-    for peer in peers.iter_mut() {
-        discard_unstarted_lossy_records(peer);
-        if matches!(queue, ShutdownQueue::Replace) {
-            peer.replace_outbound_for_shutdown();
-        } else {
-            peer.preserve_outbound_for_shutdown();
-        }
-        peer.initial_sync.clear();
-        peer.inbound.clear();
-        let notice = shutdown_message();
-        if peer.queue(&notice, Accounting::Session).is_err() {
-            let _ = peer.queue(&notice, Accounting::Raw);
-        }
-        peer.phase = Phase::Closing;
-    }
-
-    let deadline = Instant::now() + CLIENT_WRITE_TIMEOUT;
-    while !peers.is_empty() && Instant::now() < deadline {
-        for index in (0..peers.len()).rev() {
-            let outcome = write_peer(&mut peers[index]);
-            let complete = if peers[index].transport.is_web() {
-                matches!(outcome, WriteOutcome::Failed) || peers[index].outbound.is_empty()
-            } else {
-                !matches!(outcome, WriteOutcome::Pending) || peers[index].outbound.is_empty()
-            };
-            if complete {
-                close_peer(peers.swap_remove(index), control);
-            }
-        }
-        if !peers.is_empty() {
-            thread::sleep(CLIENT_READ_POLL_INTERVAL);
-        }
-    }
-    close_all(peers, control);
-}
-
-fn close_all(peers: &mut Vec<Peer>, control: &SharedControl) {
-    while let Some(peer) = peers.pop() {
-        close_peer(peer, control);
-    }
-}
-
-fn shutdown_for_reason(
-    reason: DaemonShutdownReason,
-    peers: &mut Vec<Peer>,
-    control: &SharedControl,
-) -> DaemonShutdownReason {
-    // Shutdown stops waiting for realization: a held acknowledgement is owed
-    // to its peer exactly like any other queued result.
-    let mut close = vec![false; peers.len()];
-    release_held_results(peers, &mut close, |_| false);
-    for peer in peers.iter_mut() {
-        peer.force_held_reply();
-    }
-    match reason {
-        DaemonShutdownReason::ProcessSignal => {
-            let queue = if peers
-                .iter()
-                .any(|peer| peer.outbound.iter().any(|record| record.command_result))
-            {
-                ShutdownQueue::PreserveCommandResult
-            } else {
-                ShutdownQueue::Replace
-            };
-            shutdown_peers(peers, control, &queue);
-        }
-        DaemonShutdownReason::ProgramSurface => close_all(peers, control),
-        DaemonShutdownReason::Once => unreachable!("once is handled below"),
-    }
-    reason
-}
-
-fn close_peer(mut peer: Peer, control: &SharedControl) {
-    if let Some(subscription) = peer.subscription.take() {
-        control.borrow_mut().unsubscribe(subscription.id());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU128;
@@ -3943,6 +3477,7 @@ mod tests {
         WireStreamTargetId,
     };
 
+    use super::io::{discard_unstarted_lossy_records, write_peer};
     use super::*;
 
     fn identity() -> ServerIdentity {
@@ -4881,12 +4416,16 @@ mod tests {
                     realized: fm_protocol::RecorderRealizedState::Recording,
                     elapsed_ms: 12_345,
                     failure: None,
+                    free_bytes: Some(42_000_000_000),
+                    remaining_seconds: Some(7_000),
                 },
                 fm_protocol::RecorderStatusSample {
                     recorder: fm_protocol::WireRecorderSlot::new(2).unwrap(),
                     realized: fm_protocol::RecorderRealizedState::Failed,
                     elapsed_ms: 0,
                     failure: Some(fm_protocol::OutputFailureCode::FolderNotWritable.into()),
+                    free_bytes: None,
+                    remaining_seconds: None,
                 },
             ],
         }
@@ -4907,6 +4446,7 @@ mod tests {
             trim_in_frames: fm_protocol::MAX_REEL_TRIM_FRAMES,
             trim_out_frames: fm_protocol::MAX_REEL_TRIM_FRAMES,
             speed_percent: 100,
+            reverse: false,
             dissolve_frames: 0,
         };
         let reels = (1..=u64::try_from(fm_protocol::MAX_REELS).unwrap())
@@ -4956,6 +4496,7 @@ mod tests {
                         trim_in_frames: 0,
                         trim_out_frames: 0,
                         speed_percent: 100,
+                        reverse: false,
                         dissolve_frames: 0,
                     }],
                     music: None,

@@ -9,6 +9,9 @@ pub struct QueueCapacity(NonZeroUsize);
 impl QueueCapacity {
     pub const MAX: usize = 65_536;
 
+    /// The smallest capacity, for a caller whose authored value was refused.
+    pub const DEFAULT: Self = Self(NonZeroUsize::MIN);
+
     /// Creates a nonzero, bounded queue capacity.
     ///
     /// # Errors

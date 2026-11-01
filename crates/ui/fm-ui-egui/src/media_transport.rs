@@ -125,6 +125,29 @@ pub(crate) fn draw_media(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
     }
     let block = slideshow_block(state);
     let now = ui.input(|input| input.time);
+    let asked_id = Id::new("studio-slide-thumbnail-requests");
+    let mut asked = ui
+        .data(|data| {
+            data.get_temp::<std::sync::Arc<
+                std::collections::BTreeSet<(fm_protocol::PagedPageKey, u64)>,
+            >>(asked_id)
+        })
+        .map(|asked| (*asked).clone())
+        .unwrap_or_default();
+    asked.retain(|(key, generation)| {
+        slideshows.iter().any(|(input, still)| {
+            key.input == fm_protocol::WireInputId::from_domain(*input)
+                && *generation == still.status.generation
+        })
+    });
+    for (input, still) in &slideshows {
+        intents.extend(
+            crate::still_input_ui::wanted_slide_thumbnails(state, *input, still, &mut asked)
+                .into_iter()
+                .map(StudioIntent::PagedPage),
+        );
+    }
+    ui.data_mut(|data| data.insert_temp(asked_id, std::sync::Arc::new(asked)));
     for (input, still) in slideshows {
         let name = input_name(l, &view.inputs, &view.input_names, input);
         card().show(ui, |ui| {
@@ -132,6 +155,7 @@ pub(crate) fn draw_media(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
             crate::still_input_ui::draw_slideshow_panel(
                 ui,
                 l,
+                state,
                 (input, &name),
                 still,
                 block,

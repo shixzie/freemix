@@ -229,6 +229,9 @@ fn function_dispatch_requires_completion_in_order() {
         Ok(TcpReply::Dispatch(Translation::Compat(
             CompatIntent::Fade {
                 input: Some(id(4)),
+                effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                    fm_protocol::AutoTransitionKind::Fade,
+                ),
                 duration_millis: 500,
             }
         )))
@@ -253,8 +256,8 @@ fn function_errors_and_unsupported_answer_immediately() {
         "FUNCTION ER input not found: 99\r\n"
     );
     assert_eq!(
-        line(&mut session, "FUNCTION AudioOn Input=1", &state),
-        "FUNCTION ER the function has no semantics in the current compatibility core\r\n"
+        line(&mut session, "FUNCTION AddInput", &state),
+        "FUNCTION ER missing parameter: Value\r\n"
     );
     assert_eq!(
         line(&mut session, "FUNCTION Cut Mix=1", &state),
@@ -476,8 +479,6 @@ fn xmltext_errors_are_distinct_and_bounded() {
         assert_eq!(state.xml_text(xpath), Err(XPathError::NotFound), "{xpath}");
     }
     for xpath in [
-        "//input",
-        "vmix//input",
         "vmix/",
         "vmix/inputs/input[0]",
         "vmix/inputs/input[",
@@ -485,8 +486,8 @@ fn xmltext_errors_are_distinct_and_bounded() {
         "vmix/inputs/input[@title='x]",
         "vmix/inputs/input[@title=x]",
         "vmix/@x/y",
-        "vmix/*",
-        "vmix/text()",
+        "vmix/text(1)",
+        "vmix/inputs/input[1]/text()/@x",
         "@x",
     ] {
         assert!(
@@ -537,8 +538,8 @@ fn xmltext_responses_stay_single_line() {
         "XMLTEXT ER XPath selected no node\r\n"
     );
     assert_eq!(
-        line(&mut session, "XMLTEXT //input", &state),
-        "XMLTEXT ER unsupported XPath: descendant axis is not supported\r\n"
+        line(&mut session, "XMLTEXT //input[1]/@title", &state),
+        "XMLTEXT OK Camera 1\r\n"
     );
 }
 

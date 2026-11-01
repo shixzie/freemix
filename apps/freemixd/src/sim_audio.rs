@@ -240,5 +240,5 @@ const fn solo_mode(mode: fm_model::AudioSoloMode) -> fm_audio::SoloMode {
 
 /// The audio plane's clock domain: the simulated daemon's one Program clock.
 fn clock_domain() -> ClockDomainId {
-    ClockDomainId::new(NonZeroU128::new(1).expect("one is nonzero"))
+    ClockDomainId::new(NonZeroU128::MIN)
 }

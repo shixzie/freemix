@@ -17,6 +17,7 @@ mod monitor_image;
 mod network_stream;
 mod output_failure;
 mod paged;
+mod production_clock;
 mod recorder_status;
 mod reel;
 mod replay;
@@ -39,11 +40,12 @@ pub use fm_types::{
 pub use audio_mixer::{
     AUDIO_GROUP_COUNT, AudioDspTarget, AudioDynamicsMeter, AudioGroupStatus, AudioLoudnessMeter,
     AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus, AudioPluginStatusMessage,
-    AudioPluginStatusRequest, AudioSoloMode, AudioStripDspStateMessage, AuxBusStatus,
-    InputAudioLabel, MAX_AUDIO_LABEL_BYTES, MAX_AUDIO_MONITOR_DEVICE_BYTES,
-    MAX_AUDIO_STRIP_DSP_STATES, MAX_DYNAMICS_REDUCTION_MILLIDB, MAX_LOUDNESS_MILLI,
-    MAX_LOUDNESS_RANGE_MILLILU, MAX_PLUGIN_ID_BYTES, MAX_PLUGIN_LATENCY_FRAMES,
-    MAX_PLUGIN_STATE_BYTES, MAX_PROTOCOL_PLUGIN_SLOTS, MIN_LOUDNESS_MILLI, PluginChainSlot,
+    AudioPluginStatusRequest, AudioSoloMode, AudioStripDspStateMessage, AudioStripSendStateMessage,
+    AuxBusStatus, InputAudioLabel, MAX_AUDIO_LABEL_BYTES, MAX_AUDIO_MONITOR_DEVICE_BYTES,
+    MAX_AUDIO_SEND_STATES, MAX_AUDIO_STRIP_DSP_STATES, MAX_DYNAMICS_REDUCTION_MILLIDB,
+    MAX_LOUDNESS_MILLI, MAX_LOUDNESS_RANGE_MILLILU, MAX_PLUGIN_ID_BYTES, MAX_PLUGIN_LATENCY_FRAMES,
+    MAX_PLUGIN_PARAMETER_NAME_BYTES, MAX_PLUGIN_PARAMETERS, MAX_PLUGIN_STATE_BYTES,
+    MAX_PROTOCOL_PLUGIN_SLOTS, MIN_LOUDNESS_MILLI, PluginChainSlot, PluginParameter,
     audio_group_is_valid, audio_label_is_valid, audio_monitor_device_is_valid,
     fade_to_black_affects,
 };
@@ -77,7 +79,7 @@ pub use cue::{
     MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES,
     MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TITLE_NUMBER,
     MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, WireCue, WireCueAction,
-    WireCueMediaOperation, WireInputTarget, WireTargetBindings,
+    WireCueClockOperation, WireCueMediaOperation, WireInputTarget, WireTargetBindings,
 };
 pub use display_output::{
     DisplayId, DisplayInventory, DisplayInventoryEntry, DisplayInventoryMessage,
@@ -149,8 +151,8 @@ pub use fm_command::{
     ScriptFailureKind,
 };
 pub use health::{
-    AlertReading, AlertRuleDefaults, AlertRuleError, AlertRuleSetting, MAX_ALERT_HOLD_MS,
-    check_alert_rule_settings, effective_alert_rule,
+    AlertReading, AlertRuleDefaults, AlertRuleError, AlertRuleSetting, AlertSeverity,
+    MAX_ALERT_HOLD_MS, check_alert_rule_settings, effective_alert_rule,
 };
 pub use health::{
     DaemonHealth, HealthAlert, HealthAlertAction, HealthAlertRequest, HealthAlertRule,
@@ -210,6 +212,13 @@ pub use paged::{
     PagedStateMessage, PagedStatus, bounded_paged_text, decode_paged_page, paged_notes_valid,
     paged_thumbnail_size_valid,
 };
+pub use production_clock::{
+    ClockControlOperation, ClockControlRequest, ClockControlResponse,
+    MAX_PRODUCTION_CLOCK_NAME_BYTES, MAX_PRODUCTION_CLOCK_STATUSES,
+    MAX_PRODUCTION_CLOCK_TEXT_BYTES, MAX_PRODUCTION_CLOCK_ZONE_BYTES, ProductionClockKind,
+    ProductionClockState, ProductionClockStatus, clock_name_is_valid, decode_statuses,
+    encode_statuses,
+};
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
 };
@@ -226,9 +235,9 @@ pub use replay::{
     MAX_REPLAY_RETENTION_SECONDS, MAX_REPLAY_STEP_FRAMES, MAX_REPLAY_STORAGE_ROOT_BYTES,
     MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReplayEventStatus, ReplayFeed,
     ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySettings, ReplaySettingsError,
-    ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage, ReplayStatusRequest, ReplayStorageLevel,
-    ReplayStorageStatus, replay_event_name_is_valid, replay_step_is_valid,
-    replay_storage_root_is_valid,
+    ReplaySmartHealth, ReplaySmartStatus, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage,
+    ReplayStatusRequest, ReplayStorageLevel, ReplayStorageStatus, replay_event_name_is_valid,
+    replay_step_is_valid, replay_storage_root_is_valid,
 };
 pub use scene_layer::{MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS, MAX_KEY_LIGHT_WRAP_WIDTH};
 pub use scene_layer::{

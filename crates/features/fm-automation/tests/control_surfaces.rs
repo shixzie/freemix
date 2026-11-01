@@ -304,13 +304,8 @@ fn decoder_expected() -> Vec<ControlEvent> {
                 velocity: 0x40,
             },
         },
-        ControlEvent {
-            control: fader.clone(),
-            value: ControlValue::Absolute {
-                raw: 0x40 << 7,
-                max: 0x3FFF,
-            },
-        },
+        // The MSB is held until its LSB arrives, so no `0x40 << 7`
+        // intermediate event appears.
         ControlEvent {
             control: fader.clone(),
             value: ControlValue::Absolute {

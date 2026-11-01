@@ -19,8 +19,9 @@
 //! tape offset `p` is drawn at viewport offset `viewport + p - distance`: the
 //! first item's leading edge sits on the far (right or bottom) edge at
 //! `start_frame` and enters on the next frame that moves at least one pixel.
-//! Crawl mode moves right to left along x; roll mode moves bottom to top along
-//! y, with each item word-wrapped to the viewport width.
+//! `Crawl` moves right to left and `Roll` bottom to top; `CrawlRight` and
+//! `RollDown` are the mirror images, entering from the left or top edge. Roll
+//! modes word-wrap each item to the viewport width.
 //!
 //! # Live updates never jump
 //!
@@ -41,7 +42,8 @@
 //! extent of at least one pixel, so walking the tape always makes progress.
 
 use crate::{
-    Alignment, AssetCatalog, Bounds, Color, ElementId, FontFace, FontStyle, MAX_FONT_SIZE_PX,
+    Alignment, AssetCatalog, Bounds, Color, ElementId, FontFace, FontStyle, HorizontalAlignment,
+    MAX_FONT_SIZE_PX, VerticalAlignment,
     font::ScaledFace,
     text::{LaidText, layout_text},
 };
@@ -67,8 +69,78 @@ pub const MAX_CRAWL_VISIBLE_SEGMENTS: usize = 1_024;
 pub enum CrawlMode {
     /// Horizontal, right to left, one unwrapped line per item.
     Crawl,
+    /// Horizontal, left to right, one unwrapped line per item.
+    CrawlRight,
     /// Vertical, bottom to top, each item word-wrapped to the viewport width.
     Roll,
+    /// Vertical, top to bottom, each item word-wrapped to the viewport width.
+    RollDown,
+}
+
+impl CrawlMode {
+    #[must_use]
+    pub const fn is_horizontal(self) -> bool {
+        matches!(self, Self::Crawl | Self::CrawlRight)
+    }
+
+    /// Whether items travel toward increasing x or y (left to right, or top
+    /// to bottom).
+    #[must_use]
+    pub const fn is_reversed(self) -> bool {
+        matches!(self, Self::CrawlRight | Self::RollDown)
+    }
+}
+
+/// Largest logo width a crawl item may reserve, in pixels.
+pub const MAX_CRAWL_LOGO_WIDTH: u32 = 2_048;
+/// Gap between a crawl item's logo and its text, in pixels.
+pub const CRAWL_LOGO_GAP_PX: u32 = 8;
+/// Longest logo asset name, in bytes.
+pub const MAX_CRAWL_LOGO_ASSET_BYTES: usize = 256;
+
+/// An image drawn before one crawl item's text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrawlLogo<'a> {
+    /// The renderer's asset name, e.g. `asset://logos/news.png`.
+    pub asset: &'a str,
+    /// Width reserved along the motion axis, in pixels.
+    pub width_px: u32,
+}
+
+/// One item of a crawl with optional per-item styling: `fill` overrides the
+/// crawl's fill colour for that item, and `logo` draws an image before its
+/// text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrawlItem<'a> {
+    pub text: &'a str,
+    pub fill: Option<Color>,
+    pub logo: Option<CrawlLogo<'a>>,
+}
+
+impl<'a> CrawlItem<'a> {
+    #[must_use]
+    pub const fn text(text: &'a str) -> Self {
+        Self {
+            text,
+            fill: None,
+            logo: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_fill(text: &'a str, fill: Color) -> Self {
+        Self {
+            text,
+            fill: Some(fill),
+            logo: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_logo(mut self, logo: CrawlLogo<'a>) -> Self {
+        self.logo = Some(logo);
+        self
+    }
 }
 
 /// An exact rational speed: `pixels` every `seconds`, normalized.
@@ -135,9 +207,10 @@ impl CrawlConfig {
     /// Viewport length along the motion axis.
     #[must_use]
     pub const fn viewport_length(&self) -> u32 {
-        match self.mode {
-            CrawlMode::Crawl => self.bounds.width,
-            CrawlMode::Roll => self.bounds.height,
+        if self.mode.is_horizontal() {
+            self.bounds.width
+        } else {
+            self.bounds.height
         }
     }
 
@@ -218,27 +291,35 @@ pub(crate) fn layout_segment(
     wrap_width: u32,
     text: &str,
 ) -> LaidText {
-    let wrap = match mode {
-        CrawlMode::Crawl => None,
-        CrawlMode::Roll => Some(wrap_width),
+    let wrap = if mode.is_horizontal() {
+        None
+    } else {
+        Some(wrap_width)
     };
     layout_text(scaled, text, wrap, MAX_CRAWL_ITEM_CHARS)
 }
 
 fn segment_extent(mode: CrawlMode, laid: &LaidText) -> u32 {
-    match mode {
-        CrawlMode::Crawl => laid.width_px,
-        CrawlMode::Roll => {
-            let lines = i64::try_from(laid.lines.len()).unwrap_or(i64::MAX);
-            u32::try_from(laid.line_height_px.saturating_mul(lines).max(0)).unwrap_or(u32::MAX)
-        }
+    if mode.is_horizontal() {
+        laid.width_px
+    } else {
+        let lines = i64::try_from(laid.lines.len()).unwrap_or(i64::MAX);
+        u32::try_from(laid.line_height_px.saturating_mul(lines).max(0)).unwrap_or(u32::MAX)
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MeasuredLogo {
+    asset: String,
+    width_px: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Measured {
     text: String,
     extent: u32,
+    fill: Option<Color>,
+    logo: Option<MeasuredLogo>,
 }
 
 /// A contiguous stretch of tape driven by one item list.
@@ -265,8 +346,15 @@ pub enum CrawlSegmentKind {
 pub struct CrawlSegment<'a> {
     pub kind: CrawlSegmentKind,
     pub text: &'a str,
+    /// Per-item fill override; `None` uses the crawl's fill.
+    pub fill: Option<Color>,
+    /// The item's logo asset name, if it has one.
+    pub logo_asset: Option<&'a str>,
+    /// The logo width reserved along the motion axis, in pixels.
+    pub logo_width_px: u32,
     /// Leading edge relative to the viewport origin along the motion axis:
-    /// x from the viewport's left for a crawl, y from its top for a roll.
+    /// x from the viewport's left for a horizontal mode, y from its top for a
+    /// vertical one.
     pub offset: i64,
     pub extent: u32,
     /// Item-list revision that produced the segment.
@@ -278,7 +366,7 @@ pub struct CrawlSegment<'a> {
 pub struct CrawlView<'a> {
     pub frame: u64,
     pub distance: u64,
-    /// In tape order, i.e. increasing `offset`.
+    /// In increasing viewport offset, i.e. left to right or top to bottom.
     pub segments: Vec<CrawlSegment<'a>>,
     /// [`MAX_CRAWL_VISIBLE_SEGMENTS`] stopped the walk early.
     pub truncated: bool,
@@ -321,6 +409,17 @@ pub enum CrawlError {
         maximum: usize,
     },
     BlankItem {
+        index: usize,
+    },
+    /// A logo's reserved width is zero or above the bound.
+    LogoTooWide {
+        index: usize,
+        width: u32,
+        maximum: u32,
+    },
+    /// A logo asset name is empty, oversized, or contains a control
+    /// character.
+    InvalidLogo {
         index: usize,
     },
     /// Items and the separator must not contain control characters
@@ -366,6 +465,17 @@ impl fmt::Display for CrawlError {
                 write!(formatter, "crawl item {index} exceeds {maximum} characters")
             }
             Self::BlankItem { index } => write!(formatter, "crawl item {index} is blank"),
+            Self::LogoTooWide {
+                index,
+                width,
+                maximum,
+            } => write!(
+                formatter,
+                "crawl item {index} logo is {width}px wide, maximum is {maximum}px"
+            ),
+            Self::InvalidLogo { index } => {
+                write!(formatter, "crawl item {index} has an invalid logo asset")
+            }
             Self::ControlCharacter { index: Some(index) } => {
                 write!(formatter, "crawl item {index} contains a control character")
             }
@@ -414,6 +524,22 @@ impl Crawl {
         items: &[&str],
         measure: &dyn CrawlMeasure,
     ) -> Result<Self, CrawlError> {
+        let items: Vec<CrawlItem<'_>> = items.iter().map(|text| CrawlItem::text(text)).collect();
+        Self::new_styled(id, config, &items, measure)
+    }
+
+    /// Creates a crawl whose items carry optional per-item fill colours.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CrawlError`] for an empty viewport, oversized font or gap,
+    /// or an invalid separator or item list.
+    pub fn new_styled(
+        id: ElementId,
+        config: CrawlConfig,
+        items: &[CrawlItem<'_>],
+        measure: &dyn CrawlMeasure,
+    ) -> Result<Self, CrawlError> {
         if config.bounds.width == 0 || config.bounds.height == 0 {
             return Err(CrawlError::EmptyViewport);
         }
@@ -436,11 +562,15 @@ impl Crawl {
             Measured {
                 text: String::new(),
                 extent: 0,
+                fill: None,
+                logo: None,
             }
         } else {
             Measured {
                 extent: measure.measure(&config.separator),
                 text: config.separator.clone(),
+                fill: None,
+                logo: None,
             }
         };
         let items = measure_items(items, measure)?;
@@ -525,6 +655,24 @@ impl Crawl {
         items: &[&str],
         measure: &dyn CrawlMeasure,
     ) -> Result<CrawlSchedule, CrawlError> {
+        let items: Vec<CrawlItem<'_>> = items.iter().map(|text| CrawlItem::text(text)).collect();
+        self.set_styled_items(expected_revision, frame, &items, measure)
+    }
+
+    /// Replaces the item list with styled items at the next item boundary
+    /// after `frame`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a conflict, frame regression, invalid list, backlog, or
+    /// revision exhaustion without changing the crawl.
+    pub fn set_styled_items(
+        &mut self,
+        expected_revision: u64,
+        frame: u64,
+        items: &[CrawlItem<'_>],
+        measure: &dyn CrawlMeasure,
+    ) -> Result<CrawlSchedule, CrawlError> {
         if expected_revision != self.revision {
             return Err(CrawlError::RevisionConflict {
                 expected: expected_revision,
@@ -587,16 +735,28 @@ impl Crawl {
         self.epochs = epochs;
         self.revision = revision;
         self.last_frame = frame;
+        let first_extent = self
+            .epochs
+            .last()
+            .and_then(|epoch| epoch.items.get(epoch.start_index))
+            .map_or(1, |item| u64::from(item.extent));
+        let enters_at_frame = if self.config.mode.is_reversed() {
+            self.config
+                .first_frame_reaching(boundary.saturating_sub(first_extent).saturating_add(1))
+        } else {
+            self.config.first_frame_reaching(boundary.saturating_add(1))
+        };
         Ok(CrawlSchedule {
             revision,
             boundary,
             start_index,
-            enters_at_frame: self.config.first_frame_reaching(boundary.saturating_add(1)),
+            enters_at_frame,
         })
     }
 
-    /// First item start at or beyond `distance` within `epoch`, and the old
-    /// list index of the item that would have started there.
+    /// First item start that has not begun entering the viewport at
+    /// `distance` within `epoch`, and the old list index of the item that
+    /// would have started there.
     fn next_boundary(&self, epoch: &Epoch, distance: u64) -> (u64, usize) {
         let items = &epoch.items;
         if items.is_empty() {
@@ -607,7 +767,15 @@ impl Crawl {
         let mut position = epoch.start.saturating_add(relative / cycle * cycle);
         let mut index = epoch.start_index % items.len();
         // At most one cycle (<= MAX_CRAWL_ITEMS steps), each >= 1 pixel.
-        while position < distance {
+        loop {
+            let unseen = if self.config.mode.is_reversed() {
+                position >= distance.saturating_add(u64::from(items[index].extent))
+            } else {
+                position >= distance
+            };
+            if unseen {
+                break;
+            }
             position = position.saturating_add(self.step(&items[index]));
             index = (index + 1) % items.len();
         }
@@ -630,14 +798,22 @@ impl Crawl {
     ///
     /// Returns [`CrawlError::FrameRegressed`] for a frame before the last
     /// accepted update: its pruned history can no longer be reproduced.
+    #[allow(clippy::too_many_lines)] // one walk with per-mode visibility and pruning
     pub fn view(&self, frame: u64) -> Result<CrawlView<'_>, CrawlError> {
         self.check_frame(frame)?;
         let distance = self.config.distance_at(frame);
         let viewport = i128::from(self.config.viewport_length());
         let high = i128::from(distance);
         let low = high - viewport;
-        let screen = |position: u64| -> i64 {
-            let offset = viewport + i128::from(position) - high;
+        let reversed = self.config.mode.is_reversed();
+        let raw_offset = |position: u64| -> i128 {
+            if reversed {
+                high - i128::from(position)
+            } else {
+                viewport + i128::from(position) - high
+            }
+        };
+        let screen = |offset: i128| -> i64 {
             i64::try_from(offset).unwrap_or(if offset < 0 { i64::MIN } else { i64::MAX })
         };
         let group = self.group();
@@ -647,7 +823,7 @@ impl Crawl {
 
         'epochs: for (number, epoch) in self.epochs.iter().enumerate() {
             let end = self.epochs.get(number + 1).map(|next| next.start);
-            if i128::from(epoch.start) >= high {
+            if !reversed && i128::from(epoch.start) >= high {
                 break;
             }
             if end.is_some_and(|end| i128::from(end) <= low) || epoch.items.is_empty() {
@@ -658,13 +834,31 @@ impl Crawl {
             let skip = u64::try_from((low - i128::from(epoch.start)).max(0)).unwrap_or(u64::MAX);
             let mut position = epoch.start.saturating_add(skip / cycle * cycle);
             let mut index = epoch.start_index % items.len();
+            // Later items are further left for a reversed tape; once even the
+            // widest one cannot reach the viewport, the rest of this epoch is
+            // invisible.
+            let max_extent = items
+                .iter()
+                .map(|item| i128::from(item.extent))
+                .max()
+                .unwrap_or(0);
             loop {
-                if i128::from(position) >= high || end.is_some_and(|end| position >= end) {
+                if end.is_some_and(|end| position >= end) {
+                    break;
+                }
+                let offset = raw_offset(position);
+                if reversed {
+                    if offset + max_extent <= 0 {
+                        break;
+                    }
+                } else if offset >= viewport {
                     break;
                 }
                 let item = &items[index];
+                let item_extent = i128::from(item.extent);
                 let item_end = position.saturating_add(u64::from(item.extent));
-                if i128::from(item_end) > low {
+                let visible = offset < viewport && offset + item_extent > 0;
+                if visible {
                     if segments.len() >= MAX_CRAWL_VISIBLE_SEGMENTS {
                         truncated = true;
                         break 'epochs;
@@ -672,15 +866,20 @@ impl Crawl {
                     segments.push(CrawlSegment {
                         kind: CrawlSegmentKind::Item { index },
                         text: &item.text,
-                        offset: screen(position),
+                        fill: item.fill,
+                        logo_asset: item.logo.as_ref().map(|logo| logo.asset.as_str()),
+                        logo_width_px: item.logo.as_ref().map_or(0, |logo| logo.width_px),
+                        offset: screen(offset),
                         extent: item.extent,
                         revision: epoch.revision,
                     });
                 }
                 if !self.separator.text.is_empty() {
                     let separator = item_end.saturating_add(gap);
-                    let separator_end = separator.saturating_add(u64::from(self.separator.extent));
-                    if i128::from(separator) < high && i128::from(separator_end) > low {
+                    let separator_offset = raw_offset(separator);
+                    if separator_offset < viewport
+                        && separator_offset + i128::from(self.separator.extent) > 0
+                    {
                         if segments.len() >= MAX_CRAWL_VISIBLE_SEGMENTS {
                             truncated = true;
                             break 'epochs;
@@ -688,7 +887,10 @@ impl Crawl {
                         segments.push(CrawlSegment {
                             kind: CrawlSegmentKind::Separator,
                             text: &self.separator.text,
-                            offset: screen(separator),
+                            fill: None,
+                            logo_asset: None,
+                            logo_width_px: 0,
+                            offset: screen(separator_offset),
                             extent: self.separator.extent,
                             revision: epoch.revision,
                         });
@@ -697,6 +899,9 @@ impl Crawl {
                 position = item_end.saturating_add(group);
                 index = (index + 1) % items.len();
             }
+        }
+        if reversed {
+            segments.reverse();
         }
         Ok(CrawlView {
             frame,
@@ -718,7 +923,7 @@ fn check_font_size(size_px: u32) -> Result<(), CrawlError> {
 }
 
 fn measure_items(
-    items: &[&str],
+    items: &[CrawlItem<'_>],
     measure: &dyn CrawlMeasure,
 ) -> Result<Arc<[Measured]>, CrawlError> {
     if items.len() > MAX_CRAWL_ITEMS {
@@ -728,25 +933,53 @@ fn measure_items(
         });
     }
     for (index, item) in items.iter().enumerate() {
-        if item.chars().nth(MAX_CRAWL_ITEM_CHARS).is_some() {
+        if item.text.chars().nth(MAX_CRAWL_ITEM_CHARS).is_some() {
             return Err(CrawlError::ItemTooLong {
                 index,
                 maximum: MAX_CRAWL_ITEM_CHARS,
             });
         }
-        if item.chars().any(char::is_control) {
+        if item.text.chars().any(char::is_control) {
             return Err(CrawlError::ControlCharacter { index: Some(index) });
         }
-        if item.trim().is_empty() {
+        if item.text.trim().is_empty() {
             return Err(CrawlError::BlankItem { index });
+        }
+        if let Some(logo) = item.logo {
+            if logo.width_px == 0 || logo.width_px > MAX_CRAWL_LOGO_WIDTH {
+                return Err(CrawlError::LogoTooWide {
+                    index,
+                    width: logo.width_px,
+                    maximum: MAX_CRAWL_LOGO_WIDTH,
+                });
+            }
+            if logo.asset.trim().is_empty()
+                || logo.asset.len() > MAX_CRAWL_LOGO_ASSET_BYTES
+                || logo.asset.chars().any(char::is_control)
+            {
+                return Err(CrawlError::InvalidLogo { index });
+            }
         }
     }
     Ok(items
         .iter()
-        .map(|item| Measured {
-            text: (*item).to_owned(),
+        .map(|item| {
             // At least one pixel so walking the tape always progresses.
-            extent: measure.measure(item).max(1),
+            let text_extent = measure.measure(item.text).max(1);
+            let extent = item.logo.map_or(text_extent, |logo| {
+                text_extent
+                    .saturating_add(logo.width_px)
+                    .saturating_add(CRAWL_LOGO_GAP_PX)
+            });
+            Measured {
+                text: item.text.to_owned(),
+                extent,
+                fill: item.fill,
+                logo: item.logo.map(|logo| MeasuredLogo {
+                    asset: logo.asset.to_owned(),
+                    width_px: logo.width_px,
+                }),
+            }
         })
         .collect())
 }
@@ -758,4 +991,409 @@ const fn gcd(mut left: u32, mut right: u32) -> u32 {
         right = remainder;
     }
     left
+}
+
+/// Largest canonical crawl document, in bytes.
+pub const MAX_CRAWL_DOCUMENT_BYTES: usize = 256 * 1024;
+
+/// One crawl item with owned strings, ready to persist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrawlItemSnapshot {
+    pub text: String,
+    pub fill: Option<Color>,
+    pub logo: Option<CrawlLogoSnapshot>,
+}
+
+/// One crawl item logo with an owned asset name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrawlLogoSnapshot {
+    pub asset: String,
+    pub width_px: u32,
+}
+
+/// A crawl's static configuration and items, ready to persist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrawlSnapshot {
+    pub config: CrawlConfig,
+    pub items: Vec<CrawlItemSnapshot>,
+}
+
+/// Why a crawl document is invalid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CrawlDocumentError {
+    TooLarge { maximum: usize },
+    Version { found: String },
+    Line { index: usize },
+    Invalid(CrawlError),
+}
+
+impl fmt::Display for CrawlDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { maximum } => {
+                write!(formatter, "crawl document exceeds {maximum} bytes")
+            }
+            Self::Version { found } => {
+                write!(formatter, "crawl document version {found:?} is not 1")
+            }
+            Self::Line { index } => write!(formatter, "crawl line {index} is malformed"),
+            Self::Invalid(error) => write!(formatter, "crawl state is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for CrawlDocumentError {}
+
+impl CrawlSnapshot {
+    /// Validates the snapshot against the crawl model's bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`CrawlError`] the configuration or items break.
+    pub fn validate(&self) -> Result<(), CrawlDocumentError> {
+        let items: Vec<CrawlItem<'_>> = self
+            .items
+            .iter()
+            .map(|item| CrawlItem {
+                text: &item.text,
+                fill: item.fill,
+                logo: item.logo.as_ref().map(|logo| CrawlLogo {
+                    asset: &logo.asset,
+                    width_px: logo.width_px,
+                }),
+            })
+            .collect();
+        Crawl::new_styled(
+            ElementId::new(core::num::NonZeroU128::MIN),
+            self.config.clone(),
+            &items,
+            &UnitMeasure,
+        )
+        .map(|_| ())
+        .map_err(CrawlDocumentError::Invalid)
+    }
+
+    /// Serializes the snapshot as a strict, versioned text document.
+    #[must_use]
+    pub fn to_document(&self) -> String {
+        use fmt::Write as _;
+        let config = &self.config;
+        let mut output = String::from("freemix-crawl 1\n");
+        let _ = writeln!(
+            output,
+            "mode {}",
+            match config.mode {
+                CrawlMode::Crawl => "crawl",
+                CrawlMode::CrawlRight => "crawl_right",
+                CrawlMode::Roll => "roll",
+                CrawlMode::RollDown => "roll_down",
+            }
+        );
+        let _ = writeln!(
+            output,
+            "bounds {} {} {} {}",
+            config.bounds.x, config.bounds.y, config.bounds.width, config.bounds.height
+        );
+        let _ = writeln!(
+            output,
+            "speed {} {}",
+            config.speed.pixels(),
+            config.speed.seconds()
+        );
+        let _ = writeln!(
+            output,
+            "frame_rate {} {}",
+            config.frame_rate.numerator(),
+            config.frame_rate.denominator()
+        );
+        let _ = writeln!(output, "start_frame {}", config.start_frame);
+        let _ = writeln!(output, "separator {}", encode_crawl_text(&config.separator));
+        let _ = writeln!(output, "gap {}", config.gap_px);
+        let _ = writeln!(
+            output,
+            "font {} {}",
+            encode_crawl_text(&config.font.family),
+            config.font.size_px
+        );
+        let _ = writeln!(output, "fill {}", write_crawl_color(config.fill));
+        let _ = writeln!(
+            output,
+            "background {}",
+            config
+                .background
+                .map_or_else(|| "none".to_owned(), write_crawl_color)
+        );
+        let _ = writeln!(output, "opacity {}", config.opacity);
+        let _ = writeln!(
+            output,
+            "alignment {} {}",
+            horizontal_token(config.alignment.horizontal),
+            vertical_token(config.alignment.vertical)
+        );
+        let _ = writeln!(output, "items {}", self.items.len());
+        for item in &self.items {
+            let _ = writeln!(
+                output,
+                "item {} {} {} {}",
+                encode_crawl_text(&item.text),
+                item.fill
+                    .map_or_else(|| "none".to_owned(), write_crawl_color),
+                item.logo
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), |logo| encode_crawl_text(&logo.asset)),
+                item.logo.as_ref().map_or(0, |logo| logo.width_px)
+            );
+        }
+        output
+    }
+
+    /// Parses a strict crawl document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrawlDocumentError`] for an oversized, malformed, or
+    /// out-of-contract document without accepting a partial result.
+    #[allow(clippy::too_many_lines)]
+    pub fn from_document(document: &str) -> Result<Self, CrawlDocumentError> {
+        if document.len() > MAX_CRAWL_DOCUMENT_BYTES {
+            return Err(CrawlDocumentError::TooLarge {
+                maximum: MAX_CRAWL_DOCUMENT_BYTES,
+            });
+        }
+        let mut lines = document.lines().enumerate();
+        let Some((_, header)) = lines.next() else {
+            return Err(CrawlDocumentError::Line { index: 1 });
+        };
+        if header != "freemix-crawl 1" {
+            return Err(CrawlDocumentError::Version {
+                found: header.to_owned(),
+            });
+        }
+        let mut index = 1;
+        macro_rules! next {
+            ($expected:expr) => {{
+                let Some((line_index, line)) = lines.next() else {
+                    return Err(CrawlDocumentError::Line { index: index + 1 });
+                };
+                index = line_index + 2;
+                let mut parts = line.split(' ');
+                if parts.next() != Some($expected) {
+                    return Err(CrawlDocumentError::Line { index });
+                }
+                parts.collect::<Vec<_>>()
+            }};
+        }
+        let mode = match single(&next!("mode"), index)? {
+            "crawl" => CrawlMode::Crawl,
+            "crawl_right" => CrawlMode::CrawlRight,
+            "roll" => CrawlMode::Roll,
+            "roll_down" => CrawlMode::RollDown,
+            _ => return Err(CrawlDocumentError::Line { index }),
+        };
+        let bounds = next!("bounds");
+        if bounds.len() != 4 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let bounds = Bounds {
+            x: parse_i32(bounds[0], index)?,
+            y: parse_i32(bounds[1], index)?,
+            width: parse_u32(bounds[2], index)?,
+            height: parse_u32(bounds[3], index)?,
+        };
+        let speed = next!("speed");
+        if speed.len() != 2 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let speed = CrawlSpeed::new(parse_u32(speed[0], index)?, parse_u32(speed[1], index)?)
+            .map_err(CrawlDocumentError::Invalid)?;
+        let rate = next!("frame_rate");
+        if rate.len() != 2 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let frame_rate = FrameRate::new(parse_u32(rate[0], index)?, parse_u32(rate[1], index)?)
+            .map_err(|_| CrawlDocumentError::Line { index })?;
+        let start_frame = parse_u64(single(&next!("start_frame"), index)?, index)?;
+        let separator = decode_crawl_text(single(&next!("separator"), index)?, index)?;
+        let gap_px = parse_u32(single(&next!("gap"), index)?, index)?;
+        let font = next!("font");
+        if font.len() != 2 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let family = decode_crawl_text(font[0], index)?;
+        let size_px = parse_u32(font[1], index)?;
+        let fill = parse_crawl_color(single(&next!("fill"), index)?, index)?;
+        let background = match single(&next!("background"), index)? {
+            "none" => None,
+            text => Some(parse_crawl_color(text, index)?),
+        };
+        let opacity = u8::try_from(parse_u32(single(&next!("opacity"), index)?, index)?)
+            .map_err(|_| CrawlDocumentError::Line { index })?;
+        let alignment = next!("alignment");
+        if alignment.len() != 2 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let alignment = Alignment {
+            horizontal: parse_horizontal(alignment[0], index)?,
+            vertical: parse_vertical(alignment[1], index)?,
+        };
+        let count = usize::try_from(parse_u32(single(&next!("items"), index)?, index)?)
+            .map_err(|_| CrawlDocumentError::Line { index })?;
+        if count > MAX_CRAWL_ITEMS {
+            return Err(CrawlDocumentError::Invalid(CrawlError::TooManyItems {
+                count,
+                maximum: MAX_CRAWL_ITEMS,
+            }));
+        }
+        let mut items = Vec::with_capacity(count);
+        for _ in 0..count {
+            let item = next!("item");
+            if item.len() != 4 {
+                return Err(CrawlDocumentError::Line { index });
+            }
+            let text = decode_crawl_text(item[0], index)?;
+            let fill = match item[1] {
+                "none" => None,
+                text => Some(parse_crawl_color(text, index)?),
+            };
+            let logo = match item[2] {
+                "none" => None,
+                asset => Some(CrawlLogoSnapshot {
+                    asset: decode_crawl_text(asset, index)?,
+                    width_px: parse_u32(item[3], index)?,
+                }),
+            };
+            items.push(CrawlItemSnapshot { text, fill, logo });
+        }
+        if lines.next().is_some() {
+            return Err(CrawlDocumentError::Line { index: index + 1 });
+        }
+        let snapshot = Self {
+            config: CrawlConfig {
+                mode,
+                bounds,
+                speed,
+                frame_rate,
+                start_frame,
+                separator,
+                gap_px,
+                font: FontStyle { family, size_px },
+                fill,
+                background,
+                opacity,
+                alignment,
+            },
+            items,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+}
+
+struct UnitMeasure;
+
+impl CrawlMeasure for UnitMeasure {
+    fn measure(&self, _text: &str) -> u32 {
+        1
+    }
+}
+
+fn single<'a>(fields: &'a [&'a str], index: usize) -> Result<&'a str, CrawlDocumentError> {
+    if fields.len() == 1 {
+        Ok(fields[0])
+    } else {
+        Err(CrawlDocumentError::Line { index })
+    }
+}
+
+fn parse_u32(text: &str, index: usize) -> Result<u32, CrawlDocumentError> {
+    text.parse().map_err(|_| CrawlDocumentError::Line { index })
+}
+
+fn parse_i32(text: &str, index: usize) -> Result<i32, CrawlDocumentError> {
+    text.parse().map_err(|_| CrawlDocumentError::Line { index })
+}
+
+fn parse_u64(text: &str, index: usize) -> Result<u64, CrawlDocumentError> {
+    text.parse().map_err(|_| CrawlDocumentError::Line { index })
+}
+
+const fn horizontal_token(alignment: HorizontalAlignment) -> &'static str {
+    match alignment {
+        HorizontalAlignment::Start => "start",
+        HorizontalAlignment::Center => "center",
+        HorizontalAlignment::End => "end",
+    }
+}
+
+const fn vertical_token(alignment: VerticalAlignment) -> &'static str {
+    match alignment {
+        VerticalAlignment::Start => "start",
+        VerticalAlignment::Center => "center",
+        VerticalAlignment::End => "end",
+    }
+}
+
+fn parse_horizontal(text: &str, index: usize) -> Result<HorizontalAlignment, CrawlDocumentError> {
+    match text {
+        "start" => Ok(HorizontalAlignment::Start),
+        "center" => Ok(HorizontalAlignment::Center),
+        "end" => Ok(HorizontalAlignment::End),
+        _ => Err(CrawlDocumentError::Line { index }),
+    }
+}
+
+fn parse_vertical(text: &str, index: usize) -> Result<VerticalAlignment, CrawlDocumentError> {
+    match text {
+        "start" => Ok(VerticalAlignment::Start),
+        "center" => Ok(VerticalAlignment::Center),
+        "end" => Ok(VerticalAlignment::End),
+        _ => Err(CrawlDocumentError::Line { index }),
+    }
+}
+
+fn encode_crawl_text(text: &str) -> String {
+    use fmt::Write as _;
+    let mut output = String::from("x");
+    for byte in text.bytes() {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn decode_crawl_text(token: &str, index: usize) -> Result<String, CrawlDocumentError> {
+    let Some(hex) = token.strip_prefix('x') else {
+        return Err(CrawlDocumentError::Line { index });
+    };
+    if hex.len() % 2 != 0 {
+        return Err(CrawlDocumentError::Line { index });
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks(2) {
+        let pair = core::str::from_utf8(chunk).map_err(|_| CrawlDocumentError::Line { index })?;
+        bytes.push(u8::from_str_radix(pair, 16).map_err(|_| CrawlDocumentError::Line { index })?);
+    }
+    String::from_utf8(bytes).map_err(|_| CrawlDocumentError::Line { index })
+}
+
+fn write_crawl_color(color: Color) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        color.r, color.g, color.b, color.a
+    )
+}
+
+fn parse_crawl_color(text: &str, index: usize) -> Result<Color, CrawlDocumentError> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 9 || bytes[0] != b'#' {
+        return Err(CrawlDocumentError::Line { index });
+    }
+    let component = |range: core::ops::Range<usize>| -> Result<u8, CrawlDocumentError> {
+        u8::from_str_radix(&text[range], 16).map_err(|_| CrawlDocumentError::Line { index })
+    };
+    Ok(Color::new(
+        component(1..3)?,
+        component(3..5)?,
+        component(5..7)?,
+        component(7..9)?,
+    ))
 }

@@ -1173,7 +1173,31 @@ fn labels<T: Copy + Ord>(
             return;
         }
         let phase = document.phase();
-        match document.apply_preset_source(target, phase, &preset, frames, state.properties) {
+        // With keys selected on several targets, one pick animates all of
+        // them in one undo step; otherwise it touches the clicked row's
+        // target.
+        let mut targets = Vec::new();
+        for key in document.selection().iter() {
+            if !targets.contains(&key.track.target) {
+                targets.push(key.track.target);
+            }
+        }
+        let result = if targets.len() > 1
+            && targets
+                .iter()
+                .all(|candidate| document.target(*candidate).is_some())
+        {
+            document.apply_preset_source_to_targets(
+                &targets,
+                phase,
+                &preset,
+                frames,
+                state.properties,
+            )
+        } else {
+            document.apply_preset_source(target, phase, &preset, frames, state.properties)
+        };
+        match result {
             Ok(()) => state.notice = None,
             Err(error) => state.notice = Some(Notice::error(l, &error)),
         }

@@ -127,6 +127,10 @@ pub enum EngineReplayOperation {
     /// Plays Replay input `input` at `speed` from its position; it pauses
     /// on the event's last frame.
     Play { input: InputId, speed: ReplaySpeed },
+    /// Shuttles Replay input `input` at `rate_milli` thousandths of real
+    /// time (negative plays backwards); it pauses at the event's first or
+    /// last frame. Zero pauses.
+    Shuttle { input: InputId, rate_milli: i32 },
     /// Pauses Replay input `input`.
     Pause { input: InputId },
     /// Jumps Replay input `input` back to its event's first frame, paused.
@@ -177,6 +181,7 @@ impl EngineReplayOperation {
             Self::Cue { input, .. }
             | Self::Angle { input, .. }
             | Self::Play { input, .. }
+            | Self::Shuttle { input, .. }
             | Self::Pause { input }
             | Self::CueIn { input }
             | Self::Step { input, .. }
@@ -237,6 +242,9 @@ pub struct EngineReplayPlayerStatus {
     pub event: Option<u32>,
     pub angle: Option<InputId>,
     pub speed: ReplaySpeed,
+    /// The shuttle rate, or zero when not shuttling.
+    pub rate_milli: i32,
+    pub shuttling: bool,
     pub playing: bool,
     /// The source frame shown, if cued.
     pub frame: Option<u64>,
@@ -279,6 +287,23 @@ pub enum EngineReplayStorageLevel {
     Full,
 }
 
+/// A drive's SMART self-assessment (OR-014, 2.139).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EngineReplaySmartHealth {
+    Passed,
+    Warning,
+    Failed,
+    Unknown,
+}
+
+/// The SMART health of the drive holding the replay root (OR-014, 2.139).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineReplaySmartStatus {
+    pub health: EngineReplaySmartHealth,
+    pub temperature_celsius: Option<u16>,
+    pub percentage_used: Option<u8>,
+}
+
 /// Free space and the observed write rate of the replay root (OR-014).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EngineReplayStorageStatus {
@@ -289,6 +314,8 @@ pub struct EngineReplayStorageStatus {
     /// Seconds of recording left at `bytes_per_second`, when it is nonzero.
     pub remaining_seconds: Option<u64>,
     pub level: EngineReplayStorageLevel,
+    /// The root drive's SMART status, when the daemon samples it (2.139).
+    pub smart: Option<EngineReplaySmartStatus>,
 }
 
 /// Seconds of storage left that still reads as a warning.
@@ -315,6 +342,9 @@ pub struct EngineReplayMultiview {
     pub input: InputId,
     pub event: u32,
     pub source_frame: u64,
+    /// The Replay input itself, then its linked A/B partner when it has one:
+    /// each channel's own angle and position at this instant.
+    pub channels: Vec<EngineReplayTile>,
     /// Up to [`MAX_MULTIVIEW_ANGLES`] angles, in the event's source order.
     pub tiles: Vec<EngineReplayTile>,
 }
@@ -339,6 +369,9 @@ pub struct EngineReplayFrame {
     /// Where that frame was recorded, once a closed segment holds it.
     pub location: Option<EngineReplayLocation>,
     pub speed: ReplaySpeed,
+    /// The shuttle rate, or zero when not shuttling.
+    pub rate_milli: i32,
+    pub shuttling: bool,
     pub playing: bool,
 }
 
@@ -348,6 +381,12 @@ struct Player {
     angle: Option<InputId>,
     speed: ReplaySpeed,
     playing: bool,
+    /// The shuttle rate in thousandths of real time while shuttling.
+    rate_milli: i32,
+    /// Whether the player advances at `rate_milli` instead of `speed`.
+    shuttling: bool,
+    /// Milli-quarter-frames carried between frames while shuttling.
+    shuttle_remainder: i32,
     /// Quarter frames since the event's first frame.
     position: u64,
     /// The player played its event to the end while on Program, and
@@ -373,6 +412,9 @@ impl Player {
             .filter(|angle| event.angles.contains(angle))
             .or_else(|| event.angles.first().copied());
         self.speed = entry.speed;
+        self.rate_milli = 0;
+        self.shuttling = false;
+        self.shuttle_remainder = 0;
         self.position = 0;
     }
 
@@ -589,6 +631,9 @@ pub(crate) struct ReplayRuntime {
     deferred_exports: BTreeMap<u64, ReelExportPlan>,
     /// Free bytes on the storage root, as the daemon last sampled it.
     storage_free: Option<u64>,
+    /// The root drive's SMART status, as the daemon last sampled it
+    /// (OR-014, 2.139).
+    storage_smart: Option<EngineReplaySmartStatus>,
     /// Bumped whenever anything clients see changes.
     generation: u64,
 }
@@ -646,10 +691,16 @@ impl ReplayRuntime {
             export_meta: BTreeMap::new(),
             deferred_exports: BTreeMap::new(),
             storage_free: None,
+            storage_smart: None,
             generation: 0,
         };
         runtime.restart(ReplaySettings::default());
         runtime
+    }
+
+    /// Whether the replay recorder is observing any input.
+    pub(crate) fn recording_active(&self) -> bool {
+        !self.store.recording.is_empty()
     }
 
     pub(crate) const fn feed(&self) -> EngineReplayFeed {
@@ -840,6 +891,16 @@ impl ReplayRuntime {
         self.touch();
     }
 
+    /// Records the root drive's SMART status, as the daemon sampled it, and
+    /// announces the change (OR-014, 2.139).
+    pub(crate) fn set_storage_smart(&mut self, smart: Option<EngineReplaySmartStatus>) {
+        if self.storage_smart == smart {
+            return;
+        }
+        self.storage_smart = smart;
+        self.touch();
+    }
+
     /// Free space and the observed write rate of the storage root, when the
     /// daemon has sampled it.
     fn storage_status(&self) -> Option<EngineReplayStorageStatus> {
@@ -883,6 +944,7 @@ impl ReplayRuntime {
             bytes_per_second: rate,
             remaining_seconds,
             level,
+            smart: self.storage_smart,
         })
     }
 
@@ -1274,6 +1336,9 @@ impl ReplayRuntime {
                                 .or_else(|| stored_angles.first().copied())
                         };
                         player.playing = false;
+                        player.shuttling = false;
+                        player.rate_milli = 0;
+                        player.shuttle_remainder = 0;
                         player.position = 0;
                         player.playlist_index = player
                             .playlist
@@ -1297,9 +1362,22 @@ impl ReplayRuntime {
                 for target in self.ganged(*input) {
                     let player = self.players.entry(target).or_default();
                     player.speed = *speed;
+                    player.rate_milli = 0;
+                    player.shuttling = false;
+                    player.shuttle_remainder = 0;
                     if player.event.is_some() {
                         player.playing = true;
                     }
+                }
+                self.touch();
+            }
+            EngineReplayOperation::Shuttle { input, rate_milli } => {
+                for target in self.ganged(*input) {
+                    let player = self.players.entry(target).or_default();
+                    player.rate_milli = *rate_milli;
+                    player.shuttling = true;
+                    player.shuttle_remainder = 0;
+                    player.playing = player.event.is_some() && *rate_milli != 0;
                 }
                 self.touch();
             }
@@ -1307,6 +1385,9 @@ impl ReplayRuntime {
                 for target in self.ganged(*input) {
                     if let Some(player) = self.players.get_mut(&target) {
                         player.playing = false;
+                        player.shuttling = false;
+                        player.rate_milli = 0;
+                        player.shuttle_remainder = 0;
                     }
                 }
                 self.generation = self.generation.wrapping_add(1);
@@ -1315,6 +1396,9 @@ impl ReplayRuntime {
                 for target in self.ganged(*input) {
                     if let Some(player) = self.players.get_mut(&target) {
                         player.playing = false;
+                        player.shuttling = false;
+                        player.rate_milli = 0;
+                        player.shuttle_remainder = 0;
                         player.position = 0;
                     }
                 }
@@ -1359,6 +1443,7 @@ impl ReplayRuntime {
     fn rearm(&mut self, operation: &EngineReplayOperation) {
         if let EngineReplayOperation::Cue { input, .. }
         | EngineReplayOperation::Play { input, .. }
+        | EngineReplayOperation::Shuttle { input, .. }
         | EngineReplayOperation::CueIn { input }
         | EngineReplayOperation::Step { input, .. }
         | EngineReplayOperation::PlaylistNext { input }
@@ -1399,6 +1484,9 @@ impl ReplayRuntime {
         };
         player.position = target.min(last) * 4;
         player.playing = false;
+        player.shuttling = false;
+        player.rate_milli = 0;
+        player.shuttle_remainder = 0;
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -1454,6 +1542,9 @@ impl ReplayRuntime {
                 .or_else(|| angles.first().copied());
             target.position = source.position;
             target.speed = source.speed;
+            target.rate_milli = source.rate_milli;
+            target.shuttling = source.shuttling;
+            target.shuttle_remainder = source.shuttle_remainder;
             target.playing = source.playing;
             target.playlist_index = target
                 .playlist
@@ -1542,23 +1633,50 @@ impl ReplayRuntime {
                 source_frame,
                 location,
                 speed: player.speed,
+                rate_milli: player.rate_milli,
+                shuttling: player.shuttling,
                 playing: player.playing,
             });
             if player.playing
                 && let Some(event) = event
             {
                 let length = event.out_frame - event.in_frame;
-                let next = player.position + player.speed.quarter_frames();
+                let delta = if player.shuttling {
+                    let total =
+                        i64::from(player.rate_milli) * 4 + i64::from(player.shuttle_remainder);
+                    let remainder = i32::try_from(total % 1_000).unwrap_or(0);
+                    let stored = self.players.entry(input).or_default();
+                    stored.shuttle_remainder = remainder;
+                    total / 1_000
+                } else {
+                    i64::try_from(player.speed.quarter_frames()).unwrap_or(i64::MAX)
+                };
+                let current = i64::try_from(player.position).unwrap_or(i64::MAX);
+                let next = current.saturating_add(delta);
+                let last =
+                    i64::try_from(length.saturating_sub(1).saturating_mul(4)).unwrap_or(i64::MAX);
                 let stored = self.players.entry(input).or_default();
-                if next / 4 >= length {
-                    // The playlist's next entry (Protocol 2.119) takes over
-                    // below; a linked pair moves on only together.
-                    stored.position = (length - 1) * 4;
+                if next < 0 {
+                    stored.position = 0;
                     stored.playing = false;
-                    ended.push(input);
+                    stored.shuttling = false;
+                    stored.rate_milli = 0;
+                    stored.shuttle_remainder = 0;
+                    changed = true;
+                } else if next > last {
+                    stored.position = u64::try_from(last).unwrap_or(0);
+                    stored.playing = false;
+                    stored.shuttling = false;
+                    stored.rate_milli = 0;
+                    stored.shuttle_remainder = 0;
+                    if !player.shuttling {
+                        // The playlist's next entry (Protocol 2.119) takes
+                        // over below; a linked pair moves on only together.
+                        ended.push(input);
+                    }
                     changed = true;
                 } else {
-                    stored.position = next;
+                    stored.position = u64::try_from(next).unwrap_or(0);
                 }
             }
         }
@@ -2110,15 +2228,23 @@ impl ReplayRuntime {
     }
 
     /// The up-to-eight-angle view of Replay input `input` at its player's
-    /// current position, or `None` when nothing is cued on it (OR-014).
+    /// current position, with the player and its linked A/B partner as the
+    /// first channel tiles, or `None` when nothing is cued on it (OR-014).
     pub(crate) fn multiview(&self, input: InputId) -> Option<EngineReplayMultiview> {
         let player = self.players.get(&input)?;
+        let linked = player.linked;
         let event = player
             .event
             .and_then(|id| self.store.event_frames.get(&id).map(|stored| (id, stored)))?;
         let (id, stored) = event;
         let source_frame =
             (stored.in_frame + player.position / 4).min(stored.out_frame.saturating_sub(1));
+        let mut channels: Vec<EngineReplayTile> = self.channel_tile(input).into_iter().collect();
+        if let Some(linked) = linked
+            && linked != input
+        {
+            channels.extend(self.channel_tile(linked));
+        }
         let tiles = stored
             .angles
             .iter()
@@ -2133,7 +2259,27 @@ impl ReplayRuntime {
             input,
             event: id,
             source_frame,
+            channels,
             tiles,
+        })
+    }
+
+    /// One Replay input's own tile: the angle it shows at its own position.
+    fn channel_tile(&self, input: InputId) -> Option<EngineReplayTile> {
+        let player = self.players.get(&input)?;
+        let event = player
+            .event
+            .and_then(|id| self.store.event_frames.get(&id))?;
+        let source_frame =
+            (event.in_frame + player.position / 4).min(event.out_frame.saturating_sub(1));
+        let angle = player
+            .angle
+            .filter(|angle| event.angles.contains(angle))
+            .or_else(|| event.angles.first().copied())?;
+        Some(EngineReplayTile {
+            angle,
+            source_frame,
+            location: self.locate(angle, source_frame),
         })
     }
 
@@ -2230,6 +2376,8 @@ impl ReplayRuntime {
                     event: player.event,
                     angle: player.angle,
                     speed: player.speed,
+                    rate_milli: player.rate_milli,
+                    shuttling: player.shuttling,
                     playing: player.playing,
                     frame,
                     playlist: player.playlist.clone(),
@@ -2277,6 +2425,7 @@ pub(crate) fn settings_rejection(error: ReplaySettingsError) -> Rejection {
         ReplaySettingsError::Retention => invalid("retention_seconds", "out_of_range", message),
         ReplaySettingsError::StorageRoot => invalid("storage_root", "invalid", message),
         ReplaySettingsError::AutoReturn => invalid("auto_return", "out_of_range", message),
+        ReplaySettingsError::Transition => invalid("transition", "out_of_range", message),
     }
 }
 
@@ -2346,6 +2495,7 @@ fn check_recording(state: &ShowState) -> Result<(), Rejection> {
 
 /// Accepts one replay operation against the show: settings are applied,
 /// everything else is checked against what the show alone decides.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn accept(
     state: &mut ShowState,
     operation: &EngineReplayOperation,
@@ -2383,6 +2533,18 @@ pub(crate) fn accept(
         EngineReplayOperation::Angle { input, angle } => {
             check_player(state, *input)?;
             check_angle(state, *angle)
+        }
+        EngineReplayOperation::Shuttle { input, rate_milli } => {
+            check_player(state, *input)?;
+            if (-16_000..=16_000).contains(rate_milli) {
+                Ok(())
+            } else {
+                Err(invalid(
+                    "rate",
+                    "out_of_range",
+                    format!("a replay shuttle rate is -16x through +16x, not {rate_milli}/1000"),
+                ))
+            }
         }
         EngineReplayOperation::Play { input, .. }
         | EngineReplayOperation::Pause { input }

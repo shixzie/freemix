@@ -72,7 +72,7 @@ pub trait AnimationTarget: Copy + Ord + core::fmt::Debug {
 }
 
 impl AnimationTarget for WireTitleElementId {
-    const PROPERTIES: &'static [Property] = &Property::ALL;
+    const PROPERTIES: &'static [Property] = &TITLE_ANIMATION_PROPERTIES;
 
     type PreviewRequest = TitlePreviewRequest;
 
@@ -104,9 +104,9 @@ impl AnimationTarget for WireTitleElementId {
     }
 }
 
-/// Every property a scene layer animates: all but
-/// [`Property::Color`] (layers have no fill colour).
-pub const SCENE_LAYER_PROPERTIES: [Property; 10] = [
+/// Every property a title element animates: the whole target property set
+/// except the garbage matte coordinates, which only scene layers carry.
+pub const TITLE_ANIMATION_PROPERTIES: [Property; 11] = [
     Property::PositionX,
     Property::PositionY,
     Property::ScaleX,
@@ -117,6 +117,38 @@ pub const SCENE_LAYER_PROPERTIES: [Property; 10] = [
     Property::CropTop,
     Property::CropRight,
     Property::CropBottom,
+    Property::Color,
+];
+
+/// Every property a scene layer animates: all but [`Property::Color`]
+/// (layers have no fill colour), including its garbage matte's points.
+pub const SCENE_LAYER_PROPERTIES: [Property; 10 + fm_types::MAX_GARBAGE_MATTE_POINTS * 2] = [
+    Property::PositionX,
+    Property::PositionY,
+    Property::ScaleX,
+    Property::ScaleY,
+    Property::Rotation,
+    Property::Opacity,
+    Property::CropLeft,
+    Property::CropTop,
+    Property::CropRight,
+    Property::CropBottom,
+    Property::MattePoint1X,
+    Property::MattePoint1Y,
+    Property::MattePoint2X,
+    Property::MattePoint2Y,
+    Property::MattePoint3X,
+    Property::MattePoint3Y,
+    Property::MattePoint4X,
+    Property::MattePoint4Y,
+    Property::MattePoint5X,
+    Property::MattePoint5Y,
+    Property::MattePoint6X,
+    Property::MattePoint6Y,
+    Property::MattePoint7X,
+    Property::MattePoint7Y,
+    Property::MattePoint8X,
+    Property::MattePoint8Y,
 ];
 
 impl AnimationTarget for WireSceneLayerId {

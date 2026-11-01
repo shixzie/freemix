@@ -48,9 +48,9 @@
 use core::fmt::Write as _;
 
 use fm_model::{
-    Cue, CueAction, CueArmed, CueFault, CueGain, CueList, CueMediaOperation, CueMute,
-    CueNumberUpdate, CuePending, CueRunState, RecorderSlot, StingerSlotNumber, StreamTargetId,
-    TitleFieldId, TransitionEffect,
+    Cue, CueAction, CueArmed, CueClockOperation, CueFault, CueGain, CueList, CueMediaOperation,
+    CueMute, CueNumberUpdate, CuePending, CueRunState, RecorderSlot, StingerSlotNumber,
+    StreamTargetId, TitleFieldId, TransitionEffect,
 };
 use fm_types::{InputId, InputTarget, TargetBindings};
 
@@ -257,6 +257,17 @@ pub(crate) fn write_action(output: &mut String, action: &CueAction) {
         }
         CueAction::RunScript { script } => {
             write!(output, "{{\"type\": \"run_script\", \"script\": {script}}}")
+        }
+        CueAction::Clock { name, operation } => {
+            write!(output, "{{\"type\": \"clock\", \"name\": \"")
+                .expect("writing to a string cannot fail");
+            escape_string(output, name);
+            write!(output, "\", \"operation\": \"{}\"", operation.token())
+                .expect("writing to a string cannot fail");
+            if let Some(value) = operation.value_ns() {
+                write!(output, ", \"value_ns\": {value}").expect("writing to a string cannot fail");
+            }
+            write!(output, "}}")
         }
     };
     result.expect("writing to a string cannot fail");
@@ -576,6 +587,19 @@ pub(crate) fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
         "run_script" => CueAction::RunScript {
             script: object.u64("script")?,
         },
+        "clock" => {
+            let name = object.string("name")?;
+            let operation = match object.string("operation")?.as_str() {
+                "start" => CueClockOperation::Start,
+                "pause" => CueClockOperation::Pause,
+                "reset" => CueClockOperation::Reset,
+                "set" => CueClockOperation::SetValue(object.i64("value_ns")?),
+                "adjust" => CueClockOperation::Adjust(object.i64("value_ns")?),
+                "preset" => CueClockOperation::SetPreset(object.i64("value_ns")?),
+                value => return Err(super::unknown_enum("cue clock operation", value)),
+            };
+            CueAction::Clock { name, operation }
+        }
         value => return Err(super::unknown_enum("cue action", value)),
     };
     object.finish()?;

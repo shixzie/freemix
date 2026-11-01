@@ -113,7 +113,10 @@ fn coalescing_channel<T>() -> (CoalescingSender<T>, CoalescingReceiver<T>) {
 
 impl<T> CoalescingSender<T> {
     fn send(&self, value: T) -> Result<(), ()> {
-        *self.slot.lock().expect("coalescing slot poisoned") = Some(value);
+        *self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(value);
         match self.wake.try_send(()) {
             Ok(()) | Err(TrySendError::Full(())) => Ok(()),
             Err(TrySendError::Disconnected(())) => Err(()),
@@ -188,7 +191,11 @@ impl<T> RecreationCoordinator<T> {
 impl<T> CoalescingReceiver<T> {
     pub(super) fn take_latest(&self) -> Option<T> {
         match self.wake.try_recv() {
-            Ok(()) => self.slot.lock().expect("coalescing slot poisoned").take(),
+            Ok(()) => self
+                .slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
         }
     }
@@ -737,6 +744,7 @@ pub(super) struct ProgramWorkerOptions {
     pub(super) record_bitrate_kbps_2: Option<u32>,
     pub(super) record_audio_bitrate_kbps: Option<u32>,
     pub(super) record_audio_bitrate_kbps_2: Option<u32>,
+    pub(super) record_fallback_dir: Option<PathBuf>,
 }
 
 struct ProgramApp {
@@ -928,6 +936,7 @@ impl ProgramApp {
         }
     }
 
+    #[allow(clippy::expect_used)] // channels are taken exactly once when the worker starts
     fn start(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) -> Result<(), String> {
         let mut windows = Vec::with_capacity(self.outputs.len());
         for index in 0..self.outputs.len() {
@@ -1011,6 +1020,7 @@ impl ProgramApp {
                         options.record_bitrate_kbps_2,
                         options.record_audio_bitrate_kbps,
                         options.record_audio_bitrate_kbps_2,
+                        options.record_fallback_dir,
                     )
                     .map_err(|error| error.to_string());
                     let _ = proxy.send_event(UserEvent::Finished(result));

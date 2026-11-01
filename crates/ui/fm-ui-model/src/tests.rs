@@ -57,7 +57,7 @@ fn input_audio_strips() -> Vec<InputAudioStripStatus> {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         })
         .collect()
 }
@@ -81,6 +81,7 @@ fn recordings() -> Vec<RecordingStatus> {
 
 fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
     ProjectSnapshot {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
@@ -104,11 +105,13 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
                 output: output(1),
                 name: "Main".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
             OutputStatus {
                 output: output(2),
                 name: "Aux".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
         ],
         input_audio_strips: input_audio_strips(),
@@ -1952,6 +1955,7 @@ mod titles {
 
         // The protocol snapshot DTO announces the same incomplete summaries.
         let protocol = fm_protocol::SnapshotMessage {
+            production_clocks: Vec::new(),
             titles: vec![fm_protocol::TitleSummary {
                 input: WireInputId::from_domain(input(TITLE)),
                 field_revision: 2,
@@ -1967,6 +1971,7 @@ mod titles {
     fn edit_history_protocol_snapshot() -> fm_protocol::SnapshotMessage {
         let wire = |value| WireInputId::from_domain(input(value));
         fm_protocol::SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -2587,8 +2592,10 @@ fn playlist_changed_replicates_the_playlist_and_desired_selection() {
         id: 4,
         input: WireInputId::from_domain(input(input_value)),
         duration_frames: 50,
+        follow_media: false,
         transition: fm_protocol::PlaylistTransitionKind::Fade,
         transition_frames: 5,
+        stinger_slot: None,
         enabled: true,
     };
     let message = |revision: u64, entry_input: u128| EventMessage {
@@ -2666,8 +2673,10 @@ fn an_announced_playlist_state_completes_the_snapshot() {
             id: 2,
             input: WireInputId::from_domain(input(entry_input)),
             duration_frames: 250,
+            follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: 0,
+            stinger_slot: None,
             enabled: true,
         }],
         state: PlaylistRunState::Paused {
@@ -4480,5 +4489,88 @@ fn strip_dsp_records_complete_the_snapshot_and_events_keep_them_current() {
     assert_eq!(
         model.state().unwrap().input_audio_dsp(input(3)),
         StripDsp::DEFAULT
+    );
+}
+
+#[test]
+fn send_state_records_complete_the_snapshot_and_carry_levels_and_taps() {
+    use fm_protocol::{AudioStripSendStateMessage, WireInputId};
+    use fm_types::audio_bus::{AudioSends, AuxBusNumber, BusSendState, SendTap};
+
+    let record = |revision, value, sends| AudioStripSendStateMessage {
+        revision,
+        input: WireInputId::from_domain(input(value)),
+        sends,
+    };
+    let a = AuxBusNumber::new(1).unwrap();
+    let pre = AudioSends::MASTER.with_aux_send(
+        a,
+        BusSendState {
+            enabled: true,
+            level_millidb: -6_000,
+            tap: SendTap::PreFader,
+        },
+    );
+    let post = AudioSends::MASTER.with_master(false).with_aux_send(
+        a,
+        BusSendState {
+            enabled: true,
+            level_millidb: 300,
+            tap: SendTap::PostFader,
+        },
+    );
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let mut installed = snapshot(project_id, 7);
+    installed.audio_mixer.send_states = 2;
+    model.install_snapshot(installed).unwrap();
+    assert!(!model.state().unwrap().audio_send_states_complete());
+    // Another revision, an unknown input, a plain mask, or an invalid level
+    // is refused.
+    let invalid = AudioSends::MASTER.with_aux_send(
+        a,
+        BusSendState {
+            enabled: true,
+            level_millidb: 24_001,
+            tap: SendTap::PostFader,
+        },
+    );
+    for refused in [
+        record(6, 2, pre),
+        record(7, 9, pre),
+        record(7, 2, AudioSends::MASTER),
+        record(7, 2, invalid),
+    ] {
+        assert_eq!(
+            model.apply_audio_strip_send_state(refused),
+            Err(ModelError::AudioStripSendStateMismatch)
+        );
+    }
+    model
+        .apply_audio_strip_send_state(record(7, 2, pre))
+        .unwrap();
+    // Records ascend by input.
+    assert_eq!(
+        model.apply_audio_strip_send_state(record(7, 1, post)),
+        Err(ModelError::AudioStripSendStateMismatch)
+    );
+    model
+        .apply_audio_strip_send_state(record(7, 3, post))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert!(state.audio_send_states_complete());
+    let strip = |value: u128| {
+        state
+            .input_audio_strips()
+            .iter()
+            .find(|strip| strip.input == input(value))
+            .unwrap()
+    };
+    assert_eq!(strip(2).sends, pre);
+    assert_eq!(strip(3).sends, post);
+    // Beyond the announced count.
+    assert_eq!(
+        model.apply_audio_strip_send_state(record(7, 2, pre)),
+        Err(ModelError::AudioStripSendStateMismatch)
     );
 }

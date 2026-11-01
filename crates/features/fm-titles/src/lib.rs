@@ -97,9 +97,12 @@ pub use animation::{
     AnimSample, AnimationEditError, TitleAnimation, TitleClip, default_title_timebase,
 };
 pub use crawl::{
-    Crawl, CrawlConfig, CrawlError, CrawlMeasure, CrawlMode, CrawlSchedule, CrawlSegment,
-    CrawlSegmentKind, CrawlSpeed, CrawlView, FontCrawlMeasure, MAX_CRAWL_EPOCHS, MAX_CRAWL_GAP_PX,
-    MAX_CRAWL_ITEM_CHARS, MAX_CRAWL_ITEMS, MAX_CRAWL_SEPARATOR_CHARS, MAX_CRAWL_VISIBLE_SEGMENTS,
+    CRAWL_LOGO_GAP_PX, Crawl, CrawlConfig, CrawlDocumentError, CrawlError, CrawlItem,
+    CrawlItemSnapshot, CrawlLogo, CrawlLogoSnapshot, CrawlMeasure, CrawlMode, CrawlSchedule,
+    CrawlSegment, CrawlSegmentKind, CrawlSnapshot, CrawlSpeed, CrawlView, FontCrawlMeasure,
+    MAX_CRAWL_DOCUMENT_BYTES, MAX_CRAWL_EPOCHS, MAX_CRAWL_GAP_PX, MAX_CRAWL_ITEM_CHARS,
+    MAX_CRAWL_ITEMS, MAX_CRAWL_LOGO_ASSET_BYTES, MAX_CRAWL_LOGO_WIDTH, MAX_CRAWL_SEPARATOR_CHARS,
+    MAX_CRAWL_VISIBLE_SEGMENTS,
 };
 pub use design::{
     ClipMask, Composition, DesignError, DesignNode, ElementPlacement, GROUP_PROPERTIES, Group,
@@ -125,7 +128,8 @@ pub use on_air::{TitleAir, TitleAirFrame, TitleAirPhase, TitleAirTiming};
 pub use playback::{PlaybackError, PlaybackOutcome, PlaybackPhase, TitlePlayback};
 pub use production_clock::{
     ClockSource, ClockUnresolved, ProductionClockSpec, TitleClock, TitleClockError, TitleClockKind,
-    TitleClockTime, evaluate_production_clock, title_clock_registry, validate_title_clocks,
+    TitleClockTime, evaluate_production_clock, title_clock_registry, title_clock_registry_with,
+    validate_title_clocks,
 };
 pub use render::{
     CrawlLayer, Degradation, DegradedElement, MAX_FONT_SIZE_PX, MAX_GLYPH_RASTER_DIMENSION,
@@ -138,9 +142,10 @@ pub use runtime::{
     evaluate_ticker_position,
 };
 pub use scoreboard::{
-    GameClock, GameClockConfig, MAX_GAME_CLOCK_MS, MAX_SCOREBOARD_ACTIONS,
-    MAX_SCOREBOARD_TEXT_CHARS, Player, Scoreboard, ScoreboardAction, ScoreboardBinding,
-    ScoreboardError, ScoreboardEvent, ScoreboardOutcome, ScoreboardRules, TeamSide, TeamState,
+    DEFAULT_SHOT_CLOCK_MS, GameClock, GameClockConfig, GameClockSnapshot, MAX_GAME_CLOCK_MS,
+    MAX_ROSTER_PLAYERS, MAX_SCOREBOARD_ACTIONS, MAX_SCOREBOARD_TEXT_CHARS, Player, Scoreboard,
+    ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent, ScoreboardOutcome,
+    ScoreboardPreset, ScoreboardRules, ScoreboardSnapshot, TeamSide, TeamState,
     actions_from_external,
 };
 pub use validation::{

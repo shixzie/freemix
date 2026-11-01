@@ -1453,7 +1453,7 @@ fn operator_page_commands_drive_the_show_within_the_session_role() {
     let daemon = Daemon::start(&project);
     let mute = |value: u128, muted: u8| {
         format!(
-            "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted={muted}\tsoloed=0\tfollow_video=1\tdelay_samples=0\tbuses=M",
+            "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted={muted}\tsoloed=0\tfollow_video=1\tdelay_samples=0\tsends=M",
             input(value)
         )
     };
@@ -1762,7 +1762,7 @@ fn several_web_clients_hold_their_own_sessions_at_once() {
 
     // The Audio page mutes; the Operator page sees the strip change.
     let mute = format!(
-        "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted=1\tsoloed=0\tfollow_video=1\tdelay_samples=0\tbuses=M",
+        "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted=1\tsoloed=0\tfollow_video=1\tdelay_samples=0\tsends=M",
         input(1)
     );
     let (revision, _) = page_command(&mut audio, "audio-mute", Some(13), &mute).unwrap();
@@ -2031,8 +2031,14 @@ fn pages_word_every_output_failure_like_studio() {
         "../../../crates/ui/fm-ui-model/src/i18n/es.rs"
     ));
     for (name, page) in [
-        ("operator", include_str!("../src/web/operator.html")),
-        ("tally", include_str!("../src/web/tally.html")),
+        (
+            "operator",
+            include_str!("../../../crates/services/fm-daemon-web/src/operator.html"),
+        ),
+        (
+            "tally",
+            include_str!("../../../crates/services/fm-daemon-web/src/tally.html"),
+        ),
     ] {
         for code in fm_protocol::OutputFailureCode::ALL {
             assert!(
@@ -2087,10 +2093,22 @@ fn page_scripts_parse_with_node_when_available() {
     }
     let directory = TestDirectory::new("node-check");
     for (name, page) in [
-        ("tally", include_str!("../src/web/tally.html")),
-        ("operator", include_str!("../src/web/operator.html")),
-        ("titles", include_str!("../src/web/titles.html")),
-        ("live_lan", include_str!("../src/web/live_lan.html")),
+        (
+            "tally",
+            include_str!("../../../crates/services/fm-daemon-web/src/tally.html"),
+        ),
+        (
+            "operator",
+            include_str!("../../../crates/services/fm-daemon-web/src/operator.html"),
+        ),
+        (
+            "titles",
+            include_str!("../../../crates/services/fm-daemon-web/src/titles.html"),
+        ),
+        (
+            "live_lan",
+            include_str!("../../../crates/services/fm-daemon-web/src/live_lan.html"),
+        ),
     ] {
         let scripts: Vec<&str> = page
             .split("<script>")
@@ -2274,7 +2292,7 @@ fn operator_page_strip_dsp_codec_matches_the_rust_codec() {
     use std::fmt::Write as _;
 
     use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     let codec = page_strip_dsp_codec(page);
     // The block stands alone: it names no other part of the page.
     for outside in ["tr(", "show.", "link.", "ui.", "document", "send("] {
@@ -2387,6 +2405,59 @@ fn operator_page_strip_dsp_codec_matches_the_rust_codec() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
 }
 
+/// The operator page's aux-bus parser (Protocol 2.133): each snapshot bus
+/// becomes `aux:A`..`aux:G` with its name, gain, mute, and optional chain
+/// code for the page's FX editor (checked under Node.js when on the `PATH`).
+#[test]
+fn operator_page_parses_aux_buses_for_the_fx_editor() {
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
+    let parser = page_aux_bus_parser(page);
+    for outside in ["tr(", "show.", "link.", "ui.", "document", "send("] {
+        assert!(!parser.contains(outside), "the parser uses {outside}");
+    }
+    let script = format!(
+        "{parser}\n\
+         const buses = parseAuxBuses(\"Bus%20A~0~0,Bus%20B~-3000~1~CODE\");\n\
+         const want = [\n\
+           {{ target: \"aux:A\", name: \"Bus A\", gain: \"0\", muted: false, chain: \"\" }},\n\
+           {{ target: \"aux:B\", name: \"Bus B\", gain: \"-3000\", muted: true, chain: \"CODE\" }},\n\
+         ];\n\
+         if (JSON.stringify(buses) !== JSON.stringify(want)) {{\n\
+           console.error(JSON.stringify(buses)); process.exit(1);\n\
+         }}\n\
+         console.log(\"ok\");\n"
+    );
+    if ProcessCommand::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("node unavailable: the page's aux bus parser check skipped");
+        return;
+    }
+    let directory = TestDirectory::new("aux-bus-parser");
+    let path = directory.0.join("aux.js");
+    fs::write(&path, script).unwrap();
+    let output = ProcessCommand::new("node").arg(&path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
+}
+
+/// The operator page's aux-bus parser block, which uses nothing else on the
+/// page.
+fn page_aux_bus_parser(page: &str) -> &str {
+    let begin = "  // `name~gain~muted[~chain]`, A through G: the aux buses the snapshot";
+    let start = page.find(begin).expect("aux bus parser begin");
+    let end = page[start..].find("\n  }\n").expect("aux bus parser end") + start + 4;
+    &page[start..end]
+}
+
 /// The operator page's Strip FX gain reduction block (AU-005, Protocol
 /// 2.103), which uses nothing else on the page.
 fn page_fx_gain_reduction(page: &str) -> &str {
@@ -2410,7 +2481,7 @@ fn operator_page_shows_strip_fx_gain_reduction_from_the_meter_feed() {
     use std::fmt::Write as _;
 
     use fm_protocol::{AudioDspTarget, AudioDynamicsMeter, AudioMetersMessage, ServerIdentity};
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     for source in [
         "telemetry.dynamics = FX_GR.parse(required(record, \"dynamics\"));",
         "telemetry.dynamics = new Map();",
@@ -2609,7 +2680,7 @@ fn operator_page_reads_daemon_health_like_the_rust_codec() {
         DaemonHealth, HealthAlert, HealthAlertRule, HealthSeverity, HealthSilence,
         HealthStatusMessage,
     };
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     let block = page_health(page);
     for outside in [
         "tr(",
@@ -2869,7 +2940,7 @@ fn operator_page_edits_strip_fx_within_the_session_role() {
 
     use fm_protocol::{AudioDspTarget, AudioMixerOperation};
     use fm_types::strip_dsp::{StripDsp, StripDspPreset};
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     for source in [
         "[\"payload\", \"audio_strip_dsp\"], [\"target\", target], [\"chain\", queued.code]",
         "[\"gesture\", queued.gesture.token], [\"continues\", queued.gesture.sent ? \"true\" : \"false\"]",
@@ -2882,8 +2953,13 @@ fn operator_page_edits_strip_fx_within_the_session_role() {
         "required(record, \"operation\") === \"audio_strip_dsp\"",
         "code === \"revision_conflict\" && !inflight.retried",
         "fxServerCode(target) !== edit.retry.base",
-        "function fxGate(target) { return gate(\"audio\", target === \"master\" ? undefined : target); }",
+        "function fxGate(target) {\n    return gate(\"audio\", target === \"master\" || target.startsWith(\"aux:\") ? undefined : target);\n  }",
         "id=\"fx-panel\"",
+        "show.auxBuses = parseAuxBuses(required(record, \"audio_aux_buses\"))",
+        "[\"payload\", \"audio_aux_bus_level\"], [\"bus\", target.slice(4).toUpperCase()]",
+        "required(record, \"operation\") === \"audio_aux_bus_level\"",
+        "required(record, \"operation\") === \"audio_aux_bus_dsp\"",
+        "row.querySelector(\".mute\").addEventListener(\"click\", () => toggleAuxMute(target));",
     ] {
         assert!(page.contains(source), "{source}");
     }
@@ -4807,7 +4883,7 @@ fn page_input_meters(page: &str) -> &str {
 #[test]
 fn operator_page_reads_strip_meters_like_the_rust_codec() {
     use fm_protocol::{AudioMeterChannel, AudioMetersMessage, InputAudioMeters, WireInputId};
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     let block = page_input_meters(page);
     for outside in [
         "tr(",

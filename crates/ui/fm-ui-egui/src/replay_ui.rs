@@ -38,6 +38,7 @@ use fm_protocol::{
     ReplayStatusMessage, ReplayStorageLevel, ReplayStorageStatus, reel_export_path_is_valid,
     reel_name_is_valid, replay_event_name_is_valid,
 };
+use fm_types::replay::{MAX_REPLAY_TRANSITION_FRAMES, ReplayTransition, ReplayTransitionKind};
 use fm_types::{FrameRate, InputId};
 
 use crate::console_keymap::ConsoleAction;
@@ -189,6 +190,7 @@ const fn clip_from(event: &ReplayEventStatus, angle: InputId) -> ReelClip {
         trim_in_frames: 0,
         trim_out_frames: 0,
         speed_percent: 100,
+        reverse: false,
         dissolve_frames: 0,
     }
 }
@@ -306,6 +308,112 @@ fn next_export_job(exports: &[ReelExportStatus]) -> Option<u64> {
         .find(|job| exports.iter().all(|export| export.job != *job))
 }
 
+/// The Replay player a console transport key drives: the one on Preview,
+/// else the one on Program, else the first.
+pub(crate) fn transport_player(state: &StudioUiState) -> Option<&fm_protocol::ReplayPlayerStatus> {
+    let status = state.replay.as_deref()?;
+    let buses = state.view.as_ref().map(|view| view.switcher.desired);
+    let on = |bus: fm_types::InputId| {
+        status
+            .players
+            .iter()
+            .find(|player| player.input.to_domain() == bus)
+    };
+    buses
+        .and_then(|buses| on(buses.preview))
+        .or_else(|| buses.and_then(|buses| on(buses.program)))
+        .or_else(|| status.players.first())
+}
+
+/// The player a controller profile drives: the console's player (Preview,
+/// else Program, else the first) or, for the second profile, the other
+/// Replay input's player (OR-012).
+pub(crate) fn transport_player_for(
+    state: &StudioUiState,
+    second: bool,
+) -> Option<&fm_protocol::ReplayPlayerStatus> {
+    let first = transport_player(state)?;
+    if !second {
+        return Some(first);
+    }
+    let status = state.replay.as_deref()?;
+    let buses = state.view.as_ref().map(|view| view.switcher.desired);
+    let other = |player: &&fm_protocol::ReplayPlayerStatus| player.input != first.input;
+    let on = |bus: fm_types::InputId| {
+        status
+            .players
+            .iter()
+            .find(|player| player.input.to_domain() == bus)
+    };
+    buses
+        .and_then(|buses| on(buses.preview).filter(other))
+        .or_else(|| buses.and_then(|buses| on(buses.program).filter(other)))
+        .or_else(|| status.players.iter().find(other))
+}
+
+/// What a console transport key sends, while replay is live and a player is
+/// available.
+pub(crate) fn transport_intent(
+    state: &StudioUiState,
+    operation: ReplayOperation,
+) -> Option<StudioIntent> {
+    transport_intent_for(state, false, operation)
+}
+
+/// [`transport_intent`] for the first or second controller profile.
+pub(crate) fn transport_intent_for(
+    state: &StudioUiState,
+    second: bool,
+    operation: ReplayOperation,
+) -> Option<StudioIntent> {
+    transport_player_for(state, second)?;
+    live_block(state)
+        .is_none()
+        .then_some(StudioIntent::Replay(operation))
+}
+
+/// How long repeated jog steps accelerate, and the largest step.
+const JOG_ACCELERATION_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+const JOG_MAX_FRAMES: i32 = 30;
+
+/// The acceleration of repeated replay step keys: a repeat within
+/// [`JOG_ACCELERATION_WINDOW`] doubles the step up to [`JOG_MAX_FRAMES`],
+/// and another action or a pause starts over at one frame (OR-012).
+#[derive(Default)]
+pub(crate) struct JogAcceleration {
+    action: Option<ConsoleAction>,
+    at: Option<std::time::Instant>,
+    frames: i32,
+}
+
+impl JogAcceleration {
+    pub(crate) fn step(&mut self, action: ConsoleAction, now: std::time::Instant) -> i32 {
+        let repeated = self.action == Some(action)
+            && self
+                .at
+                .is_some_and(|at| now.duration_since(at) <= JOG_ACCELERATION_WINDOW);
+        self.frames = if repeated {
+            self.frames.saturating_mul(2).min(JOG_MAX_FRAMES)
+        } else {
+            1
+        };
+        self.action = Some(action);
+        self.at = Some(now);
+        self.frames
+    }
+}
+
+thread_local! {
+    static JOG: std::cell::RefCell<JogAcceleration> =
+        std::cell::RefCell::new(JogAcceleration::default());
+}
+
+/// The signed frame step one jog key press sends, accelerating while it
+/// repeats.
+pub(crate) fn jog_frames(action: ConsoleAction, direction: i32) -> i32 {
+    JOG.with_borrow_mut(|jog| direction * jog.step(action, std::time::Instant::now()))
+}
+
 /// Why live replay keys (marks, captures, players) cannot be pressed.
 #[must_use]
 pub(crate) fn live_block(state: &StudioUiState) -> Option<&'static str> {
@@ -393,10 +501,19 @@ pub(crate) fn with_source(
     }
 }
 
-/// What TAKE does: put the Replay input on Preview, then cut.
+/// What TAKE does: put the Replay input on Preview, then cut or fade in
+/// with the show's configured replay transition (Protocol 2.137).
 #[must_use]
-pub(crate) fn take(input: InputId) -> [StudioIntent; 2] {
-    [StudioIntent::SelectPreview(input), StudioIntent::Cut]
+pub(crate) fn take(input: InputId, transition: ReplayTransition) -> [StudioIntent; 2] {
+    [
+        StudioIntent::SelectPreview(input),
+        match transition.kind {
+            ReplayTransitionKind::Cut => StudioIntent::Cut,
+            ReplayTransitionKind::Fade => StudioIntent::Fade {
+                duration_frames: transition.duration_frames,
+            },
+        },
+    ]
 }
 
 fn frame_rate(state: &StudioUiState) -> FrameRate {
@@ -507,6 +624,38 @@ fn draw_storage(ui: &mut Ui, l: Locale, storage: ReplayStorageStatus) {
         ui.label(caption(detail))
             .on_hover_text(l.text(Msg::ReplayStorageHover));
     });
+    // The drive's own SMART verdict, when the daemon samples it (2.139).
+    if let Some(smart) = storage.smart {
+        let (label, tone) = match smart.health {
+            fm_protocol::ReplaySmartHealth::Passed => (Msg::ReplaySmartPassed, Tone::Ready),
+            fm_protocol::ReplaySmartHealth::Warning => (Msg::ReplaySmartWarning, Tone::Pending),
+            fm_protocol::ReplaySmartHealth::Failed => (Msg::ReplaySmartFailed, Tone::Fault),
+            fm_protocol::ReplaySmartHealth::Unknown => (Msg::ReplaySmartUnknown, Tone::Pending),
+        };
+        let mut parts = Vec::new();
+        if let Some(temperature) = smart.temperature_celsius {
+            parts.push(l.format(
+                Msg::ReplaySmartTemperature,
+                &[("temperature", Arg::Str(&temperature.to_string()))],
+            ));
+        }
+        if let Some(used) = smart.percentage_used {
+            parts.push(l.format(
+                Msg::ReplaySmartUsed,
+                &[("used", Arg::Str(&used.to_string()))],
+            ));
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            status_chip(ui, l.text(label), tone, 76.0);
+            if !parts.is_empty() {
+                ui.label(caption(parts.join(" · ")))
+                    .on_hover_text(l.text(Msg::ReplaySmartHover));
+            }
+        })
+        .response
+        .on_hover_text(l.text(Msg::ReplaySmartHover));
+    }
 }
 
 /// The Replay panel body.
@@ -656,6 +805,7 @@ fn draw_recording(
         }
     });
     draw_auto_return(ui, l, status, block, intents);
+    draw_transition(ui, l, status, intents);
     for source in &status.recorded {
         let input = source.input.to_domain();
         ui.label(caption(l.format(
@@ -719,6 +869,82 @@ fn draw_auto_return(
         }
         if (response.drag_stopped() || response.lost_focus()) && frames != current {
             intents.push(configure(Some(frames)));
+        }
+    });
+}
+
+/// The take transition (Protocol 2.137): a cut or a fade of its own
+/// duration, used when a Replay input is taken to Program.
+fn draw_transition(
+    ui: &mut Ui,
+    l: Locale,
+    status: &ReplayStatusMessage,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let configure = |transition| {
+        StudioIntent::Replay(ReplayOperation::Configure(Box::new(ReplaySettings {
+            transition,
+            ..status.settings.clone()
+        })))
+    };
+    let current = status.settings.transition;
+    ui.horizontal(|ui| {
+        ui.label(l.text(Msg::ReplayTransition))
+            .on_hover_text(l.text(Msg::ReplayTransitionHover));
+        let selected = match current.kind {
+            ReplayTransitionKind::Cut => l.text(Msg::TransitionCut).to_owned(),
+            ReplayTransitionKind::Fade => l.text(Msg::TransitionFade).to_owned(),
+        };
+        ComboBox::from_id_salt("studio-replay-transition")
+            .selected_text(selected)
+            .width(90.0)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(current.is_cut(), l.text(Msg::TransitionCut))
+                    .on_hover_text(l.text(Msg::ReplayTransitionHover))
+                    .clicked()
+                    && !current.is_cut()
+                {
+                    intents.push(configure(ReplayTransition::CUT));
+                }
+                if ui
+                    .selectable_label(!current.is_cut(), l.text(Msg::TransitionFade))
+                    .on_hover_text(l.text(Msg::ReplayTransitionHover))
+                    .clicked()
+                    && current.is_cut()
+                {
+                    intents.push(configure(
+                        ReplayTransition::new(ReplayTransitionKind::Fade, 30)
+                            .expect("30 frames is a usable fade"),
+                    ));
+                }
+            })
+            .response
+            .on_hover_text(l.text(Msg::ReplayTransitionHover));
+        if current.is_cut() {
+            return;
+        }
+        let id = Id::new("studio-replay-transition-frames");
+        let mut frames = ui
+            .data(|data| data.get_temp::<u32>(id))
+            .unwrap_or(current.duration_frames);
+        let response = ui
+            .add(
+                DragValue::new(&mut frames)
+                    .range(1..=MAX_REPLAY_TRANSITION_FRAMES)
+                    .suffix(" fr"),
+            )
+            .on_hover_text(l.text(Msg::ReplayTransitionFramesHover));
+        if response.dragged() || response.has_focus() {
+            ui.data_mut(|data| data.insert_temp(id, frames));
+        } else {
+            ui.data_mut(|data| data.remove::<u32>(id));
+        }
+        if (response.drag_stopped() || response.lost_focus())
+            && frames != current.duration_frames
+            && let Ok(transition) = ReplayTransition::new(ReplayTransitionKind::Fade, frames)
+        {
+            intents.push(configure(transition));
         }
     });
 }
@@ -1039,6 +1265,60 @@ fn draw_player(
                 }));
             }
         }
+        // Shuttle: the chosen rate back or forward, pausing at either end
+        // (Protocol 2.131).
+        let rate_id = Id::new("studio-replay-shuttle-rate");
+        let mut shuttle_rate: i32 = ui
+            .data_mut(|data| *data.get_temp_mut_or_insert_with(rate_id, || 2_000))
+            .clamp(1_000, 16_000);
+        ComboBox::from_id_salt(("studio-replay-shuttle-rate", input))
+            .selected_text(format!("{}x", shuttle_rate / 1_000))
+            .width(54.0)
+            .show_ui(ui, |ui| {
+                for rate in [1_000, 2_000, 4_000, 8_000, 16_000] {
+                    if ui
+                        .selectable_label(shuttle_rate == rate, format!("{}x", rate / 1_000))
+                        .on_hover_text(l.format(
+                            Msg::ReplayShuttleRateHover,
+                            &[("rate", Arg::Count(u64::try_from(rate / 1_000).unwrap_or(1)))],
+                        ))
+                        .clicked()
+                    {
+                        shuttle_rate = rate;
+                        ui.data_mut(|data| data.insert_temp(rate_id, rate));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(l.format(
+                Msg::ReplayShuttleRateHover,
+                &[(
+                    "rate",
+                    Arg::Count(u64::try_from(shuttle_rate / 1_000).unwrap_or(1)),
+                )],
+            ));
+        for (rate, label, hover) in [
+            (-shuttle_rate, "◀◀", Msg::ReplayShuttleBackHover),
+            (shuttle_rate, "▶▶", Msg::ReplayShuttleForwardHover),
+        ] {
+            let text = l.format(
+                hover,
+                &[(
+                    "rate",
+                    Arg::Count(u64::try_from(shuttle_rate / 1_000).unwrap_or(1)),
+                )],
+            );
+            if ui
+                .add_enabled(cued_reason.is_none(), key_button(label, None, 32.0))
+                .hint(&text, reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::Replay(ReplayOperation::Shuttle {
+                    input: player.input,
+                    rate_milli: rate,
+                }));
+            }
+        }
         if ui
             .add_enabled(
                 block.is_none(),
@@ -1050,7 +1330,7 @@ fn draw_player(
             )
             .clicked()
         {
-            intents.extend(take(input));
+            intents.extend(take(input, status.settings.transition));
         }
     });
     ui.horizontal_wrapped(|ui| {
@@ -1804,6 +2084,22 @@ fn draw_clip(
             })
             .response
             .on_hover_text(l.text(Msg::ReelClipSpeedHover));
+        let mut reverse = clip.reverse;
+        if ui
+            .add_enabled(
+                edit.is_none(),
+                egui::Checkbox::new(&mut reverse, l.text(Msg::ReelClipReverse)),
+            )
+            .hint(l.text(Msg::ReelClipReverseHover), reason)
+            .changed()
+            && reverse != clip.reverse
+        {
+            let mut updated = clip;
+            updated.reverse = reverse;
+            if let Some(operation) = set_clip(reel, index, updated) {
+                intents.push(StudioIntent::Reel(operation));
+            }
+        }
         ui.label(caption(l.text(Msg::ReelClipDissolve)))
             .on_hover_text(l.text(Msg::ReelClipDissolveHover));
         // The first clip always cuts in.
@@ -2113,6 +2409,7 @@ mod tests {
             retention_seconds: 120,
             storage_root: Some("/srv/replay".to_owned()),
             auto_return: None,
+            transition: fm_types::replay::ReplayTransition::CUT,
         };
         let added = with_source(&settings, input(2), true);
         assert_eq!(added.sources, vec![input(3), input(1), input(2)]);
@@ -2130,10 +2427,22 @@ mod tests {
     }
 
     #[test]
-    fn take_cuts_the_replay_input_to_program() {
+    fn take_uses_the_configured_replay_transition() {
         assert_eq!(
-            take(input(9)),
+            take(input(9), ReplayTransition::CUT),
             [StudioIntent::SelectPreview(input(9)), StudioIntent::Cut]
+        );
+        assert_eq!(
+            take(
+                input(9),
+                ReplayTransition::new(ReplayTransitionKind::Fade, 30).unwrap()
+            ),
+            [
+                StudioIntent::SelectPreview(input(9)),
+                StudioIntent::Fade {
+                    duration_frames: 30
+                }
+            ]
         );
     }
 
@@ -2298,6 +2607,7 @@ mod tests {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                reverse: false,
                 dissolve_frames: 0,
             }]
         );
@@ -2493,5 +2803,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn repeated_jog_steps_accelerate_and_reset_after_a_pause() {
+        let mut jog = JogAcceleration::default();
+        let start = std::time::Instant::now();
+        let after = |ms| start + std::time::Duration::from_millis(ms);
+        assert_eq!(jog.step(ConsoleAction::ReplayStepForward, start), 1);
+        assert_eq!(jog.step(ConsoleAction::ReplayStepForward, after(100)), 2);
+        assert_eq!(jog.step(ConsoleAction::ReplayStepForward, after(200)), 4);
+        // Another action starts over.
+        assert_eq!(jog.step(ConsoleAction::ReplayStepBack, after(250)), 1);
+        // A pause starts over too.
+        assert_eq!(jog.step(ConsoleAction::ReplayStepForward, after(2_000)), 1);
+        // The step caps at 30 frames.
+        let mut jog = JogAcceleration::default();
+        let mut frames = 0;
+        for _ in 0..10 {
+            frames = jog.step(ConsoleAction::ReplayStepForward, start);
+        }
+        assert_eq!(frames, JOG_MAX_FRAMES);
     }
 }

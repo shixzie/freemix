@@ -91,22 +91,40 @@ pub enum PlaylistTransitionKind {
 }
 
 /// The transition that brings an entry on air. A cut has zero duration;
-/// every other kind needs a nonzero duration no longer than the entry.
+/// every other kind needs a nonzero duration no longer than the entry. A
+/// Stinger names its slot; no other kind has one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlaylistTransition {
     pub kind: PlaylistTransitionKind,
     pub duration_ms: u64,
+    /// The Stinger slot (`1..=8`) a Stinger transition takes.
+    pub stinger_slot: Option<u8>,
 }
 
 impl PlaylistTransition {
     pub const CUT: Self = Self {
         kind: PlaylistTransitionKind::Cut,
         duration_ms: 0,
+        stinger_slot: None,
     };
 
     #[must_use]
     pub const fn new(kind: PlaylistTransitionKind, duration_ms: u64) -> Self {
-        Self { kind, duration_ms }
+        Self {
+            kind,
+            duration_ms,
+            stinger_slot: None,
+        }
+    }
+
+    /// A Stinger transition from `slot` lasting `duration_ms`.
+    #[must_use]
+    pub const fn stinger(slot: u8, duration_ms: u64) -> Self {
+        Self {
+            kind: PlaylistTransitionKind::Stinger,
+            duration_ms,
+            stinger_slot: Some(slot),
+        }
     }
 }
 
@@ -663,21 +681,89 @@ impl Playlist {
         }
     }
 
-    /// Replaces every entry while stopped or finished. A finished playlist
-    /// becomes stopped.
+    /// Replaces every entry. While stopped or finished the playlist becomes
+    /// stopped; while armed, playing, or paused the new list applies at once,
+    /// keeping the armed start or the current entry's on-air timing. An edit
+    /// that removes or disables the entry that is armed or on air is refused.
     ///
     /// # Errors
     ///
-    /// Returns [`PlaylistError::EditWhileActive`] while armed or on air, or
-    /// any entry validation error.
+    /// Returns [`PlaylistError::EditWhileActive`] when the armed or on-air
+    /// entry is not in `entries` (or is disabled), or any entry validation
+    /// error.
     pub fn replace_entries(&mut self, entries: Vec<PlaylistEntry>) -> Result<(), PlaylistError> {
-        if !matches!(self.slot, Slot::Stopped | Slot::Finished { .. }) {
-            return Err(PlaylistError::EditWhileActive);
-        }
         validate_entries(&entries)?;
-        self.entries = entries;
-        self.slot = Slot::Stopped;
-        Ok(())
+        match self.slot {
+            Slot::Stopped | Slot::Finished { .. } => {
+                self.entries = entries;
+                self.slot = Slot::Stopped;
+                Ok(())
+            }
+            Slot::Armed { start_at_ms, from } => {
+                let from = from
+                    .and_then(|index| self.entries.get(index))
+                    .and_then(|entry| {
+                        entries
+                            .iter()
+                            .position(|candidate| candidate.id == entry.id)
+                    });
+                self.entries = entries;
+                self.slot = Slot::Armed { start_at_ms, from };
+                Ok(())
+            }
+            Slot::Playing {
+                index,
+                take,
+                cycle,
+                started_at_ms,
+            } => {
+                let next_index = self.replaced_entry(&entries, index)?;
+                self.entries = entries;
+                self.slot = Slot::Playing {
+                    index: next_index,
+                    take,
+                    cycle,
+                    started_at_ms,
+                };
+                Ok(())
+            }
+            Slot::Paused {
+                index,
+                take,
+                cycle,
+                elapsed_ms,
+            } => {
+                let next_index = self.replaced_entry(&entries, index)?;
+                self.entries = entries;
+                self.slot = Slot::Paused {
+                    index: next_index,
+                    take,
+                    cycle,
+                    elapsed_ms,
+                };
+                Ok(())
+            }
+        }
+    }
+
+    /// The index of the entry that is currently armed or on air in a
+    /// replacement list. A replacement that drops or disables it cannot be
+    /// applied without interrupting the airing, so it is refused.
+    fn replaced_entry(
+        &self,
+        entries: &[PlaylistEntry],
+        current: usize,
+    ) -> Result<usize, PlaylistError> {
+        let current = self.entries[current].id;
+        let index = entries
+            .iter()
+            .position(|entry| entry.id == current)
+            .ok_or(PlaylistError::EditWhileActive)?;
+        if entries[index].enabled {
+            Ok(index)
+        } else {
+            Err(PlaylistError::EditWhileActive)
+        }
     }
 
     /// Processes every time-driven boundary up to `now_ms`.
@@ -946,8 +1032,19 @@ fn validate_entries(entries: &[PlaylistEntry]) -> Result<(), PlaylistError> {
         }
         let transition = entry.transition;
         let valid = match transition.kind {
-            PlaylistTransitionKind::Cut => transition.duration_ms == 0,
-            _ => (1..=MAX_PLAYLIST_ENTRY_MS).contains(&transition.duration_ms),
+            PlaylistTransitionKind::Cut => {
+                transition.duration_ms == 0 && transition.stinger_slot.is_none()
+            }
+            PlaylistTransitionKind::Stinger => {
+                (1..=MAX_PLAYLIST_ENTRY_MS).contains(&transition.duration_ms)
+                    && transition
+                        .stinger_slot
+                        .is_some_and(|slot| (1..=8).contains(&slot))
+            }
+            _ => {
+                (1..=MAX_PLAYLIST_ENTRY_MS).contains(&transition.duration_ms)
+                    && transition.stinger_slot.is_none()
+            }
         };
         if !valid {
             return Err(PlaylistError::InvalidTransition(entry.id));

@@ -568,7 +568,7 @@ fn assets_listing(store: &ProjectStore) -> Vec<String> {
 fn every_element_kind_round_trips_exactly() {
     let expected = rich_template();
     let encoded = encode_title_template(&expected).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 90,\n  \"template\": {\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 106,\n  \"template\": {\n"));
     assert!(encoded.contains(
         "\"kind\": {\"type\": \"image\", \"field\": 4, \"fit\": \"contain\", \"filter\": \"bilinear\"}"
     ));
@@ -763,15 +763,15 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
         );
     }
 
-    for (schema, found) in [("89", 89), ("91", 91)] {
+    for (schema, found) in [("91", 91), ("93", 93)] {
         let document = encoded.replacen(
-            "\"schema_version\": 90",
+            "\"schema_version\": 106",
             &format!("\"schema_version\": {schema}"),
             1,
         );
         assert!(matches!(
             decode_title_template(&document),
-            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 90 }) if f == found
+            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 106 }) if f == found
         ));
     }
 
@@ -1138,19 +1138,46 @@ fn production_clocks_of_every_kind_and_preset_round_trip_exactly() {
 }
 
 #[test]
+fn a_reference_clock_round_trips_without_a_format() {
+    let mut stored = clock_template();
+    stored.clocks.push(TitleClock {
+        name: clock_name("MediaRef"),
+        kind: TitleClockKind::Reference {
+            clock: clock_name("ShowMedia"),
+        },
+    });
+    let id = u128::try_from(stored.template.elements.len()).unwrap() + 1;
+    stored.template.elements.push(element(
+        id,
+        ElementKind::ProductionClock(ProductionClockSpec::new(clock_name("MediaRef"))),
+        Some("Mono"),
+    ));
+    stored
+        .clocks
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    let encoded = encode_title_template(&stored).unwrap();
+    assert!(
+        encoded.contains(
+            "{\"name\": \"MediaRef\", \"kind\": \"reference\", \"clock\": \"ShowMedia\"}"
+        ),
+        "{encoded}"
+    );
+    let decoded = decode_title_template(&encoded).unwrap();
+    assert_eq!(decoded, stored);
+    assert_eq!(encode_title_template(&decoded).unwrap(), encoded);
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn clock_tables_and_clock_content_are_strict() {
     let stored = clock_template();
     let encoded = encode_title_template(&stored).unwrap();
 
-    // The table covers exactly the clocks elements show.
+    // An element may name a shared show clock the template does not
+    // define; the render caller resolves it from the live registry.
     let mut missing = stored.clone();
     missing.clocks.retain(|clock| clock.name.as_str() != "To_3");
-    assert!(matches!(
-        encode_title_template(&missing),
-        Err(TitleTemplateError::InvalidClocks(TitleClockError::UndefinedClock { clock, .. }))
-            if clock.as_str() == "To_3"
-    ));
+    assert!(encode_title_template(&missing).is_ok());
     let mut unused = stored.clone();
     unused.clocks.push(TitleClock {
         name: clock_name("Spare"),
@@ -1377,7 +1404,7 @@ fn a_compact_source_whose_stored_form_exceeds_the_cap_is_refused() {
     // would leave a template that never loads again.
     let cap = usize::try_from(fm_persistence::MAX_TITLE_TEMPLATE_BYTES).unwrap();
     let mut source = String::from(
-        r##"{"schema_version":90,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
+        r##"{"schema_version":106,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
     );
     let mut id = 1_u32;
     while source.len() < cap - 1024 {

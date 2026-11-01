@@ -99,21 +99,31 @@ impl EngineAudioGroup {
     }
 }
 
-/// One aux bus (AU-002): its name and live fader and mute.
+/// One aux bus (AU-002): its name, live fader and mute, and DSP chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineAuxBus {
     pub name: String,
     pub state: EngineAudioGroupState,
+    /// The bus's DSP chain, after its fader and mute.
+    pub dsp: StripDsp,
+    /// The local audio output device the bus plays on (2.135), or `None`
+    /// for meter-only.
+    pub device: Option<String>,
+    /// Whether the bus is published as an OMT audio sender (2.138).
+    pub omt: bool,
 }
 
 impl EngineAuxBus {
     /// The default aux bus `bus`: "Bus A" through "Bus G" at unity,
-    /// unmuted.
+    /// unmuted, metered only.
     #[must_use]
     pub fn default_for(bus: AuxBusNumber) -> Self {
         Self {
             name: format!("Bus {}", bus.letter()),
             state: EngineAudioGroupState::default(),
+            dsp: StripDsp::DEFAULT,
+            device: None,
+            omt: false,
         }
     }
 }
@@ -184,8 +194,8 @@ pub enum EngineAudioMixerEdit {
     SetMonitorDevice { device: Option<String> },
     /// Moves the monitor output level or mute. A live operation.
     SetMonitorLevel { state: EngineAudioGroupState },
-    /// Replaces a strip's or the Master bus's plugin chain (AU-006). A live
-    /// operation: chains are runtime state and are not undone or persisted.
+    /// Replaces a strip's or the Master bus's plugin chain (AU-006). A
+    /// project edit, persisted and undone like a DSP chain.
     SetPluginChain {
         target: StripDspTarget,
         /// Boxed: a chain is larger than every other command's payload.
@@ -209,11 +219,33 @@ pub enum EngineAudioMixerEdit {
         bus: AuxBusNumber,
         state: EngineAudioGroupState,
     },
+    /// Replaces an aux bus's DSP chain (AU-002). A project edit.
+    SetAuxBusDsp {
+        bus: AuxBusNumber,
+        /// Boxed: a chain is larger than every other command's payload.
+        chain: Box<StripDsp>,
+    },
+    /// Plays an aux bus on a local audio output device, or on none
+    /// (AU-002, 2.135). A project edit.
+    SetAuxBusDevice {
+        bus: AuxBusNumber,
+        device: Option<String>,
+    },
+    /// Publishes an aux bus as an OMT audio sender, or stops it (AU-002,
+    /// 2.138). A project edit.
+    SetAuxBusOmt { bus: AuxBusNumber, omt: bool },
     /// Makes `output` hear aux bus `bus`, or Master for `None` (AU-002). A
     /// project edit.
     SetOutputAuxBus {
         output: OutputId,
         bus: Option<AuxBusNumber>,
+    },
+    /// Makes `output`'s aux feed leave `input` out, or restores its full mix
+    /// for `None` (AU-002 mix-minus). A project edit; it applies only while
+    /// the output hears an aux bus.
+    SetOutputMixMinus {
+        output: OutputId,
+        input: Option<InputId>,
     },
 }
 
@@ -255,7 +287,6 @@ impl EngineAudioMixerEdit {
                 | Self::SetMonitorLevel { .. }
                 | Self::ResetLoudness { .. }
                 | Self::SetAuxBusLevel { .. }
-                | Self::SetPluginChain { .. }
         )
     }
 
@@ -274,11 +305,11 @@ impl EngineAudioMixerEdit {
                 ..
             } => Some(*input),
             Self::SetStripDsp {
-                target: StripDspTarget::Master,
+                target: StripDspTarget::Master | StripDspTarget::Aux(_),
                 ..
             }
             | Self::SetPluginChain {
-                target: StripDspTarget::Master,
+                target: StripDspTarget::Master | StripDspTarget::Aux(_),
                 ..
             }
             | Self::RenameGroup { .. }
@@ -291,7 +322,11 @@ impl EngineAudioMixerEdit {
             | Self::ResetLoudness { .. }
             | Self::RenameAuxBus { .. }
             | Self::SetAuxBusLevel { .. }
-            | Self::SetOutputAuxBus { .. } => None,
+            | Self::SetAuxBusDsp { .. }
+            | Self::SetAuxBusDevice { .. }
+            | Self::SetAuxBusOmt { .. }
+            | Self::SetOutputAuxBus { .. }
+            | Self::SetOutputMixMinus { .. } => None,
         }
     }
 
@@ -299,6 +334,13 @@ impl EngineAudioMixerEdit {
     #[must_use]
     pub fn names_input(&self, input: InputId) -> bool {
         self.locked_input() == Some(input)
+            || matches!(
+                self,
+                Self::SetOutputMixMinus {
+                    input: Some(candidate),
+                    ..
+                } if *candidate == input
+            )
     }
 }
 
@@ -350,10 +392,29 @@ pub enum EngineAudioMixerUpdate {
         bus: AuxBusNumber,
         state: EngineAudioGroupState,
     },
+    /// An aux bus's DSP chain changed (AU-002).
+    AuxBusDsp {
+        bus: AuxBusNumber,
+        chain: Box<StripDsp>,
+    },
+    /// An aux bus's local output device changed, even if unchanged, so the
+    /// media plane reopens it (AU-002, 2.135).
+    AuxBusDevice {
+        bus: AuxBusNumber,
+        device: Option<String>,
+    },
+    /// An aux bus's OMT audio sender was enabled or stopped (AU-002, 2.138).
+    AuxBusOmt { bus: AuxBusNumber, omt: bool },
     /// An output now hears an aux bus, or Master for `None` (AU-002).
     OutputAuxBus {
         output: OutputId,
         bus: Option<AuxBusNumber>,
+    },
+    /// An output's aux feed now leaves an input out, or has a full mix
+    /// (AU-002 mix-minus).
+    OutputMixMinus {
+        output: OutputId,
+        input: Option<InputId>,
     },
 }
 
@@ -398,10 +459,28 @@ impl EngineAudioMixerUpdate {
                 bus: *bus,
                 state: *state,
             }),
+            EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => Some(Self::AuxBusDsp {
+                bus: *bus,
+                chain: chain.clone(),
+            }),
+            EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => Some(Self::AuxBusDevice {
+                bus: *bus,
+                device: device.clone(),
+            }),
+            EngineAudioMixerEdit::SetAuxBusOmt { bus, omt } => Some(Self::AuxBusOmt {
+                bus: *bus,
+                omt: *omt,
+            }),
             EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => Some(Self::OutputAuxBus {
                 output: *output,
                 bus: *bus,
             }),
+            EngineAudioMixerEdit::SetOutputMixMinus { output, input } => {
+                Some(Self::OutputMixMinus {
+                    output: *output,
+                    input: *input,
+                })
+            }
             EngineAudioMixerEdit::SetLabel { .. }
             | EngineAudioMixerEdit::RenameGroup { .. }
             | EngineAudioMixerEdit::RenameAuxBus { .. } => None,
@@ -499,11 +578,19 @@ fn apply_plugin_chain(
             state.set_input_audio_plugins(input, chain.clone());
             Ok(())
         }
+        // Aux buses carry a DSP chain but no plugin chain.
+        StripDspTarget::Aux(_) => Err(rejection(
+            RejectionCode::InvalidCommand,
+            "target",
+            "unsupported_target",
+            "an aux bus carries no plugin chain".to_owned(),
+        )),
     }
 }
 
 /// Returns a rejection for an unknown input, an unusable label or name, or
 /// an out-of-range group level. The show is unchanged on error.
+#[allow(clippy::too_many_lines)] // one arm per mixer edit
 pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), Rejection> {
     match edit {
         EngineAudioMixerEdit::SetPluginChain { target, chain } => {
@@ -596,13 +683,18 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
                 StripDspTarget::Input(input) => state
                     .set_input_audio_dsp(input, **chain)
                     .map_err(|_| unknown_input(input))?,
+                StripDspTarget::Aux(bus) => state.aux_bus_mut(bus).dsp = **chain,
             }
             Ok(())
         }
         EngineAudioMixerEdit::ResetLoudness { target } => loudness_target(state, *target),
         EngineAudioMixerEdit::RenameAuxBus { .. }
         | EngineAudioMixerEdit::SetAuxBusLevel { .. }
-        | EngineAudioMixerEdit::SetOutputAuxBus { .. } => apply_aux(state, edit),
+        | EngineAudioMixerEdit::SetAuxBusDsp { .. }
+        | EngineAudioMixerEdit::SetAuxBusDevice { .. }
+        | EngineAudioMixerEdit::SetAuxBusOmt { .. }
+        | EngineAudioMixerEdit::SetOutputAuxBus { .. }
+        | EngineAudioMixerEdit::SetOutputMixMinus { .. } => apply_aux(state, edit),
     }
 }
 
@@ -613,6 +705,18 @@ fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), R
             fm_model::validate_audio_group_name(name)
                 .map_err(|error| label_rejection("name", error))?;
             state.aux_bus_mut(*bus).name.clone_from(name);
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => {
+            chain.validate().map_err(|error| {
+                rejection(
+                    RejectionCode::InvalidCommand,
+                    "chain",
+                    "out_of_range",
+                    error.to_string(),
+                )
+            })?;
+            state.aux_bus_mut(*bus).dsp = **chain;
             Ok(())
         }
         EngineAudioMixerEdit::SetAuxBusLevel { bus, state: level } => {
@@ -628,6 +732,24 @@ fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), R
                 )
             })?;
             state.aux_bus_mut(*bus).state = *level;
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => {
+            if let Some(device) = device {
+                fm_model::validate_audio_monitor_device(device).map_err(|error| {
+                    rejection(
+                        RejectionCode::InvalidCommand,
+                        "device",
+                        "invalid",
+                        error.to_string(),
+                    )
+                })?;
+            }
+            state.aux_bus_mut(*bus).device.clone_from(device);
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetAuxBusOmt { bus, omt } => {
+            state.aux_bus_mut(*bus).omt = *omt;
             Ok(())
         }
         EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
@@ -646,14 +768,36 @@ fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), R
             state.set_output_aux_bus(*output, *bus);
             Ok(())
         }
+        EngineAudioMixerEdit::SetOutputMixMinus { output, input } => {
+            if !state
+                .outputs()
+                .iter()
+                .any(|(candidate, _)| candidate == output)
+            {
+                return Err(rejection(
+                    RejectionCode::NotFound,
+                    "output",
+                    "unknown_output",
+                    format!("show does not contain output {output}"),
+                ));
+            }
+            if let Some(input) = input
+                && !state.inputs().contains(input)
+            {
+                return Err(unknown_input(*input));
+            }
+            state.set_output_mix_minus(*output, *input);
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
 
-/// Validates a loudness reset's target: Master, or an input of the show.
+/// Validates a loudness reset's target: Master, an input of the show, or an
+/// aux bus (which reports no loudness).
 fn loudness_target(state: &ShowState, target: StripDspTarget) -> Result<(), Rejection> {
     match target {
-        StripDspTarget::Master => Ok(()),
+        StripDspTarget::Master | StripDspTarget::Aux(_) => Ok(()),
         StripDspTarget::Input(input) if state.inputs().contains(&input) => Ok(()),
         StripDspTarget::Input(input) => Err(unknown_input(input)),
     }
@@ -662,6 +806,7 @@ fn loudness_target(state: &ShowState, target: StripDspTarget) -> Result<(), Reje
 /// The exact edit that reverts project edit `edit` on `state`, or `None` for
 /// a live group level, solo, monitor level, or loudness reset, or an unknown
 /// input.
+#[allow(clippy::too_many_lines)] // one arm per mixer edit
 pub(crate) fn inverse(
     state: &ShowState,
     edit: &EngineAudioMixerEdit,
@@ -714,6 +859,11 @@ pub(crate) fn inverse(
                 chain: Box::new(*state.master_audio_dsp()),
                 gesture: None,
             }),
+            StripDspTarget::Aux(bus) => Some(EngineAudioMixerEdit::SetStripDsp {
+                target: *target,
+                chain: Box::new(state.aux_bus(bus).dsp),
+                gesture: None,
+            }),
             StripDspTarget::Input(input) => {
                 state
                     .inputs()
@@ -725,10 +875,46 @@ pub(crate) fn inverse(
                     })
             }
         },
+        EngineAudioMixerEdit::SetPluginChain { target, .. } => match *target {
+            StripDspTarget::Master => Some(EngineAudioMixerEdit::SetPluginChain {
+                target: *target,
+                chain: Box::new(state.master_audio_plugins().clone()),
+            }),
+            StripDspTarget::Input(input) => {
+                state
+                    .inputs()
+                    .contains(&input)
+                    .then(|| EngineAudioMixerEdit::SetPluginChain {
+                        target: *target,
+                        chain: Box::new(state.input_audio_plugins(input).clone()),
+                    })
+            }
+            // An aux bus carries no plugin chain, so such an edit never
+            // reaches the history.
+            StripDspTarget::Aux(_) => None,
+        },
         EngineAudioMixerEdit::RenameAuxBus { bus, .. } => {
             Some(EngineAudioMixerEdit::RenameAuxBus {
                 bus: *bus,
                 name: state.aux_bus(*bus).name.clone(),
+            })
+        }
+        EngineAudioMixerEdit::SetAuxBusDsp { bus, .. } => {
+            Some(EngineAudioMixerEdit::SetAuxBusDsp {
+                bus: *bus,
+                chain: Box::new(state.aux_bus(*bus).dsp),
+            })
+        }
+        EngineAudioMixerEdit::SetAuxBusDevice { bus, .. } => {
+            Some(EngineAudioMixerEdit::SetAuxBusDevice {
+                bus: *bus,
+                device: state.aux_bus(*bus).device.clone(),
+            })
+        }
+        EngineAudioMixerEdit::SetAuxBusOmt { bus, .. } => {
+            Some(EngineAudioMixerEdit::SetAuxBusOmt {
+                bus: *bus,
+                omt: state.aux_bus(*bus).omt,
             })
         }
         EngineAudioMixerEdit::SetOutputAuxBus { output, .. } => state
@@ -739,11 +925,18 @@ pub(crate) fn inverse(
                 output: *output,
                 bus: state.output_aux_bus(*output),
             }),
+        EngineAudioMixerEdit::SetOutputMixMinus { output, .. } => state
+            .outputs()
+            .iter()
+            .any(|(candidate, _)| candidate == output)
+            .then(|| EngineAudioMixerEdit::SetOutputMixMinus {
+                output: *output,
+                input: state.output_mix_minus_input(*output),
+            }),
         EngineAudioMixerEdit::SetGroupLevel { .. }
         | EngineAudioMixerEdit::SetGroupSolo { .. }
         | EngineAudioMixerEdit::SetMonitorLevel { .. }
         | EngineAudioMixerEdit::ResetLoudness { .. }
-        | EngineAudioMixerEdit::SetAuxBusLevel { .. }
-        | EngineAudioMixerEdit::SetPluginChain { .. } => None,
+        | EngineAudioMixerEdit::SetAuxBusLevel { .. } => None,
     }
 }

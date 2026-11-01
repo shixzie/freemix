@@ -160,6 +160,7 @@ fn handshake_version(
 
 fn snapshot(revision: u64) -> SnapshotMessage {
     SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
@@ -228,7 +229,7 @@ fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         })
         .collect()
 }
@@ -859,6 +860,7 @@ fn manual_stingers_and_fade_to_black_timing_reduce_into_the_client_model() {
         output,
         name: "Program".into(),
         aux_bus: None,
+        mix_minus: None,
     }];
     initial.fade_to_black_output_durations = vec![(output, 90)];
     initial.desired_manual_transition = ManualTransitionStatus::Active(ManualTransitionState {
@@ -1734,6 +1736,7 @@ mod titles {
 
     fn titled_snapshot(revision: u64) -> SnapshotMessage {
         SnapshotMessage {
+            production_clocks: Vec::new(),
             titles: vec![TitleSummary {
                 input: input(2),
                 field_revision: 3,
@@ -2062,6 +2065,7 @@ mod playlists {
 
     fn announced_snapshot(revision: u64, titles: bool) -> SnapshotMessage {
         SnapshotMessage {
+            production_clocks: Vec::new(),
             titles: if titles {
                 vec![TitleSummary {
                     input: input(2),
@@ -2115,8 +2119,10 @@ mod playlists {
                 id: 7,
                 input: input(entry_input),
                 duration_frames: 300,
+                follow_media: false,
                 transition: PlaylistTransitionKind::Fade,
                 transition_frames: 15,
+                stinger_slot: None,
                 enabled: true,
             }],
             state: PlaylistRunState::Playing {
@@ -2535,6 +2541,7 @@ mod scene_animation {
 
     fn scene_snapshot(revision: u64) -> SnapshotMessage {
         SnapshotMessage {
+            production_clocks: Vec::new(),
             scenes: vec![input(1), input(2)],
             layout_scenes: vec![scene(SHOWN), scene(SPARE)],
             ..snapshot(revision)

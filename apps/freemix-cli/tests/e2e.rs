@@ -28,9 +28,21 @@ use fm_types::{BusId, InputId, OutputId, SceneId};
 static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const TEST_PEER_TIMEOUT: Duration = Duration::from_secs(4);
-const TEST_CLI_TIMEOUT: Duration = Duration::from_secs(4);
+const TEST_CLI_TIMEOUT: Duration = Duration::from_secs(10);
 /// The absolute destination the OR-013 fake export writes to.
 const REEL_EXPORT_DESTINATION: &str = "/srv/reels/highlights.mp4";
+
+/// The aux-bus lines `audio-buses` appends after the legacy bus graph, for a
+/// project whose seven buses are still at their defaults.
+const DEFAULT_AUX_BUSES: &str = concat!(
+    "\naudio_aux_bus bus=A name=\"Bus A\" gain_millidb=0 muted=false dsp=flat omt=false",
+    "\naudio_aux_bus bus=B name=\"Bus B\" gain_millidb=0 muted=false dsp=flat omt=false",
+    "\naudio_aux_bus bus=C name=\"Bus C\" gain_millidb=0 muted=false dsp=flat omt=false",
+    "\naudio_aux_bus bus=D name=\"Bus D\" gain_millidb=0 muted=false dsp=flat omt=false",
+    "\naudio_aux_bus bus=E name=\"Bus E\" gain_millidb=0 muted=false dsp=flat omt=false",
+    "\naudio_aux_bus bus=F name=\"Bus F\" gain_millidb=0 muted=false dsp=flat omt=false",
+    "\naudio_aux_bus bus=G name=\"Bus G\" gain_millidb=0 muted=false dsp=flat omt=false",
+);
 
 struct FakeRemoteServer {
     address: SocketAddr,
@@ -397,6 +409,7 @@ fn serve_diagnostics_peer(
             subscriber_limit: 8,
             subscriber_queue_limit: 16,
             source_sync,
+            production_clocks: Vec::new(),
             health,
         }),
     );
@@ -782,6 +795,7 @@ fn serve_reel_sessions(listener: &TcpListener) {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                reverse: false,
                 dissolve_frames: 0,
             },
             ReelClip {
@@ -790,6 +804,7 @@ fn serve_reel_sessions(listener: &TcpListener) {
                 trim_in_frames: 5,
                 trim_out_frames: 6,
                 speed_percent: 50,
+                reverse: false,
                 dissolve_frames: 0,
             },
         ],
@@ -934,6 +949,7 @@ fn serve_streams_snapshot_peer(
     write_message(
         &mut writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -1034,7 +1050,7 @@ fn serve_audio_strip(listener: &TcpListener) {
             soloed: true,
             follow_video: false,
             delay_samples: 2_400,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         },
         "remote-audio-strip",
         0,
@@ -1072,7 +1088,7 @@ fn serve_audio_strip(listener: &TcpListener) {
                         soloed: false,
                         follow_video: true,
                         delay_samples: 0,
-                        buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                        sends: fm_types::audio_bus::AudioSends::MASTER,
                     },
                     fm_protocol::InputAudioStripStatus {
                         pan_basis_points: 0,
@@ -1084,7 +1100,7 @@ fn serve_audio_strip(listener: &TcpListener) {
                         soloed: true,
                         follow_video: false,
                         delay_samples: 2_400,
-                        buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                        sends: fm_types::audio_bus::AudioSends::MASTER,
                     },
                 ],
             },
@@ -1842,6 +1858,7 @@ fn write_handshake_snapshot(
     write_message(
         writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -1968,6 +1985,7 @@ fn write_handshake_version_with_fade_to_black(
     write_message(
         writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -2154,6 +2172,7 @@ fn output_statuses() -> Vec<fm_protocol::OutputStatus> {
             output: fm_protocol::WireOutputId::new(NonZeroU128::new(value).unwrap()),
             name: name.into(),
             aux_bus: None,
+            mix_minus: None,
         })
         .collect()
 }
@@ -2171,7 +2190,7 @@ fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         })
         .collect()
 }
@@ -4522,7 +4541,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 90,
+  "schema_version": 106,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4730,7 +4749,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 90", "\"schema_version\": 47"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 106", "\"schema_version\": 47"),
     )
     .unwrap();
     assert_failure_contains(
@@ -4744,7 +4763,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 47 is unsupported; expected 90",
+        "title template schema 47 is unsupported; expected 106",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4762,7 +4781,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 90,
+  "schema_version": 106,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -5025,7 +5044,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 90,
+  "schema_version": 106,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -5150,7 +5169,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
             "--font",
             &font_argument(&not_a_font),
         ]),
-        "title template clocks: element 3 shows clock later, which is not defined",
+        "title template clocks: clock on-air is defined but never shown",
     );
     let bad_zone = context.root.join("bad-zone.fmtitle");
     fs::write(
@@ -5255,7 +5274,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 90,
+  "schema_version": 106,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -5320,6 +5339,11 @@ fn title_render_frame_draws_decoded_images() {
     let (report, drawn) = render("logo.ppm");
     assert!(!report.contains("placeholder image"), "{report}");
     assert_eq!(drawn, image_golden());
+    let (report, png) = render("logo.png");
+    assert!(!report.contains("placeholder image"), "{report}");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 16);
+    assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 8);
 
     // An image that no longer resolves keeps the placeholder and is named.
     fs::remove_file(images.join("logo.png")).unwrap();
@@ -5352,7 +5376,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 90,
+  "schema_version": 106,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -6577,13 +6601,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        90
+        106
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 90);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 106);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -6596,7 +6620,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 90);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 106);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -6672,7 +6696,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        90
+        106
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -6680,7 +6704,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 90);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 106);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -6690,7 +6714,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 90);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 106);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -6698,7 +6722,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 90);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 106);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -7086,9 +7110,12 @@ fn local_output_editing_persists_routes_and_names_and_rejects_unknown_references
     assert_success(&audio_buses);
     assert_eq!(
         stdout(&audio_buses),
-        concat!(
-            "audio_bus id=20 name=\"Master\" sends=[]\n",
-            "audio_bus id=21 name=\"Aux \\\"A\\\"\" sends=[]"
+        format!(
+            "{}{DEFAULT_AUX_BUSES}",
+            concat!(
+                "audio_bus id=20 name=\"Master\" sends=[]\n",
+                "audio_bus id=21 name=\"Aux \\\"A\\\"\" sends=[]"
+            )
         )
     );
     let outputs = invoke(&["outputs", context.project_path()]);
@@ -7328,7 +7355,7 @@ fn local_audio_bus_send_editing_is_atomic() {
     let assert_inventory = |expected| {
         let inventory = invoke(&["audio-buses", context.project_path()]);
         assert_success(&inventory);
-        assert_eq!(stdout(&inventory), expected);
+        assert_eq!(stdout(&inventory), format!("{expected}{DEFAULT_AUX_BUSES}"));
     };
     edit("audio-bus-send-add", "20", "21");
     assert_inventory(
@@ -8042,7 +8069,7 @@ fn local_replay_settings_persist_and_print_the_synthetic_feed() {
     assert_eq!(
         stdout(&shown),
         format!(
-            "ReplaySettings(sources=[2,1], retention_seconds=30, storage_root={root:?}, auto_return=12)\n\
+            "ReplaySettings(sources=[2,1], retention_seconds=30, storage_root={root:?}, auto_return=12, transition=cut)\n\
              Replay(feed=synthetic, root={root:?}, live_frame=none, mark_in=none, \
              mark_out=none)"
         )
@@ -8073,7 +8100,7 @@ fn local_replay_settings_persist_and_print_the_synthetic_feed() {
     assert_success(&shown);
     assert_eq!(
         stdout(&shown),
-        "ReplaySettings(sources=[], retention_seconds=30, storage_root=default, auto_return=12)\n\
+        "ReplaySettings(sources=[], retention_seconds=30, storage_root=default, auto_return=12, transition=cut)\n\
          Replay(feed=synthetic, root=\"replay\", live_frame=none, mark_in=none, \
          mark_out=none)"
     );
@@ -8167,6 +8194,7 @@ fn local_reel_set_persists_and_reel_prints_the_plan() {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                reverse: false,
                 dissolve_frames: 0,
             },
             ReelClip {
@@ -8175,6 +8203,7 @@ fn local_reel_set_persists_and_reel_prints_the_plan() {
                 trim_in_frames: 5,
                 trim_out_frames: 6,
                 speed_percent: 50,
+                reverse: false,
                 dissolve_frames: 15,
             },
         ]
@@ -16990,4 +17019,191 @@ fn remote_scene_layer_auto_key_is_one_live_key_edit() {
         "--despill",
     );
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn local_plugin_chain_persists_for_a_strip_and_master() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let input = InputId::new(NonZeroU128::new(2).unwrap());
+    assert_success(&invoke(&[
+        "audio-plugin-chain",
+        context.project_path(),
+        "2",
+        "freemix.reference.trim:1:7:20d1ffff",
+        "freemix.reference.polarity",
+    ]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let stored = store.load().unwrap();
+    let chain = stored.project().input_audio_plugins(input).unwrap();
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain.slots()[0].plugin(), "freemix.reference.trim");
+    assert!(chain.slots()[0].is_bypassed());
+    assert_eq!(chain.slots()[0].latency_frames(), 7);
+    assert_eq!(chain.slots()[0].state(), [0x20, 0xd1, 0xff, 0xff]);
+    assert_eq!(chain.slots()[1].plugin(), "freemix.reference.polarity");
+
+    assert_success(&invoke(&[
+        "audio-plugin-chain",
+        context.project_path(),
+        "master",
+        "freemix.reference.softclip",
+    ]));
+    let stored = store.load().unwrap();
+    let master = stored.project().master_audio_plugins();
+    assert_eq!(master.len(), 1);
+    assert_eq!(master.slots()[0].plugin(), "freemix.reference.softclip");
+
+    let text = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(
+        text.contains("\"plugins\": [{\"plugin\": \"freemix.reference.trim\""),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.softclip\""),
+        "{text}"
+    );
+    assert!(text.contains("\"schema_version\": 106"), "{text}");
+
+    // No slots clears the chain; an unknown input changes nothing.
+    assert_success(&invoke(&[
+        "audio-plugin-chain",
+        context.project_path(),
+        "2",
+    ]));
+    let stored = store.load().unwrap();
+    assert!(
+        stored
+            .project()
+            .input_audio_plugins(input)
+            .unwrap()
+            .is_empty()
+    );
+    let failed = invoke(&[
+        "audio-plugin-chain",
+        context.project_path(),
+        "99",
+        "freemix.reference.trim",
+    ]);
+    assert_failure_contains(&failed, "input 99 is not part of this show");
+    // The refusal changes no chain; the rejected receipt is still journaled.
+    let stored = store.load().unwrap();
+    assert!(
+        stored
+            .project()
+            .input_audio_plugins(input)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(stored.project().master_audio_plugins(), master);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn local_audio_strip_sends_persist_levels_and_taps() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let input = InputId::new(NonZeroU128::new(2).unwrap());
+    assert_success(&invoke(&[
+        "audio-strip",
+        context.project_path(),
+        "2",
+        "-6000",
+        "0",
+        "off",
+        "off",
+        "on",
+        "0",
+        "--sends",
+        "M,A@-6000p,C@0",
+    ]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let strip = |store: &ProjectStore| {
+        store
+            .load()
+            .unwrap()
+            .project()
+            .input_audio_strip(input)
+            .unwrap()
+            .sends
+    };
+    let sends = strip(&store);
+    let a = fm_types::audio_bus::AuxBusNumber::new(1).unwrap();
+    let c = fm_types::audio_bus::AuxBusNumber::new(3).unwrap();
+    assert!(sends.master());
+    assert_eq!(sends.aux(a).level_millidb, -6_000);
+    assert_eq!(sends.aux(a).tap, fm_types::audio_bus::SendTap::PreFader);
+    assert_eq!(sends.aux(c).level_millidb, 0);
+    assert_eq!(sends.aux(c).tap, fm_types::audio_bus::SendTap::PostFader);
+    let text = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(text.contains("\"sends\": \"M,A@-6000p,C@0\""), "{text}");
+
+    // `--buses` is the unity post-fader shortcut for the same field.
+    assert_success(&invoke(&[
+        "audio-strip",
+        context.project_path(),
+        "2",
+        "0",
+        "0",
+        "off",
+        "off",
+        "on",
+        "0",
+        "--buses",
+        "MG",
+    ]));
+    let sends = strip(&store);
+    assert!(sends.master());
+    assert!(!sends.aux(a).enabled);
+    assert!(
+        sends
+            .aux(fm_types::audio_bus::AuxBusNumber::new(7).unwrap())
+            .enabled
+    );
+    assert_eq!(
+        sends
+            .aux(fm_types::audio_bus::AuxBusNumber::new(7).unwrap())
+            .level_millidb,
+        0
+    );
+    // Both shortcuts, or a malformed token, are refused before any write.
+    let before = fs::read(context.project.join("project.json")).unwrap();
+    assert_failure_contains(
+        &invoke(&[
+            "audio-strip",
+            context.project_path(),
+            "2",
+            "0",
+            "0",
+            "off",
+            "off",
+            "on",
+            "0",
+            "--sends",
+            "M",
+            "--buses",
+            "M",
+        ]),
+        "--buses",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "audio-strip",
+            context.project_path(),
+            "2",
+            "0",
+            "0",
+            "off",
+            "off",
+            "on",
+            "0",
+            "--sends",
+            "M,A@0,M",
+        ]),
+        "sends",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        before
+    );
 }

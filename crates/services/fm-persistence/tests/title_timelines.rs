@@ -126,7 +126,7 @@ fn title_timelines_round_trip_exactly_and_strictly() {
         text.contains(
             ",\n    \"title_timelines\": [\n      {\"input\": 3, \"on\": \"air\", \"since_frame\": \
              18446744073709551615},\n      {\"input\": 5, \"on\": \"preview\", \
-             \"since_frame\": 0}\n    ],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },"
+             \"since_frame\": 0}\n    ],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null, \"transition\": \"cut\"}\n  },"
         ),
         "{text}"
     );

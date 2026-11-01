@@ -28,6 +28,9 @@ pub const VISCA_MAX_PRESET: u8 = 0xFE;
 pub struct ViscaAddress(u8);
 
 impl ViscaAddress {
+    /// The address a single camera on a point-to-point link uses.
+    pub const DEFAULT: Self = Self(1);
+
     /// Creates an address in `1..=7`.
     #[must_use]
     pub const fn new(value: u8) -> Option<Self> {

@@ -56,6 +56,12 @@ pub enum PlaylistIntent {
     Start {
         from: Option<u64>,
     },
+    /// Starts `after_frames` frames after the command, from `from` or else
+    /// the first enabled entry (a scheduled start).
+    StartAfter {
+        from: Option<u64>,
+        after_frames: u64,
+    },
     Stop,
     Pause,
     Resume,
@@ -382,29 +388,41 @@ pub const fn transition_label(kind: PlaylistTransitionKind) -> &'static str {
         PlaylistTransitionKind::Wipe => Msg::TransitionWipe.en(),
         PlaylistTransitionKind::Slide => Msg::TransitionSlide.en(),
         PlaylistTransitionKind::Zoom => Msg::TransitionZoom.en(),
+        PlaylistTransitionKind::Stinger => Msg::TransitionStingerName.en(),
     }
 }
 
-const TRANSITIONS: [PlaylistTransitionKind; 6] = [
+const TRANSITIONS: [PlaylistTransitionKind; 7] = [
     PlaylistTransitionKind::Cut,
     PlaylistTransitionKind::Fade,
     PlaylistTransitionKind::AlphaFade,
     PlaylistTransitionKind::Wipe,
     PlaylistTransitionKind::Slide,
     PlaylistTransitionKind::Zoom,
+    PlaylistTransitionKind::Stinger,
 ];
 
 /// `Cut`, or `Fade 15 fr`, in the console language.
 #[must_use]
 pub fn entry_transition_text(l: Locale, entry: &PlaylistEntrySpec) -> String {
-    let name = l.tr(transition_label(entry.transition));
+    let name = if entry.transition == PlaylistTransitionKind::Stinger {
+        l.format(
+            Msg::TransitionStinger,
+            &[(
+                "slot",
+                Arg::Count(u64::from(entry.stinger_slot.unwrap_or(1))),
+            )],
+        )
+    } else {
+        l.tr(transition_label(entry.transition)).to_owned()
+    };
     if entry.transition == PlaylistTransitionKind::Cut {
-        name.to_owned()
+        name
     } else {
         l.format(
             Msg::PlaylistTransitionFrames,
             &[
-                ("transition", Arg::Str(name)),
+                ("transition", Arg::Str(&name)),
                 ("frames", Arg::Count(u64::from(entry.transition_frames))),
             ],
         )
@@ -606,9 +624,13 @@ pub struct EntryForm {
     pub input: Option<InputId>,
     /// Duration text as typed (see [`parse_duration`]).
     pub duration: String,
+    /// Follow the input's media length instead of the typed duration.
+    pub follow_media: bool,
     pub transition: PlaylistTransitionKind,
     /// Transition frames for every kind but Cut.
     pub transition_frames: u32,
+    /// The Stinger slot (`1..=8`) a Stinger transition takes.
+    pub stinger_slot: u8,
     pub enabled: bool,
 }
 
@@ -621,8 +643,10 @@ impl EntryForm {
             editing: None,
             input: None,
             duration: timecode(10 * fps, rate),
+            follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: u32::try_from(fps.div_ceil(2)).unwrap_or(15),
+            stinger_slot: 1,
             enabled: true,
         }
     }
@@ -635,12 +659,14 @@ impl EntryForm {
             editing: Some(entry.id),
             input: Some(entry.input.to_domain()),
             duration: timecode(entry.duration_frames, rate),
+            follow_media: entry.follow_media,
             transition: entry.transition,
             transition_frames: if entry.transition == PlaylistTransitionKind::Cut {
                 defaults.transition_frames
             } else {
                 entry.transition_frames
             },
+            stinger_slot: entry.stinger_slot.unwrap_or(1),
             enabled: entry.enabled,
         }
     }
@@ -658,12 +684,15 @@ impl EntryForm {
             id,
             input: WireInputId::from_domain(input),
             duration_frames,
+            follow_media: self.follow_media,
             transition: self.transition,
             transition_frames: transition_frames_for(
                 self.transition,
                 self.transition_frames,
                 duration_frames,
             ),
+            stinger_slot: (self.transition == PlaylistTransitionKind::Stinger)
+                .then_some(self.stinger_slot),
             enabled: self.enabled,
         })
     }
@@ -827,7 +856,31 @@ impl PlaylistPanel {
 
         draw_status_card(ui, playlist, phase, rate, now_frame, &names, edit, intents);
         ui.add_space(4.0);
-        draw_transport(ui, &transport_availability(playlist, control), intents);
+        // A scheduled start: seconds from now before the first entry airs.
+        let delay_id = ui.make_persistent_id("playlist-start-in-seconds");
+        let mut start_in_seconds: u32 = ui.data(|data| data.get_temp(delay_id)).unwrap_or(0);
+        ui.horizontal(|ui| {
+            ui.label(field_label(l.text(Msg::PlaylistStartIn)));
+            let response = ui.add_enabled(
+                edit.is_none(),
+                egui::DragValue::new(&mut start_in_seconds)
+                    .range(0..=3600)
+                    .speed(1.0)
+                    .suffix(" s"),
+            );
+            response.hint(l.text(Msg::PlaylistStartInHover), edit.unwrap_or(""));
+        });
+        ui.data_mut(|data| data.insert_temp(delay_id, start_in_seconds));
+        #[allow(clippy::cast_possible_truncation)]
+        let start_after_frames = u64::from(start_in_seconds)
+            .saturating_mul(u64::from(rate.numerator()))
+            / u64::from(rate.denominator()).max(1);
+        draw_transport(
+            ui,
+            &transport_availability(playlist, control),
+            start_after_frames,
+            intents,
+        );
         ui.add_space(6.0);
 
         if playlist.entries.is_empty() {
@@ -1107,7 +1160,12 @@ type TransportKey<'a> = (
 );
 
 /// Start, Stop, Pause/Resume, Previous, and Next keys.
-fn draw_transport(ui: &mut Ui, transport: &TransportAvailability, intents: &mut Vec<StudioIntent>) {
+fn draw_transport(
+    ui: &mut Ui,
+    transport: &TransportAvailability,
+    start_after_frames: u64,
+    intents: &mut Vec<StudioIntent>,
+) {
     let l = l10n::locale(ui.ctx());
     let resume = transport.pause_resume == Ok(PlaylistIntent::Resume);
     let keys: [TransportKey<'_>; 5] = [
@@ -1158,7 +1216,7 @@ fn draw_transport(ui: &mut Ui, transport: &TransportAvailability, intents: &mut 
         let width = ((ui.available_width() - 4.0 * (keys.len() - 1) as f32) / keys.len() as f32)
             .floor()
             .max(48.0);
-        for (result, label, hover, tone) in keys {
+        for (index, (result, label, hover, tone)) in keys.into_iter().enumerate() {
             let enabled = result.is_ok();
             // A fixed width keeps the five keys inside the panel; longer
             // words truncate with the full label in the tooltip.
@@ -1178,7 +1236,16 @@ fn draw_transport(ui: &mut Ui, transport: &TransportAvailability, intents: &mut 
             if response.clicked()
                 && let Ok(intent) = result
             {
-                intents.push(StudioIntent::Playlist(intent.clone()));
+                // The start key schedules when a delay is set.
+                let intent = if index == 0 && start_after_frames > 0 {
+                    PlaylistIntent::StartAfter {
+                        from: None,
+                        after_frames: start_after_frames,
+                    }
+                } else {
+                    intent.clone()
+                };
+                intents.push(StudioIntent::Playlist(intent));
             }
         }
     });
@@ -1240,7 +1307,11 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
             row.take.as_ref().err().copied().unwrap_or(""),
         );
     let transition = entry_transition_text(l, row.entry);
-    let duration = timecode(row.entry.duration_frames, row.rate);
+    let duration = if row.entry.follow_media {
+        l.text(Msg::PlaylistFollowsMedia).to_owned()
+    } else {
+        timecode(row.entry.duration_frames, row.rate)
+    };
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let (accent, fill) = match row.role {
@@ -1582,6 +1653,14 @@ fn draw_entry_form(
                 submit = duration.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
                 ui.end_row();
 
+                ui.label(field_label(l.text(Msg::PlaylistFollowMedia)));
+                ui.add(egui::Checkbox::new(
+                    &mut form.follow_media,
+                    l.text(Msg::PlaylistFollowMedia),
+                ))
+                .on_hover_text(l.text(Msg::PlaylistFollowMediaHover));
+                ui.end_row();
+
                 ui.label(field_label(l.text(Msg::TransitionSection)));
                 ui.horizontal(|ui| {
                     ComboBox::from_id_salt("studio-playlist-transition")
@@ -1615,6 +1694,11 @@ fn draw_entry_form(
                         l.text(Msg::PlaylistTransitionFramesHover),
                         Msg::PlaylistReasonCutHasNoLength.en(),
                     );
+                    if form.transition == PlaylistTransitionKind::Stinger {
+                        ui.label(field_label(l.text(Msg::PlaylistStingerSlot)));
+                        ui.add(egui::DragValue::new(&mut form.stinger_slot).range(1..=8))
+                            .on_hover_text(l.text(Msg::PlaylistStingerSlotHover));
+                    }
                 });
                 ui.end_row();
             });
@@ -1723,12 +1807,14 @@ mod tests {
             id,
             input: WireInputId::from_domain(input(input_value)),
             duration_frames: duration,
+            follow_media: false,
             transition: if id.is_multiple_of(2) {
                 PlaylistTransitionKind::Fade
             } else {
                 PlaylistTransitionKind::Cut
             },
             transition_frames: if id.is_multiple_of(2) { 12 } else { 0 },
+            stinger_slot: None,
             enabled,
         }
     }
@@ -2116,6 +2202,7 @@ mod tests {
         };
         let wire = WireInputId::from_domain;
         let snapshot = SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -2152,7 +2239,7 @@ mod tests {
                     soloed: false,
                     follow_video: true,
                     delay_samples: 0,
-                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                    sends: fm_types::audio_bus::AudioSends::MASTER,
                 })
                 .to_vec(),
             desired_program: wire(input(1)),

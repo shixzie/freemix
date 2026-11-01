@@ -6,7 +6,7 @@
 //! family the template draws with to a font file in the same bundle:
 //!
 //! ```json
-//! {"schema_version": 90,
+//! {"schema_version": 92,
 //!  "template": {"id": 1, "name": "Lower third", "width": 1920, "height": 1080,
 //!               "background": "#00000000", "fields": [...], "elements": [...],
 //!               "animation": {"timebase": "30/1", "revision": 3,
@@ -47,7 +47,8 @@
 //! show, sorted by name. Each clock is a [`TitleClock`]: `time_of_day` in a
 //! canonical POSIX `TZ` zone (DST rules included), `countdown_to` a whole
 //! second UTC `target_utc` (`YYYY-MM-DDTHH:MM:SSZ`) with an `overrun` policy,
-//! or `since_take`. Display presets are `{"type": "duration" | "time_of_day",
+//! `since_take`, or `reference` to another show clock by name. Display
+//! presets are `{"type": "duration" | "time_of_day",
 //! "preset": name}`; the frames preset adds a `frame_rate`. A host reads the
 //! clocks through [`fm_titles::title_clock_registry`].
 //!
@@ -82,7 +83,7 @@ use fm_titles::{
     ElementKind, FieldDefinition, FieldId, FieldType, FieldValue, FontError, FontFace, FontStyle,
     HorizontalAlignment, ImageFilter, ImageFit, ImageSource, MAX_FONT_BYTES, ProductionClockSpec,
     Style, TemplateId, TickerDirection, TickerSpec, TitleAnimation, TitleClock, TitleClockError,
-    TitleClockKind, TitleTemplate, VerticalAlignment,
+    TitleClockKind, TitleDesign, TitleTemplate, VerticalAlignment,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -672,6 +673,40 @@ impl ProjectStore {
         if !declared_fonts.is_empty() {
             return Err(TitleImportError::SourceDeclaresFonts);
         }
+        let stem = template
+            .file_stem()
+            .map_or_else(|| "title".to_owned(), imported_key);
+        self.import_title_parts(parsed, clocks, fonts, &stem)
+    }
+
+    /// Imports a validated designer document (GX-002) as a stored template:
+    /// [`TitleDesign::to_template`] flattens its element tree, and the
+    /// template is written to `assets/titles/<design name>.fmtitle` through
+    /// the same validation, font import, and dedupe path as
+    /// [`Self::import_title_template`]. The design's group nodes and group
+    /// tracks are not part of the flattened template.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TitleImportError`] for a template, font, or bundle problem;
+    /// nothing is copied before validation succeeds.
+    pub fn import_title_design(
+        &self,
+        design: &TitleDesign,
+        fonts: &[(String, PathBuf)],
+    ) -> Result<ImportedTitleTemplate, TitleImportError> {
+        let template = design.to_template();
+        let stem = imported_key(OsStr::new(design.name()));
+        self.import_title_parts(template, Vec::new(), fonts, &stem)
+    }
+
+    fn import_title_parts(
+        &self,
+        parsed: TitleTemplate,
+        clocks: Vec<TitleClock>,
+        fonts: &[(String, PathBuf)],
+        stem: &str,
+    ) -> Result<ImportedTitleTemplate, TitleImportError> {
         validate_template_body(&parsed)?;
         check_font_table(&parsed, fonts.iter().map(|(family, _)| family.as_str()))?;
         check_clock_table(&parsed, &clocks)?;
@@ -730,9 +765,6 @@ impl ProjectStore {
         };
         let document = encode_title_template(&stored)?;
 
-        let stem = template
-            .file_stem()
-            .map_or_else(|| "title".to_owned(), imported_key);
         let base = format!("{TITLES_DIRECTORY}/{stem}.{TITLE_TEMPLATE_EXTENSION}");
         let (key, disposition) = place_bytes(&assets_root, &base, document.as_bytes())?;
         Ok(ImportedTitleTemplate {
@@ -996,6 +1028,7 @@ fn check_clock_table(
                 }
             }
             TitleClockKind::SinceTake { .. } => {}
+            TitleClockKind::Reference { .. } => {}
         }
     }
     Ok(())
@@ -1285,19 +1318,19 @@ pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, Tit
     Ok(output)
 }
 
-fn write_string(output: &mut String, value: &str) {
+pub(crate) fn write_string(output: &mut String, value: &str) {
     output.push('"');
     escape_string(output, value);
     output.push('"');
 }
 
-fn write_color(output: &mut String, color: Color) {
+pub(crate) fn write_color(output: &mut String, color: Color) {
     output.push('"');
     write_hex_color(output, Rgba8::new(color.r, color.g, color.b, color.a));
     output.push('"');
 }
 
-fn write_field_value(output: &mut String, value: &FieldValue) {
+pub(crate) fn write_field_value(output: &mut String, value: &FieldValue) {
     match value {
         FieldValue::Text(text) => {
             output.push_str("{\"type\": \"text\", \"value\": ");
@@ -1319,7 +1352,7 @@ fn write_field_value(output: &mut String, value: &FieldValue) {
     output.push('}');
 }
 
-fn write_element(output: &mut String, element: &Element) {
+pub(crate) fn write_element(output: &mut String, element: &Element) {
     write!(output, "{{\"id\": {}, \"name\": ", element.id)
         .expect("writing to a string cannot fail");
     write_string(output, &element.name);
@@ -1365,7 +1398,7 @@ fn write_element(output: &mut String, element: &Element) {
 }
 
 /// Writes `"animation": {...}` with the tracks in clip order.
-fn write_animation(
+pub(crate) fn write_animation(
     output: &mut String,
     animation: &TitleAnimation,
 ) -> Result<(), TitleTemplateError> {
@@ -1480,6 +1513,12 @@ fn write_clock(output: &mut String, clock: &TitleClock) {
             .expect("writing to a string cannot fail");
         }
         TitleClockKind::SinceTake { .. } => output.push_str(", \"kind\": \"since_take\""),
+        TitleClockKind::Reference { clock } => {
+            output.push_str(", \"kind\": \"reference\", \"clock\": ");
+            write_string(output, clock.as_str());
+            output.push('}');
+            return;
+        }
     }
     output.push_str(", \"format\": ");
     write_display_format(output, clock.kind.display_format());
@@ -1491,6 +1530,13 @@ fn write_display_format(output: &mut String, format: DisplayFormat) {
         DisplayFormat::Duration(DurationFormat::HoursMinutesSecondsFrames(rate)) => write!(
             output,
             "{{\"type\": \"duration\", \"preset\": \"hours_minutes_seconds_frames\", \"frame_rate\": {{\"numerator\": {}, \"denominator\": {}}}}}",
+            rate.numerator(),
+            rate.denominator()
+        )
+        .expect("writing to a string cannot fail"),
+        DisplayFormat::Duration(DurationFormat::HoursMinutesSecondsDropFrame(rate)) => write!(
+            output,
+            "{{\"type\": \"duration\", \"preset\": \"hours_minutes_seconds_drop_frame\", \"frame_rate\": {{\"numerator\": {}, \"denominator\": {}}}}}",
             rate.numerator(),
             rate.denominator()
         )
@@ -1519,6 +1565,7 @@ const fn duration_preset_name(format: DurationFormat) -> &'static str {
         DurationFormat::MinutesSecondsTenths => "minutes_seconds_tenths",
         DurationFormat::HoursMinutesSecondsMillis => "hours_minutes_seconds_millis",
         DurationFormat::HoursMinutesSecondsFrames(_) => "hours_minutes_seconds_frames",
+        DurationFormat::HoursMinutesSecondsDropFrame(_) => "hours_minutes_seconds_drop_frame",
         DurationFormat::Compact => "compact",
     }
 }
@@ -1559,7 +1606,9 @@ fn write_element_kind(output: &mut String, element: &Element) {
             spec.starts_at_ms,
             match spec.format {
                 ClockFormat::MinutesSeconds => "minutes_seconds",
+                ClockFormat::MinutesSecondsTenths => "minutes_seconds_tenths",
                 ClockFormat::HoursMinutesSeconds => "hours_minutes_seconds",
+                ClockFormat::HoursMinutesSecondsTenths => "hours_minutes_seconds_tenths",
             }
         )
         .expect("writing to a string cannot fail"),
@@ -1687,6 +1736,9 @@ fn parse_clock(value: Value) -> Result<TitleClock, DecodeError> {
         "since_take" => TitleClockKind::SinceTake {
             format: parse_duration_format(object.take("format")?)?,
         },
+        "reference" => TitleClockKind::Reference {
+            clock: parse_clock_name(&object.string("clock")?)?,
+        },
         value => return Err(unknown_enum("clock kind", value)),
     };
     object.finish()?;
@@ -1751,6 +1803,9 @@ fn parse_display_format(value: Value) -> Result<DisplayFormat, DecodeError> {
             "minutes_seconds_tenths" => DurationFormat::MinutesSecondsTenths,
             "hours_minutes_seconds_millis" => DurationFormat::HoursMinutesSecondsMillis,
             "hours_minutes_seconds_frames" => DurationFormat::HoursMinutesSecondsFrames(
+                parse_frame_rate(object.take("frame_rate")?)?,
+            ),
+            "hours_minutes_seconds_drop_frame" => DurationFormat::HoursMinutesSecondsDropFrame(
                 parse_frame_rate(object.take("frame_rate")?)?,
             ),
             "compact" => DurationFormat::Compact,
@@ -1823,7 +1878,7 @@ fn parse_color(value: &str) -> Result<Color, DecodeError> {
     Ok(Color::new(color.red, color.green, color.blue, color.alpha))
 }
 
-fn parse_field(value: Value) -> Result<FieldDefinition, DecodeError> {
+pub(crate) fn parse_field(value: Value) -> Result<FieldDefinition, DecodeError> {
     let mut object = Object::new(value, "title template field")?;
     let field = FieldDefinition {
         id: FieldId::new(object.nonzero_u128("id")?),
@@ -1858,7 +1913,7 @@ fn parse_field_value(value: Value) -> Result<FieldValue, DecodeError> {
     Ok(value)
 }
 
-fn parse_element(value: Value) -> Result<Element, TitleTemplateError> {
+pub(crate) fn parse_element(value: Value) -> Result<Element, TitleTemplateError> {
     let mut object = Object::new(value, "title element")?;
     let id = ElementId::new(object.nonzero_u128("id")?);
     let name = object.string("name")?;
@@ -1988,7 +2043,9 @@ fn parse_kind(value: Value) -> Result<ElementKind, DecodeError> {
             starts_at_ms: object.u64("starts_at_ms")?,
             format: match object.string("format")?.as_str() {
                 "minutes_seconds" => ClockFormat::MinutesSeconds,
+                "minutes_seconds_tenths" => ClockFormat::MinutesSecondsTenths,
                 "hours_minutes_seconds" => ClockFormat::HoursMinutesSeconds,
+                "hours_minutes_seconds_tenths" => ClockFormat::HoursMinutesSecondsTenths,
                 value => return Err(unknown_enum("clock format", value)),
             },
         }),
@@ -2013,7 +2070,7 @@ fn parse_kind(value: Value) -> Result<ElementKind, DecodeError> {
     Ok(kind)
 }
 
-fn parse_animation(value: Value) -> Result<TitleAnimation, TitleTemplateError> {
+pub(crate) fn parse_animation(value: Value) -> Result<TitleAnimation, TitleTemplateError> {
     let mut object = Object::new(value, "title animation")?;
     let timebase = parse_timebase(&object.string("timebase")?)?;
     let revision = object.u64("revision")?;

@@ -512,6 +512,7 @@ paths = ["crates/ui/fm-ui-egui/tests/hover_audit.rs"]
 commands = ["cargo test -p fm-ui-egui --test hover_audit"]
 [[features]]
 id = "IN-001"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "platform-professional-hardware"
@@ -523,6 +524,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-002"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "platform-professional-hardware"
@@ -534,6 +536,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-003"
+kind = "adapter"
 priority = "P0"
 phase = 2
 owner = "codecs-network-recording"
@@ -545,6 +548,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-004"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "codecs-network-recording"
@@ -556,6 +560,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-005"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "audio-dsp"
@@ -567,6 +572,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-006"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "media-core-clocks"
@@ -578,6 +584,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-007"
+kind = "adapter"
 priority = "P2"
 phase = 9
 owner = "codecs-network-recording"
@@ -589,6 +596,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-008"
+kind = "adapter"
 priority = "P0"
 phase = 2
 owner = "gpu-compositor-color"
@@ -600,6 +608,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-009"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "media-core-clocks"
@@ -611,6 +620,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-010"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "gpu-compositor-color"
@@ -622,6 +632,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-011"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "platform-professional-hardware"
@@ -633,6 +644,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-012"
+kind = "adapter"
 priority = "P1"
 phase = 6
 owner = "replay-guests"
@@ -644,6 +656,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-013"
+kind = "model"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -655,6 +668,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-014"
+kind = "adapter"
 priority = "P2"
 phase = 9
 owner = "graphics-data-automation-plugins"
@@ -666,6 +680,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-015"
+kind = "adapter"
 priority = "P0"
 phase = 4
 owner = "codecs-network-recording"
@@ -677,6 +692,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-016"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "codecs-network-recording"
@@ -688,6 +704,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-017"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "codecs-network-recording"
@@ -699,6 +716,7 @@ substitution_policy = "exact-authorized-integration-required"
 
 [[features]]
 id = "IN-018"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "platform-professional-hardware"
@@ -710,6 +728,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-019"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "codecs-network-recording"
@@ -721,6 +740,7 @@ substitution_policy = "exact-authorized-integration-required"
 
 [[features]]
 id = "IN-020"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "gpu-compositor-color"
@@ -732,6 +752,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-021"
+kind = "adapter"
 priority = "P1"
 phase = 9
 owner = "gpu-compositor-color"
@@ -743,6 +764,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-022"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "media-core-clocks"
@@ -754,6 +776,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-023"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "gpu-compositor-color"
@@ -765,6 +788,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-024"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "media-core-clocks"
@@ -776,6 +800,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-025"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "engine-control-persistence-security"
@@ -787,6 +812,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-026"
+kind = "adapter"
 priority = "P0"
 phase = 2
 owner = "engine-control-persistence-security"
@@ -798,6 +824,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-027"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -809,6 +836,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-028"
+kind = "model"
 priority = "P1"
 phase = 5
 owner = "platform-professional-hardware"
@@ -820,6 +848,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-029"
+kind = "model"
 priority = "P2"
 phase = 6
 owner = "replay-guests"
@@ -831,6 +860,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-030"
+kind = "adapter"
 priority = "P2"
 phase = 9
 owner = "platform-professional-hardware"
@@ -842,6 +872,7 @@ substitution_policy = "exact-authorized-integration-required"
 
 [[features]]
 id = "SW-001"
+kind = "adapter"
 priority = "P0"
 phase = 2
 owner = "gpu-compositor-color"
@@ -853,6 +884,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-002"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "gpu-compositor-color"
@@ -864,6 +896,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-003"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "gpu-compositor-color"
@@ -875,6 +908,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-004"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "gpu-compositor-color"
@@ -886,6 +920,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-005"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "gpu-compositor-color"
@@ -897,6 +932,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-006"
+kind = "adapter"
 priority = "P0"
 phase = 2
 owner = "gpu-compositor-color"
@@ -908,6 +944,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-007"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "gpu-compositor-color"
@@ -919,6 +956,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-008"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "gpu-compositor-color"
@@ -930,6 +968,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-009"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "gpu-compositor-color"
@@ -941,6 +980,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-010"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "gpu-compositor-color"
@@ -952,6 +992,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-011"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "gpu-compositor-color"
@@ -963,6 +1004,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-012"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "gpu-compositor-color"
@@ -974,6 +1016,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-013"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "studio-web-ux"
@@ -985,6 +1028,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-014"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "studio-web-ux"
@@ -996,6 +1040,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-015"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "gpu-compositor-color"
@@ -1007,6 +1052,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-016"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "media-core-clocks"
@@ -1018,6 +1064,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-017"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "engine-control-persistence-security"
@@ -1029,6 +1076,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-018"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "gpu-compositor-color"
@@ -1040,6 +1088,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "SW-019"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "gpu-compositor-color"
@@ -1051,6 +1100,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-001"
+kind = "adapter"
 priority = "P0"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1062,6 +1112,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-002"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1073,6 +1124,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-003"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1084,6 +1136,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-004"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1095,6 +1148,7 @@ substitution_policy = "exact-authorized-integration-required"
 
 [[features]]
 id = "GX-005"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1106,6 +1160,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-006"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "studio-web-ux"
@@ -1117,6 +1172,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-007"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1128,6 +1184,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-008"
+kind = "adapter"
 priority = "P2"
 phase = 9
 owner = "graphics-data-automation-plugins"
@@ -1139,6 +1196,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-009"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "platform-professional-hardware"
@@ -1150,6 +1208,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-010"
+kind = "model"
 priority = "P2"
 phase = 9
 owner = "graphics-data-automation-plugins"
@@ -1161,6 +1220,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-011"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1172,6 +1232,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-001"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "audio-dsp"
@@ -1183,6 +1244,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-002"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "audio-dsp"
@@ -1194,6 +1256,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-003"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "audio-dsp"
@@ -1205,6 +1268,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-004"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "media-core-clocks"
@@ -1216,6 +1280,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-005"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "audio-dsp"
@@ -1227,6 +1292,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-006"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "audio-dsp"
@@ -1238,6 +1304,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-007"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "audio-dsp"
@@ -1249,6 +1316,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-008"
+kind = "adapter"
 priority = "P1"
 phase = 3
 owner = "audio-dsp"
@@ -1260,6 +1328,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-009"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "audio-dsp"
@@ -1271,6 +1340,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-010"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "audio-dsp"
@@ -1282,6 +1352,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-011"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "platform-professional-hardware"
@@ -1293,6 +1364,7 @@ substitution_policy = "exact-authorized-integration-required"
 
 [[features]]
 id = "OR-001"
+kind = "adapter"
 priority = "P0"
 phase = 2
 owner = "codecs-network-recording"
@@ -1304,6 +1376,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-002"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "codecs-network-recording"
@@ -1315,6 +1388,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-003"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "codecs-network-recording"
@@ -1326,6 +1400,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-004"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "codecs-network-recording"
@@ -1337,6 +1412,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-005"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "codecs-network-recording"
@@ -1348,6 +1424,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-006"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "codecs-network-recording"
@@ -1359,6 +1436,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-007"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "codecs-network-recording"
@@ -1370,6 +1448,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-008"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "platform-professional-hardware"
@@ -1381,6 +1460,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-009"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "codecs-network-recording"
@@ -1392,6 +1472,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-010"
+kind = "adapter"
 priority = "P1"
 phase = 8
 owner = "platform-professional-hardware"
@@ -1403,6 +1484,7 @@ substitution_policy = "exact-authorized-integration-required"
 
 [[features]]
 id = "OR-011"
+kind = "adapter"
 priority = "P0"
 phase = 2
 owner = "platform-professional-hardware"
@@ -1414,6 +1496,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-012"
+kind = "adapter"
 priority = "P1"
 phase = 7
 owner = "replay-guests"
@@ -1425,6 +1508,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-013"
+kind = "adapter"
 priority = "P1"
 phase = 7
 owner = "replay-guests"
@@ -1436,6 +1520,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-014"
+kind = "adapter"
 priority = "P1"
 phase = 7
 owner = "replay-guests"
@@ -1447,6 +1532,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-015"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1458,6 +1544,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-016"
+kind = "adapter"
 priority = "P2"
 phase = 8
 owner = "codecs-network-recording"
@@ -1469,6 +1556,7 @@ substitution_policy = "exact-authorized-integration-required"
 
 [[features]]
 id = "OR-017"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "studio-web-ux"
@@ -1480,6 +1568,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-001"
+kind = "model"
 priority = "P1"
 phase = 6
 owner = "replay-guests"
@@ -1491,6 +1580,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-002"
+kind = "model"
 priority = "P1"
 phase = 6
 owner = "replay-guests"
@@ -1502,6 +1592,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-003"
+kind = "model"
 priority = "P1"
 phase = 6
 owner = "replay-guests"
@@ -1513,6 +1604,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-004"
+kind = "adapter"
 priority = "P0"
 phase = 3
 owner = "graphics-data-automation-plugins"
@@ -1524,6 +1616,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-005"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1535,6 +1628,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-006"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1546,6 +1640,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-007"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "studio-web-ux"
@@ -1557,6 +1652,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-008"
+kind = "adapter"
 priority = "P0"
 phase = 1
 owner = "engine-control-persistence-security"
@@ -1568,6 +1664,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-009"
+kind = "model"
 priority = "P2"
 phase = 9
 owner = "engine-control-persistence-security"
@@ -1579,6 +1676,7 @@ substitution_policy = "exact-authorized-integration-required"
 
 [[features]]
 id = "RC-010"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1590,6 +1688,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-011"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1601,6 +1700,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-012"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "engine-control-persistence-security"
@@ -1612,6 +1712,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-013"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "engine-control-persistence-security"
@@ -1623,6 +1724,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-014"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "studio-web-ux"
@@ -1634,6 +1736,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-015"
+kind = "adapter"
 priority = "P1"
 phase = 4
 owner = "engine-control-persistence-security"
@@ -1645,6 +1748,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-016"
+kind = "adapter"
 priority = "P2"
 phase = 9
 owner = "studio-web-ux"
@@ -1656,6 +1760,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-017"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "graphics-data-automation-plugins"
@@ -1667,6 +1772,7 @@ substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "RC-018"
+kind = "adapter"
 priority = "P1"
 phase = 5
 owner = "studio-web-ux"

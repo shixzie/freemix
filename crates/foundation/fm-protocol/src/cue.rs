@@ -71,6 +71,9 @@ pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
 /// Largest magnitude a title number action sets or adds, and largest an
 /// added value may reach (Protocol 2.65).
 pub const MAX_CUE_TITLE_NUMBER: i64 = 999_999_999_999;
+/// Largest magnitude a clock action sets, adjusts, or presets, in
+/// nanoseconds: the production clock value range's bound (Protocol 2.151).
+pub const MAX_CUE_CLOCK_VALUE_NS: i64 = 360_000_000_000_000_000;
 
 /// One step of a cue.
 ///
@@ -185,6 +188,14 @@ pub enum WireCueAction {
     RunScript {
         script: u64,
     },
+    /// Starts, pauses, resets, sets, adjusts, or presets production clock
+    /// `name` (SW-013, Protocol 2.151): token
+    /// `clock.<name>.<start|pause|reset|set|adjust|preset>[.<value-ns>]`.
+    /// The show must define the clock when the action fires.
+    Clock {
+        name: String,
+        operation: WireCueClockOperation,
+    },
 }
 
 /// The input a cue or shortcut action acts on (Protocol 2.88, RC-004): a
@@ -246,6 +257,7 @@ impl WireCueAction {
             | Self::PlaylistStop
             | Self::Record { .. }
             | Self::Stream { .. }
+            | Self::Clock { .. }
             | Self::Wait { .. }
             | Self::Delay { .. }
             | Self::RunScript { .. } => None,
@@ -307,6 +319,42 @@ pub enum WireCueMediaOperation {
     },
     /// Seeks to the start of the trimmed range and plays.
     Restart,
+}
+
+/// How a [`WireCueAction::Clock`] operates a production clock (SW-013,
+/// Protocol 2.151).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WireCueClockOperation {
+    Start,
+    Pause,
+    Reset,
+    SetValue(i64),
+    Adjust(i64),
+    SetPreset(i64),
+}
+
+impl WireCueClockOperation {
+    /// The operation's token, without its value.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Pause => "pause",
+            Self::Reset => "reset",
+            Self::SetValue(_) => "set",
+            Self::Adjust(_) => "adjust",
+            Self::SetPreset(_) => "preset",
+        }
+    }
+
+    /// The operation's value or delta in nanoseconds.
+    #[must_use]
+    pub const fn value_ns(self) -> Option<i64> {
+        match self {
+            Self::Start | Self::Pause | Self::Reset => None,
+            Self::SetValue(value) | Self::Adjust(value) | Self::SetPreset(value) => Some(value),
+        }
+    }
 }
 
 /// One cue.

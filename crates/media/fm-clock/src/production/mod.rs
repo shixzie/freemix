@@ -40,6 +40,7 @@ mod media;
 mod registry;
 mod session;
 mod timer;
+mod tzif;
 mod value;
 mod zone;
 
@@ -58,5 +59,6 @@ pub use timer::{
     MAX_PENDING_TIMER_EVENTS, OverrunPolicy, Timer, TimerConfig, TimerDirection, TimerError,
     TimerEvent, TimerPhase, TimerSnapshot,
 };
+pub use tzif::{MAX_TZIF_BYTES, TzifError, TzifType, TzifZone};
 pub use value::{ClockValue, ClockValueError, parse_clock_value};
 pub use zone::{DaylightRule, TimeZone, TransitionDate, ZoneError, ZoneResolution};

@@ -10,13 +10,15 @@ use fm_frame::{
 
 use crate::{
     BrowserError, BrowserId, BrowserLimits, BrowserRenderer, BrowserState, ChildLifecycle,
-    ChildSupervisor, CookieJar, CrashDisposition, InteractionIntent, InteractionKind,
-    InteractionMode, NavigationPolicy, NetworkBudget, NetworkLimits, ProfileId, RenderOutput,
-    RestartError, RestartPolicy, SurfaceConfig, SurfaceId, SurfaceSnapshot,
+    ChildSupervisor, CookieJar, CrashDisposition, HostRules, InteractionIntent, InteractionKind,
+    InteractionMode, NavigationPolicy, NetworkBudget, NetworkLimits, NetworkPolicy, ProfileId,
+    RenderOutput, RestartError, RestartPolicy, SurfaceConfig, SurfaceId, SurfaceSnapshot,
 };
 
 const DEFAULT_FRAME_DURATION_NANOS: u64 = 33_333_333;
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
+/// Most in-page fetch URLs one fixture may declare.
+pub const MAX_PAGE_FETCHES: usize = 64;
 
 /// A tiny HTML-like fixture. `data-color="#RRGGBB[AA]"` selects a solid
 /// frame, while `data-audio="0.0,0.5,-0.5"` supplies a repeating mono waveform.
@@ -30,6 +32,9 @@ pub struct HtmlFixture {
     requests: usize,
     response_bytes: usize,
     redirects: usize,
+    /// In-page fetch URLs the fixture declares; the renderer checks each
+    /// against the navigation policy before the page can load.
+    fetches: Vec<String>,
 }
 
 impl HtmlFixture {
@@ -62,6 +67,19 @@ impl HtmlFixture {
                 "data-sample-rate must be a positive u32".to_owned(),
             ));
         }
+        let fetches = attribute(&html, "data-fetch")
+            .map(|value| {
+                value
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if fetches.len() > MAX_PAGE_FETCHES {
+            return Err(BrowserError::InvalidFixture(format!(
+                "data-fetch declares at most {MAX_PAGE_FETCHES} URLs"
+            )));
+        }
         let response_bytes = html.len();
         Ok(Self {
             html,
@@ -72,12 +90,19 @@ impl HtmlFixture {
             requests: 1,
             response_bytes,
             redirects: 0,
+            fetches,
         })
     }
 
     #[must_use]
     pub fn html(&self) -> &str {
         &self.html
+    }
+
+    /// The in-page fetch URLs the fixture declares.
+    #[must_use]
+    pub fn fetches(&self) -> &[String] {
+        &self.fetches
     }
 
     #[must_use]
@@ -119,7 +144,7 @@ struct SurfaceRecord {
 /// A deterministic fake which performs no DNS, network, HTML, or JavaScript work.
 #[derive(Clone, Debug)]
 pub struct FakeRenderer {
-    policy: NavigationPolicy,
+    policy: NetworkPolicy,
     browser_limits: BrowserLimits,
     network_limits: NetworkLimits,
     supervisor: ChildSupervisor,
@@ -133,9 +158,9 @@ pub struct FakeRenderer {
 impl FakeRenderer {
     #[must_use]
     pub fn new(clock_domain: ClockDomainId) -> Self {
-        Self::with_limits(
+        Self::with_network_policy(
             clock_domain,
-            NavigationPolicy::new(),
+            NetworkPolicy::default(),
             BrowserLimits::default(),
             NetworkLimits::default(),
             RestartPolicy::default(),
@@ -146,6 +171,25 @@ impl FakeRenderer {
     pub fn with_limits(
         clock_domain: ClockDomainId,
         policy: NavigationPolicy,
+        browser_limits: BrowserLimits,
+        network_limits: NetworkLimits,
+        restart_policy: RestartPolicy,
+    ) -> Self {
+        Self::with_network_policy(
+            clock_domain,
+            NetworkPolicy::new(policy, HostRules::default()),
+            browser_limits,
+            network_limits,
+            restart_policy,
+        )
+    }
+
+    /// A renderer enforcing `policy`'s navigation grants, host rules, URL
+    /// bounds, and redirect rules.
+    #[must_use]
+    pub fn with_network_policy(
+        clock_domain: ClockDomainId,
+        policy: NetworkPolicy,
         browser_limits: BrowserLimits,
         network_limits: NetworkLimits,
         restart_policy: RestartPolicy,
@@ -167,10 +211,21 @@ impl FakeRenderer {
 
     #[must_use]
     pub const fn policy(&self) -> &NavigationPolicy {
-        &self.policy
+        self.policy.navigation()
     }
 
     pub const fn policy_mut(&mut self) -> &mut NavigationPolicy {
+        self.policy.navigation_mut()
+    }
+
+    /// The full network policy: navigation grants, host rules, and URL
+    /// bounds.
+    #[must_use]
+    pub const fn network_policy(&self) -> &NetworkPolicy {
+        &self.policy
+    }
+
+    pub const fn network_policy_mut(&mut self) -> &mut NetworkPolicy {
         &mut self.policy
     }
 
@@ -407,15 +462,25 @@ impl BrowserRenderer for FakeRenderer {
 
     fn navigate(&mut self, surface_id: SurfaceId, url: &str) -> Result<(), BrowserError> {
         self.ensure_running()?;
-        self.policy.check(url)?;
+        self.policy
+            .check(url)
+            .map_err(BrowserError::NetworkPolicy)?;
         let fixture = self
             .fixtures
             .get(url)
             .ok_or_else(|| BrowserError::UnknownFixture(url.to_owned()))?;
+        // Subresources the page fetches are held to the same policy as the
+        // document, so a page cannot reach a scheme or host navigation could
+        // not.
+        for fetch in &fixture.fetches {
+            self.policy
+                .check(fetch)
+                .map_err(BrowserError::NetworkPolicy)?;
+        }
         let mut budget = NetworkBudget::default();
         budget.consume(
             self.network_limits,
-            fixture.requests,
+            fixture.requests.saturating_add(fixture.fetches.len()),
             fixture.response_bytes,
             fixture.redirects,
         )?;
@@ -466,7 +531,29 @@ impl BrowserRenderer for FakeRenderer {
                 y,
             });
         }
-        let text_bytes = match &intent.kind {
+        // The surface zooms the page: a display point maps back to page
+        // space before the intent reaches the page (100 percent is identity).
+        let zoom = u64::from(surface.config.zoom.percent());
+        let page = |value: u32| u32::try_from(u64::from(value) * 100 / zoom).unwrap_or(u32::MAX);
+        let kind = match &intent.kind {
+            InteractionKind::PointerMove { x, y } => InteractionKind::PointerMove {
+                x: page(*x),
+                y: page(*y),
+            },
+            InteractionKind::PointerButton {
+                x,
+                y,
+                button,
+                state,
+            } => InteractionKind::PointerButton {
+                x: page(*x),
+                y: page(*y),
+                button: *button,
+                state: *state,
+            },
+            other => other.clone(),
+        };
+        let text_bytes = match &kind {
             InteractionKind::Text(text) | InteractionKind::Key { code: text, .. } => text.len(),
             _ => 0,
         };
@@ -477,7 +564,10 @@ impl BrowserRenderer for FakeRenderer {
                 self.browser_limits.max_interaction_text_bytes,
             ));
         }
-        surface.interactions.push(intent);
+        surface.interactions.push(InteractionIntent {
+            surface_id: intent.surface_id,
+            kind,
+        });
         Ok(())
     }
 

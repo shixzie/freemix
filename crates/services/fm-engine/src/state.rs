@@ -110,8 +110,9 @@ pub struct EngineInputAudioStripState {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
-    /// Master and the aux buses the strip feeds (AU-002). A live control.
-    pub buses: fm_types::audio_bus::AudioBusMask,
+    /// Master and the aux buses the strip feeds, with each aux send's level
+    /// and tap (AU-002). A live control.
+    pub sends: fm_types::audio_bus::AudioSends,
 }
 
 impl Default for EngineInputAudioStripState {
@@ -124,7 +125,7 @@ impl Default for EngineInputAudioStripState {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }
     }
 }
@@ -257,6 +258,8 @@ pub struct ShowState {
     aux_buses: [crate::EngineAuxBus; fm_model::AUX_BUS_COUNT],
     /// The outputs that hear an aux bus instead of Master (AU-002).
     output_aux_buses: BTreeMap<fm_types::OutputId, fm_model::AuxBusNumber>,
+    /// The input each output's aux feed leaves out (AU-002 mix-minus).
+    output_mix_minus: BTreeMap<fm_types::OutputId, fm_types::InputId>,
     /// How a soloed strip is heard (AU-001).
     audio_solo_mode: fm_model::AudioSoloMode,
     audio_monitor: crate::EngineAudioMonitor,
@@ -271,6 +274,8 @@ pub struct ShowState {
     alert_rules: Vec<fm_types::alert_rules::AlertRuleSetting>,
     /// The project's highlight reels, in display order (OR-013).
     reels: Vec<fm_types::reel::ReelSpec>,
+    /// The show's named production clocks (SW-013), in definition order.
+    production_clocks: Vec<fm_types::ProjectClock>,
     /// Every configured stream destination's authored configuration in
     /// authored order (OR-006), parallel to the switcher's stream inventory.
     /// The switcher owns the desired running flags; each entry's own
@@ -366,6 +371,7 @@ impl ShowState {
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
             aux_buses: fm_model::AuxBusNumber::ALL.map(crate::EngineAuxBus::default_for),
             output_aux_buses: BTreeMap::new(),
+            output_mix_minus: BTreeMap::new(),
             audio_solo_mode: fm_model::AudioSoloMode::InPlace,
             audio_monitor: crate::EngineAudioMonitor::default(),
             display_outputs: BTreeMap::new(),
@@ -373,6 +379,7 @@ impl ShowState {
             replay: fm_types::replay::ReplaySettings::default(),
             alert_rules: Vec::new(),
             reels: Vec::new(),
+            production_clocks: Vec::new(),
             stream_targets: Vec::new(),
         })
     }
@@ -950,6 +957,10 @@ impl ShowState {
         value: crate::EngineAuxBus,
     ) -> Result<(), ShowError> {
         fm_model::validate_audio_group_name(&value.name).map_err(ShowError::InvalidAudioMixer)?;
+        if let Some(device) = &value.device {
+            fm_model::validate_audio_monitor_device(device)
+                .map_err(|_| ShowError::InvalidAudioMonitorDevice)?;
+        }
         crate::audio_mixer::validate_group_state(value.state)
             .map_err(|_| ShowError::InvalidAudioGroupGain(value.state.gain_millidb))?;
         self.aux_buses[bus.index()] = value;
@@ -978,6 +989,32 @@ impl ShowState {
         match bus {
             Some(bus) => self.output_aux_buses.insert(output, bus),
             None => self.output_aux_buses.remove(&output),
+        };
+    }
+
+    /// The inputs each output's aux feed leaves out (AU-002 mix-minus),
+    /// ascending.
+    #[must_use]
+    pub const fn output_mix_minus(&self) -> &BTreeMap<fm_types::OutputId, fm_types::InputId> {
+        &self.output_mix_minus
+    }
+
+    /// The input `output`'s aux feed leaves out, or `None`.
+    #[must_use]
+    pub fn output_mix_minus_input(&self, output: fm_types::OutputId) -> Option<fm_types::InputId> {
+        self.output_mix_minus.get(&output).copied()
+    }
+
+    /// Makes `output`'s aux feed leave `input` out, or nothing for `None`;
+    /// the caller checks that both exist.
+    pub fn set_output_mix_minus(
+        &mut self,
+        output: fm_types::OutputId,
+        input: Option<fm_types::InputId>,
+    ) {
+        match input {
+            Some(input) => self.output_mix_minus.insert(output, input),
+            None => self.output_mix_minus.remove(&output),
         };
     }
 
@@ -1178,6 +1215,33 @@ impl ShowState {
 
     /// Restores persisted reels without checking them; problems are
     /// reported by the project's validation.
+    /// The show's named production clocks (SW-013), in definition order.
+    #[must_use]
+    pub fn production_clocks(&self) -> &[fm_types::ProjectClock] {
+        &self.production_clocks
+    }
+
+    /// Replaces the production clock definitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fm_types::ProjectClockError`] for an invalid definition;
+    /// nothing changes then.
+    pub fn set_production_clocks(
+        &mut self,
+        clocks: Vec<fm_types::ProjectClock>,
+    ) -> Result<(), fm_types::ProjectClockError> {
+        fm_types::validate_project_clocks(&clocks)?;
+        self.production_clocks = clocks;
+        Ok(())
+    }
+
+    /// Replaces the production clocks without checking them;
+    /// [`fm_model::Project::validate`] reports invalid definitions.
+    pub fn restore_production_clocks(&mut self, clocks: Vec<fm_types::ProjectClock>) {
+        self.production_clocks = clocks;
+    }
+
     pub fn restore_reels(&mut self, reels: Vec<fm_types::reel::ReelSpec>) {
         self.reels = reels;
     }

@@ -104,15 +104,8 @@ impl MixBus {
     }
 }
 
-/// Where a send taps the strip.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum SendTap {
-    /// Before the strip fader (strip mute still applies).
-    PreFader,
-    /// After the strip fader.
-    #[default]
-    PostFader,
-}
+/// Where a send taps the strip (AU-002): before or after its fader.
+pub use fm_types::audio_bus::SendTap;
 
 /// One strip-to-bus send.
 #[derive(Clone, Copy, Debug, PartialEq)]

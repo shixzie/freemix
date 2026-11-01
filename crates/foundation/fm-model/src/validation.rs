@@ -66,6 +66,11 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_shortcuts(project, &mut errors);
     validate_media_lists(project, &mut errors);
     validate_title_timelines(project, &mut errors);
+    validate_scoreboards(project, &mut errors);
+    validate_previews(project, &mut errors);
+    validate_crawls(project, &mut errors);
+    validate_ptz_presets(project, &mut errors);
+    validate_production_clocks(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
     validate_main_mix(project, &mut errors);
@@ -121,6 +126,22 @@ fn validate_aux_buses(project: &Project, errors: &mut Vec<ValidationError>) {
                 },
             });
         }
+        if bus.dsp.validate().is_err() {
+            errors.push(ValidationError {
+                entity: None,
+                field: "aux_buses.dsp",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+        if let Some(device) = &bus.device
+            && crate::validate_audio_monitor_device(device).is_err()
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "aux_buses.device",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
     }
     for &output in project.output_aux_buses().keys() {
         if !project
@@ -135,8 +156,33 @@ fn validate_aux_buses(project: &Project, errors: &mut Vec<ValidationError>) {
             });
         }
     }
+    for (&output, &input) in project.output_mix_minus() {
+        if !project
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.id == output)
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "output_mix_minus",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
+            });
+        }
+        if !project
+            .inputs()
+            .iter()
+            .any(|candidate| candidate.id == input)
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "output_mix_minus",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
+            });
+        }
+    }
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationError>) {
     for input in project.inputs() {
         let count = project
@@ -164,6 +210,13 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
             errors.push(ValidationError {
                 entity: Some(EntityRef::Input(strip.input)),
                 field: "audio_strip.label",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+        if strip.state.sends.validate().is_err() {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(strip.input)),
+                field: "audio_strip.sends",
                 kind: ValidationErrorKind::OutOfRange,
             });
         }
@@ -344,6 +397,131 @@ fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
             field: "playlist.next_take",
             kind: ValidationErrorKind::OutOfRange,
         });
+    }
+}
+
+fn validate_production_clocks(project: &Project, errors: &mut Vec<ValidationError>) {
+    if fm_types::validate_project_clocks(project.production_clocks()).is_err() {
+        errors.push(ValidationError {
+            entity: None,
+            field: "production_clocks",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for clock in project.production_clocks() {
+        if let fm_types::ProjectClockKind::MediaRemaining {
+            input: Some(input), ..
+        } = &clock.kind
+            && !project
+                .inputs()
+                .iter()
+                .any(|candidate| candidate.id == *input)
+        {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "production_clocks.media_input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            });
+        }
+    }
+}
+
+fn validate_ptz_presets(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Some(document) = project.ptz_presets_document()
+        && (document.is_empty() || document.len() > crate::MAX_PTZ_PRESETS_DOCUMENT_BYTES)
+    {
+        errors.push(ValidationError {
+            entity: None,
+            field: "ptz_presets",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+fn validate_crawls(project: &Project, errors: &mut Vec<ValidationError>) {
+    if project.crawl_documents().len() > crate::MAX_CRAWLS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "crawls",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for (input, document) in project.crawl_documents() {
+        let is_title = project.inputs().iter().any(|candidate| {
+            candidate.id == *input && matches!(candidate.kind, crate::InputKind::Title(_))
+        });
+        if !is_title {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "crawls.input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            });
+        }
+        if document.is_empty() || document.len() > crate::MAX_CRAWL_DOCUMENT_BYTES {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "crawls.document",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+    }
+}
+
+fn validate_previews(project: &Project, errors: &mut Vec<ValidationError>) {
+    if project.preview_documents().len() > crate::MAX_PREVIEW_STATES {
+        errors.push(ValidationError {
+            entity: None,
+            field: "previews",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for (input, document) in project.preview_documents() {
+        let is_title = project.inputs().iter().any(|candidate| {
+            candidate.id == *input && matches!(candidate.kind, crate::InputKind::Title(_))
+        });
+        if !is_title {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "previews.input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            });
+        }
+        if document.is_empty() || document.len() > crate::MAX_PREVIEW_DOCUMENT_BYTES {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "previews.document",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+    }
+}
+
+fn validate_scoreboards(project: &Project, errors: &mut Vec<ValidationError>) {
+    if project.scoreboard_documents().len() > crate::MAX_SCOREBOARDS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "scoreboards",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for (input, document) in project.scoreboard_documents() {
+        let is_title = project.inputs().iter().any(|candidate| {
+            candidate.id == *input && matches!(candidate.kind, crate::InputKind::Title(_))
+        });
+        if !is_title {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "scoreboards.input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            });
+        }
+        if document.is_empty() || document.len() > crate::MAX_SCOREBOARD_DOCUMENT_BYTES {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "scoreboards.document",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
     }
 }
 
@@ -1046,7 +1224,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                         kind: ValidationErrorKind::MissingReference(EntityRef::Input(*target)),
                     });
                 }
-                if crop.is_some_and(|crop| !crop_fits_project(project, crop)) {
+                if crop.is_some_and(|crop| !crop.fits_source()) {
                     errors.push(ValidationError {
                         entity,
                         field: "kind.alias.crop",
@@ -1797,7 +1975,8 @@ fn validate_capabilities<'a>(
 /// outputs, and no display claimed by both slots.
 /// The `LiveLAN` configuration (OR-017): a viewer limit in range and a source
 /// output the project holds.
-/// Every strip DSP chain and the Master chain are in range (AU-005).
+/// Every strip DSP chain and the Master chain are in range (AU-005), and
+/// every audio plugin chain is valid and unique (AU-006).
 fn validate_audio_dsp(project: &Project, errors: &mut Vec<ValidationError>) {
     for strip in project.input_audio_strips() {
         if strip.dsp.validate().is_err() {
@@ -1807,11 +1986,25 @@ fn validate_audio_dsp(project: &Project, errors: &mut Vec<ValidationError>) {
                 kind: ValidationErrorKind::OutOfRange,
             });
         }
+        if strip.plugins.validate().is_err() {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(strip.input)),
+                field: "audio_strip.plugins",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
     }
     if project.master_audio_dsp().validate().is_err() {
         errors.push(ValidationError {
             entity: None,
             field: "master_audio_dsp",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    if project.master_audio_plugins().validate().is_err() {
+        errors.push(ValidationError {
+            entity: None,
+            field: "master_audio_plugins",
             kind: ValidationErrorKind::OutOfRange,
         });
     }
@@ -1895,6 +2088,11 @@ fn validate_replay(project: &Project, errors: &mut Vec<ValidationError>) {
         ReplaySettingsError::AutoReturn => ValidationError {
             entity: None,
             field: "replay.auto_return",
+            kind: ValidationErrorKind::OutOfRange,
+        },
+        ReplaySettingsError::Transition => ValidationError {
+            entity: None,
+            field: "replay.transition",
             kind: ValidationErrorKind::OutOfRange,
         },
     });

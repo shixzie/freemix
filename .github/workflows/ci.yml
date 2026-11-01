@@ -4,9 +4,16 @@ on:
   pull_request:
   push:
     branches: [master]
+  schedule:
+    # Nightly desktop and soak tier.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   fmt:
@@ -18,17 +25,39 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  workspace:
+  # Every pull request pays for one workspace run.
+  workspace-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Keep pull requests from evicting the desktop targets' caches.
+          shared-key: linux
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test --workspace --all-targets --all-features --no-fail-fast
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # macOS and Windows run on merge, nightly, and manual dispatch, not on every
+  # pull request.
+  workspace-desktop:
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}
       - run: cargo check --workspace --all-targets --all-features
       - run: cargo test --workspace --all-targets --all-features --no-fail-fast
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -38,6 +67,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux
       - run: cargo run -p xtask -- parity check
       - run: cargo run -p xtask -- deps check
       - run: cargo run -p xtask -- matrix check
+
+  # Long-running and process-soak work runs on a schedule, never on a pull
+  # request. Tests that need a GPU, native media, or FFmpeg skip themselves
+  # unless their FM_REQUIRE_* flag is set.
+  soak:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux
+      - run: sudo apt-get update && sudo apt-get install --yes ffmpeg libsrt-gnutls-dev libvulkan1 mesa-vulkan-drivers
+      - run: cargo test -p freemixd --test native_soak --all-features -- --ignored
+      - run: cargo test -p freemixd --test process --all-features

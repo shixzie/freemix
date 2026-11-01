@@ -96,7 +96,10 @@ impl Default for GroupTransform {
 /// `x <= px < x + width` and `y <= py < y + height`, and, in a corner square of
 /// side `r = min(corner_radius, width / 2, height / 2)`, the exact integer test
 /// `(2px + 1 - 2cx)^2 + (2py + 1 - 2cy)^2 <= (2r)^2` against that corner's
-/// circle center `(cx, cy)`. Masks are hard edged (no anti-aliasing).
+/// circle center `(cx, cy)`. In the renderer the mask reports a 4x4
+/// subpixel coverage so a rounded corner fades instead of stepping; the
+/// `contains` test above remains the exact pixel-center rule used by
+/// callers that need a binary answer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClipMask {
     pub bounds: Bounds,
@@ -150,33 +153,89 @@ impl ResolvedClip {
     /// Whether canvas pixel `(x, y)` is inside; see [`ClipMask`].
     #[must_use]
     pub fn contains(&self, x: i64, y: i64) -> bool {
-        let right = self.x + i64::from(self.width);
-        let bottom = self.y + i64::from(self.height);
-        if x < self.x || x >= right || y < self.y || y >= bottom {
+        self.contains_scaled(
+            x.saturating_mul(8).saturating_add(4),
+            y.saturating_mul(8).saturating_add(4),
+        )
+    }
+
+    /// Whether the point at `(x8, y8)`, in eighths of a canvas pixel, is
+    /// inside. Integer-only so every renderer agrees.
+    fn contains_scaled(&self, x8: i64, y8: i64) -> bool {
+        let left = self.x.saturating_mul(8);
+        let top = self.y.saturating_mul(8);
+        let right = self
+            .x
+            .saturating_add(i64::from(self.width))
+            .saturating_mul(8);
+        let bottom = self
+            .y
+            .saturating_add(i64::from(self.height))
+            .saturating_mul(8);
+        if x8 < left || x8 >= right || y8 < top || y8 >= bottom {
             return false;
         }
-        let radius = i64::from(self.corner_radius);
+        let radius = i64::from(self.corner_radius).saturating_mul(8);
         if radius == 0 {
             return true;
         }
-        let center_x = if x < self.x + radius {
-            self.x + radius
-        } else if x >= right - radius {
+        let center_x = if x8 < left + radius {
+            left + radius
+        } else if x8 >= right - radius {
             right - radius
         } else {
             return true;
         };
-        let center_y = if y < self.y + radius {
-            self.y + radius
-        } else if y >= bottom - radius {
+        let center_y = if y8 < top + radius {
+            top + radius
+        } else if y8 >= bottom - radius {
             bottom - radius
         } else {
             return true;
         };
-        let dx = i128::from(2 * x + 1 - 2 * center_x);
-        let dy = i128::from(2 * y + 1 - 2 * center_y);
-        let r = i128::from(2 * radius);
+        let dx = i128::from(x8 - center_x);
+        let dy = i128::from(y8 - center_y);
+        let r = i128::from(radius);
         dx * dx + dy * dy <= r * r
+    }
+
+    /// The fraction of canvas pixel `(x, y)` inside, `0..=255`, sampled on a
+    /// 4x4 grid so rounded corners and any non-pixel-aligned edge fade out
+    /// instead of ending in a staircase.
+    #[must_use]
+    pub fn coverage(&self, x: i64, y: i64) -> u8 {
+        let left = self.x.saturating_mul(8);
+        let top = self.y.saturating_mul(8);
+        let right = self
+            .x
+            .saturating_add(i64::from(self.width))
+            .saturating_mul(8);
+        let bottom = self
+            .y
+            .saturating_add(i64::from(self.height))
+            .saturating_mul(8);
+        let x8 = x.saturating_mul(8);
+        let y8 = y.saturating_mul(8);
+        // A pixel wholly outside (or wholly inside) costs one test per side.
+        if x8 >= right || y8 >= bottom || x8 + 8 <= left || y8 + 8 <= top {
+            return 0;
+        }
+        let corners = [(x8, y8), (x8 + 8, y8), (x8, y8 + 8), (x8 + 8, y8 + 8)];
+        if corners
+            .iter()
+            .all(|(cx, cy)| self.contains_scaled(*cx, *cy))
+        {
+            return 255;
+        }
+        let mut inside = 0_u16;
+        for sample_y in [1, 3, 5, 7] {
+            for sample_x in [1, 3, 5, 7] {
+                if self.contains_scaled(x8 + sample_x, y8 + sample_y) {
+                    inside += 1;
+                }
+            }
+        }
+        u8::try_from(inside * 255 / 16).unwrap_or(0)
     }
 }
 
@@ -447,9 +506,70 @@ impl TitleDesign {
         Ok(design)
     }
 
+    /// Creates a design from decoded parts, validating the whole document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DesignError`] for an invalid tree, node bound, field, or
+    /// animation clip.
+    #[allow(clippy::too_many_arguments)] // one field per decoded design section
+    pub fn from_parts(
+        id: TemplateId,
+        name: String,
+        width: u32,
+        height: u32,
+        background: Color,
+        fields: Vec<FieldDefinition>,
+        nodes: BTreeMap<ElementId, DesignNode>,
+        roots: Vec<ElementId>,
+        children: BTreeMap<ElementId, Vec<ElementId>>,
+        animation: TitleClip,
+    ) -> Result<Self, DesignError> {
+        let design = Self {
+            id,
+            name,
+            width,
+            height,
+            background,
+            fields,
+            nodes,
+            roots,
+            children,
+            animation,
+        };
+        design.validate()?;
+        Ok(design)
+    }
+
     #[must_use]
     pub const fn id(&self) -> TemplateId {
         self.id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn background(&self) -> Color {
+        self.background
+    }
+
+    #[must_use]
+    pub fn fields(&self) -> &[FieldDefinition] {
+        &self.fields
+    }
+
+    /// Every node in id order.
+    pub fn nodes(&self) -> impl Iterator<Item = (&ElementId, &DesignNode)> {
+        self.nodes.iter()
+    }
+
+    /// Each group's ordered children.
+    #[must_use]
+    pub const fn children_map(&self) -> &BTreeMap<ElementId, Vec<ElementId>> {
+        &self.children
     }
 
     #[must_use]

@@ -115,6 +115,7 @@ fn settings(sources: &[u128], retention_seconds: u32) -> ReplaySettings {
         retention_seconds,
         storage_root: Some("/srv/replay".to_owned()),
         auto_return: None,
+        transition: fm_types::replay::ReplayTransition::CUT,
     }
 }
 
@@ -128,6 +129,7 @@ fn spec(id: u64, event: u32, angle: u128) -> ReelSpec {
             trim_in_frames: 0,
             trim_out_frames: 0,
             speed_percent: 100,
+            reverse: false,
             dissolve_frames: 0,
         }],
         music: None,

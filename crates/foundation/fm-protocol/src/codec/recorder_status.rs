@@ -1,7 +1,10 @@
 //! `recorder_status` samples (Protocol 2.66): `recorders` is one
-//! `<slot>:<state>:<elapsed_ms>:<failure>` entry per recorder slot in strict
-//! slot order, `;`-separated, with `failure` an [`crate::OutputFailure`]
-//! token (Protocol 2.67), empty unless `state` is `failed`.
+//! `<slot>:<state>:<elapsed_ms>:<failure>:<free bytes or ->:<remaining or ->`
+//! entry per recorder slot in strict slot order, `;`-separated, with
+//! `failure` an [`crate::OutputFailure`] token (Protocol 2.67), empty unless
+//! `state` is `failed`, the free bytes on the slot's output filesystem when
+//! the daemon samples them (Protocol 2.140), and the estimated seconds of
+//! recording left at the configured bitrate (Protocol 2.147).
 
 use crate::{
     CodecError, MAX_RECORDER_STATUS_SAMPLES, OutputFailure, RecorderRealizedState,
@@ -34,13 +37,19 @@ pub(super) fn encode_samples(samples: &[RecorderStatusSample]) -> Result<String,
             }
             previous = Some(sample.recorder.get());
             Ok(format!(
-                "{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}",
                 sample.recorder,
                 sample.realized.token(),
                 sample.elapsed_ms,
                 sample
                     .failure
-                    .map_or_else(String::new, |failure| failure.to_string())
+                    .map_or_else(String::new, |failure| failure.to_string()),
+                sample
+                    .free_bytes
+                    .map_or_else(|| "-".to_owned(), |bytes| bytes.to_string()),
+                sample
+                    .remaining_seconds
+                    .map_or_else(|| "-".to_owned(), |seconds| seconds.to_string())
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -60,7 +69,9 @@ pub(super) fn decode_samples(value: &str) -> Result<Vec<RecorderStatusSample>, C
     entries
         .into_iter()
         .map(|entry| {
-            let [slot, state, elapsed, failure] = entry.split(':').collect::<Vec<_>>()[..] else {
+            let [slot, state, elapsed, failure, free, remaining] =
+                entry.split(':').collect::<Vec<_>>()[..]
+            else {
                 return Err(invalid(entry));
             };
             let recorder = slot
@@ -81,6 +92,16 @@ pub(super) fn decode_samples(value: &str) -> Result<Vec<RecorderStatusSample>, C
                     None
                 } else {
                     Some(OutputFailure::parse(failure).ok_or_else(|| invalid(entry))?)
+                },
+                free_bytes: if free == "-" {
+                    None
+                } else {
+                    Some(parse_canonical_u64(free).ok_or_else(|| invalid(entry))?)
+                },
+                remaining_seconds: if remaining == "-" {
+                    None
+                } else {
+                    Some(parse_canonical_u64(remaining).ok_or_else(|| invalid(entry))?)
                 },
             };
             if sample.is_valid() {

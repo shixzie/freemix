@@ -121,6 +121,7 @@ fn handshake_version(
 
 fn snapshot(revision: u64) -> SnapshotMessage {
     SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
@@ -1247,7 +1248,7 @@ fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         })
         .collect()
 }
@@ -1552,6 +1553,7 @@ fn diagnostics_wait_assembles_monitor_frames() {
             subscriber_limit: 4,
             subscriber_queue_limit: 8,
             source_sync: Vec::new(),
+            production_clocks: Vec::new(),
             health: fm_protocol::DaemonHealth::default(),
         }));
         peer.send_all(&records);
@@ -1596,6 +1598,7 @@ fn diagnostics_wait_reconciles_results_answered_before_it() {
                 subscriber_limit: 4,
                 subscriber_queue_limit: 8,
                 source_sync: Vec::new(),
+                production_clocks: Vec::new(),
                 health: fm_protocol::DaemonHealth::default(),
             }),
         ]);
@@ -2175,6 +2178,8 @@ fn recorder_status(sequence: u64) -> fm_protocol::RecorderStatusMessage {
             realized: fm_protocol::RecorderRealizedState::Recording,
             elapsed_ms: sequence * 250,
             failure: None,
+            free_bytes: None,
+            remaining_seconds: None,
         }],
     }
 }
@@ -2485,6 +2490,7 @@ fn reel_status(sequence: u64, request_id: Option<&str>) -> fm_protocol::ReelStat
                     trim_in_frames: 0,
                     trim_out_frames: 0,
                     speed_percent: 100,
+                    reverse: false,
                     dissolve_frames: 0,
                 }],
                 music: None,
@@ -2619,6 +2625,7 @@ fn audio_plugin_status_requests_round_trip() {
             bypassed: true,
             latency_frames: 3,
             state: (-12_000_i32).to_le_bytes().to_vec(),
+            parameters: Vec::new(),
         }],
     };
 

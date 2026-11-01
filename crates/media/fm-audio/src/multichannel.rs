@@ -684,8 +684,10 @@ impl GainMatrix {
     /// * 7.1 → 5.1: `L R C LFE` pass at unity; `Ls' = g·Ls + g·Lrs`,
     ///   `Rs' = g·Rs + g·Rrs` (`0.5` each when normalized).
     /// * 2.0 → 1.0: `M = 0.5·L + 0.5·R` (already normalized).
+    /// * 5.1 → 1.0 (composite): the 5.1 → stereo fold then `0.5·(L + R)`:
+    ///   `M = 0.5·L + 0.5·R + g·C + (g/2)·Ls + (g/2)·Rs + k·LFE`.
     ///
-    /// `options.lfe` only affects 5.1 → 2.0.
+    /// `options.lfe` only affects 5.1 output mixes.
     ///
     /// # Errors
     ///
@@ -736,6 +738,21 @@ impl GainMatrix {
                 routes[..table.len()].copy_from_slice(&table);
                 table.len()
             }
+            // The composite of the BS.775 5.1 → stereo fold and 0.5·(L+R):
+            // `M = 0.5·L + 0.5·R + g·C + (g/2)·Ls + (g/2)·Rs + k·LFE`.
+            (StandardLayout::FivePointOne, StandardLayout::Mono) => {
+                let k = options.lfe.coefficient();
+                let table = [
+                    (0, 0, 0.5),
+                    (1, 0, 0.5),
+                    (2, 0, G),
+                    (3, 0, k),
+                    (4, 0, 0.5 * G),
+                    (5, 0, 0.5 * G),
+                ];
+                routes[..table.len()].copy_from_slice(&table);
+                table.len()
+            }
             _ => {
                 return Err(MultichannelError::UnsupportedConversion {
                     from: from.layout(),
@@ -766,6 +783,59 @@ impl GainMatrix {
             };
         }
         Self::new(from.layout(), to.layout(), &compiled[..count])
+    }
+
+    /// A Dolby Surround (Lt/Rt) matrix for 5.1 → 2.0.
+    ///
+    /// `Lt = L + g·C − g·Ls + k·LFE`, `Rt = R + g·C + g·Rs + k·LFE`, with
+    /// `g = 1/sqrt(2)` and `k` selected by [`LfeHandling`]. The 90° phase
+    /// shift Dolby applies to the surrounds is not modelled; the matrix's
+    /// signs carry it. [`DownmixNormalization::PreventClipping`] divides
+    /// each output's coefficients by their absolute sum when it exceeds one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultichannelError::UnsupportedConversion`] for any input
+    /// other than 5.1.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "coefficients are computed in f64 and rounded once to f32"
+    )]
+    pub fn lt_rt(from: StandardLayout, options: DownmixOptions) -> Result<Self, MultichannelError> {
+        const G: f64 = core::f64::consts::FRAC_1_SQRT_2;
+        if from != StandardLayout::FivePointOne {
+            return Err(MultichannelError::UnsupportedConversion {
+                from: from.layout(),
+                to: StandardLayout::Stereo.layout(),
+            });
+        }
+        let k = options.lfe.coefficient();
+        let table = [
+            (0, 0, 1.0),
+            (2, 0, G),
+            (3, 0, k),
+            (4, 0, -G),
+            (1, 1, 1.0),
+            (2, 1, G),
+            (3, 1, k),
+            (5, 1, G),
+        ];
+        let mut sums = [0.0_f64; MAX_MULTICHANNEL_CHANNELS];
+        for (_, output, gain) in &table {
+            sums[*output] += gain.abs();
+        }
+        let compiled = table.map(|(input, output, gain)| {
+            let scale = match options.normalization {
+                DownmixNormalization::PreventClipping if sums[output] > 1.0 => sums[output],
+                _ => 1.0,
+            };
+            MatrixRoute {
+                input,
+                output,
+                gain: (gain / scale) as f32,
+            }
+        });
+        Self::new(from.layout(), StandardLayout::Stereo.layout(), &compiled)
     }
 
     /// Upmix by duplication between catalogued layouts with more output than

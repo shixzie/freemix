@@ -101,34 +101,35 @@ fn seven_bit_fader_burst_coalesces_to_latest_value_per_tick() {
 }
 
 #[test]
-fn fourteen_bit_pairs_never_surface_the_msb_only_intermediate_within_a_tick() {
+fn fourteen_bit_pairs_never_surface_the_msb_only_intermediate() {
     let mut decoder = MidiControlDecoder::default();
     decoder.enable_14bit(ch(0), 7).unwrap();
     let mut coalescer = ControlCoalescer::new(8).unwrap();
-    // Three MSB/LSB pairs moving 0x1000 -> 0x1F7F. Each MSB alone decodes to
-    // `msb << 7` (MIDI resets the LSB), a transient glitch.
+    // Three MSB/LSB pairs moving 0x1000 -> 0x1F7F. Each MSB is held until its
+    // LSB arrives, so the intermediate `msb << 7` never reaches a tick.
     let mut raw_values = Vec::new();
     for (msb, lsb) in [(0x20, 0x00), (0x30, 0x40), (0x3E, 0x7F)] {
-        for message in [
-            MidiMessage::ControlChange {
-                channel: ch(0),
-                controller: 7,
-                value: msb,
-            },
-            MidiMessage::ControlChange {
+        assert!(
+            decoder
+                .decode(&MidiMessage::ControlChange {
+                    channel: ch(0),
+                    controller: 7,
+                    value: msb,
+                })
+                .is_none(),
+            "the MSB is held"
+        );
+        let event = decoder
+            .decode(&MidiMessage::ControlChange {
                 channel: ch(0),
                 controller: 39,
                 value: lsb,
-            },
-        ] {
-            let event = decoder.decode(&message).unwrap();
-            raw_values.push(event.value);
-            coalescer.offer("X-Touch", event, ts(1)).unwrap();
-        }
+            })
+            .unwrap();
+        raw_values.push(event.value);
+        coalescer.offer("X-Touch", event, ts(1)).unwrap();
     }
-    // The raw decoded stream contains the MSB-only value `0x3E << 7` just
-    // before the final combined value; the tick only surfaces the latter.
-    assert!(raw_values.contains(&ControlValue::Absolute {
+    assert!(!raw_values.contains(&ControlValue::Absolute {
         raw: 0x3E << 7,
         max: 16_383
     }));
@@ -144,7 +145,45 @@ fn fourteen_bit_pairs_never_surface_the_msb_only_intermediate_within_a_tick() {
                 raw: (0x3E << 7) | 0x7F,
                 max: 16_383
             },
-            5
+            2
+        )]
+    );
+
+    // A pair that straddles a tick boundary holds the MSB through the empty
+    // tick and applies only the combined value in the next.
+    let mut decoder = MidiControlDecoder::default();
+    decoder.enable_14bit(ch(0), 7).unwrap();
+    let mut coalescer = ControlCoalescer::new(8).unwrap();
+    assert!(
+        decoder
+            .decode(&MidiMessage::ControlChange {
+                channel: ch(0),
+                controller: 7,
+                value: 0x20,
+            })
+            .is_none()
+    );
+    assert!(coalescer.drain().is_empty());
+    let event = decoder
+        .decode(&MidiMessage::ControlChange {
+            channel: ch(0),
+            controller: 39,
+            value: 0x01,
+        })
+        .unwrap();
+    coalescer.offer("X-Touch", event, ts(2)).unwrap();
+    assert_eq!(
+        summary(&coalescer.drain()),
+        vec![(
+            ControlId::MidiCc14 {
+                channel: ch(0),
+                controller: 7
+            },
+            ControlValue::Absolute {
+                raw: (0x20 << 7) | 0x01,
+                max: 16_383
+            },
+            0
         )]
     );
 }
@@ -472,6 +511,8 @@ fn schedule(budget: usize, interval: u64) -> FeedbackSchedule {
     FeedbackSchedule {
         per_device_budget: NonZeroUsize::new(budget).unwrap(),
         min_interval: MediaDuration::new(interval),
+        per_device_bytes_per_second: None,
+        settle_after_release: MediaDuration::new(0),
     }
 }
 
@@ -666,6 +707,53 @@ fn touched_fader_is_never_driven_and_resyncs_once_on_release() {
     router.set_touched(&id("f1"), true).unwrap();
     router.attach(&device);
     assert!(!router.is_touched(&id("f1")));
+}
+
+#[test]
+fn a_released_fader_waits_out_the_settle_hold() {
+    let device = key("behringer:xtouch:1");
+    let mut router = motor_bank(&device, 1);
+    router.observe_level("f0.volume", 50.0).unwrap();
+    let mut paced = schedule(8, 0);
+    paced.settle_after_release = MediaDuration::new(100);
+    router.drain_tick(ts(0), paced);
+
+    router.set_touched(&id("f0"), true).unwrap();
+    router.observe_level("f0.volume", 70.0).unwrap();
+    assert!(router.drain_tick(ts(10), paced).messages.is_empty());
+
+    // Release: the first drain starts the hold; nothing goes out yet.
+    router.set_touched(&id("f0"), false).unwrap();
+    let held = router.drain_tick(ts(20), paced);
+    assert!(held.messages.is_empty());
+    assert_eq!(held.deferred_settle, 1);
+    let still_held = router.drain_tick(ts(50), paced);
+    assert!(still_held.messages.is_empty());
+    assert_eq!(still_held.deferred_settle, 1);
+
+    // Past the hold, the authoritative value is resent once.
+    let released = router.drain_tick(ts(120), paced);
+    assert_eq!(names(&released.messages), ["f0"]);
+    assert_eq!(released.deferred_settle, 0);
+    assert!(router.drain_tick(ts(130), paced).messages.is_empty());
+}
+
+#[test]
+fn a_device_byte_rate_limit_defers_to_the_next_second() {
+    let device = key("behringer:xtouch:1");
+    let mut router = motor_bank(&device, 2);
+    router.observe_level("f0.volume", 40.0).unwrap();
+    router.observe_level("f1.volume", 50.0).unwrap();
+    // One 14-bit CC message is six bytes: the limit fits one, not two.
+    let mut paced = schedule(8, 0);
+    paced.per_device_bytes_per_second = NonZeroUsize::new(9);
+    let first = router.drain_tick(ts(0), paced);
+    assert_eq!(first.messages.len(), 1);
+    assert_eq!(first.deferred_bytes, 1);
+    // The one-second window resets and the second message goes out.
+    let next = router.drain_tick(ts(1_000_000_000), paced);
+    assert_eq!(next.messages.len(), 1);
+    assert_eq!(next.deferred_bytes, 0);
 }
 
 #[test]

@@ -164,13 +164,17 @@ pub(crate) struct ThumbnailWork {
     pub(crate) grades: Arc<CompiledProjectGrades>,
     /// The animation pose of every Scene input on air; others hold.
     pub(crate) scenes: Vec<(InputId, AnimSample)>,
-    /// The animation pose of every title on air; others hold.
-    pub(crate) titles: Vec<(InputId, AnimSample)>,
+    /// The animation pose of every title on air, and the frame its timeline
+    /// was taken on; others hold at zero.
+    pub(crate) titles: Vec<(InputId, AnimSample, Option<u64>)>,
     /// Each media input's playhead and the end of its playable range, as
     /// the engine holds them (a simulated daemon draws them).
     pub(crate) media: Vec<(InputId, u64, u64)>,
     /// What every slideshow input shows (a simulated daemon draws it).
     pub(crate) slideshows: Vec<(InputId, SlidesShown)>,
+    /// The show's live production clocks, for title elements that name a
+    /// shared clock (SW-013).
+    pub(crate) clocks: fm_clock::production::ProductionClocks,
     /// A native daemon's newest source frames; `None` on a simulated one.
     pub(crate) live: Option<LiveSourceFrames>,
 }
@@ -647,16 +651,17 @@ impl LeafContext<'_> {
             InputKind::Title(title) => {
                 // As the monitor tap draws a title: its pose on air (or
                 // Hold), keyed.
-                let keyed = title_render::render_title_at(
+                let keyed = title_render::render_title_at_with_clocks(
                     self.titles,
                     id,
                     title,
                     TitleTime::now(
                         frame,
                         work.project.settings().frame_rate,
-                        None,
-                        pose_of(&work.titles, id),
+                        taken_frame_of(&work.titles, id),
+                        title_pose_of(&work.titles, id),
                     ),
+                    Some(&work.clocks),
                     width,
                     height,
                 )?;
@@ -757,6 +762,23 @@ fn pose_of(poses: &[(InputId, AnimSample)], input: InputId) -> AnimSample {
         .iter()
         .find(|(candidate, _)| *candidate == input)
         .map_or(AnimSample::Hold, |(_, pose)| *pose)
+}
+
+/// The animation pose of title `input` in the thumbnail work's title list,
+/// or Hold.
+fn title_pose_of(titles: &[(InputId, AnimSample, Option<u64>)], input: InputId) -> AnimSample {
+    titles
+        .iter()
+        .find(|(candidate, _, _)| *candidate == input)
+        .map_or(AnimSample::Hold, |(_, pose, _)| *pose)
+}
+
+/// The frame `input`'s title timeline started on, if it is on air.
+fn taken_frame_of(titles: &[(InputId, AnimSample, Option<u64>)], input: InputId) -> Option<u64> {
+    titles
+        .iter()
+        .find(|(candidate, _, _)| *candidate == input)
+        .and_then(|(_, _, taken)| *taken)
 }
 
 /// A native daemon's Scene thumbnail leaves: each source's newest frame
@@ -1330,6 +1352,7 @@ mod tests {
             titles: Vec::new(),
             media: Vec::new(),
             slideshows: Vec::new(),
+            clocks: fm_clock::production::ProductionClocks::new(),
             live: None,
         }
     }
@@ -1592,6 +1615,7 @@ mod tests {
                 titles: Vec::new(),
                 media: Vec::new(),
                 slideshows: Vec::new(),
+                clocks: fm_clock::production::ProductionClocks::new(),
                 live: None,
             });
             thread::sleep(Duration::from_millis(5));
@@ -2293,6 +2317,7 @@ mod native_tests {
             titles: Vec::new(),
             media: Vec::new(),
             slideshows: Vec::new(),
+            clocks: fm_clock::production::ProductionClocks::new(),
             live: Some(LiveSourceFrames::from_frames(frames)),
         };
         let mut out = BTreeMap::new();

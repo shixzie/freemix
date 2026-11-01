@@ -2,11 +2,12 @@
 //! title template fields.
 //!
 //! A [`Scoreboard`] holds two teams (name, abbreviation, score, featured
-//! player), a period, and a [`GameClock`]. Operators change it with
-//! [`ScoreboardAction`]s applied as one atomic, revision-checked batch at an
-//! engine frame index: either every action applies or none does. Score and
-//! period *adjustments* (the increment/decrement shortcuts) saturate at their
-//! bounds and report it; explicit *sets* outside the bounds are refused.
+//! player, and a bounded roster), a period, and a [`GameClock`]. Operators
+//! change it with [`ScoreboardAction`]s applied as one atomic, revision-checked
+//! batch at an engine frame index: either every action applies or none does.
+//! Score and period *adjustments* (the increment/decrement shortcuts) saturate
+//! at their bounds and report it; explicit *sets* outside the bounds are
+//! refused.
 //!
 //! # Clock
 //!
@@ -43,10 +44,14 @@ use fm_types::FrameRate;
 
 /// Maximum characters in a team name, abbreviation, or player name.
 pub const MAX_SCOREBOARD_TEXT_CHARS: usize = 64;
+/// Maximum players on one team's roster.
+pub const MAX_ROSTER_PLAYERS: usize = 32;
 /// Maximum actions in one batch, and entries in one external update.
 pub const MAX_SCOREBOARD_ACTIONS: usize = 64;
 /// Largest clock value accepted, in milliseconds (100 hours).
 pub const MAX_GAME_CLOCK_MS: u64 = 100 * 60 * 60 * 1_000;
+/// The shot clock a new scoreboard starts with: 24 seconds, stopped.
+pub const DEFAULT_SHOT_CLOCK_MS: u64 = 24_000;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TeamSide {
@@ -76,6 +81,8 @@ pub struct TeamState {
     pub name: String,
     pub abbreviation: String,
     pub score: u32,
+    /// Players available to feature, in addition to the featured `player`.
+    pub roster: Vec<Player>,
     pub player: Option<Player>,
 }
 
@@ -86,16 +93,115 @@ impl TeamState {
             name: name.into(),
             abbreviation: abbreviation.into(),
             score: 0,
+            roster: Vec::new(),
             player: None,
         }
     }
 }
 
+fn duplicate_roster_player(roster: &[Player], player: &Player) -> bool {
+    roster
+        .iter()
+        .any(|entry| match (entry.number, player.number) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => entry.name == player.name,
+            _ => false,
+        })
+}
+
 /// Inclusive bounds: scores are `0..=max_score`, periods `1..=max_period`.
+/// `shot_clock_ms` is the shot clock's count-down duration; `None` has no
+/// shot clock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScoreboardRules {
     pub max_score: u32,
     pub max_period: u16,
+    pub shot_clock_ms: Option<u64>,
+}
+
+/// A sport's standard scoreboard rules and game clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScoreboardPreset {
+    Basketball,
+    AmericanFootball,
+    IceHockey,
+    Soccer,
+}
+
+impl ScoreboardPreset {
+    pub const ALL: [Self; 4] = [
+        Self::Basketball,
+        Self::AmericanFootball,
+        Self::IceHockey,
+        Self::Soccer,
+    ];
+
+    /// The preset's period and score bounds.
+    #[must_use]
+    pub const fn rules(self) -> ScoreboardRules {
+        match self {
+            Self::Basketball => ScoreboardRules {
+                max_score: 199,
+                max_period: 4,
+                shot_clock_ms: Some(DEFAULT_SHOT_CLOCK_MS),
+            },
+            Self::AmericanFootball => ScoreboardRules {
+                max_score: 199,
+                max_period: 4,
+                shot_clock_ms: Some(40_000),
+            },
+            Self::IceHockey => ScoreboardRules {
+                max_score: 99,
+                max_period: 3,
+                shot_clock_ms: Some(30_000),
+            },
+            Self::Soccer => ScoreboardRules {
+                max_score: 99,
+                max_period: 2,
+                shot_clock_ms: None,
+            },
+        }
+    }
+
+    /// The preset's game clock at `frame_rate`: a count-down period for
+    /// basketball (10:00), football (15:00), and hockey (20:00), and a
+    /// count-up half with a 45:00 limit for soccer.
+    #[must_use]
+    pub const fn clock(self, frame_rate: FrameRate) -> GameClockConfig {
+        let minutes = match self {
+            Self::Basketball => 10,
+            Self::AmericanFootball => 15,
+            Self::IceHockey => 20,
+            Self::Soccer => 0,
+        };
+        GameClockConfig {
+            direction: match self {
+                Self::Soccer => ClockDirection::CountUp,
+                _ => ClockDirection::CountDown,
+            },
+            format: ClockFormat::MinutesSeconds,
+            frame_rate,
+            initial_ms: minutes * 60 * 1_000,
+            limit_ms: match self {
+                Self::Soccer => Some(45 * 60 * 1_000),
+                _ => None,
+            },
+        }
+    }
+
+    /// A scoreboard with this preset's rules and clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Scoreboard::new`] validation error.
+    pub fn board(
+        self,
+        home: TeamState,
+        away: TeamState,
+        frame_rate: FrameRate,
+    ) -> Result<Scoreboard, ScoreboardError> {
+        Scoreboard::new(home, away, self.rules(), self.clock(frame_rate))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -258,6 +364,10 @@ impl GameClock {
         }
     }
 
+    fn set_format(&mut self, format: ClockFormat) {
+        self.config.format = format;
+    }
+
     fn set(&mut self, frame: u64, value_ms: u64) -> Result<(), ScoreboardError> {
         check_clock_ms(value_ms)?;
         self.base_ms = value_ms;
@@ -280,6 +390,72 @@ fn check_clock_ms(value_ms: u64) -> Result<(), ScoreboardError> {
         });
     }
     Ok(())
+}
+
+/// A [`GameClock`]'s complete state, for persistence and exact restore.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GameClockSnapshot {
+    pub config: GameClockConfig,
+    pub base_ms: u64,
+    pub accumulated_frames: u64,
+    pub running_since: Option<u64>,
+    pub expired_at: Option<u64>,
+    pub expiry_pending: bool,
+}
+
+/// A [`Scoreboard`]'s complete state, for persistence and exact restore.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScoreboardSnapshot {
+    pub rules: ScoreboardRules,
+    pub home: TeamState,
+    pub away: TeamState,
+    pub period: u16,
+    pub clock: GameClockSnapshot,
+    pub shot_clock: Option<GameClockSnapshot>,
+    pub revision: u64,
+    pub last_frame: u64,
+}
+
+impl GameClock {
+    /// This clock's complete state.
+    #[must_use]
+    pub const fn snapshot(&self) -> GameClockSnapshot {
+        GameClockSnapshot {
+            config: self.config,
+            base_ms: self.base_ms,
+            accumulated_frames: self.accumulated_frames,
+            running_since: self.running_since,
+            expired_at: self.expired_at,
+            expiry_pending: self.expiry_pending,
+        }
+    }
+
+    fn from_snapshot(
+        snapshot: GameClockSnapshot,
+        last_frame: u64,
+    ) -> Result<Self, ScoreboardError> {
+        check_clock_ms(snapshot.base_ms)?;
+        check_clock_ms(snapshot.config.initial_ms)?;
+        if let Some(limit) = snapshot.config.limit_ms {
+            check_clock_ms(limit)?;
+        }
+        if let Some(running_since) = snapshot.running_since
+            && running_since > last_frame
+        {
+            return Err(ScoreboardError::ClockSnapshotRunningAfterLastFrame {
+                running_since,
+                last_frame,
+            });
+        }
+        Ok(Self {
+            config: snapshot.config,
+            base_ms: snapshot.base_ms,
+            accumulated_frames: snapshot.accumulated_frames,
+            running_since: snapshot.running_since,
+            expired_at: snapshot.expired_at,
+            expiry_pending: snapshot.expiry_pending,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -308,6 +484,39 @@ pub enum ScoreboardAction {
         side: TeamSide,
         player: Option<Player>,
     },
+    /// Appends a player to the roster; refused for a duplicate jersey number
+    /// (or duplicate name for unnumbered players) or a full roster.
+    AddRosterPlayer {
+        side: TeamSide,
+        player: Player,
+    },
+    /// Removes the roster entry at `index`, clearing the featured player if it
+    /// was that entry.
+    RemoveRosterPlayer {
+        side: TeamSide,
+        index: usize,
+    },
+    /// Features the roster entry at `index`; `None` clears the featured player.
+    SelectRosterPlayer {
+        side: TeamSide,
+        index: Option<usize>,
+    },
+    /// Features the roster entry wearing `number`; refused when no roster
+    /// entry has it.
+    SelectPlayerByNumber {
+        side: TeamSide,
+        number: u16,
+    },
+    /// Clears the roster and the featured player.
+    ClearRoster {
+        side: TeamSide,
+    },
+    /// Replaces the roster atomically; the featured player is cleared when
+    /// it is not in the new roster.
+    SetRoster {
+        side: TeamSide,
+        roster: Vec<Player>,
+    },
     /// Saturates at `1..=max_period`.
     AdjustPeriod {
         delta: i32,
@@ -322,12 +531,34 @@ pub enum ScoreboardAction {
     SetClock {
         value_ms: u64,
     },
+    StartShotClock,
+    StopShotClock,
+    /// Sets the shot clock's value and re-arms its expiry; a running shot
+    /// clock keeps running.
+    SetShotClock {
+        value_ms: u64,
+    },
+    /// Replaces the shot clock's count-down duration and resets it to that
+    /// value, stopped.
+    SetShotClockDuration {
+        value_ms: u64,
+    },
+    /// Changes the game clock's display format.
+    SetClockFormat {
+        format: ClockFormat,
+    },
+    /// Changes the shot clock's display format.
+    SetShotClockFormat {
+        format: ClockFormat,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScoreboardEvent {
     /// The clock reached zero (count-down) or its limit (count-up) at `frame`.
     ClockExpired { frame: u64 },
+    /// The shot clock reached zero at `frame`.
+    ShotClockExpired { frame: u64 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -367,12 +598,36 @@ pub enum ScoreboardError {
         maximum: usize,
     },
     ControlCharacter,
+    RosterFull {
+        side: TeamSide,
+        maximum: usize,
+    },
+    DuplicateRosterPlayer {
+        side: TeamSide,
+        player: String,
+    },
+    RosterIndexOutOfRange {
+        side: TeamSide,
+        index: usize,
+        len: usize,
+    },
+    RosterNumberNotFound {
+        side: TeamSide,
+        number: u16,
+    },
     ClockOutOfRange {
         value_ms: u64,
         maximum: u64,
     },
     /// Starting an expired clock; set it first.
     ClockExpired,
+    /// A restored running clock started after the scoreboard's last frame.
+    ClockSnapshotRunningAfterLastFrame {
+        running_since: u64,
+        last_frame: u64,
+    },
+    /// The scoreboard's rules have no shot clock.
+    NoShotClock,
     UnknownExternalKey {
         index: usize,
     },
@@ -411,10 +666,33 @@ impl fmt::Display for ScoreboardError {
             Self::ControlCharacter => {
                 formatter.write_str("scoreboard text contains a control character")
             }
+            Self::RosterFull { side, maximum } => {
+                write!(formatter, "{side:?} roster is full at {maximum} players")
+            }
+            Self::DuplicateRosterPlayer { side, player } => {
+                write!(formatter, "{side:?} roster already contains {player}")
+            }
+            Self::RosterIndexOutOfRange { side, index, len } => {
+                write!(
+                    formatter,
+                    "{side:?} roster index {index} is outside 0..{len}"
+                )
+            }
+            Self::RosterNumberNotFound { side, number } => {
+                write!(formatter, "{side:?} roster has no player number {number}")
+            }
             Self::ClockOutOfRange { value_ms, maximum } => {
                 write!(formatter, "clock value {value_ms}ms exceeds {maximum}ms")
             }
             Self::ClockExpired => formatter.write_str("clock has expired; set it before starting"),
+            Self::ClockSnapshotRunningAfterLastFrame {
+                running_since,
+                last_frame,
+            } => write!(
+                formatter,
+                "clock started on frame {running_since} after the scoreboard's last frame {last_frame}"
+            ),
+            Self::NoShotClock => formatter.write_str("scoreboard rules have no shot clock"),
             Self::UnknownExternalKey { index } => {
                 write!(formatter, "external entry {index} has an unknown key")
             }
@@ -440,8 +718,11 @@ pub struct ScoreboardBinding {
     pub away_abbreviation: Option<FieldId>,
     pub away_score: Option<FieldId>,
     pub away_player: Option<FieldId>,
+    pub home_roster: Option<FieldId>,
+    pub away_roster: Option<FieldId>,
     pub period: Option<FieldId>,
     pub clock: Option<FieldId>,
+    pub shot_clock: Option<FieldId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -450,6 +731,7 @@ pub struct Scoreboard {
     away: TeamState,
     period: u16,
     clock: GameClock,
+    shot_clock: Option<GameClock>,
     rules: ScoreboardRules,
     revision: u64,
     last_frame: u64,
@@ -477,6 +759,21 @@ impl Scoreboard {
             if let Some(player) = &team.player {
                 check_text(&player.name)?;
             }
+            if team.roster.len() > MAX_ROSTER_PLAYERS {
+                return Err(ScoreboardError::RosterFull {
+                    side,
+                    maximum: MAX_ROSTER_PLAYERS,
+                });
+            }
+            for (index, player) in team.roster.iter().enumerate() {
+                check_text(&player.name)?;
+                if duplicate_roster_player(&team.roster[..index], player) {
+                    return Err(ScoreboardError::DuplicateRosterPlayer {
+                        side,
+                        player: player.display(),
+                    });
+                }
+            }
             if team.score > rules.max_score {
                 return Err(ScoreboardError::ScoreOutOfRange {
                     side,
@@ -490,6 +787,18 @@ impl Scoreboard {
             away,
             period: 1,
             clock: GameClock::new(clock)?,
+            shot_clock: rules
+                .shot_clock_ms
+                .map(|initial_ms| {
+                    GameClock::new(GameClockConfig {
+                        direction: ClockDirection::CountDown,
+                        format: ClockFormat::MinutesSeconds,
+                        frame_rate: clock.frame_rate,
+                        initial_ms,
+                        limit_ms: None,
+                    })
+                })
+                .transpose()?,
             rules,
             revision: 0,
             last_frame: 0,
@@ -514,6 +823,14 @@ impl Scoreboard {
         &self.clock
     }
 
+    /// The shot clock, when the rules have one: a stopped 24-second
+    /// count-down when it was created from [`ScoreboardRules`] without an
+    /// override.
+    #[must_use]
+    pub const fn shot_clock(&self) -> Option<&GameClock> {
+        self.shot_clock.as_ref()
+    }
+
     #[must_use]
     pub const fn rules(&self) -> ScoreboardRules {
         self.rules
@@ -528,6 +845,56 @@ impl Scoreboard {
     #[must_use]
     pub const fn last_frame(&self) -> u64 {
         self.last_frame
+    }
+
+    /// This scoreboard's complete state, for persistence.
+    #[must_use]
+    pub fn snapshot(&self) -> ScoreboardSnapshot {
+        ScoreboardSnapshot {
+            rules: self.rules,
+            home: self.home.clone(),
+            away: self.away.clone(),
+            period: self.period,
+            clock: self.clock.snapshot(),
+            shot_clock: self.shot_clock.as_ref().map(GameClock::snapshot),
+            revision: self.revision,
+            last_frame: self.last_frame,
+        }
+    }
+
+    /// Restores a scoreboard exactly from `snapshot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScoreboardError::InvalidRules`] when the snapshot's rules
+    /// and shot clock disagree, a bound error for a period or clock outside
+    /// its contract, or [`ScoreboardError::ClockSnapshotRunningAfterLastFrame`]
+    /// for a running clock that starts after the last frame.
+    pub fn restore(snapshot: ScoreboardSnapshot) -> Result<Self, ScoreboardError> {
+        let mut board = Self::new(
+            snapshot.home,
+            snapshot.away,
+            snapshot.rules,
+            snapshot.clock.config,
+        )?;
+        if snapshot.period == 0 || snapshot.period > snapshot.rules.max_period {
+            return Err(ScoreboardError::PeriodOutOfRange {
+                period: snapshot.period,
+                maximum: snapshot.rules.max_period,
+            });
+        }
+        board.period = snapshot.period;
+        board.clock = GameClock::from_snapshot(snapshot.clock, snapshot.last_frame)?;
+        board.shot_clock = snapshot
+            .shot_clock
+            .map(|clock| GameClock::from_snapshot(clock, snapshot.last_frame))
+            .transpose()?;
+        if board.shot_clock.is_some() != snapshot.rules.shot_clock_ms.is_some() {
+            return Err(ScoreboardError::InvalidRules);
+        }
+        board.revision = snapshot.revision;
+        board.last_frame = snapshot.last_frame;
+        Ok(board)
     }
 
     const fn team_mut(&mut self, side: TeamSide) -> &mut TeamState {
@@ -556,6 +923,9 @@ impl Scoreboard {
     pub fn advance(&mut self, frame: u64) -> Result<Vec<ScoreboardEvent>, ScoreboardError> {
         self.check_frame(frame)?;
         self.clock.settle(frame);
+        if let Some(shot_clock) = &mut self.shot_clock {
+            shot_clock.settle(frame);
+        }
         self.last_frame = frame;
         Ok(self.take_events())
     }
@@ -566,6 +936,14 @@ impl Scoreboard {
             self.clock.expiry_pending = false;
             if let Some(frame) = self.clock.expired_at {
                 events.push(ScoreboardEvent::ClockExpired { frame });
+            }
+        }
+        if let Some(shot_clock) = &mut self.shot_clock
+            && shot_clock.expiry_pending
+        {
+            shot_clock.expiry_pending = false;
+            if let Some(frame) = shot_clock.expired_at {
+                events.push(ScoreboardEvent::ShotClockExpired { frame });
             }
         }
         events
@@ -602,6 +980,9 @@ impl Scoreboard {
         }
         let mut next = self.clone();
         next.clock.settle(frame);
+        if let Some(shot_clock) = &mut next.shot_clock {
+            shot_clock.settle(frame);
+        }
         next.last_frame = frame;
         let mut saturated = Vec::new();
         for (index, action) in actions.iter().enumerate() {
@@ -639,6 +1020,7 @@ impl Scoreboard {
     }
 
     /// Returns whether the action saturated.
+    #[allow(clippy::too_many_lines)] // one arm per scoreboard action
     fn apply_one(
         &mut self,
         frame: u64,
@@ -682,6 +1064,50 @@ impl Scoreboard {
                 }
                 self.team_mut(*side).player.clone_from(player);
             }
+            ScoreboardAction::AddRosterPlayer { side, player } => {
+                self.add_roster_player(*side, player)?;
+            }
+            ScoreboardAction::RemoveRosterPlayer { side, index } => {
+                self.remove_roster_player(*side, *index)?;
+            }
+            ScoreboardAction::SelectRosterPlayer { side, index } => {
+                self.select_roster_player(*side, *index)?;
+            }
+            ScoreboardAction::SelectPlayerByNumber { side, number } => {
+                self.select_player_by_number(*side, *number)?;
+            }
+            ScoreboardAction::ClearRoster { side } => {
+                let team = self.team_mut(*side);
+                team.roster.clear();
+                team.player = None;
+            }
+            ScoreboardAction::SetRoster { side, roster } => {
+                if roster.len() > MAX_ROSTER_PLAYERS {
+                    return Err(ScoreboardError::RosterFull {
+                        side: *side,
+                        maximum: MAX_ROSTER_PLAYERS,
+                    });
+                }
+                for (index, player) in roster.iter().enumerate() {
+                    check_text(&player.name)?;
+                    if duplicate_roster_player(&roster[..index], player) {
+                        return Err(ScoreboardError::DuplicateRosterPlayer {
+                            side: *side,
+                            player: player.display(),
+                        });
+                    }
+                }
+                let keep = self
+                    .team_mut(*side)
+                    .player
+                    .as_ref()
+                    .is_some_and(|player| roster.contains(player));
+                let team = self.team_mut(*side);
+                team.roster.clone_from(roster);
+                if !keep {
+                    team.player = None;
+                }
+            }
             ScoreboardAction::AdjustPeriod { delta } => {
                 let wanted = i64::from(self.period) + i64::from(*delta);
                 let clamped = wanted.clamp(1, i64::from(max_period));
@@ -697,11 +1123,115 @@ impl Scoreboard {
                 }
                 self.period = *period;
             }
+            ScoreboardAction::SetClockFormat { format } => self.clock.set_format(*format),
+            ScoreboardAction::SetShotClockFormat { format } => {
+                self.shot_clock_mut()?.set_format(*format);
+            }
             ScoreboardAction::StartClock => self.clock.start(frame)?,
             ScoreboardAction::StopClock => self.clock.stop(frame),
             ScoreboardAction::SetClock { value_ms } => self.clock.set(frame, *value_ms)?,
+            ScoreboardAction::StartShotClock => self.shot_clock_mut()?.start(frame)?,
+            ScoreboardAction::StopShotClock => self.shot_clock_mut()?.stop(frame),
+            ScoreboardAction::SetShotClock { value_ms } => {
+                self.shot_clock_mut()?.set(frame, *value_ms)?;
+            }
+            ScoreboardAction::SetShotClockDuration { value_ms } => {
+                check_clock_ms(*value_ms)?;
+                self.shot_clock_mut()?;
+                self.rules.shot_clock_ms = Some(*value_ms);
+                let frame_rate = self.clock.config.frame_rate;
+                self.shot_clock = Some(GameClock::new(GameClockConfig {
+                    direction: ClockDirection::CountDown,
+                    format: ClockFormat::MinutesSeconds,
+                    frame_rate,
+                    initial_ms: *value_ms,
+                    limit_ms: None,
+                })?);
+            }
         }
         Ok(false)
+    }
+
+    fn shot_clock_mut(&mut self) -> Result<&mut GameClock, ScoreboardError> {
+        self.shot_clock.as_mut().ok_or(ScoreboardError::NoShotClock)
+    }
+
+    fn add_roster_player(
+        &mut self,
+        side: TeamSide,
+        player: &Player,
+    ) -> Result<(), ScoreboardError> {
+        check_text(&player.name)?;
+        let team = self.team_mut(side);
+        if team.roster.len() >= MAX_ROSTER_PLAYERS {
+            return Err(ScoreboardError::RosterFull {
+                side,
+                maximum: MAX_ROSTER_PLAYERS,
+            });
+        }
+        if duplicate_roster_player(&team.roster, player) {
+            return Err(ScoreboardError::DuplicateRosterPlayer {
+                side,
+                player: player.display(),
+            });
+        }
+        team.roster.push(player.clone());
+        Ok(())
+    }
+
+    fn remove_roster_player(
+        &mut self,
+        side: TeamSide,
+        index: usize,
+    ) -> Result<(), ScoreboardError> {
+        let team = self.team_mut(side);
+        if index >= team.roster.len() {
+            return Err(ScoreboardError::RosterIndexOutOfRange {
+                side,
+                index,
+                len: team.roster.len(),
+            });
+        }
+        let removed = team.roster.remove(index);
+        if team.player.as_ref() == Some(&removed) {
+            team.player = None;
+        }
+        Ok(())
+    }
+
+    fn select_roster_player(
+        &mut self,
+        side: TeamSide,
+        index: Option<usize>,
+    ) -> Result<(), ScoreboardError> {
+        let team = self.team_mut(side);
+        team.player = match index {
+            None => None,
+            Some(index) => Some(team.roster.get(index).cloned().ok_or(
+                ScoreboardError::RosterIndexOutOfRange {
+                    side,
+                    index,
+                    len: team.roster.len(),
+                },
+            )?),
+        };
+        Ok(())
+    }
+
+    fn select_player_by_number(
+        &mut self,
+        side: TeamSide,
+        number: u16,
+    ) -> Result<(), ScoreboardError> {
+        let team = self.team_mut(side);
+        let player = team
+            .roster
+            .iter()
+            .find(|player| player.number == Some(number))
+            .cloned()
+            .ok_or(ScoreboardError::RosterNumberNotFound { side, number })?;
+        team.player = Some(player);
+        Ok(())
     }
 
     /// Bound field values at `frame` that differ from `scene`'s current ones.
@@ -717,14 +1247,29 @@ impl Scoreboard {
                 .as_ref()
                 .map_or_else(String::new, Player::display)
         };
+        let roster = |team: &TeamState| {
+            team.roster
+                .iter()
+                .map(Player::display)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let texts = [
             (binding.home_name, self.home.name.clone()),
             (binding.home_abbreviation, self.home.abbreviation.clone()),
             (binding.home_player, player(&self.home)),
+            (binding.home_roster, roster(&self.home)),
             (binding.away_name, self.away.name.clone()),
             (binding.away_abbreviation, self.away.abbreviation.clone()),
             (binding.away_player, player(&self.away)),
+            (binding.away_roster, roster(&self.away)),
             (binding.clock, self.clock.display(frame)),
+            (
+                binding.shot_clock,
+                self.shot_clock
+                    .as_ref()
+                    .map_or_else(String::new, |clock| clock.display(frame)),
+            ),
         ];
         let numbers = [
             (binding.home_score, i64::from(self.home.score)),
@@ -791,9 +1336,19 @@ fn check_text(text: &str) -> Result<(), ScoreboardError> {
 /// | `<side>.score` | decimal `u32` | [`ScoreboardAction::SetScore`] |
 /// | `<side>.score.delta` | signed decimal | [`ScoreboardAction::AdjustScore`] |
 /// | `<side>.player` | `""`, `name`, or `number name` | [`ScoreboardAction::SetPlayer`] |
+/// | `<side>.roster.add` | `name` or `number name` | [`ScoreboardAction::AddRosterPlayer`] |
+/// | `<side>.roster.remove` | decimal index | [`ScoreboardAction::RemoveRosterPlayer`] |
+/// | `<side>.roster.select` | decimal index or `""` to clear | [`ScoreboardAction::SelectRosterPlayer`] |
+/// | `<side>.roster.number` | decimal jersey number | [`ScoreboardAction::SelectPlayerByNumber`] |
+/// | `<side>.roster.clear` | `true` | [`ScoreboardAction::ClearRoster`] |
 /// | `period` | decimal `u16` | [`ScoreboardAction::SetPeriod`] |
 /// | `clock.ms` | decimal `u64` | [`ScoreboardAction::SetClock`] |
+/// | `clock.format` | `minutes_seconds`, `minutes_seconds_tenths`, `hours_minutes_seconds`, or `hours_minutes_seconds_tenths` | [`ScoreboardAction::SetClockFormat`] |
 /// | `clock.running` | `true` / `false` | start / stop |
+/// | `shot_clock.ms` | decimal `u64` | [`ScoreboardAction::SetShotClock`] |
+/// | `shot_clock.duration` | decimal `u64` | [`ScoreboardAction::SetShotClockDuration`] |
+/// | `shot_clock.format` | a `clock.format` token | [`ScoreboardAction::SetShotClockFormat`] |
+/// | `shot_clock.running` | `true` / `false` | start / stop the shot clock |
 ///
 /// Numbers are plain ASCII decimal (a leading `-` only for deltas); no
 /// whitespace, signs, or separators are tolerated.
@@ -854,20 +1409,71 @@ fn external_action(
             side,
             player: parse_player(&text()?),
         },
+        (Some(side), "roster.add") => ScoreboardAction::AddRosterPlayer {
+            side,
+            player: parse_player(&text()?).ok_or(invalid)?,
+        },
+        (Some(side), "roster.remove") => ScoreboardAction::RemoveRosterPlayer {
+            side,
+            index: parse_unsigned(value).ok_or(invalid)?,
+        },
+        (Some(side), "roster.select") => ScoreboardAction::SelectRosterPlayer {
+            side,
+            index: if value.is_empty() {
+                None
+            } else {
+                Some(parse_unsigned(value).ok_or(invalid)?)
+            },
+        },
+        (Some(side), "roster.number") => ScoreboardAction::SelectPlayerByNumber {
+            side,
+            number: parse_unsigned(value).ok_or(invalid)?,
+        },
+        (Some(side), "roster.clear") => match value {
+            "true" => ScoreboardAction::ClearRoster { side },
+            _ => return Err(invalid),
+        },
         (None, "period") => ScoreboardAction::SetPeriod {
             period: parse_unsigned(value).ok_or(invalid)?,
         },
         (None, "clock.ms") => ScoreboardAction::SetClock {
             value_ms: parse_unsigned(value).ok_or(invalid)?,
         },
+        (None, "clock.format") => ScoreboardAction::SetClockFormat {
+            format: parse_clock_format_token(value).ok_or(invalid)?,
+        },
+        (None, "shot_clock.format") => ScoreboardAction::SetShotClockFormat {
+            format: parse_clock_format_token(value).ok_or(invalid)?,
+        },
         (None, "clock.running") => match value {
             "true" => ScoreboardAction::StartClock,
             "false" => ScoreboardAction::StopClock,
             _ => return Err(invalid),
         },
+        (None, "shot_clock.ms") => ScoreboardAction::SetShotClock {
+            value_ms: parse_unsigned(value).ok_or(invalid)?,
+        },
+        (None, "shot_clock.duration") => ScoreboardAction::SetShotClockDuration {
+            value_ms: parse_unsigned(value).ok_or(invalid)?,
+        },
+        (None, "shot_clock.running") => match value {
+            "true" => ScoreboardAction::StartShotClock,
+            "false" => ScoreboardAction::StopShotClock,
+            _ => return Err(invalid),
+        },
         _ => return Err(ScoreboardError::UnknownExternalKey { index }),
     };
     Ok(action)
+}
+
+fn parse_clock_format_token(value: &str) -> Option<ClockFormat> {
+    match value {
+        "minutes_seconds" => Some(ClockFormat::MinutesSeconds),
+        "minutes_seconds_tenths" => Some(ClockFormat::MinutesSecondsTenths),
+        "hours_minutes_seconds" => Some(ClockFormat::HoursMinutesSeconds),
+        "hours_minutes_seconds_tenths" => Some(ClockFormat::HoursMinutesSecondsTenths),
+        _ => None,
+    }
 }
 
 fn parse_unsigned<T: core::str::FromStr>(value: &str) -> Option<T> {
@@ -902,4 +1508,394 @@ fn parse_player(value: &str) -> Option<Player> {
         number: None,
         name: value.to_owned(),
     })
+}
+
+/// Largest scoreboard document, in bytes.
+pub const MAX_SCOREBOARD_DOCUMENT_BYTES: usize = 256 * 1024;
+
+/// Why a scoreboard document is invalid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScoreboardDocumentError {
+    TooLarge { maximum: usize },
+    Version { found: String },
+    Line { index: usize },
+    Invalid { error: ScoreboardError },
+}
+
+impl fmt::Display for ScoreboardDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { maximum } => {
+                write!(formatter, "scoreboard document exceeds {maximum} bytes")
+            }
+            Self::Version { found } => {
+                write!(formatter, "scoreboard document version {found:?} is not 1")
+            }
+            Self::Line { index } => write!(formatter, "scoreboard line {index} is malformed"),
+            Self::Invalid { error } => write!(formatter, "scoreboard state is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ScoreboardDocumentError {}
+
+/// Encodes `text` as `x` followed by its UTF-8 bytes in lowercase hex.
+fn encode_scoreboard_text(text: &str) -> String {
+    use fmt::Write as _;
+    let mut output = String::from("x");
+    for byte in text.bytes() {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn decode_scoreboard_text(token: &str) -> Option<String> {
+    let hex = token.strip_prefix('x')?;
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks(2) {
+        let pair = std::str::from_utf8(chunk).ok()?;
+        bytes.push(u8::from_str_radix(pair, 16).ok()?);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn format_optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "none".to_owned(), |value| value.to_string())
+}
+
+fn format_optional_frame(value: Option<u64>) -> String {
+    value.map_or_else(|| "-".to_owned(), |value| value.to_string())
+}
+
+#[allow(clippy::option_option)] // the outer Option is "parsed", the inner is "none"
+fn parse_optional_u64(token: &str) -> Option<Option<u64>> {
+    if token == "none" {
+        return Some(None);
+    }
+    parse_scoreboard_unsigned(token).map(Some)
+}
+
+#[allow(clippy::option_option)] // the outer Option is "parsed", the inner is "none"
+fn parse_optional_frame(token: &str) -> Option<Option<u64>> {
+    if token == "-" {
+        return Some(None);
+    }
+    parse_scoreboard_unsigned(token).map(Some)
+}
+
+fn parse_scoreboard_unsigned<T: core::str::FromStr>(token: &str) -> Option<T> {
+    if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    token.parse().ok()
+}
+
+fn format_direction(direction: ClockDirection) -> &'static str {
+    match direction {
+        ClockDirection::CountUp => "count_up",
+        ClockDirection::CountDown => "count_down",
+    }
+}
+
+fn parse_direction(token: &str) -> Option<ClockDirection> {
+    match token {
+        "count_up" => Some(ClockDirection::CountUp),
+        "count_down" => Some(ClockDirection::CountDown),
+        _ => None,
+    }
+}
+
+fn format_clock_format(format: ClockFormat) -> &'static str {
+    match format {
+        ClockFormat::MinutesSeconds => "minutes_seconds",
+        ClockFormat::MinutesSecondsTenths => "minutes_seconds_tenths",
+        ClockFormat::HoursMinutesSeconds => "hours_minutes_seconds",
+        ClockFormat::HoursMinutesSecondsTenths => "hours_minutes_seconds_tenths",
+    }
+}
+
+fn parse_clock_format(token: &str) -> Option<ClockFormat> {
+    match token {
+        "minutes_seconds" => Some(ClockFormat::MinutesSeconds),
+        "minutes_seconds_tenths" => Some(ClockFormat::MinutesSecondsTenths),
+        "hours_minutes_seconds" => Some(ClockFormat::HoursMinutesSeconds),
+        "hours_minutes_seconds_tenths" => Some(ClockFormat::HoursMinutesSecondsTenths),
+        _ => None,
+    }
+}
+
+fn format_scoreboard_player(player: Option<&Player>) -> String {
+    let Some(player) = player else {
+        return "none".to_owned();
+    };
+    format!(
+        "p:{}:{}",
+        format_optional_frame(player.number.map(u64::from)),
+        encode_scoreboard_text(&player.name)
+    )
+}
+
+#[allow(clippy::option_option)] // the outer Option is "parsed", the inner is "no player"
+fn parse_scoreboard_player(token: &str) -> Option<Option<Player>> {
+    if token == "none" {
+        return Some(None);
+    }
+    let rest = token.strip_prefix("p:")?;
+    let (number, name) = rest.split_once(':')?;
+    let number = parse_optional_frame(number)?
+        .map(u16::try_from)
+        .transpose()
+        .ok()?;
+    let name = decode_scoreboard_text(name)?;
+    Some(Some(Player { number, name }))
+}
+
+fn write_scoreboard_clock(output: &mut String, prefix: &str, clock: Option<&GameClockSnapshot>) {
+    use fmt::Write as _;
+    let Some(clock) = clock else {
+        let _ = writeln!(output, "{prefix} none");
+        return;
+    };
+    let _ = writeln!(
+        output,
+        "{prefix} {} {} {} {} {} {} {} {} {} {} {}",
+        format_direction(clock.config.direction),
+        format_clock_format(clock.config.format),
+        clock.config.frame_rate.numerator(),
+        clock.config.frame_rate.denominator(),
+        clock.config.initial_ms,
+        format_optional_u64(clock.config.limit_ms),
+        clock.base_ms,
+        clock.accumulated_frames,
+        format_optional_frame(clock.running_since),
+        format_optional_frame(clock.expired_at),
+        clock.expiry_pending,
+    );
+}
+
+#[allow(clippy::option_option)] // the outer Option is "parsed", the inner is "no clock"
+fn parse_scoreboard_clock(tokens: &[String]) -> Option<Option<GameClockSnapshot>> {
+    if tokens.len() == 1 && tokens[0] == "none" {
+        return Some(None);
+    }
+    if tokens.len() != 11 {
+        return None;
+    }
+    let direction = parse_direction(&tokens[0])?;
+    let format = parse_clock_format(&tokens[1])?;
+    let frame_rate = FrameRate::new(
+        parse_scoreboard_unsigned(&tokens[2])?,
+        parse_scoreboard_unsigned(&tokens[3])?,
+    )
+    .ok()?;
+    Some(Some(GameClockSnapshot {
+        config: GameClockConfig {
+            direction,
+            format,
+            frame_rate,
+            initial_ms: parse_scoreboard_unsigned(&tokens[4])?,
+            limit_ms: parse_optional_u64(&tokens[5])?,
+        },
+        base_ms: parse_scoreboard_unsigned(&tokens[6])?,
+        accumulated_frames: parse_scoreboard_unsigned(&tokens[7])?,
+        running_since: parse_optional_frame(&tokens[8])?,
+        expired_at: parse_optional_frame(&tokens[9])?,
+        expiry_pending: match tokens[10].as_str() {
+            "true" => true,
+            "false" => false,
+            _ => return None,
+        },
+    }))
+}
+
+fn write_scoreboard_team(output: &mut String, prefix: &str, team: &TeamState) {
+    use fmt::Write as _;
+    let _ = writeln!(
+        output,
+        "{prefix} {} {} {} {} {}",
+        encode_scoreboard_text(&team.name),
+        encode_scoreboard_text(&team.abbreviation),
+        team.score,
+        format_scoreboard_player(team.player.as_ref()),
+        team.roster.len(),
+    );
+}
+
+impl ScoreboardSnapshot {
+    /// Serializes this snapshot as a strict, versioned text document.
+    #[must_use]
+    pub fn to_document(&self) -> String {
+        use fmt::Write as _;
+        let mut output = String::from("freemix-scoreboard 1\n");
+        let _ = writeln!(
+            output,
+            "rules {} {} {}",
+            self.rules.max_score,
+            self.rules.max_period,
+            format_optional_u64(self.rules.shot_clock_ms),
+        );
+        let _ = writeln!(output, "period {}", self.period);
+        let _ = writeln!(output, "revision {}", self.revision);
+        let _ = writeln!(output, "last_frame {}", self.last_frame);
+        write_scoreboard_team(&mut output, "home", &self.home);
+        for player in &self.home.roster {
+            let _ = writeln!(
+                output,
+                "home-roster {} {}",
+                format_optional_frame(player.number.map(u64::from)),
+                encode_scoreboard_text(&player.name),
+            );
+        }
+        write_scoreboard_team(&mut output, "away", &self.away);
+        for player in &self.away.roster {
+            let _ = writeln!(
+                output,
+                "away-roster {} {}",
+                format_optional_frame(player.number.map(u64::from)),
+                encode_scoreboard_text(&player.name),
+            );
+        }
+        write_scoreboard_clock(&mut output, "clock", Some(&self.clock));
+        write_scoreboard_clock(&mut output, "shot", self.shot_clock.as_ref());
+        output
+    }
+
+    /// Parses a strict scoreboard document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScoreboardDocumentError`] for an oversized, malformed, or
+    /// out-of-contract document without accepting a partial result.
+    #[allow(clippy::too_many_lines)] // one section per document line
+    pub fn from_document(text: &str) -> Result<Self, ScoreboardDocumentError> {
+        if text.len() > MAX_SCOREBOARD_DOCUMENT_BYTES {
+            return Err(ScoreboardDocumentError::TooLarge {
+                maximum: MAX_SCOREBOARD_DOCUMENT_BYTES,
+            });
+        }
+        let mut lines = text.lines().enumerate();
+        let Some((_, header)) = lines.next() else {
+            return Err(ScoreboardDocumentError::Line { index: 1 });
+        };
+        if header != "freemix-scoreboard 1" {
+            return Err(ScoreboardDocumentError::Version {
+                found: header.to_owned(),
+            });
+        }
+        let mut next =
+            |expected: &str, index: &mut usize| -> Result<Vec<String>, ScoreboardDocumentError> {
+                let Some((line_index, line)) = lines.next() else {
+                    return Err(ScoreboardDocumentError::Line {
+                        index: line_index_after(*index),
+                    });
+                };
+                *index = line_index + 2;
+                let mut parts = line.split(' ').map(str::to_owned);
+                if parts.next().as_deref() != Some(expected) {
+                    return Err(ScoreboardDocumentError::Line {
+                        index: line_index + 1,
+                    });
+                }
+                Ok(parts.collect())
+            };
+        let mut index = 1_usize;
+        let rules = next("rules", &mut index)?;
+        if rules.len() != 3 {
+            return Err(ScoreboardDocumentError::Line { index: 2 });
+        }
+        let rules = ScoreboardRules {
+            max_score: parse_scoreboard_unsigned::<u32>(&rules[0])
+                .ok_or(ScoreboardDocumentError::Line { index: 2 })?,
+            max_period: parse_scoreboard_unsigned::<u16>(&rules[1])
+                .ok_or(ScoreboardDocumentError::Line { index: 2 })?,
+            shot_clock_ms: parse_optional_u64(&rules[2])
+                .ok_or(ScoreboardDocumentError::Line { index: 2 })?,
+        };
+        let period: u16 = single_value(&mut next("period", &mut index)?)
+            .and_then(|value| parse_scoreboard_unsigned(&value))
+            .ok_or(ScoreboardDocumentError::Line { index: 3 })?;
+        let revision: u64 = single_value(&mut next("revision", &mut index)?)
+            .and_then(|value| parse_scoreboard_unsigned(&value))
+            .ok_or(ScoreboardDocumentError::Line { index: 4 })?;
+        let last_frame: u64 = single_value(&mut next("last_frame", &mut index)?)
+            .and_then(|value| parse_scoreboard_unsigned(&value))
+            .ok_or(ScoreboardDocumentError::Line { index: 5 })?;
+        let mut teams = Vec::new();
+        for side in [TeamSide::Home, TeamSide::Away] {
+            let (prefix, roster_prefix) = match side {
+                TeamSide::Home => ("home", "home-roster"),
+                TeamSide::Away => ("away", "away-roster"),
+            };
+            let fields = next(prefix, &mut index)?;
+            if fields.len() != 5 {
+                return Err(ScoreboardDocumentError::Line { index });
+            }
+            let name = decode_scoreboard_text(&fields[0])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            let abbreviation = decode_scoreboard_text(&fields[1])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            let score: u32 = parse_scoreboard_unsigned(&fields[2])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            let player = parse_scoreboard_player(&fields[3])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            let roster_count: usize = parse_scoreboard_unsigned(&fields[4])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            if roster_count > MAX_ROSTER_PLAYERS {
+                return Err(ScoreboardDocumentError::Line { index });
+            }
+            let mut roster = Vec::with_capacity(roster_count);
+            for _ in 0..roster_count {
+                let fields = next(roster_prefix, &mut index)?;
+                if fields.len() != 2 {
+                    return Err(ScoreboardDocumentError::Line { index });
+                }
+                let number = parse_optional_frame(&fields[0])
+                    .and_then(|number| number.map(u16::try_from).transpose().ok())
+                    .ok_or(ScoreboardDocumentError::Line { index })?;
+                let name = decode_scoreboard_text(&fields[1])
+                    .ok_or(ScoreboardDocumentError::Line { index })?;
+                roster.push(Player { number, name });
+            }
+            teams.push(TeamState {
+                name,
+                abbreviation,
+                score,
+                roster,
+                player,
+            });
+        }
+        let clock = next("clock", &mut index)?;
+        let clock = parse_scoreboard_clock(&clock)
+            .flatten()
+            .ok_or(ScoreboardDocumentError::Line { index })?;
+        let shot_clock = parse_scoreboard_clock(&next("shot", &mut index)?)
+            .ok_or(ScoreboardDocumentError::Line { index })?;
+        if lines.next().is_some() {
+            return Err(ScoreboardDocumentError::Line { index: index + 1 });
+        }
+        let snapshot = Self {
+            rules,
+            home: teams.remove(0),
+            away: teams.remove(0),
+            period,
+            clock,
+            shot_clock,
+            revision,
+            last_frame,
+        };
+        Scoreboard::restore(snapshot.clone())
+            .map_err(|error| ScoreboardDocumentError::Invalid { error })?;
+        Ok(snapshot)
+    }
+}
+
+fn single_value(fields: &mut Vec<String>) -> Option<String> {
+    (fields.len() == 1).then(|| fields.remove(0))
+}
+
+fn line_index_after(index: usize) -> usize {
+    index.saturating_add(1)
 }

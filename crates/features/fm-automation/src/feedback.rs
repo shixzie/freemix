@@ -195,6 +195,13 @@ pub struct FeedbackMessage {
     pub payload: FeedbackPayload,
 }
 
+/// Encoded bytes of one payload, for the per-device byte-rate limit.
+fn payload_bytes(payload: &FeedbackPayload) -> usize {
+    match payload {
+        FeedbackPayload::Midi(bytes) | FeedbackPayload::Osc(bytes) => bytes.len(),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum FeedbackError {
     InvalidTarget,
@@ -357,6 +364,11 @@ struct Slot {
     sent: Option<FeedbackPayload>,
     /// The operator is holding the physical control; feedback is withheld.
     touched: bool,
+    /// The control was released and waits for the settle hold before its
+    /// authoritative value is resent.
+    released: bool,
+    /// When the settle hold was first observed at a drain tick.
+    settle_started: Option<MediaTimestamp>,
     last_sent_at: Option<MediaTimestamp>,
 }
 
@@ -368,6 +380,13 @@ pub struct FeedbackSchedule {
     /// Minimum caller ticks between two sends of one binding (`0` disables).
     /// Changes inside the interval coalesce and go out once it elapses.
     pub min_interval: MediaDuration,
+    /// Maximum bytes emitted to one device per second (`None` disables).
+    /// A message that does not fit the current one-second window stays
+    /// pending.
+    pub per_device_bytes_per_second: Option<NonZeroUsize>,
+    /// How long after a touch release the binding waits before the
+    /// authoritative value is resent (`0` disables).
+    pub settle_after_release: MediaDuration,
 }
 
 /// What one [`FeedbackRouter::drain_tick`] emitted and withheld.
@@ -380,6 +399,10 @@ pub struct FeedbackTick {
     pub deferred_interval: usize,
     /// Changed bindings withheld because the operator is touching them.
     pub withheld_touched: usize,
+    /// Changed bindings left pending by the device's byte-rate limit.
+    pub deferred_bytes: usize,
+    /// Changed bindings left pending inside the post-release settle hold.
+    pub deferred_settle: usize,
 }
 
 /// Derives coalesced outgoing feedback from typed state observations.
@@ -390,6 +413,8 @@ pub struct FeedbackRouter {
     /// Round-robin start position per device, as an index into that
     /// device's bindings in binding order.
     cursors: BTreeMap<DeviceKey, usize>,
+    /// Per-device byte window: when it started and how many bytes it holds.
+    byte_windows: BTreeMap<DeviceKey, (MediaTimestamp, usize)>,
 }
 
 impl FeedbackRouter {
@@ -427,6 +452,8 @@ impl FeedbackRouter {
             current: None,
             sent: None,
             touched: false,
+            released: false,
+            settle_started: None,
             last_sent_at: None,
         });
         Ok(())
@@ -477,15 +504,18 @@ impl FeedbackRouter {
     }
 
     /// Marks a device connected and forgets what it was sent, so the next
-    /// drain resends every known value for it. Touch state and resend
-    /// intervals restart.
+    /// drain resends every known value for it. Touch state, resend
+    /// intervals, and the byte window restart.
     pub fn attach(&mut self, device: &DeviceKey) {
         self.connected.insert(device.clone());
         self.cursors.remove(device);
+        self.byte_windows.remove(device);
         for slot in &mut self.slots {
             if &slot.binding.device == device {
                 slot.sent = None;
                 slot.touched = false;
+                slot.released = false;
+                slot.settle_started = None;
                 slot.last_sent_at = None;
             }
         }
@@ -494,9 +524,12 @@ impl FeedbackRouter {
     /// Marks a device disconnected; its changes stay pending.
     pub fn detach(&mut self, device: &DeviceKey) {
         self.connected.remove(device);
+        self.byte_windows.remove(device);
         for slot in &mut self.slots {
             if &slot.binding.device == device {
                 slot.touched = false;
+                slot.released = false;
+                slot.settle_started = None;
             }
         }
     }
@@ -511,9 +544,10 @@ impl FeedbackRouter {
     /// Records whether the operator is touching the control behind `id`
     /// (e.g. a motor fader's touch sense). While touched, nothing is sent to
     /// it, so the motor never fights the hand and the operator's own moves
-    /// are not echoed. On release the latest authoritative value is resent
-    /// once, even if it equals what was last sent, because the physical
-    /// position has drifted from it. Returns whether the touch state changed.
+    /// are not echoed. On release the authoritative value is resent once
+    /// after the schedule's settle hold, even if it equals what was last
+    /// sent, because the physical position has drifted from it. Returns
+    /// whether the touch state changed.
     ///
     /// # Errors
     ///
@@ -524,9 +558,14 @@ impl FeedbackRouter {
             return Ok(false);
         }
         slot.touched = touched;
-        if !touched {
+        if touched {
+            slot.released = false;
+            slot.settle_started = None;
+        } else {
             slot.sent = None;
             slot.last_sent_at = None;
+            slot.released = true;
+            slot.settle_started = None;
         }
         Ok(true)
     }
@@ -571,13 +610,17 @@ impl FeedbackRouter {
     /// Emits one tick of paced feedback at caller time `now`.
     ///
     /// Each connected device receives at most `schedule.per_device_budget`
-    /// messages. Its bindings are visited round-robin from where the previous
-    /// tick stopped, so a busy control cannot starve the others. A binding
-    /// sent less than `schedule.min_interval` ago stays pending (still
-    /// coalescing) until the interval elapses; time running backwards makes
-    /// it due. Touched bindings are withheld. Output is grouped by device in
-    /// key order.
+    /// messages and at most `schedule.per_device_bytes_per_second` encoded
+    /// bytes per one-second window. Its bindings are visited round-robin from
+    /// where the previous tick stopped, so a busy control cannot starve the
+    /// others. A binding sent less than `schedule.min_interval` ago stays
+    /// pending (still coalescing) until the interval elapses; time running
+    /// backwards makes it due. Touched bindings are withheld, and a released
+    /// binding waits out `schedule.settle_after_release` before its
+    /// authoritative value is resent. Output is grouped by device in key
+    /// order.
     pub fn drain_tick(&mut self, now: MediaTimestamp, schedule: FeedbackSchedule) -> FeedbackTick {
+        const TICKS_PER_SECOND: i128 = 1_000_000_000;
         let mut tick = FeedbackTick::default();
         let mut by_device: BTreeMap<DeviceKey, Vec<usize>> = BTreeMap::new();
         for (index, slot) in self.slots.iter().enumerate() {
@@ -589,38 +632,70 @@ impl FeedbackRouter {
             }
         }
         let interval = i128::from(schedule.min_interval.ticks());
+        let settle = i128::from(schedule.settle_after_release.ticks());
         for (device, indices) in by_device {
             let start = self.cursors.get(&device).copied().unwrap_or(0) % indices.len();
             let mut emitted = 0;
             let mut next_cursor = None;
+            let mut window = self.byte_windows.get(&device).copied().unwrap_or((now, 0));
+            let elapsed_window = i128::from(now.ticks()) - i128::from(window.0.ticks());
+            if !(0..TICKS_PER_SECOND).contains(&elapsed_window) {
+                window = (now, 0);
+            }
             for offset in 0..indices.len() {
                 let position = (start + offset) % indices.len();
-                let slot = &self.slots[indices[position]];
-                if slot.current.is_none() || slot.current == slot.sent {
-                    continue;
+                let index = indices[position];
+                {
+                    let slot = &self.slots[index];
+                    if slot.current.is_none() || slot.current == slot.sent {
+                        continue;
+                    }
+                    if slot.touched {
+                        tick.withheld_touched += 1;
+                        continue;
+                    }
                 }
-                if slot.touched {
-                    tick.withheld_touched += 1;
-                    continue;
+                if self.slots[index].released {
+                    let slot = &mut self.slots[index];
+                    let started = *slot.settle_started.get_or_insert(now);
+                    let elapsed = i128::from(now.ticks()) - i128::from(started.ticks());
+                    if (0..settle).contains(&elapsed) {
+                        tick.deferred_settle += 1;
+                        continue;
+                    }
                 }
-                let waiting = slot.last_sent_at.is_some_and(|sent| {
-                    let elapsed = i128::from(now.ticks()) - i128::from(sent.ticks());
-                    (0..interval).contains(&elapsed)
-                });
-                if waiting {
-                    tick.deferred_interval += 1;
-                    continue;
+                {
+                    let slot = &self.slots[index];
+                    let waiting = slot.last_sent_at.is_some_and(|sent| {
+                        let elapsed = i128::from(now.ticks()) - i128::from(sent.ticks());
+                        (0..interval).contains(&elapsed)
+                    });
+                    if waiting {
+                        tick.deferred_interval += 1;
+                        continue;
+                    }
                 }
                 if emitted >= schedule.per_device_budget.get() {
                     tick.deferred_budget += 1;
                     continue;
                 }
-                let slot = &mut self.slots[indices[position]];
+                let bytes = self.slots[index].current.as_ref().map_or(0, payload_bytes);
+                if schedule
+                    .per_device_bytes_per_second
+                    .is_some_and(|limit| window.1.saturating_add(bytes) > limit.get())
+                {
+                    tick.deferred_bytes += 1;
+                    continue;
+                }
+                let slot = &mut self.slots[index];
                 let Some(payload) = slot.current.clone() else {
                     continue;
                 };
                 slot.sent = Some(payload.clone());
                 slot.last_sent_at = Some(now);
+                slot.released = false;
+                slot.settle_started = None;
+                window.1 = window.1.saturating_add(bytes);
                 emitted += 1;
                 next_cursor = Some(position + 1);
                 tick.messages.push(FeedbackMessage {
@@ -629,6 +704,7 @@ impl FeedbackRouter {
                     payload,
                 });
             }
+            self.byte_windows.insert(device.clone(), window);
             if let Some(cursor) = next_cursor {
                 self.cursors.insert(device, cursor % indices.len());
             }

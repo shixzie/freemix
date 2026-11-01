@@ -2231,7 +2231,7 @@ fn draw_input_strip(
     let mut soloed = status.soloed;
     let mut follow_video = status.follow_video;
     let mut delay_samples = status.delay_samples;
-    let mut buses = status.buses;
+    let mut sends = status.sends;
     let mut gain_changed = false;
     let mut balance_changed = false;
     let mut mute_changed = false;
@@ -2354,7 +2354,7 @@ fn draw_input_strip(
                 *fx = Some(StripDspTarget::Input(status.input));
             }
         });
-        buses = bus_keys(ui, enabled, reason, buses, layout.inner_width());
+        sends = bus_keys(ui, enabled, reason, sends, layout.inner_width());
         loudness_box(ui, loudness.as_ref(), false, feed.stale);
         let row_height = crate::source_sync_ui::SYNC_ROW_HEIGHT - 4.0;
         match sync {
@@ -2408,7 +2408,7 @@ fn draw_input_strip(
         soloed: solo_changed.then_some(soloed),
         follow_video: follow_changed.then_some(follow_video),
         delay_samples: delay_changed.then_some(delay_samples),
-        buses: (buses != status.buses).then_some(buses),
+        sends: (sends != status.sends).then_some(sends),
     };
     if update != InputAudioStripUpdate::default() {
         intents.push(StudioIntent::SetInputAudioStrip {
@@ -2420,15 +2420,15 @@ fn draw_input_strip(
 }
 
 /// The strip's bus keys (AU-002), like a vMix strip's: `M` feeds Master and
-/// `A`–`G` feed the aux buses, four to a row. Returns the strip's buses after
-/// any click.
+/// `A`–`G` feed the aux buses, four to a row. Returns the strip's sends after
+/// any click, keeping each send's level and tap.
 fn bus_keys(
     ui: &mut Ui,
     enabled: bool,
     reason: &str,
-    mut buses: fm_types::audio_bus::AudioBusMask,
+    mut sends: fm_types::audio_bus::AudioSends,
     width: f32,
-) -> fm_types::audio_bus::AudioBusMask {
+) -> fm_types::audio_bus::AudioSends {
     let l = l10n::locale(ui.ctx());
     let aux = fm_types::audio_bus::AuxBusNumber::ALL;
     let rows: [[Option<fm_types::audio_bus::AuxBusNumber>; 4]; 2] = [
@@ -2442,12 +2442,12 @@ fn bus_keys(
             for bus in row {
                 let (mut on, label, hover) = match bus {
                     None => (
-                        buses.master(),
+                        sends.master(),
                         "M".to_owned(),
                         l.text(Msg::StripBusMasterHover).to_owned(),
                     ),
                     Some(bus) => (
-                        buses.aux(bus),
+                        sends.aux(bus).enabled,
                         bus.letter().to_string(),
                         l.format(
                             Msg::StripBusAuxHover,
@@ -2464,15 +2464,15 @@ fn bus_keys(
                     .hint(&hover, reason)
                     .changed()
                 {
-                    buses = match bus {
-                        None => buses.with_master(on),
-                        Some(bus) => buses.with_aux(bus, on),
+                    sends = match bus {
+                        None => sends.with_master(on),
+                        Some(bus) => sends.with_aux(bus, on),
                     };
                 }
             }
         });
     }
-    buses
+    sends
 }
 
 /// A latching console key with an LED bar: lit in `color` while on, an unlit
@@ -3109,11 +3109,12 @@ pub(crate) fn draw_bus_mixer_window(
     context: &egui::Context,
     state: &StudioUiState,
     intents: &mut Vec<StudioIntent>,
-) {
+) -> Option<StripDspTarget> {
     if !*open {
-        return;
+        return None;
     }
     let l = l10n::locale(context);
+    let mut fx = None;
     // A floating, non-modal window: the operator keeps the console and the
     // Program monitor in reach while riding a bus fader.
     egui::Window::new(l.text(Msg::BusMixerTitle))
@@ -3124,12 +3125,18 @@ pub(crate) fn draw_bus_mixer_window(
         .default_width(520.0)
         .show(context, |ui| {
             ui.set_width(520.0);
-            draw_bus_mixer_contents(ui, state, intents);
+            draw_bus_mixer_contents(ui, state, intents, &mut fx);
         });
+    fx
 }
 
 #[allow(clippy::too_many_lines)] // one row per bus, then the outputs
-fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+fn draw_bus_mixer_contents(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+    fx: &mut Option<StripDspTarget>,
+) {
     let l = l10n::locale(ui.ctx());
     let Some(view) = &state.view else {
         crate::theme::empty_state(
@@ -3144,6 +3151,15 @@ fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
     let edit_enabled = ready && state.can_edit_project;
     let audio_reason = unavailable_reason(state, Capability::Audio);
     let edit_reason = unavailable_reason(state, Capability::EditProject);
+    // The bus output pickers need the server's device list; ask for it when
+    // the window first shows and then every few seconds while it stays open.
+    let asked_id = ui.make_persistent_id("bus-mixer-devices-listed-at");
+    let now = ui.input(|input| input.time);
+    let asked = ui.data(|data| data.get_temp::<f64>(asked_id));
+    if asked.is_none_or(|asked| now < asked || now - asked >= OUTPUT_LIST_REFRESH_SECONDS) {
+        ui.data_mut(|data| data.insert_temp(asked_id, now));
+        intents.push(StudioIntent::RequestAudioOutputDevices);
+    }
     ui.label(caption(l.text(Msg::BusMixerNote)));
     ui.add_space(6.0);
     for (number, bus) in fm_types::audio_bus::AuxBusNumber::ALL
@@ -3211,6 +3227,144 @@ fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                     .map(|aux| aux.channels.as_slice())
             });
             bus_meter(ui, channels, 56.0, 14.0);
+            let open_target = *fx;
+            if fx_key(
+                ui,
+                open_target == Some(StripDspTarget::Aux(number)) || !bus.dsp.is_default(),
+                l.text(Msg::FxKeyHover),
+                40.0,
+            ) {
+                *fx = Some(StripDspTarget::Aux(number));
+            }
+            ui.label(
+                RichText::new(crate::strip_fx::stage_summary(&bus.dsp))
+                    .monospace()
+                    .color(muted_color()),
+            );
+            // The bus's local output device (Protocol 2.135): meter-only or
+            // one of the server's listed outputs.
+            let current = bus.device.as_deref();
+            let inventory = view.audio_output_inventory.as_ref();
+            let shown = current.map_or_else(
+                || l.text(Msg::BusMixerDeviceNone).to_owned(),
+                |device| {
+                    inventory
+                        .and_then(|inventory| inventory.device(device))
+                        .map_or_else(
+                            || l.text(Msg::BusMixerDeviceMissing).to_owned(),
+                            |device| {
+                                if device.description.is_empty() {
+                                    device.device.clone()
+                                } else {
+                                    device.description.clone()
+                                }
+                            },
+                        )
+                },
+            );
+            let mut pick = None;
+            egui::ComboBox::from_id_salt(("bus-mixer-device", number.index()))
+                .selected_text(shown)
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(current.is_none(), l.text(Msg::BusMixerDeviceNone))
+                        .clicked()
+                    {
+                        pick = Some(None);
+                    }
+                    match inventory {
+                        Some(inventory) if inventory.devices.is_empty() => {
+                            ui.label(RichText::new(l.text(Msg::BusMixerNoDeviceList)).weak());
+                        }
+                        Some(inventory) => {
+                            for device in &inventory.devices {
+                                let label = if device.description.is_empty() {
+                                    device.device.clone()
+                                } else {
+                                    device.description.clone()
+                                };
+                                if ui
+                                    .selectable_label(
+                                        current == Some(device.device.as_str()),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    pick = Some(Some(device.device.clone()));
+                                }
+                            }
+                        }
+                        None => {
+                            ui.label(RichText::new(l.text(Msg::BusMixerNoDeviceList)).weak());
+                        }
+                    }
+                })
+                .response
+                .hint(l.text(Msg::BusMixerDeviceHover), edit_reason);
+            if let Some(device) = pick {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetAuxBusDevice {
+                        bus: number,
+                        device,
+                    },
+                ));
+            }
+            // Publishing the bus as an OMT audio sender (Protocol 2.138).
+            let mut omt = bus.omt;
+            if ui
+                .add_enabled(
+                    edit_enabled,
+                    egui::Checkbox::new(&mut omt, l.text(Msg::BusMixerOmt)),
+                )
+                .hint(l.text(Msg::BusMixerOmtHover), edit_reason)
+                .changed()
+            {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetAuxBusOmt { bus: number, omt },
+                ));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(caption(l.text(Msg::BusMixerDsp)));
+            let preset_id = egui::Id::new(("aux-bus-dsp-preset", number.index()));
+            let mut preset: fm_types::strip_dsp::StripDspPreset = ui.data_mut(|data| {
+                *data.get_temp_mut_or_insert_with(preset_id, || {
+                    fm_types::strip_dsp::StripDspPreset::Flat
+                })
+            });
+            egui::ComboBox::from_id_salt(("bus-mixer-dsp", number.index()))
+                .selected_text(crate::strip_fx::preset_name(l, preset))
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for candidate in fm_types::strip_dsp::StripDspPreset::ALL {
+                        if ui
+                            .selectable_label(
+                                preset == candidate,
+                                crate::strip_fx::preset_name(l, candidate),
+                            )
+                            .clicked()
+                        {
+                            preset = candidate;
+                            ui.data_mut(|data| data.insert_temp(preset_id, candidate));
+                        }
+                    }
+                });
+            if ui
+                .add_enabled(
+                    edit_enabled,
+                    egui::Button::new(l.text(Msg::BusMixerDspApply)),
+                )
+                .hint(l.text(Msg::BusMixerDspHover), edit_reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetAuxBusDsp {
+                        bus: number,
+                        chain: Box::new(preset.chain()),
+                    },
+                ));
+            }
         });
     }
     ui.add_space(8.0);
@@ -3258,6 +3412,192 @@ fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                     },
                 ));
             }
+            if chosen.is_some() {
+                let mut mix_minus = output.mix_minus;
+                let selected = match mix_minus {
+                    None => l.text(Msg::BusMixerFullMix).to_owned(),
+                    Some(input) => view
+                        .inputs
+                        .iter()
+                        .position(|candidate| *candidate == input)
+                        .map_or_else(
+                            || input.to_string(),
+                            |index| view.input_names[index].clone(),
+                        ),
+                };
+                ui.add_enabled_ui(edit_enabled, |ui| {
+                    egui::ComboBox::from_id_salt(("bus-mixer-mix-minus", output.output))
+                        .selected_text(selected)
+                        .width(140.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut mix_minus, None, l.text(Msg::BusMixerFullMix));
+                            for (input, name) in view.inputs.iter().zip(&view.input_names) {
+                                ui.selectable_value(&mut mix_minus, Some(*input), name);
+                            }
+                        });
+                })
+                .response
+                .hint(l.text(Msg::BusMixerMixMinusHover), edit_reason);
+                if mix_minus != output.mix_minus {
+                    intents.push(StudioIntent::AudioMixer(
+                        fm_protocol::AudioMixerOperation::SetOutputMixMinus {
+                            output: fm_protocol::WireOutputId::from_domain(output.output),
+                            input: mix_minus.map(fm_protocol::WireInputId::from_domain),
+                        },
+                    ));
+                }
+            }
+        });
+    }
+    draw_send_levels(ui, state, intents, audio_enabled, audio_reason);
+}
+
+/// One strip's send levels and taps (AU-002, Protocol 2.130): a picker, then
+/// Master's enable key and each aux bus's key, level, and Pre/Post tap.
+#[allow(clippy::too_many_lines)]
+fn draw_send_levels(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+    audio_enabled: bool,
+    audio_reason: &str,
+) {
+    let l = l10n::locale(ui.ctx());
+    let Some(view) = &state.view else {
+        return;
+    };
+    ui.add_space(8.0);
+    ui.label(section_label(l.text(Msg::BusMixerSends)));
+    if view.input_audio_strips.is_empty() {
+        ui.label(caption(l.text(Msg::BusMixerNoInputs)));
+        return;
+    }
+    let selection = egui::Id::new("studio-bus-mixer-send-input");
+    let selected = ui.data(|data| data.get_temp::<fm_types::InputId>(selection));
+    let mut chosen = selected
+        .filter(|input| {
+            view.input_audio_strips
+                .iter()
+                .any(|strip| strip.input == *input)
+        })
+        .or_else(|| view.input_audio_strips.first().map(|strip| strip.input));
+    let name = |input: fm_types::InputId| {
+        view.inputs
+            .iter()
+            .position(|candidate| *candidate == input)
+            .and_then(|index| view.input_names.get(index))
+            .map_or("?", String::as_str)
+    };
+    ui.horizontal(|ui| {
+        ui.label(caption(l.text(Msg::BusMixerSendInput)));
+        let text = chosen.map_or("?", name);
+        egui::ComboBox::from_id_salt("bus-mixer-send-input-combo")
+            .selected_text(text)
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                for strip in &view.input_audio_strips {
+                    ui.selectable_value(&mut chosen, Some(strip.input), name(strip.input));
+                }
+            })
+            .response
+            .hint(l.text(Msg::BusMixerSendInputHover), audio_reason);
+    });
+    let Some(input) = chosen else {
+        return;
+    };
+    ui.data_mut(|data| data.insert_temp(selection, input));
+    let Some(status) = view
+        .input_audio_strips
+        .iter()
+        .find(|strip| strip.input == input)
+    else {
+        return;
+    };
+    let mut sends = status.sends;
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let mut on = sends.master();
+        if led_key(ui, audio_enabled, &mut on, "M", PROGRAM, 24.0)
+            .hint(l.text(Msg::StripBusMasterHover), audio_reason)
+            .changed()
+        {
+            sends = sends.with_master(on);
+            changed = true;
+        }
+        ui.label(caption(l.text(Msg::BusMixerMaster)));
+    });
+    for bus in fm_types::audio_bus::AuxBusNumber::ALL {
+        let mut send = sends.aux(bus);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let mut on = send.enabled;
+            let hover = l.format(
+                Msg::StripBusAuxHover,
+                &[("bus", Arg::Str(&bus.letter().to_string()))],
+            );
+            if led_key(
+                ui,
+                audio_enabled,
+                &mut on,
+                &bus.letter().to_string(),
+                accent_color(),
+                24.0,
+            )
+            .hint(&hover, audio_reason)
+            .changed()
+            {
+                send.enabled = on;
+                changed = true;
+            }
+            let mut gain = send.level_millidb;
+            if ui
+                .add_enabled(
+                    audio_enabled,
+                    DragValue::new(&mut gain)
+                        .range(-96_000..=24_000)
+                        .speed(50.0)
+                        .custom_formatter(|value, _| {
+                            #[allow(clippy::cast_possible_truncation)] // bounded range
+                            format_gain(l, value as i32)
+                        })
+                        .custom_parser(|text| parse_gain(l, text)),
+                )
+                .hint(l.text(Msg::BusMixerSendLevelHover), audio_reason)
+                .changed()
+            {
+                send.level_millidb = gain;
+                changed = true;
+            }
+            let pre = send.tap == fm_types::audio_bus::SendTap::PreFader;
+            ui.add_enabled_ui(audio_enabled, |ui| {
+                if ui
+                    .selectable_label(pre, l.text(Msg::BusMixerPreFader))
+                    .hint(l.text(Msg::BusMixerSendTapHover), audio_reason)
+                    .clicked()
+                {
+                    send.tap = fm_types::audio_bus::SendTap::PreFader;
+                    changed = true;
+                }
+                if ui
+                    .selectable_label(!pre, l.text(Msg::BusMixerPostFader))
+                    .hint(l.text(Msg::BusMixerSendTapHover), audio_reason)
+                    .clicked()
+                {
+                    send.tap = fm_types::audio_bus::SendTap::PostFader;
+                    changed = true;
+                }
+            });
+        });
+        sends = sends.with_aux_send(bus, send);
+    }
+    if changed {
+        intents.push(StudioIntent::SetInputAudioStrip {
+            input,
+            update: InputAudioStripUpdate {
+                sends: Some(sends),
+                ..InputAudioStripUpdate::default()
+            },
         });
     }
 }
@@ -3354,7 +3694,7 @@ mod tests {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         };
         let strips = [strip(1, Some(1)), strip(2, None), strip(3, Some(3))];
         // Group 2 has no strips of its own but nests group 1.

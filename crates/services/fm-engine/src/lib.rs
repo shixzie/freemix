@@ -13,6 +13,7 @@ mod media;
 pub(crate) mod media_list;
 mod paged;
 mod playlist;
+mod production_clock;
 mod reel;
 mod replay;
 mod scene_animation;
@@ -32,14 +33,14 @@ pub use audio_mixer::{
 };
 pub use cue::{EngineCueListDefinition, EngineCueOperation, cue_due};
 pub use engine::{
-    CueScriptRun, Engine, EngineAcceptance, EngineActionMotion, EngineCommand,
+    CueScriptRun, Engine, EngineAcceptance, EngineActionMotion, EngineAsRunEntry, EngineCommand,
     EngineCommandOutcome, EngineEvent, EngineFadeToBlackState, EngineManualTransitionKind,
     EngineManualTransitionPosition, EngineManualTransitionState, EnginePrepareOutcome,
     EngineRestoreState, EngineSnapshot, EngineStreamControl, EngineStreamStatus, EngineTitleAir,
-    FrameResult, MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS, MAX_INPUT_AUDIO_DELAY_SAMPLES,
-    MAX_INPUT_AUDIO_GAIN_MILLIDB, MAX_RETAINED_RECEIPTS, MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS,
-    MIN_INPUT_AUDIO_GAIN_MILLIDB, PreparedEngineExecution, TitleAirRequirement, TitleCue,
-    TitleCueAction,
+    FrameResult, MAX_AS_RUN_ENTRIES, MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS,
+    MAX_INPUT_AUDIO_DELAY_SAMPLES, MAX_INPUT_AUDIO_GAIN_MILLIDB, MAX_RETAINED_RECEIPTS,
+    MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS, MIN_INPUT_AUDIO_GAIN_MILLIDB, PreparedEngineExecution,
+    TitleAirRequirement, TitleCue, TitleCueAction,
 };
 pub use error::{
     EngineError, EngineMediaError, InputCatalogueError, ShowError, SnapshotError, TitleRejection,
@@ -68,6 +69,10 @@ pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,
     PlaylistRestoreError, playlist_due_frame, playlist_from_model, playlist_to_model,
 };
+pub use production_clock::{
+    EngineProductionClockError, media_clock_inputs, production_clock_from_definition,
+    registry_from_definitions, session_clocks,
+};
 pub use reel::{
     EngineReelChunk, EngineReelError, EngineReelExportState, EngineReelExportStatus,
     EngineReelFrame, EngineReelLayer, EngineReelOperation, EngineReelStatus, EngineReelSummary,
@@ -75,8 +80,9 @@ pub use reel::{
 pub use replay::{
     DEFAULT_REPLAY_ROOT, EngineReplayEventStatus, EngineReplayFeed, EngineReplayFrame,
     EngineReplayLocation, EngineReplayMultiview, EngineReplayOperation, EngineReplayPlayerStatus,
-    EngineReplayPlaylistEntry, EngineReplaySourceStatus, EngineReplayStatus,
-    EngineReplayStorageLevel, EngineReplayStorageStatus, EngineReplayTile, REPLAY_RETURN_LIST,
+    EngineReplayPlaylistEntry, EngineReplaySmartHealth, EngineReplaySmartStatus,
+    EngineReplaySourceStatus, EngineReplayStatus, EngineReplayStorageLevel,
+    EngineReplayStorageStatus, EngineReplayTile, REPLAY_RETURN_LIST,
     REPLAY_STORAGE_CRITICAL_SECONDS, REPLAY_STORAGE_WARNING_SECONDS, SYNTHETIC_REPLAY_FRAME_BYTES,
     SYNTHETIC_REPLAY_SEGMENT_SECONDS,
 };

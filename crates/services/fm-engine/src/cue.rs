@@ -922,6 +922,10 @@ pub(crate) fn expand(
             input: *input,
             navigation: *navigation,
         }],
+        CueAction::Clock { name, operation } => vec![EngineCommand::ControlClock {
+            name: name.clone(),
+            operation: *operation,
+        }],
         CueAction::Media { input, operation } => {
             let media = |operation| {
                 EngineCommand::Media(crate::EngineMediaCommand {

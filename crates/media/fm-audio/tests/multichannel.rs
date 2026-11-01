@@ -769,3 +769,80 @@ fn embedding_map_preserves_layouts_through_a_round_trip() {
     );
     assert_eq!(bits(&back), bits(&source));
 }
+
+#[test]
+fn five_one_to_stereo_lt_rt_uses_dolby_surround_coefficients() {
+    let matrix =
+        GainMatrix::lt_rt(StandardLayout::FivePointOne, DownmixOptions::default()).unwrap();
+    // Lt = L + g·C − g·Ls, Rt = R + g·C + g·Rs; LFE is discarded.
+    assert_eq!(
+        matrix.routes(),
+        [
+            route(0, 0, 1.0),
+            route(2, 0, G),
+            route(4, 0, -G),
+            route(1, 1, 1.0),
+            route(2, 1, G),
+            route(5, 1, G),
+        ]
+        .as_slice()
+    );
+    let (l, r, c, lfe, ls, rs) = (0.5_f32, -0.25_f32, 0.75_f32, 1.0_f32, 0.125_f32, -0.5_f32);
+    let input = vec![vec![l], vec![r], vec![c], vec![lfe], vec![ls], vec![rs]];
+    let mut output = outputs(2, 1);
+    matrix.process(&input, &mut output).unwrap();
+    assert_eq!(output[0][0], l + c * G - ls * G);
+    assert_eq!(output[1][0], r + c * G + rs * G);
+    // Only 5.1 may fold to Lt/Rt.
+    assert_eq!(
+        GainMatrix::lt_rt(StandardLayout::Stereo, DownmixOptions::default()),
+        Err(MultichannelError::UnsupportedConversion {
+            from: StandardLayout::Stereo.layout(),
+            to: StandardLayout::Stereo.layout(),
+        })
+    );
+}
+
+#[test]
+fn five_one_to_mono_is_the_composite_stereo_fold() {
+    let matrix = GainMatrix::downmix(
+        StandardLayout::FivePointOne,
+        StandardLayout::Mono,
+        DownmixOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        matrix.routes(),
+        [
+            route(0, 0, 0.5),
+            route(1, 0, 0.5),
+            route(2, 0, G),
+            route(4, 0, 0.5 * G),
+            route(5, 0, 0.5 * G),
+        ]
+        .as_slice()
+    );
+    let (l, r, c, lfe, ls, rs) = (0.5_f32, -0.25_f32, 0.75_f32, 1.0_f32, 0.125_f32, -0.5_f32);
+    let input = vec![vec![l], vec![r], vec![c], vec![lfe], vec![ls], vec![rs]];
+    let mut output = outputs(1, 1);
+    matrix.process(&input, &mut output).unwrap();
+    assert_eq!(
+        output[0][0],
+        0.5 * l + 0.5 * r + c * G + 0.5 * ls * G + 0.5 * rs * G
+    );
+    // Normalization keeps an in-phase full-scale mix inside full scale.
+    let normalized = GainMatrix::downmix(
+        StandardLayout::FivePointOne,
+        StandardLayout::Mono,
+        DownmixOptions {
+            lfe: LfeHandling::Unity,
+            normalization: DownmixNormalization::PreventClipping,
+        },
+    )
+    .unwrap();
+    let mut output = outputs(1, 1);
+    normalized
+        .process(&vec![vec![1.0]; 6], &mut output)
+        .unwrap();
+    assert!((output[0][0] - 1.0).abs() <= f32::EPSILON);
+}

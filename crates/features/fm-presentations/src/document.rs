@@ -82,6 +82,8 @@ pub enum DocumentError {
     ConversionFailed(String),
     /// The converter did not finish in time and was stopped.
     ConversionTimedOut,
+    /// The conversion was cancelled because its input went away.
+    ConversionCancelled,
     /// Reading the file failed.
     Io(String),
 }
@@ -128,6 +130,7 @@ impl fmt::Display for DocumentError {
                 write!(formatter, "conversion to PDF failed: {detail}")
             }
             Self::ConversionTimedOut => formatter.write_str("conversion to PDF timed out"),
+            Self::ConversionCancelled => formatter.write_str("conversion to PDF was cancelled"),
             Self::Io(detail) => write!(formatter, "the document cannot be read: {detail}"),
         }
     }

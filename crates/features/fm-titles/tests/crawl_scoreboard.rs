@@ -7,12 +7,13 @@
 
 use fm_titles::{
     Alignment, AssetCatalog, Bounds, ClockDirection, ClockFormat, Color, Crawl, CrawlConfig,
-    CrawlError, CrawlLayer, CrawlMeasure, CrawlMode, CrawlSegment, CrawlSegmentKind, CrawlSpeed,
-    Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue, FontCrawlMeasure,
-    FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS, Player, ReferenceRenderer,
-    Scoreboard, ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent,
-    ScoreboardRules, Style, TeamSide, TeamState, TemplateId, TitleId, TitleScene, TitleTemplate,
-    UpdateError, VerticalAlignment, actions_from_external,
+    CrawlError, CrawlItem, CrawlLayer, CrawlLogo, CrawlMeasure, CrawlMode, CrawlSegment,
+    CrawlSegmentKind, CrawlSpeed, Element, ElementId, ElementKind, FieldDefinition, FieldId,
+    FieldValue, FontCrawlMeasure, FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS,
+    MAX_CRAWL_LOGO_WIDTH, MAX_ROSTER_PLAYERS, Player, ReferenceRenderer, Scoreboard,
+    ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent, ScoreboardPreset,
+    ScoreboardRules, ScoreboardSnapshot, Style, TeamSide, TeamState, TemplateId, TitleId,
+    TitleScene, TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
 };
 use fm_types::FrameRate;
 use std::fs;
@@ -124,6 +125,115 @@ fn distance_is_an_exact_rational_function_of_the_frame_index() {
     let half = CrawlSpeed::new(90, 2).unwrap();
     assert_eq!((half.pixels(), half.seconds()), (45, 1));
     assert_eq!(CrawlSpeed::new(0, 1), Err(CrawlError::ZeroSpeed));
+}
+
+#[test]
+fn crawl_right_enters_from_the_left_edge_and_moves_right() {
+    let config = crawl_config(
+        CrawlMode::CrawlRight,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 20,
+        },
+        120,
+        (30, 1),
+    );
+    let crawl = Crawl::new(
+        ElementId::new(nz(7)),
+        config,
+        &["AAAA", "BB"],
+        &FixedMeasure(10),
+    )
+    .unwrap();
+    assert_eq!(
+        summary(&crawl.view(10).unwrap().segments),
+        vec![("AAAA".into(), 0, 0)]
+    );
+    assert_eq!(
+        summary(&crawl.view(11).unwrap().segments),
+        vec![("AAAA".into(), 4, 0)]
+    );
+    // At distance 40 the separator's right edge enters the left edge.
+    assert_eq!(
+        summary(&crawl.view(20).unwrap().segments),
+        vec![("|".into(), -5, 0), ("AAAA".into(), 40, 0)]
+    );
+}
+
+#[test]
+fn roll_down_moves_items_top_to_bottom() {
+    let config = crawl_config(
+        CrawlMode::RollDown,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 200,
+        },
+        120,
+        (30, 1),
+    );
+    let crawl = Crawl::new(
+        ElementId::new(nz(7)),
+        config,
+        &["AAAA", "BB"],
+        &FixedMeasure(10),
+    )
+    .unwrap();
+    assert_eq!(
+        summary(&crawl.view(10).unwrap().segments),
+        vec![("AAAA".into(), 0, 0)]
+    );
+    assert_eq!(crawl.view(11).unwrap().segments[0].offset, 4);
+}
+
+#[test]
+fn styled_crawl_items_keep_their_own_fill() {
+    let config = crawl_config(
+        CrawlMode::CrawlRight,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 20,
+        },
+        120,
+        (30, 1),
+    );
+    let red = Color::new(255, 0, 0, 255);
+    let blue = Color::new(0, 0, 255, 255);
+    let mut crawl = Crawl::new_styled(
+        ElementId::new(nz(7)),
+        config,
+        &[
+            CrawlItem::with_fill("AAAA", red),
+            CrawlItem::with_fill("BB", blue),
+        ],
+        &FixedMeasure(10),
+    )
+    .unwrap();
+    let view = crawl.view(10).unwrap();
+    assert_eq!(view.segments.len(), 1);
+    assert_eq!(view.segments[0].fill, Some(red));
+    // The second item enters at distance 60 (frame 25) with its own fill.
+    let view = crawl.view(30).unwrap();
+    assert!(
+        view.segments
+            .iter()
+            .any(|segment| segment.fill == Some(blue))
+    );
+    // An update accepts styled items and advances the revision.
+    let schedule = crawl
+        .set_styled_items(
+            0,
+            31,
+            &[CrawlItem::text("CC"), CrawlItem::with_fill("DD", blue)],
+            &FixedMeasure(10),
+        )
+        .unwrap();
+    assert_eq!(schedule.revision, 1);
 }
 
 #[test]
@@ -468,6 +578,24 @@ fn reference_scene(
     bounds: Bounds,
     alignment: Alignment,
 ) -> TitleScene {
+    reference_scene_filled(
+        width,
+        height,
+        text,
+        bounds,
+        alignment,
+        Color::new(255, 255, 255, 255),
+    )
+}
+
+fn reference_scene_filled(
+    width: u32,
+    height: u32,
+    text: &str,
+    bounds: Bounds,
+    alignment: Alignment,
+    fill: Color,
+) -> TitleScene {
     scene(&template(
         width,
         height,
@@ -484,7 +612,7 @@ fn reference_scene(
             z_index: 0,
             visible: true,
             style: Style {
-                fill: Color::new(255, 255, 255, 255),
+                fill,
                 background: None,
                 opacity: 255,
                 font: Some(FontStyle {
@@ -579,6 +707,41 @@ fn crawl_text_lands_on_the_exact_pixel_position() {
 
     // Rendering is a pure function of the frame index.
     assert_eq!(render_crawl(&crawl, 40, &assets, 320, 56), crawl_pixels);
+}
+
+#[test]
+fn crawl_item_fill_overrides_the_layer_fill() {
+    let Some(assets) = catalog() else { return };
+    let mut config = render_crawl_config(&assets);
+    config.fill = Color::new(255, 255, 255, 255);
+    let measure = FontCrawlMeasure::new(&config, &assets).unwrap();
+    let red = Color::new(255, 0, 0, 255);
+    let crawl = Crawl::new_styled(
+        ElementId::new(nz(9)),
+        config.clone(),
+        &[CrawlItem::with_fill("HELLO", red)],
+        &measure,
+    )
+    .unwrap();
+    let width = measure.measure("HELLO");
+    assert!(width > 20 && width < 140, "unexpected width {width}");
+    let pixels = render_crawl(&crawl, 40, &assets, 320, 56);
+    let reference = reference_scene_filled(
+        320,
+        56,
+        "HELLO",
+        Bounds {
+            x: 150,
+            y: 8,
+            width: 100_000,
+            height: 40,
+        },
+        config.alignment,
+        red,
+    );
+    let expected = ReferenceRenderer.render(&reference, 0, &assets).unwrap();
+    assert!(pixels.iter().any(|channel| *channel != 0));
+    assert_eq!(pixels, expected.frame.pixels());
 }
 
 #[test]
@@ -697,6 +860,7 @@ fn board(clock: GameClockConfig) -> Scoreboard {
         ScoreboardRules {
             max_score: 99,
             max_period: 4,
+            shot_clock_ms: Some(24_000),
         },
         clock,
     )
@@ -883,6 +1047,629 @@ fn count_up_clock_stops_at_its_limit() {
     assert_eq!(board.clock().display(1_000), "00:00:05");
 }
 
+#[test]
+fn the_shot_clock_counts_down_and_reports_its_expiry_once() {
+    let mut board = board(clock_config(ClockDirection::CountDown, (25, 1), 60_000));
+    let outcome = board
+        .apply(
+            0,
+            10,
+            &[
+                ScoreboardAction::SetShotClock { value_ms: 24_000 },
+                ScoreboardAction::StartShotClock,
+            ],
+        )
+        .unwrap();
+    assert_eq!(outcome.revision, 1);
+    // 24 s at 25 fps is 600 frames, so it expires at frame 610.
+    assert_eq!(board.shot_clock().unwrap().expiry_frame(), Some(610));
+    assert_eq!(board.shot_clock().unwrap().value_ms(10), 24_000);
+    assert_eq!(board.shot_clock().unwrap().display(10), "00:24");
+    assert_eq!(board.advance(609).unwrap(), Vec::new());
+    assert_eq!(
+        board.advance(610).unwrap(),
+        vec![ScoreboardEvent::ShotClockExpired { frame: 610 }]
+    );
+    assert_eq!(board.advance(611).unwrap(), Vec::new());
+    // The external feed re-arms and starts it.
+    let outcome = board
+        .apply_external(
+            1,
+            620,
+            &[("shot_clock.ms", "14000"), ("shot_clock.running", "true")],
+        )
+        .unwrap();
+    assert_eq!(outcome.revision, 2);
+    assert_eq!(board.shot_clock().unwrap().value_ms(620), 14_000);
+}
+
+#[test]
+fn clock_formats_include_tenths() {
+    let mut config = clock_config(ClockDirection::CountUp, (30, 1), 0);
+    config.format = ClockFormat::MinutesSecondsTenths;
+    let mut count_up = board(config);
+    count_up
+        .apply(0, 0, &[ScoreboardAction::StartClock])
+        .unwrap();
+    assert_eq!(count_up.clock().display(0), "00:00.0");
+    assert_eq!(count_up.clock().display(3), "00:00.1");
+    assert_eq!(count_up.clock().display(30), "00:01.0");
+    assert_eq!(count_up.clock().display(35), "00:01.1");
+
+    let mut config = clock_config(ClockDirection::CountDown, (30, 1), 90_000);
+    config.format = ClockFormat::HoursMinutesSecondsTenths;
+    let mut count_down = board(config);
+    count_down
+        .apply(0, 0, &[ScoreboardAction::StartClock])
+        .unwrap();
+    assert_eq!(count_down.clock().display(0), "00:01:30.0");
+    assert_eq!(count_down.clock().display(30), "00:01:29.0");
+    assert_eq!(count_down.clock().display(33), "00:01:28.9");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // roster add, duplicate, remove, and external keys
+fn rosters_add_select_and_remove_players_atomically() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    let jane = Player {
+        number: Some(23),
+        name: "Jane Doe".into(),
+    };
+    let sam = Player {
+        number: Some(7),
+        name: "Sam Roe".into(),
+    };
+    let outcome = board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: jane.clone(),
+                },
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: sam.clone(),
+                },
+                ScoreboardAction::SelectRosterPlayer {
+                    side: TeamSide::Home,
+                    index: Some(1),
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(outcome.revision, 1);
+    assert_eq!(
+        board.team(TeamSide::Home).roster,
+        vec![jane.clone(), sam.clone()]
+    );
+    assert_eq!(board.team(TeamSide::Home).player, Some(sam.clone()));
+
+    // A duplicate jersey number is refused and the batch changes nothing.
+    let before = board.clone();
+    assert_eq!(
+        board.apply(
+            1,
+            1,
+            &[ScoreboardAction::AddRosterPlayer {
+                side: TeamSide::Home,
+                player: Player {
+                    number: Some(23),
+                    name: "Other".into(),
+                },
+            }],
+        ),
+        Err(ScoreboardError::DuplicateRosterPlayer {
+            side: TeamSide::Home,
+            player: "23 Other".into(),
+        })
+    );
+    assert_eq!(board, before);
+
+    // Removing the featured player clears the featured slot; bad indices fail.
+    assert_eq!(
+        board.apply(
+            1,
+            2,
+            &[ScoreboardAction::RemoveRosterPlayer {
+                side: TeamSide::Home,
+                index: 9,
+            }],
+        ),
+        Err(ScoreboardError::RosterIndexOutOfRange {
+            side: TeamSide::Home,
+            index: 9,
+            len: 2,
+        })
+    );
+    board
+        .apply(
+            1,
+            2,
+            &[ScoreboardAction::RemoveRosterPlayer {
+                side: TeamSide::Home,
+                index: 1,
+            }],
+        )
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).roster, vec![jane]);
+    assert_eq!(board.team(TeamSide::Home).player, None);
+
+    // Selecting by index and clearing from the external feed.
+    board
+        .apply_external(
+            2,
+            3,
+            &[("home.roster.select", "0"), ("away.roster.add", "9 Alex")],
+        )
+        .unwrap();
+    assert_eq!(
+        board.team(TeamSide::Home).player.as_ref().unwrap().number,
+        Some(23)
+    );
+    assert_eq!(board.team(TeamSide::Away).roster.len(), 1);
+    board
+        .apply_external(3, 4, &[("home.roster.select", "")])
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).player, None);
+    assert_eq!(
+        actions_from_external(&[("home.roster.add", "  ")]),
+        Err(ScoreboardError::InvalidExternalValue { index: 0 })
+    );
+    assert_eq!(
+        actions_from_external(&[("home.roster.select", "x")]),
+        Err(ScoreboardError::InvalidExternalValue { index: 0 })
+    );
+}
+
+#[test]
+fn rosters_refuse_a_full_one() {
+    // A full roster is refused.
+    let mut full = TeamState::new("Home", "HOM");
+    for number in 0..u16::try_from(MAX_ROSTER_PLAYERS).unwrap() {
+        full.roster.push(Player {
+            number: Some(number),
+            name: format!("Player {number}"),
+        });
+    }
+    let mut board = Scoreboard::new(
+        full,
+        TeamState::new("Away", "AWY"),
+        ScoreboardRules {
+            max_score: 99,
+            max_period: 4,
+            shot_clock_ms: Some(24_000),
+        },
+        GameClockConfig {
+            direction: ClockDirection::CountDown,
+            format: ClockFormat::MinutesSeconds,
+            frame_rate: FrameRate::new(30, 1).unwrap(),
+            initial_ms: 90_000,
+            limit_ms: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        board.apply(
+            0,
+            0,
+            &[ScoreboardAction::AddRosterPlayer {
+                side: TeamSide::Home,
+                player: Player {
+                    number: Some(99),
+                    name: "Overflow".into(),
+                },
+            }],
+        ),
+        Err(ScoreboardError::RosterFull {
+            side: TeamSide::Home,
+            maximum: MAX_ROSTER_PLAYERS,
+        })
+    );
+}
+
+#[test]
+fn a_player_can_be_featured_by_jersey_number() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    let jane = Player {
+        number: Some(23),
+        name: "Jane Doe".into(),
+    };
+    let sam = Player {
+        number: Some(7),
+        name: "Sam Roe".into(),
+    };
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: jane,
+                },
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: sam.clone(),
+                },
+                ScoreboardAction::SelectPlayerByNumber {
+                    side: TeamSide::Home,
+                    number: 7,
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).player, Some(sam));
+    assert_eq!(
+        board.apply(
+            1,
+            1,
+            &[ScoreboardAction::SelectPlayerByNumber {
+                side: TeamSide::Home,
+                number: 99,
+            }],
+        ),
+        Err(ScoreboardError::RosterNumberNotFound {
+            side: TeamSide::Home,
+            number: 99,
+        })
+    );
+    board
+        .apply_external(1, 2, &[("home.roster.number", "23")])
+        .unwrap();
+    assert_eq!(
+        board.team(TeamSide::Home).player.as_ref().unwrap().number,
+        Some(23)
+    );
+    board
+        .apply(
+            2,
+            3,
+            &[ScoreboardAction::ClearRoster {
+                side: TeamSide::Home,
+            }],
+        )
+        .unwrap();
+    assert!(board.team(TeamSide::Home).roster.is_empty());
+    assert_eq!(board.team(TeamSide::Home).player, None);
+}
+
+#[test]
+fn scoreboard_snapshots_restore_exactly() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::SetScore {
+                    side: TeamSide::Home,
+                    score: 3,
+                },
+                ScoreboardAction::SetShotClock { value_ms: 14_000 },
+                ScoreboardAction::StartShotClock,
+                ScoreboardAction::StartClock,
+            ],
+        )
+        .unwrap();
+    board.advance(30).unwrap();
+    let snapshot = board.snapshot();
+    let restored = Scoreboard::restore(snapshot.clone()).unwrap();
+    assert_eq!(restored, board);
+    assert_eq!(restored.clock().display(30), "01:29");
+    assert_eq!(
+        restored.clock().expiry_frame(),
+        board.clock().expiry_frame()
+    );
+    assert_eq!(
+        restored.shot_clock().unwrap().value_ms(30),
+        board.shot_clock().unwrap().value_ms(30)
+    );
+
+    // A running clock that starts after the last frame is refused.
+    let mut broken = snapshot;
+    broken.clock.running_since = Some(99);
+    broken.last_frame = 30;
+    assert_eq!(
+        Scoreboard::restore(broken),
+        Err(ScoreboardError::ClockSnapshotRunningAfterLastFrame {
+            running_since: 99,
+            last_frame: 30,
+        })
+    );
+}
+
+#[test]
+fn the_shot_clock_duration_can_be_replaced() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[ScoreboardAction::SetShotClockDuration { value_ms: 30_000 }],
+        )
+        .unwrap();
+    assert_eq!(board.rules().shot_clock_ms, Some(30_000));
+    assert_eq!(board.shot_clock().unwrap().config().initial_ms, 30_000);
+    assert_eq!(board.shot_clock().unwrap().display(0), "00:30");
+    board
+        .apply(1, 1, &[ScoreboardAction::StartShotClock])
+        .unwrap();
+    assert_eq!(board.shot_clock().unwrap().expiry_frame(), Some(901));
+    board
+        .apply_external(2, 2, &[("shot_clock.duration", "24000")])
+        .unwrap();
+    assert_eq!(board.shot_clock().unwrap().display(2), "00:24");
+    assert!(!board.shot_clock().unwrap().is_running());
+}
+
+#[test]
+fn a_roster_can_be_replaced_atomically() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    let jane = Player {
+        number: Some(23),
+        name: "Jane Doe".into(),
+    };
+    let sam = Player {
+        number: Some(7),
+        name: "Sam Roe".into(),
+    };
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: jane.clone(),
+                },
+                ScoreboardAction::SelectRosterPlayer {
+                    side: TeamSide::Home,
+                    index: Some(0),
+                },
+            ],
+        )
+        .unwrap();
+    // Replacing without the featured player clears the featured slot.
+    board
+        .apply(
+            1,
+            1,
+            &[ScoreboardAction::SetRoster {
+                side: TeamSide::Home,
+                roster: vec![sam.clone()],
+            }],
+        )
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).roster, vec![sam.clone()]);
+    assert_eq!(board.team(TeamSide::Home).player, None);
+    // Keeping it leaves the featured player set.
+    board
+        .apply(
+            2,
+            2,
+            &[
+                ScoreboardAction::SelectRosterPlayer {
+                    side: TeamSide::Home,
+                    index: Some(0),
+                },
+                ScoreboardAction::SetRoster {
+                    side: TeamSide::Home,
+                    roster: vec![sam.clone()],
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).player, Some(sam.clone()));
+    // Duplicates and over-capacity rosters are refused whole.
+    let before = board.clone();
+    assert_eq!(
+        board.apply(
+            3,
+            3,
+            &[ScoreboardAction::SetRoster {
+                side: TeamSide::Home,
+                roster: vec![sam.clone(), sam.clone()],
+            }],
+        ),
+        Err(ScoreboardError::DuplicateRosterPlayer {
+            side: TeamSide::Home,
+            player: "7 Sam Roe".into(),
+        })
+    );
+    assert_eq!(board, before);
+    let full: Vec<Player> = (0..=u16::try_from(MAX_ROSTER_PLAYERS).unwrap())
+        .map(|number| Player {
+            number: Some(number),
+            name: format!("Player {number}"),
+        })
+        .collect();
+    assert_eq!(
+        board.apply(
+            3,
+            3,
+            &[ScoreboardAction::SetRoster {
+                side: TeamSide::Home,
+                roster: full,
+            }],
+        ),
+        Err(ScoreboardError::RosterFull {
+            side: TeamSide::Home,
+            maximum: MAX_ROSTER_PLAYERS,
+        })
+    );
+    assert_eq!(board, before);
+}
+
+#[test]
+fn scoreboard_documents_round_trip_strictly() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSecondsTenths,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: Player {
+                        number: Some(23),
+                        name: "Jane Doe".into(),
+                    },
+                },
+                ScoreboardAction::SelectRosterPlayer {
+                    side: TeamSide::Home,
+                    index: Some(0),
+                },
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Away,
+                    player: Player {
+                        number: Some(11),
+                        name: "Away One".into(),
+                    },
+                },
+                ScoreboardAction::SetShotClockDuration { value_ms: 30_000 },
+                ScoreboardAction::StartClock,
+            ],
+        )
+        .unwrap();
+    board.advance(10).unwrap();
+    let snapshot = board.snapshot();
+    let document = snapshot.to_document();
+    assert_eq!(
+        ScoreboardSnapshot::from_document(&document),
+        Ok(snapshot.clone())
+    );
+    let restored =
+        Scoreboard::restore(ScoreboardSnapshot::from_document(&document).unwrap()).unwrap();
+    assert_eq!(restored, board);
+    for text in [
+        "freemix-scoreboard 2\n",
+        "freemix-scoreboard 1\nrules 99 4 none\nperiod 1\nrevision 0\nlast_frame 0\nhome x486f6d65 x484f4d 0 none 0\naway x41777979 x415759 0 none 0\nclock none\nshot none\nextra\n",
+        "freemix-scoreboard 1\nrules 99 4 none\nperiod 1\nrevision 0\nlast_frame 0\nhome x486f6d65 x484f4d 0 none 1\naway x41777979 x415759 0 none 0\nclock none\nshot none\n",
+    ] {
+        assert!(ScoreboardSnapshot::from_document(text).is_err(), "{text:?}");
+    }
+}
+
+#[test]
+fn clock_formats_can_be_changed_at_runtime() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::SetClockFormat {
+                    format: ClockFormat::MinutesSecondsTenths,
+                },
+                ScoreboardAction::SetShotClockFormat {
+                    format: ClockFormat::HoursMinutesSecondsTenths,
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(board.clock().display(0), "01:30.0");
+    assert_eq!(board.shot_clock().unwrap().display(0), "00:00:24.0");
+    board
+        .apply_external(
+            1,
+            1,
+            &[
+                ("clock.format", "minutes_seconds"),
+                ("shot_clock.format", "minutes_seconds"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(board.clock().display(0), "01:30");
+    assert_eq!(board.shot_clock().unwrap().display(0), "00:24");
+    assert_eq!(
+        actions_from_external(&[("clock.format", "nope")]),
+        Err(ScoreboardError::InvalidExternalValue { index: 0 })
+    );
+}
+
+#[test]
+fn sport_presets_carry_their_rules_and_clocks() {
+    let rate = FrameRate::new(25, 1).unwrap();
+    let basketball = ScoreboardPreset::Basketball
+        .board(
+            TeamState::new("Home", "HOM"),
+            TeamState::new("Away", "AWY"),
+            rate,
+        )
+        .unwrap();
+    assert_eq!(basketball.rules().max_period, 4);
+    assert_eq!(basketball.rules().max_score, 199);
+    assert_eq!(basketball.rules().shot_clock_ms, Some(24_000));
+    assert_eq!(basketball.shot_clock().unwrap().config().initial_ms, 24_000);
+    assert_eq!(basketball.clock().config().initial_ms, 600_000);
+    assert_eq!(
+        basketball.clock().config().direction,
+        ClockDirection::CountDown
+    );
+    let soccer = ScoreboardPreset::Soccer
+        .board(
+            TeamState::new("Home", "HOM"),
+            TeamState::new("Away", "AWY"),
+            rate,
+        )
+        .unwrap();
+    assert_eq!(soccer.rules().max_period, 2);
+    assert_eq!(soccer.rules().shot_clock_ms, None);
+    assert_eq!(soccer.shot_clock(), None);
+    assert_eq!(soccer.clock().config().direction, ClockDirection::CountUp);
+    assert_eq!(soccer.clock().config().limit_ms, Some(2_700_000));
+    assert_eq!(
+        soccer
+            .clone()
+            .apply(0, 0, &[ScoreboardAction::StartShotClock]),
+        Err(ScoreboardError::NoShotClock)
+    );
+}
+
 fn scoreboard_template() -> TitleTemplate {
     let text = |id, name: &str| FieldDefinition {
         id: field(id),
@@ -1005,6 +1792,61 @@ fn publishing_maps_typed_values_onto_template_fields_atomically() {
 }
 
 #[test]
+fn roster_fields_publish_in_player_order() {
+    let roster_field = field(9);
+    let template = template(
+        64,
+        16,
+        vec![FieldDefinition {
+            id: roster_field,
+            name: "roster".into(),
+            default: FieldValue::Text(String::new()),
+            exposed: true,
+        }],
+        Vec::new(),
+    );
+    let mut scene = scene(&template);
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: Player {
+                        number: Some(23),
+                        name: "Jane Doe".into(),
+                    },
+                },
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: Player {
+                        number: Some(7),
+                        name: "Sam Roe".into(),
+                    },
+                },
+            ],
+        )
+        .unwrap();
+    let binding = ScoreboardBinding {
+        home_roster: Some(roster_field),
+        ..ScoreboardBinding::default()
+    };
+    assert_eq!(board.publish(&binding, &mut scene, 0, 0), Ok(1));
+    assert_eq!(
+        scene.field_value(roster_field),
+        Some(&FieldValue::Text("23 Jane Doe, 7 Sam Roe".into()))
+    );
+}
+
+#[test]
 fn external_key_values_map_onto_typed_actions() {
     let mut board = board(clock_config(ClockDirection::CountDown, (30, 1), 0));
     let outcome = board
@@ -1067,4 +1909,60 @@ fn external_key_values_map_onto_typed_actions() {
             .is_err()
     );
     assert_eq!(board, before);
+}
+
+#[test]
+fn a_crawl_item_reserves_room_for_a_logo() {
+    let config = crawl_config(
+        CrawlMode::CrawlRight,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 20,
+        },
+        120,
+        (30, 1),
+    );
+    let logo = CrawlLogo {
+        asset: "asset://logos/news.png",
+        width_px: 40,
+    };
+    let item = CrawlItem::text("AAAA").with_logo(logo);
+    let crawl =
+        Crawl::new_styled(ElementId::new(nz(7)), config, &[item], &FixedMeasure(10)).unwrap();
+    let view = crawl.view(10).unwrap();
+    assert_eq!(view.segments.len(), 1);
+    let segment = &view.segments[0];
+    assert_eq!(segment.logo_asset, Some("asset://logos/news.png"));
+    assert_eq!(segment.logo_width_px, 40);
+    assert_eq!(segment.extent, 40 + 8 + 40);
+}
+
+#[test]
+fn invalid_crawl_logos_are_refused() {
+    let config = crawl_config(
+        CrawlMode::Crawl,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 20,
+        },
+        120,
+        (30, 1),
+    );
+    let refused = |asset: &str, width_px: u32| {
+        let item = CrawlItem::text("AAAA").with_logo(CrawlLogo { asset, width_px });
+        Crawl::new_styled(
+            ElementId::new(nz(7)),
+            config.clone(),
+            &[item],
+            &FixedMeasure(10),
+        )
+        .is_err()
+    };
+    assert!(refused("", 40));
+    assert!(refused("asset://x", 0));
+    assert!(refused("asset://x", MAX_CRAWL_LOGO_WIDTH + 1));
 }

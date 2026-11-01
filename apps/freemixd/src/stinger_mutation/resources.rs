@@ -174,10 +174,10 @@ impl NativeDaemon {
             match preflight.result.try_recv() {
                 Ok(Ok(mutation)) => {
                     let _ = preflight.worker.join();
-                    if self
-                        .playback
+                    if !self
+                        .video
                         .validate_retained_byte_limit(mutation.ordinary_video_limit)
-                        .is_err()
+                        .map_err(AppFailure)?
                     {
                         self.stinger_retirements.discard(mutation)?;
                         return Ok(Some((Err(()), runtime_events)));
@@ -209,10 +209,17 @@ impl NativeDaemon {
         let Some(mutation) = self.pending_stinger_mutation.take() else {
             return Ok(());
         };
-        self.playback
-            .set_retained_byte_limit(mutation.ordinary_video_limit);
-        let old_stingers = core::mem::replace(&mut self.stingers, mutation.stingers);
-        let old_audio = self.master.replace_stinger_audio(mutation.audio);
+        self.video
+            .set_retained_byte_limit(mutation.ordinary_video_limit)
+            .map_err(AppFailure)?;
+        let old_stingers = self
+            .video
+            .replace_stingers(mutation.stingers)
+            .map_err(AppFailure)?;
+        let old_audio = self
+            .audio
+            .replace_stinger_audio(mutation.audio)
+            .map_err(|error| AppFailure(format!("native Stinger audio: {error}")))?;
         self.project_plan = mutation.project_plan;
         match self.stinger_retirements.retire(Box::new(RetiredResources {
             stingers: old_stingers,

@@ -55,15 +55,15 @@ FreeMix shall:
 |---|---|
 | GPU API | `wgpu`, using D3D12 on Windows, Metal on Apple platforms, and Vulkan on Linux |
 | Native studio UI | `egui`/`eframe` immediate-mode UI over a replicated read model |
-| Browser control UI | Rust/Wasm DOM UI; WebRTC for live previews |
+| Browser control UI | Server-rendered HTML pages from `freemixd` (operator, tally, titles, live LAN) with inline JavaScript; no Wasm client build |
 | Media interoperability | FFmpeg-backed codec/demux/mux adapter behind narrow Rust traits |
 | Real-time scheduling | Dedicated media threads; no async executor on render/audio hot paths |
-| Service runtime | Tokio for control, storage, discovery, HTTP, WebSocket, and background I/O |
+| Service runtime | Synchronous `std` threads with bounded polling; no async executor or Tokio |
 | Control protocol | Versioned commands plus ordered events over WebSocket; HTTP for resources |
 | Remote media | WebRTC for guests/previews, SRT/RIST-class adapters for contribution, RTMP/SRT/HLS for delivery |
 | State | Single-writer engine authority, immutable client snapshots, monotonic revisions |
 | Projects | Versioned manifest plus content-addressed media references and autosave journal |
-| Plugins | Validated shader packages; sandboxed Wasm automation/data; class-specific native device/codec and real-time DSP hosts |
+| Plugins | Validated shader packages; sandboxed Wasm automation/data; class-specific native device/codec and real-time DSP hosts. The current plugin host loads native child processes; the Wasm sandbox is not implemented |
 
 Dependencies are architectural candidates, not permanently pinned choices.
 Phase 0 prototypes must validate GPU texture interop, codec licensing, and

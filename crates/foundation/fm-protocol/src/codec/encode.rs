@@ -143,6 +143,12 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::DiagnosticsResponse(message) => {
             encode_diagnostics_response(&mut record, message)?;
         }
+        WireMessage::ClockControlRequest(message) => {
+            encode_clock_control_request(&mut record, message)?;
+        }
+        WireMessage::ClockControlResponse(message) => {
+            encode_clock_control_response(&mut record, message)?;
+        }
         WireMessage::Error(message) => encode_error_message(&mut record, message)?,
         WireMessage::TitleState(message) => encode_title_state(&mut record, message)?,
         WireMessage::TitlePhases(message) => encode_title_phases_record(&mut record, message)?,
@@ -191,6 +197,12 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 "chain",
                 super::audio_mixer::encode_chain("chain", &message.chain)?,
             )?;
+        }
+        WireMessage::AudioStripSendState(message) => {
+            record.kind("audio_strip_send_state");
+            record.field("revision", message.revision)?;
+            record.field("input", message.input)?;
+            record.field_string("sends", message.sends.token())?;
         }
         WireMessage::DisplayInventoryRequest(message) => {
             record.kind("display_inventory_request");
@@ -651,11 +663,10 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 record.field("value", value.get())?;
             }
         }
-        CommandPayload::StopScript { run } => {
+        CommandPayload::StopScript { runs } => {
             record.field("payload", "script_stop")?;
-            if let Some(run) = run {
-                super::script::validate_run_id(*run)?;
-                record.field("run", run)?;
+            if !runs.is_empty() {
+                record.field("runs", super::script::encode_run_list(runs)?)?;
             }
         }
         payload @ (CommandPayload::SetInputGrade { .. }
@@ -1697,7 +1708,7 @@ fn encode_input_audio_strip_command(
         soloed,
         follow_video,
         delay_samples,
-        buses,
+        sends,
     } = payload
     else {
         unreachable!("input audio strip encoder received another command")
@@ -1711,7 +1722,7 @@ fn encode_input_audio_strip_command(
     record.field("soloed", u8::from(*soloed))?;
     record.field("follow_video", u8::from(*follow_video))?;
     record.field("delay_samples", delay_samples)?;
-    record.field_string("buses", buses.token())
+    record.field_string("sends", sends.token())
 }
 
 fn encode_overlay_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
@@ -1882,6 +1893,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     encode_identity(record, &message.engine)?;
     record.field("revision", message.revision)?;
     record.field_str("show_name", &message.show_name)?;
+    record.field_string(
+        "production_clocks",
+        crate::production_clock::encode_names(&message.production_clocks)?,
+    )?;
     record.field_string("inputs", input_statuses(&message.inputs)?)?;
     record.field_string("outputs", output_statuses(&message.outputs)?)?;
     encode_input_audio_strips(record, &message.input_audio_strips)?;
@@ -2440,7 +2455,7 @@ fn encode_input_audio_strips(
             u8::from(status.follow_video),
             status.delay_samples,
             super::audio_mixer::encode_strip_group(status.group)?,
-            status.buses.token(),
+            status.sends.mask().token(),
         );
         if !(-96_000..=24_000).contains(&status.gain_millidb)
             || !(-10_000..=10_000).contains(&status.balance_basis_points)
@@ -3715,6 +3730,60 @@ fn encode_diagnostics_response(
     record.field_string("source_sync", sources)?;
     for (name, value) in super::health::encode(&message.health)? {
         record.field_string(name, value)?;
+    }
+    record.field_string(
+        "production_clocks",
+        crate::production_clock::encode_statuses(&message.production_clocks)?,
+    )?;
+    Ok(())
+}
+
+fn encode_clock_control_request(
+    record: &mut Record,
+    message: &crate::ClockControlRequest,
+) -> Result<(), CodecError> {
+    record.kind("clock_control_request");
+    record.field("protocol", message.protocol)?;
+    validate_request_id(&message.request_id)?;
+    record.field_str("request_id", &message.request_id)?;
+    if !crate::clock_name_is_valid(&message.name) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: message.name.clone(),
+        });
+    }
+    record.field_str("name", &message.name)?;
+    record.field_str("operation", message.operation.token())?;
+    if let Some(value) = message.operation.value_ns() {
+        record.field("value_ns", value)?;
+    }
+    Ok(())
+}
+
+fn encode_clock_control_response(
+    record: &mut Record,
+    message: &crate::ClockControlResponse,
+) -> Result<(), CodecError> {
+    record.kind("clock_control_response");
+    record.field("protocol", message.protocol)?;
+    validate_request_id(&message.request_id)?;
+    record.field_str("request_id", &message.request_id)?;
+    if !crate::clock_name_is_valid(&message.name) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: message.name.clone(),
+        });
+    }
+    record.field_str("name", &message.name)?;
+    record.field("accepted", u8::from(message.accepted))?;
+    if let Some(error) = &message.error {
+        record.field_str("error", error)?;
+    }
+    if let Some(reading) = &message.reading {
+        record.field_string(
+            "reading",
+            crate::production_clock::encode_statuses(std::slice::from_ref(reading))?,
+        )?;
     }
     Ok(())
 }

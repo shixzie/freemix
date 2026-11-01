@@ -17,12 +17,12 @@ use fm_protocol::{
     MAX_CUE_ARM_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_TITLE_NUMBER, MAX_CUES,
     ManualTransitionStatus, MediaTime, MediaTransportState, OverlayStatus, PlaylistRunState,
     ProtocolVersion, RecordingStatus, StreamRealizedState, StreamStatus, TransitionFavoriteEffect,
-    WireCue, WireCueAction, WireCueMediaOperation, WireInputId, WireMessage, WireOverlayChannelId,
-    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId, decode_line,
-    encode_line,
+    WireCue, WireCueAction, WireCueClockOperation, WireCueMediaOperation, WireInputId, WireMessage,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.129\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.152\tid=a\tidempotency_key=k";
 
 /// Lowercase hex of `text`'s UTF-8 bytes.
 fn hex(text: &str) -> String {
@@ -212,7 +212,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 129));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 152));
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn script_run_event(scripts: Vec<CueScriptRun>) -> WireMessage {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }],
         streams: Vec::new(),
         recordings: [1, 2]
@@ -643,7 +643,7 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }],
         streams: vec![StreamStatus {
             target: WireStreamTargetId::new(NonZeroU128::new(9).unwrap()),
@@ -906,5 +906,61 @@ fn the_hidden_title_value_marker_round_trips_exactly() {
         "title_text.3.0.hidden",
     ] {
         assert_eq!(fm_protocol::parse_cue_action_token(bad), None, "{bad}");
+    }
+}
+
+/// Protocol 2.152 (SW-013): a production clock action round-trips through
+/// its token and refuses a value on an operation that takes none, a missing
+/// value, a non-canonical value, and an unknown operation.
+#[test]
+fn clock_actions_round_trip_and_are_strict() {
+    for action in [
+        WireCueAction::Clock {
+            name: "Countdown".to_owned(),
+            operation: WireCueClockOperation::Start,
+        },
+        WireCueAction::Clock {
+            name: "Countdown".to_owned(),
+            operation: WireCueClockOperation::Pause,
+        },
+        WireCueAction::Clock {
+            name: "Countdown".to_owned(),
+            operation: WireCueClockOperation::Reset,
+        },
+        WireCueAction::Clock {
+            name: "Countdown".to_owned(),
+            operation: WireCueClockOperation::SetValue(5_000_000_000),
+        },
+        WireCueAction::Clock {
+            name: "Countdown".to_owned(),
+            operation: WireCueClockOperation::Adjust(-1_500_000_000),
+        },
+        WireCueAction::Clock {
+            name: "Countdown".to_owned(),
+            operation: WireCueClockOperation::SetPreset(300_000_000_000),
+        },
+    ] {
+        let token = fm_protocol::cue_action_token(&action);
+        assert_eq!(
+            fm_protocol::parse_cue_action_token(&token),
+            Some(action),
+            "{token}"
+        );
+    }
+    for token in [
+        // A value with an operation that takes none, a missing value, a
+        // non-canonical one, and an unknown operation.
+        "clock.Countdown.start.5",
+        "clock.Countdown.set",
+        "clock.Countdown.set.0500",
+        "clock.Countdown.set.+5",
+        "clock.Countdown.set.-0",
+        "clock.Countdown.stop",
+        // A blank, over-long, or non-name clock, and a missing operation.
+        "clock..start",
+        "clock.Count down.start",
+        "clock.Countdown",
+    ] {
+        assert_eq!(fm_protocol::parse_cue_action_token(token), None, "{token}");
     }
 }

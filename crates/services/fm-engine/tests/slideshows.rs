@@ -466,8 +466,20 @@ fn next_at_the_end_of_a_random_cycle_starts_the_next_cycle() {
         });
         let mut labels = vec![step(&mut engine).label];
         for index in 0..(names.len() * 3 - 1) {
+            let next = engine
+                .slideshow_status(input(SHOW))
+                .expect("the slideshow has a status")
+                .next
+                .clone();
             navigate(&mut engine, &format!("next-{index}"), PagedNavigation::Next);
-            labels.push(step(&mut engine).label);
+            let label = step(&mut engine).label;
+            let expected = format!("asset://{label}");
+            assert_eq!(
+                next.as_deref(),
+                Some(expected.as_str()),
+                "seed {seed} prefetches the slide Next actually shows"
+            );
+            labels.push(label);
         }
         for (cycle, chunk) in labels.chunks(names.len()).enumerate() {
             let distinct: std::collections::BTreeSet<_> = chunk.iter().collect();

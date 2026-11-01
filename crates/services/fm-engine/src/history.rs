@@ -244,6 +244,7 @@ impl EngineCommand {
             | Self::RealizeCueActions(_)
             | Self::RunScript { .. }
             | Self::StopScript { .. }
+            | Self::ControlClock { .. }
             | Self::FireShortcut { .. } => EngineCommandKind::LiveOperation,
         }
     }

@@ -11,15 +11,21 @@ fm-client = { path = "../../crates/services/fm-client" }
 fm-command = { path = "../../crates/foundation/fm-command" }
 fm-compositor = { path = "../../crates/gpu/fm-compositor" }
 fm-control = { path = "../../crates/services/fm-control" }
+fm-data = { path = "../../crates/features/fm-data" }
 fm-script = { path = "../../crates/foundation/fm-script" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-grade = { path = "../../crates/foundation/fm-grade" }
 fm-model = { path = "../../crates/foundation/fm-model" }
+fm-playback = { path = "../../crates/media/fm-playback" }
 fm-persistence = { path = "../../crates/services/fm-persistence" }
+fm-plugin-host-api = { path = "../../crates/features/fm-plugin-host-api" }
 fm-preset-file = { path = "../../crates/foundation/fm-preset-file" }
+fm-ptz = { path = "../../crates/features/fm-ptz" }
 fm-presentations = { path = "../../crates/features/fm-presentations" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
+fm-record = { path = "../../crates/media/fm-record" }
 fm-sim = { path = "../../crates/media/fm-sim" }
+fm-social = { path = "../../crates/features/fm-social" }
 fm-switcher = { path = "../../crates/features/fm-switcher" }
 fm-title-render = { path = "../../crates/services/fm-title-render", features = ["images"] }
 fm-titles = { path = "../../crates/features/fm-titles" }

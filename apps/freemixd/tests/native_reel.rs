@@ -170,6 +170,7 @@ fn save_project(path: &Path) {
             retention_seconds: 10,
             storage_root: None,
             auto_return: None,
+            transition: fm_types::replay::ReplayTransition::CUT,
         })
         .unwrap();
     let stored = StoredProject::from_project_with_complete_runtime_state(
@@ -511,6 +512,7 @@ fn clip(event: u32) -> fm_protocol::ReelClip {
         trim_in_frames: 0,
         trim_out_frames: 0,
         speed_percent: 100,
+        reverse: false,
         dissolve_frames: 0,
     }
 }

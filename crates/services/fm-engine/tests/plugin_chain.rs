@@ -1,6 +1,6 @@
-//! AU-006: a strip or the Master bus carries a live, ordered plugin chain
-//! that the media plane renders; unsupported plugins and unknown strips are
-//! refused, and clearing a chain removes it.
+//! AU-006: a strip or the Master bus carries a persisted, undoable plugin
+//! chain that the media plane renders; unsupported plugins and unknown
+//! strips are refused, and clearing a chain removes it.
 
 use core::num::NonZeroU128;
 
@@ -76,6 +76,26 @@ fn execute(engine: &mut Engine, key: &str, command: EngineCommand) -> EngineComm
         .unwrap()
 }
 
+fn undo(engine: &mut Engine, key: &str) {
+    accept(
+        engine,
+        key,
+        EngineCommand::Undo {
+            expected_edit: None,
+        },
+    );
+}
+
+fn redo(engine: &mut Engine, key: &str) {
+    accept(
+        engine,
+        key,
+        EngineCommand::Redo {
+            expected_edit: None,
+        },
+    );
+}
+
 fn accept(engine: &mut Engine, key: &str, command: EngineCommand) -> EngineCommandOutcome {
     let outcome = execute(engine, key, command);
     assert!(
@@ -87,7 +107,7 @@ fn accept(engine: &mut Engine, key: &str, command: EngineCommand) -> EngineComma
 }
 
 #[test]
-fn a_plugin_chain_is_live_and_reaches_the_frame() {
+fn a_plugin_chain_is_an_undoable_project_edit_and_reaches_the_frame() {
     let mut engine = engine();
     let input_chain = chain();
     accept(
@@ -100,24 +120,37 @@ fn a_plugin_chain_is_live_and_reaches_the_frame() {
         &input_chain,
         "the strip holds the chain"
     );
-    // A live chain is not an undoable project edit.
-    assert_eq!(engine.undo_entries().len(), 0);
+    // A chain is a project edit: undoable, and persisted with the project.
+    assert_eq!(engine.undo_entries().len(), 1);
     assert_eq!(
         EngineCommand::AudioMixer(EngineAudioMixerEdit::SetPluginChain {
             target: StripDspTarget::Input(input(1)),
             chain: Box::new(input_chain.clone()),
         })
         .kind(),
-        EngineCommandKind::LiveOperation
+        EngineCommandKind::ProjectEdit
     );
     let frame = engine.tick().unwrap();
     assert_eq!(
         frame.audio_mixer_updates,
         vec![EngineAudioMixerUpdate::PluginChain {
             target: StripDspTarget::Input(input(1)),
-            chain: Box::new(input_chain),
+            chain: Box::new(input_chain.clone()),
         }]
     );
+
+    undo(&mut engine, "undo-input");
+    assert!(engine.show().input_audio_plugins(input(1)).is_empty());
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![EngineAudioMixerUpdate::PluginChain {
+            target: StripDspTarget::Input(input(1)),
+            chain: Box::new(PluginChain::new()),
+        }]
+    );
+    redo(&mut engine, "redo-input");
+    assert_eq!(engine.show().input_audio_plugins(input(1)), &input_chain);
 
     // The Master bus takes a chain too; it renders after the summed strips.
     let master = chain();
@@ -126,6 +159,10 @@ fn a_plugin_chain_is_live_and_reaches_the_frame() {
         "master",
         command(StripDspTarget::Master, master.clone()),
     );
+    assert_eq!(engine.show().master_audio_plugins(), &master);
+    undo(&mut engine, "undo-master");
+    assert!(engine.show().master_audio_plugins().is_empty());
+    redo(&mut engine, "redo-master");
     assert_eq!(engine.show().master_audio_plugins(), &master);
 }
 

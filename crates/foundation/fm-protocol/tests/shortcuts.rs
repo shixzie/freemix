@@ -311,7 +311,7 @@ fn shortcut_events_and_states_round_trip_exactly() {
             soloed: false,
             follow_video: false,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }],
         streams: Vec::new(),
         recordings: vec![
@@ -397,6 +397,7 @@ fn the_snapshot_announces_at_most_the_shortcut_bound() {
 fn snapshot(shortcut_states: u16) -> fm_protocol::SnapshotMessage {
     use fm_protocol::{EditLockStatus, InputStatus, SnapshotMessage};
     SnapshotMessage {
+        production_clocks: Vec::new(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -423,7 +424,7 @@ fn snapshot(shortcut_states: u16) -> fm_protocol::SnapshotMessage {
                 soloed: false,
                 follow_video: true,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
             .into(),
         desired_program: input(1),

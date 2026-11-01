@@ -92,12 +92,37 @@ pub enum ConsoleAction {
     Overlay(u8),
     /// GO on the Cues panel's list.
     CueGo,
+    /// Step the slideshow on Program (else Preview) to its next slide.
+    SlideNext,
+    /// Step the slideshow on Program (else Preview) to its previous slide.
+    SlidePrevious,
     /// The replay in mark at the live frame.
     ReplayMarkIn,
     /// The replay out mark at the live frame.
     ReplayMarkOut,
     /// Capture the marked range as a replay event.
     ReplayCapture,
+    /// Play the console's Replay player, or pause it while it plays.
+    ReplayPlayPause,
+    /// Step the Replay player one frame back, paused.
+    ReplayStepBack,
+    /// Step the Replay player one frame on, paused.
+    ReplayStepForward,
+    /// Shuttle the Replay player backwards at 2x.
+    ReplayShuttleBack,
+    /// Shuttle the Replay player forwards at 2x.
+    ReplayShuttleForward,
+    /// Play the second Replay input's player, or pause it (OR-012): two
+    /// controllers can drive A and B independently.
+    ReplayPlayPauseB,
+    /// Step the second Replay input's player one frame back, paused.
+    ReplayStepBackB,
+    /// Step the second Replay input's player one frame on, paused.
+    ReplayStepForwardB,
+    /// Shuttle the second Replay input's player backwards at 2x.
+    ReplayShuttleBackB,
+    /// Shuttle the second Replay input's player forwards at 2x.
+    ReplayShuttleForwardB,
 }
 
 impl ConsoleAction {
@@ -113,9 +138,21 @@ impl ConsoleAction {
             .chain((1..=OVERLAY_KEYS).map(Self::Overlay))
             .chain([
                 Self::CueGo,
+                Self::SlideNext,
+                Self::SlidePrevious,
                 Self::ReplayMarkIn,
                 Self::ReplayMarkOut,
                 Self::ReplayCapture,
+                Self::ReplayPlayPause,
+                Self::ReplayStepBack,
+                Self::ReplayStepForward,
+                Self::ReplayShuttleBack,
+                Self::ReplayShuttleForward,
+                Self::ReplayPlayPauseB,
+                Self::ReplayStepBackB,
+                Self::ReplayStepForwardB,
+                Self::ReplayShuttleBackB,
+                Self::ReplayShuttleForwardB,
             ])
             .collect()
     }
@@ -133,9 +170,21 @@ impl ConsoleAction {
             Self::Favorite(n) => format!("favorite.{n}"),
             Self::Overlay(n) => format!("overlay.{n}"),
             Self::CueGo => "cue_go".to_owned(),
+            Self::SlideNext => "slide_next".to_owned(),
+            Self::SlidePrevious => "slide_previous".to_owned(),
             Self::ReplayMarkIn => "replay_mark_in".to_owned(),
             Self::ReplayMarkOut => "replay_mark_out".to_owned(),
             Self::ReplayCapture => "replay_capture".to_owned(),
+            Self::ReplayPlayPause => "replay_play_pause".to_owned(),
+            Self::ReplayStepBack => "replay_step_back".to_owned(),
+            Self::ReplayStepForward => "replay_step_forward".to_owned(),
+            Self::ReplayShuttleBack => "replay_shuttle_back".to_owned(),
+            Self::ReplayShuttleForward => "replay_shuttle_forward".to_owned(),
+            Self::ReplayPlayPauseB => "replay_play_pause_b".to_owned(),
+            Self::ReplayStepBackB => "replay_step_back_b".to_owned(),
+            Self::ReplayStepForwardB => "replay_step_forward_b".to_owned(),
+            Self::ReplayShuttleBackB => "replay_shuttle_back_b".to_owned(),
+            Self::ReplayShuttleForwardB => "replay_shuttle_forward_b".to_owned(),
         }
     }
 
@@ -155,12 +204,24 @@ impl ConsoleAction {
             | Self::Take(_)
             | Self::QuickPlay(_)
             | Self::Cut
-            | Self::Overlay(_) => crate::ShortcutGroup::Switching,
+            | Self::Overlay(_)
+            | Self::SlideNext
+            | Self::SlidePrevious => crate::ShortcutGroup::Switching,
             Self::Fade | Self::FadeToBlack | Self::Favorite(_) => crate::ShortcutGroup::Transitions,
             Self::CueGo => crate::ShortcutGroup::Cues,
-            Self::ReplayMarkIn | Self::ReplayMarkOut | Self::ReplayCapture => {
-                crate::ShortcutGroup::Output
-            }
+            Self::ReplayMarkIn
+            | Self::ReplayMarkOut
+            | Self::ReplayCapture
+            | Self::ReplayPlayPause
+            | Self::ReplayStepBack
+            | Self::ReplayStepForward
+            | Self::ReplayShuttleBack
+            | Self::ReplayShuttleForward
+            | Self::ReplayPlayPauseB
+            | Self::ReplayStepBackB
+            | Self::ReplayStepForwardB
+            | Self::ReplayShuttleBackB
+            | Self::ReplayShuttleForwardB => crate::ShortcutGroup::Output,
         }
     }
 
@@ -178,9 +239,23 @@ impl ConsoleAction {
             Self::Favorite(n) => numbered(Msg::ConsoleActionFavorite, n),
             Self::Overlay(n) => numbered(Msg::ConsoleActionOverlay, n),
             Self::CueGo => l.text(Msg::ShortcutCueGo).to_owned(),
+            Self::SlideNext => l.text(Msg::CueActSlideNext).to_owned(),
+            Self::SlidePrevious => l.text(Msg::CueActSlidePrevious).to_owned(),
             Self::ReplayMarkIn => l.text(Msg::ConsoleActionReplayMarkIn).to_owned(),
             Self::ReplayMarkOut => l.text(Msg::ConsoleActionReplayMarkOut).to_owned(),
             Self::ReplayCapture => l.text(Msg::ConsoleActionReplayCapture).to_owned(),
+            Self::ReplayPlayPause => l.text(Msg::ConsoleActionReplayPlayPause).to_owned(),
+            Self::ReplayStepBack => l.text(Msg::ConsoleActionReplayStepBack).to_owned(),
+            Self::ReplayStepForward => l.text(Msg::ConsoleActionReplayStepForward).to_owned(),
+            Self::ReplayShuttleBack => l.text(Msg::ConsoleActionReplayShuttleBack).to_owned(),
+            Self::ReplayShuttleForward => l.text(Msg::ConsoleActionReplayShuttleForward).to_owned(),
+            Self::ReplayPlayPauseB => l.text(Msg::ConsoleActionReplayPlayPauseB).to_owned(),
+            Self::ReplayStepBackB => l.text(Msg::ConsoleActionReplayStepBackB).to_owned(),
+            Self::ReplayStepForwardB => l.text(Msg::ConsoleActionReplayStepForwardB).to_owned(),
+            Self::ReplayShuttleBackB => l.text(Msg::ConsoleActionReplayShuttleBackB).to_owned(),
+            Self::ReplayShuttleForwardB => {
+                l.text(Msg::ConsoleActionReplayShuttleForwardB).to_owned()
+            }
         }
     }
 }
@@ -212,6 +287,15 @@ impl ConsoleStroke {
     pub const fn command(key: Key) -> Self {
         Self {
             command: true,
+            ..Self::plain(key)
+        }
+    }
+
+    /// `key` with Shift.
+    #[must_use]
+    pub const fn shift(key: Key) -> Self {
+        Self {
+            shift: true,
             ..Self::plain(key)
         }
     }
@@ -347,6 +431,7 @@ impl BuiltinProfile {
 
     /// The profile's keys.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one binding per console action
     pub fn keymap(self) -> ConsoleKeymap {
         let digit = |n: u8| match n {
             1 => Key::Num1,
@@ -374,6 +459,38 @@ impl BuiltinProfile {
                     bindings.push((ConsoleAction::Favorite(n), ConsoleStroke::plain(key)));
                 }
                 bindings.push((ConsoleAction::CueGo, ConsoleStroke::plain(Key::G)));
+                bindings.extend([
+                    (
+                        ConsoleAction::SlideNext,
+                        ConsoleStroke::shift(Key::ArrowRight),
+                    ),
+                    (
+                        ConsoleAction::SlidePrevious,
+                        ConsoleStroke::shift(Key::ArrowLeft),
+                    ),
+                ]);
+                bindings.extend([
+                    (ConsoleAction::ReplayMarkIn, ConsoleStroke::plain(Key::I)),
+                    (ConsoleAction::ReplayMarkOut, ConsoleStroke::plain(Key::O)),
+                    (ConsoleAction::ReplayCapture, ConsoleStroke::plain(Key::E)),
+                    (ConsoleAction::ReplayPlayPause, ConsoleStroke::plain(Key::K)),
+                    (
+                        ConsoleAction::ReplayStepBack,
+                        ConsoleStroke::plain(Key::ArrowLeft),
+                    ),
+                    (
+                        ConsoleAction::ReplayStepForward,
+                        ConsoleStroke::plain(Key::ArrowRight),
+                    ),
+                    (
+                        ConsoleAction::ReplayShuttleBack,
+                        ConsoleStroke::plain(Key::J),
+                    ),
+                    (
+                        ConsoleAction::ReplayShuttleForward,
+                        ConsoleStroke::plain(Key::L),
+                    ),
+                ]);
             }
             Self::Vmix => {
                 for n in 1..=NUMBERED_INPUTS {
@@ -392,11 +509,38 @@ impl BuiltinProfile {
                 for (n, key) in [(1, Key::F9), (2, Key::F10), (3, Key::F11), (4, Key::F12)] {
                     bindings.push((ConsoleAction::Overlay(n), ConsoleStroke::plain(key)));
                 }
+                bindings.extend([(ConsoleAction::CueGo, ConsoleStroke::plain(Key::G))]);
                 bindings.extend([
-                    (ConsoleAction::CueGo, ConsoleStroke::plain(Key::G)),
+                    (
+                        ConsoleAction::SlideNext,
+                        ConsoleStroke::shift(Key::ArrowRight),
+                    ),
+                    (
+                        ConsoleAction::SlidePrevious,
+                        ConsoleStroke::shift(Key::ArrowLeft),
+                    ),
+                ]);
+                bindings.extend([
                     (ConsoleAction::ReplayMarkIn, ConsoleStroke::plain(Key::I)),
                     (ConsoleAction::ReplayMarkOut, ConsoleStroke::plain(Key::O)),
                     (ConsoleAction::ReplayCapture, ConsoleStroke::plain(Key::E)),
+                    (ConsoleAction::ReplayPlayPause, ConsoleStroke::plain(Key::K)),
+                    (
+                        ConsoleAction::ReplayStepBack,
+                        ConsoleStroke::plain(Key::ArrowLeft),
+                    ),
+                    (
+                        ConsoleAction::ReplayStepForward,
+                        ConsoleStroke::plain(Key::ArrowRight),
+                    ),
+                    (
+                        ConsoleAction::ReplayShuttleBack,
+                        ConsoleStroke::plain(Key::J),
+                    ),
+                    (
+                        ConsoleAction::ReplayShuttleForward,
+                        ConsoleStroke::plain(Key::L),
+                    ),
                 ]);
             }
         }
@@ -675,6 +819,9 @@ pub struct ConsoleKeyProfiles {
     /// This console's MIDI controller bindings (RC-005), saved with the
     /// profiles.
     pub midi: crate::midi_bindings::MidiBindings,
+    /// This console's HID controller bindings (RC-005), saved with the
+    /// profiles.
+    pub hid: crate::hid_bindings::HidBindings,
 }
 
 impl ConsoleKeyProfiles {
@@ -845,6 +992,7 @@ impl ConsoleKeyProfiles {
             }
         }
         entries.extend(self.midi.preference_entries());
+        entries.extend(self.hid.preference_entries());
         entries
     }
 
@@ -855,6 +1003,9 @@ impl ConsoleKeyProfiles {
     pub fn apply_preference(&mut self, key: &str, value: &str) -> bool {
         if crate::midi_bindings::MidiBindings::is_preference_key(key) {
             return self.midi.apply_preference(key, value);
+        }
+        if crate::hid_bindings::HidBindings::is_preference_key(key) {
+            return self.hid.apply_preference(key, value);
         }
         if key == PROFILE_KEY {
             let choice = match value.strip_prefix("custom.") {
@@ -968,6 +1119,7 @@ impl ConsoleKeyProfiles {
             active: ProfileChoice::default(),
             custom: vec![profile],
             midi: crate::midi_bindings::MidiBindings::default(),
+            hid: crate::hid_bindings::HidBindings::default(),
         };
         for (key, value) in single.preference_entries() {
             let field = key.strip_prefix("keymap.custom.1.")?;

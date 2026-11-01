@@ -1822,6 +1822,7 @@ pub(crate) mod tests {
             output: OutputId::new(NonZeroU128::new(1).unwrap()),
             name: "Program".to_owned(),
             aux_bus: None,
+            mix_minus: None,
         }];
         view.stream_targets = targets.to_vec();
         view.streams = targets

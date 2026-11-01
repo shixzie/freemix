@@ -31,6 +31,9 @@ Connection options:
   --web-mdns-name <NAME> Advertise the pages as NAME.local over mDNS
                          [default: freemix-<computer name>]
   --no-web-mdns          Advertise nothing over mDNS
+  --live-lan-listen <ADDR>
+                         Serve the project's LiveLAN viewers at this address
+                         (for example 0.0.0.0:8090) from the supervised daemon
   --connect <ADDR>       Connect to an existing daemon
   --project-id <ID>      Expected full nonzero u128 project ID in existing mode
 
@@ -140,6 +143,9 @@ pub struct SupervisedConfig {
     pub web_listen: Option<SocketAddr>,
     /// The gateway's own certificate and mDNS name, with `web_listen`.
     pub web: SupervisedWeb,
+    /// `--live-lan-listen`: the supervised daemon's LiveLAN viewer stream
+    /// listener (OR-017).
+    pub live_lan_listen: Option<SocketAddr>,
 }
 
 /// `--web-tls-cert`/`--web-tls-key` and the mDNS options, passed to the
@@ -164,6 +170,7 @@ impl SupervisedConfig {
             listen: default_listen(),
             web_listen: None,
             web: SupervisedWeb::default(),
+            live_lan_listen: None,
         }
     }
 }
@@ -304,6 +311,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
     let mut diagnose = None;
     let mut web_connect = None;
     let mut web_listen = None;
+    let mut live_lan_listen = None;
     let mut web_tls_cert = None;
     let mut web_tls_key = None;
     let mut web_mdns_name = None;
@@ -363,6 +371,11 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
                 let value = required(&mut arguments, "--web-listen")?;
                 let address = socket_address("--web-listen", &value)?;
                 set_once(&mut web_listen, address, "--web-listen")?;
+            }
+            "--live-lan-listen" => {
+                let value = required(&mut arguments, "--live-lan-listen")?;
+                let address = socket_address("--live-lan-listen", &value)?;
+                set_once(&mut live_lan_listen, address, "--live-lan-listen")?;
             }
             "--web-tls-cert" => set_once(
                 &mut web_tls_cert,
@@ -440,17 +453,21 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
         mdns_name: web_mdns_name,
         no_mdns: no_web_mdns.is_some(),
     };
-    let connection = match (connection, web_listen) {
-        (ConnectionConfig::Supervised(supervised), web_listen) => {
+    let connection = match (connection, web_listen, live_lan_listen) {
+        (ConnectionConfig::Supervised(supervised), web_listen, live_lan_listen) => {
             ConnectionConfig::Supervised(SupervisedConfig {
                 web_listen,
                 web,
+                live_lan_listen,
                 ..supervised
             })
         }
-        (existing, None) => existing,
-        (ConnectionConfig::Existing(_), Some(_)) => {
+        (existing, None, None) => existing,
+        (ConnectionConfig::Existing(_), Some(_), _) => {
             return Err(ArgsError::SupervisedOnly("--web-listen"));
+        }
+        (ConnectionConfig::Existing(_), None, Some(_)) => {
+            return Err(ArgsError::SupervisedOnly("--live-lan-listen"));
         }
     };
     if diagnose.is_some() && osc_listen.is_some() {
@@ -514,6 +531,7 @@ fn connection_config(
                 listen,
                 web_listen: None,
                 web: SupervisedWeb::default(),
+                live_lan_listen: None,
             }))
         }
         (None, Some(address)) => {

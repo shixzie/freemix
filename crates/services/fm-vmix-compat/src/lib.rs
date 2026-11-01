@@ -13,9 +13,11 @@ use std::{error::Error, fmt, fmt::Write as _, num::NonZeroU128};
 
 use fm_protocol::{CommandPayload, WireInputId};
 
+mod server;
 mod tcp;
 mod xpath;
 
+pub use server::{MAX_TCP_WRITE_BUFFER_BYTES, VmixServerError, VmixTcpServer};
 pub use tcp::{
     MAX_TCP_MESSAGE_BYTES, MAX_TCP_SESSIONS, SubscriptionTopic, TcpEvent, TcpHub, TcpReply,
     TcpRequest, TcpRequestError, TcpSession, TcpSessionError, TcpSessionId, parse_tcp_request,
@@ -37,8 +39,12 @@ pub const MAX_PARAMETER_VALUE_BYTES: usize = 4 * 1024;
 pub const MAX_INPUTS: usize = 1_000;
 /// Number of vMix 29 overlay channels represented by the compatibility model.
 pub const OVERLAY_CHANNELS: usize = 8;
+/// Number of vMix 29 output channels represented by the compatibility model.
+pub const OUTPUT_CHANNELS: usize = 4;
 
 const MAX_TRANSITION_MILLIS: u32 = 86_400_000;
+/// vMix's default transition duration, in milliseconds.
+const DEFAULT_TRANSITION_MILLIS: u32 = 500;
 
 /// A title text field exposed in a compatibility state snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,6 +77,17 @@ pub struct CompatInput {
     pub kind: String,
     /// Title text fields, in deterministic `SelectedIndex` order.
     pub text_fields: Vec<CompatTextField>,
+    /// vMix playback state (`Running`, `Paused`, or `Stopped`), when known;
+    /// omitted from the XML and XPath state when `None`.
+    pub state: Option<String>,
+    /// Source position in milliseconds, when known.
+    pub position_ms: Option<u64>,
+    /// Source duration in milliseconds, when known.
+    pub duration_ms: Option<u64>,
+    /// Whether the input's audio is muted, when known.
+    pub muted: Option<bool>,
+    /// The input's vMix audio volume, 0 through 100, when known.
+    pub volume_percent: Option<u8>,
 }
 
 impl CompatInput {
@@ -82,6 +99,11 @@ impl CompatInput {
             title: title.into(),
             kind: kind.into(),
             text_fields: Vec::new(),
+            state: None,
+            position_ms: None,
+            duration_ms: None,
+            muted: None,
+            volume_percent: None,
         }
     }
 
@@ -89,6 +111,28 @@ impl CompatInput {
     #[must_use]
     pub fn with_text_fields(mut self, fields: Vec<CompatTextField>) -> Self {
         self.text_fields = fields;
+        self
+    }
+
+    /// Adds the input's playback state, source position, and duration.
+    #[must_use]
+    pub fn with_media(
+        mut self,
+        state: impl Into<String>,
+        position_ms: u64,
+        duration_ms: Option<u64>,
+    ) -> Self {
+        self.state = Some(state.into());
+        self.position_ms = Some(position_ms);
+        self.duration_ms = duration_ms;
+        self
+    }
+
+    /// Adds the input's audio mute and volume (0 through 100).
+    #[must_use]
+    pub fn with_audio(mut self, muted: bool, volume_percent: u8) -> Self {
+        self.muted = Some(muted);
+        self.volume_percent = Some(volume_percent.min(100));
         self
     }
 }
@@ -104,6 +148,8 @@ pub enum StateError {
     InputNotFound,
     /// Overlay channels are one-based and must be in `1..=8`.
     InvalidOverlayChannel,
+    /// Output channels are one-based and must be in `1..=4`.
+    InvalidOutput,
 }
 
 impl fmt::Display for StateError {
@@ -113,6 +159,7 @@ impl fmt::Display for StateError {
             Self::DuplicateInput => "compatibility state contains a duplicate input ID",
             Self::InputNotFound => "compatibility state refers to an unknown input",
             Self::InvalidOverlayChannel => "overlay channel must be between 1 and 8",
+            Self::InvalidOutput => "output channel must be between 1 and 4",
         })
     }
 }
@@ -132,10 +179,21 @@ pub struct CompatState {
     pub preview: WireInputId,
     /// One entry per one-based overlay channel.
     pub overlays: [Option<WireInputId>; OVERLAY_CHANNELS],
+    /// The input each overlay channel showed before its current one, for
+    /// vMix's `OverlayInput<N>Last`.
+    pub previous_overlays: [Option<WireInputId>; OVERLAY_CHANNELS],
+    /// One entry per one-based output channel.
+    pub outputs: [Option<WireInputId>; OUTPUT_CHANNELS],
     /// Recording activity exposed by XML.
     pub recording: bool,
     /// Streaming activity exposed by XML.
     pub streaming: bool,
+    /// The configured transition duration in milliseconds (`Fade` without
+    /// `Duration` uses it; vMix's default is 500).
+    pub transition_millis: u32,
+    /// The configured transition effect (`Fade` uses it; vMix's default is
+    /// a fade).
+    pub transition_effect: fm_protocol::TransitionFavoriteEffect,
 }
 
 impl CompatState {
@@ -170,8 +228,14 @@ impl CompatState {
             active,
             preview,
             overlays: [None; OVERLAY_CHANNELS],
+            previous_overlays: [None; OVERLAY_CHANNELS],
+            outputs: [None; OUTPUT_CHANNELS],
             recording: false,
             streaming: false,
+            transition_millis: DEFAULT_TRANSITION_MILLIS,
+            transition_effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Fade,
+            ),
         })
     }
 
@@ -192,7 +256,44 @@ impl CompatState {
         if input.is_some_and(|id| !self.inputs.iter().any(|candidate| candidate.id == id)) {
             return Err(StateError::InputNotFound);
         }
+        if self.overlays[index] != input {
+            self.previous_overlays[index] = self.overlays[index];
+        }
         self.overlays[index] = input;
+        Ok(())
+    }
+
+    /// Restores the input one-based overlay `channel` showed before its
+    /// current one, swapping the two, and returns the restored input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid channel.
+    pub fn restore_overlay(&mut self, channel: u8) -> Result<Option<WireInputId>, StateError> {
+        let index = usize::from(channel)
+            .checked_sub(1)
+            .filter(|index| *index < OVERLAY_CHANNELS)
+            .ok_or(StateError::InvalidOverlayChannel)?;
+        let previous = self.previous_overlays[index];
+        self.previous_overlays[index] = self.overlays[index];
+        self.overlays[index] = previous;
+        Ok(previous)
+    }
+
+    /// Sets or clears one-based output `output`'s source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an output outside `1..=4` or an absent input ID.
+    pub fn set_output(&mut self, output: u8, input: Option<WireInputId>) -> Result<(), StateError> {
+        let index = usize::from(output)
+            .checked_sub(1)
+            .filter(|index| *index < OUTPUT_CHANNELS)
+            .ok_or(StateError::InvalidOutput)?;
+        if input.is_some_and(|id| !self.inputs.iter().any(|candidate| candidate.id == id)) {
+            return Err(StateError::InputNotFound);
+        }
+        self.outputs[index] = input;
         Ok(())
     }
 
@@ -226,6 +327,31 @@ impl CompatState {
                 escape_xml_into(&mut output, &field.value);
                 output.push_str("</text>");
             }
+            if let Some(state) = &input.state {
+                output.push_str("<state>");
+                escape_xml_into(&mut output, state);
+                output.push_str("</state>");
+            }
+            if let Some(position) = input.position_ms {
+                write!(output, "<position>{position}</position>")
+                    .expect("writing to a String cannot fail");
+            }
+            if let Some(duration) = input.duration_ms {
+                write!(output, "<duration>{duration}</duration>")
+                    .expect("writing to a String cannot fail");
+            }
+            if let Some(muted) = input.muted {
+                write!(
+                    output,
+                    "<muted>{}</muted>",
+                    if muted { "True" } else { "False" }
+                )
+                .expect("writing to a String cannot fail");
+            }
+            if let Some(volume) = input.volume_percent {
+                write!(output, "<volume>{volume}</volume>")
+                    .expect("writing to a String cannot fail");
+            }
             output.push_str("</input>");
         }
         output.push_str("</inputs><overlays>");
@@ -239,9 +365,27 @@ impl CompatState {
             }
             output.push_str("</overlay>");
         }
+        output.push_str("</overlays><outputs>");
+        for (index, source) in self.outputs.iter().enumerate() {
+            write!(output, "<output number=\"{}\">", index + 1)
+                .expect("writing to a String cannot fail");
+            if let Some(input) = source {
+                write!(output, "{}", self.ordinal(*input).unwrap_or_default())
+                    .expect("writing to a String cannot fail");
+            }
+            output.push_str("</output>");
+        }
+        output.push_str("</outputs><transitions><transition number=\"1\"><effect>");
+        escape_xml_into(&mut output, &self.transition_effect.token());
         write!(
             output,
-            "</overlays><preview>{}</preview><active>{}</active><recording>{}</recording><streaming>{}</streaming></vmix>",
+            "</effect><duration_millis>{}</duration_millis></transition></transitions>",
+            self.transition_millis
+        )
+        .expect("writing to a String cannot fail");
+        write!(
+            output,
+            "<preview>{}</preview><active>{}</active><recording>{}</recording><streaming>{}</streaming></vmix>",
             self.ordinal(self.preview).unwrap_or_default(),
             self.ordinal(self.active).unwrap_or_default(),
             vmix_bool(self.recording),
@@ -332,10 +476,28 @@ pub enum CompatIntent {
     /// Fade using vMix's millisecond duration, optionally to a selected input.
     Fade {
         input: Option<WireInputId>,
+        effect: fm_protocol::TransitionFavoriteEffect,
         duration_millis: u32,
+    },
+    /// Configure the duration `Fade` uses when its request omits one; the
+    /// dispatcher stores it on the compatibility state.
+    SetTransitionDuration { millis: u32 },
+    /// Configure the effect `Fade` uses; the dispatcher stores it on the
+    /// compatibility state.
+    SetTransitionEffect {
+        effect: fm_protocol::TransitionFavoriteEffect,
     },
     /// Toggle a one-based overlay channel for an input on the main mix.
     ToggleOverlay { channel: u8, input: WireInputId },
+    /// Restore the input a one-based overlay channel showed before its
+    /// current one; the dispatcher swaps them on the compatibility state.
+    RestoreOverlay { channel: u8 },
+    /// Set (or clear with `None`) one-based output `output`'s source; the
+    /// dispatcher maps it onto a display output.
+    SetOutput {
+        output: u8,
+        input: Option<WireInputId>,
+    },
     /// Set one title field.
     SetText {
         input: WireInputId,
@@ -346,6 +508,40 @@ pub enum CompatIntent {
     SetRecording { enabled: bool },
     /// Start or stop all streams or one zero-based stream index.
     SetStreaming { enabled: bool, stream: Option<u16> },
+    /// Toggle one media input's play/pause state; the dispatcher reads the
+    /// current transport state.
+    ToggleMediaPlayback { input: WireInputId },
+    /// Restart one media input from its trim start and play it; the
+    /// dispatcher issues the seek and play.
+    RestartMedia { input: WireInputId },
+    /// Set one input's volume as vMix's 0 through 100 percentage; the
+    /// dispatcher maps it onto the strip's gain.
+    SetInputVolume { input: WireInputId, percent: u8 },
+    /// Mute or unmute one input's audio strip.
+    SetInputMuted { input: WireInputId, muted: bool },
+    /// Toggle the primary recorder; the dispatcher reads the current state.
+    ToggleRecording,
+    /// Toggle all streams or one zero-based stream index; the dispatcher
+    /// reads the current state.
+    ToggleStreaming { stream: Option<u16> },
+    /// Turn every overlay channel off.
+    AllOverlaysOff,
+    /// Toggle the Fade to Black state; the dispatcher reads the current state.
+    ToggleFadeToBlack,
+    /// Rename one input (vMix's short name).
+    RenameInput { input: WireInputId, name: String },
+    /// Add a network-stream input from `url` with an optional short `name`;
+    /// the dispatcher allocates the input ID.
+    AddNetworkStream { url: String, name: Option<String> },
+    /// Replace one still input's picture from `url`; the dispatcher imports
+    /// it into the project.
+    SetImage { input: WireInputId, url: String },
+    /// Put one-based fullscreen output `output` on `input`, or turn it off
+    /// with `None`; the dispatcher maps it onto a display output.
+    SetOutputFullscreen {
+        output: u8,
+        input: Option<WireInputId>,
+    },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -496,6 +692,7 @@ fn translate_function(
     translate(function, &parameters, state)
 }
 
+#[allow(clippy::too_many_lines)] // one arm per translated vMix function
 fn translate(
     function: &str,
     parameters: &[(String, String)],
@@ -534,22 +731,235 @@ fn translate(
                     "only the main mix (0) is represented",
                 ));
             }
-            let Some(duration) = optional(parameters, "Duration") else {
-                return Ok(unsupported(
-                    function,
-                    "the configured vMix transition duration is not present in the request",
-                ));
+            let duration_millis = match optional(parameters, "Duration") {
+                Some(duration) => parse_u32(duration, "Duration", 1, MAX_TRANSITION_MILLIS)?,
+                // vMix uses the duration configured by
+                // `SetTransitionDuration` when the request omits one.
+                None => state.transition_millis.max(1),
             };
-            let duration_millis = parse_u32(duration, "Duration", 1, MAX_TRANSITION_MILLIS)?;
             let input = optional(parameters, "Input")
                 .map(|reference| state.resolve_input(reference))
                 .transpose()?;
+            let effect = state.transition_effect;
+            if effect == fm_protocol::TransitionFavoriteEffect::Cut {
+                return Ok(
+                    input.map_or(Translation::Protocol(CommandPayload::Cut), |input| {
+                        Translation::Compat(CompatIntent::CutTo { input })
+                    }),
+                );
+            }
             Ok(Translation::Compat(CompatIntent::Fade {
                 input,
+                effect,
                 duration_millis,
             }))
         }
+        "SetTransitionEffect" => {
+            allowed(parameters, &["Function", "Value"])?;
+            let effect = parse_transition_effect(required(parameters, "Value")?).ok_or(
+                ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "unknown transition effect",
+                },
+            )?;
+            Ok(Translation::Compat(CompatIntent::SetTransitionEffect {
+                effect,
+            }))
+        }
+        "SetTransitionDuration" => {
+            allowed(parameters, &["Function", "Value"])?;
+            let millis = parse_u32(
+                required(parameters, "Value")?,
+                "Value",
+                1,
+                MAX_TRANSITION_MILLIS,
+            )?;
+            Ok(Translation::Compat(CompatIntent::SetTransitionDuration {
+                millis,
+            }))
+        }
+        "NextItem" | "PreviousItem" | "NextPicture" | "PreviousPicture" => {
+            allowed(parameters, &["Function", "Input"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let navigation = if function.starts_with("Next") {
+                fm_protocol::PagedNavigation::Next
+            } else {
+                fm_protocol::PagedNavigation::Previous
+            };
+            Ok(Translation::Protocol(CommandPayload::PageNavigate {
+                input,
+                navigation,
+            }))
+        }
+        "SelectIndex" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let value = parse_u32(required(parameters, "Value")?, "Value", 1, u32::MAX)?;
+            Ok(Translation::Protocol(CommandPayload::PageNavigate {
+                input,
+                navigation: fm_protocol::PagedNavigation::Goto(value - 1),
+            }))
+        }
+        "Play" | "Pause" | "Stop" | "Restart" => {
+            allowed(parameters, &["Function", "Input"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let operation = match function {
+                "Play" => fm_protocol::MediaOperation::Play,
+                "Pause" => fm_protocol::MediaOperation::Pause,
+                "Stop" => fm_protocol::MediaOperation::Stop,
+                _ => return Ok(Translation::Compat(CompatIntent::RestartMedia { input })),
+            };
+            Ok(Translation::Protocol(CommandPayload::Media {
+                input,
+                operation,
+            }))
+        }
+        "SetPosition" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let millis = parse_u32(required(parameters, "Value")?, "Value", 0, u32::MAX)?;
+            Ok(Translation::Protocol(CommandPayload::Media {
+                input,
+                operation: fm_protocol::MediaOperation::Seek(fm_protocol::MediaSeekTarget::Time {
+                    numerator: u64::from(millis),
+                    denominator: 1_000,
+                }),
+            }))
+        }
+        "PlayPause" => {
+            allowed(parameters, &["Function", "Input"])?;
+            Ok(Translation::Compat(CompatIntent::ToggleMediaPlayback {
+                input: state.resolve_input(required(parameters, "Input")?)?,
+            }))
+        }
+        "SetVolume" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let percent = u8::try_from(parse_u32(required(parameters, "Value")?, "Value", 0, 100)?)
+                .map_err(|_| ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "volume is 0 through 100",
+                })?;
+            Ok(Translation::Compat(CompatIntent::SetInputVolume {
+                input: state.resolve_input(required(parameters, "Input")?)?,
+                percent,
+            }))
+        }
+        "StartPlayList" | "StopPlayList" | "NextPlayListEntry" | "PreviousPlayListEntry" => {
+            allowed(parameters, &["Function"])?;
+            let operation = match function {
+                "StartPlayList" => fm_protocol::PlaylistOperation::Start {
+                    at: fm_protocol::PlaylistStart::Now,
+                    from: None,
+                },
+                "StopPlayList" => fm_protocol::PlaylistOperation::Stop,
+                "NextPlayListEntry" => fm_protocol::PlaylistOperation::Next,
+                _ => fm_protocol::PlaylistOperation::Previous,
+            };
+            Ok(Translation::Protocol(CommandPayload::PlaylistControl {
+                operation,
+            }))
+        }
+        "OverlayInputAllOff" => {
+            allowed(parameters, &["Function"])?;
+            Ok(Translation::Compat(CompatIntent::AllOverlaysOff))
+        }
+        "FadeToBlack" => {
+            allowed(parameters, &["Function"])?;
+            Ok(Translation::Compat(CompatIntent::ToggleFadeToBlack))
+        }
+        "StartStopRecording" => {
+            allowed(parameters, &["Function"])?;
+            Ok(Translation::Compat(CompatIntent::ToggleRecording))
+        }
+        "StartStopStreaming" => {
+            allowed(parameters, &["Function", "Value"])?;
+            let stream = optional(parameters, "Value")
+                .filter(|value| !value.is_empty())
+                .map(|value| parse_u16(value, "Value"))
+                .transpose()?;
+            Ok(Translation::Compat(CompatIntent::ToggleStreaming {
+                stream,
+            }))
+        }
+        "AudioOn" | "AudioOff" => {
+            allowed(parameters, &["Function", "Input"])?;
+            Ok(Translation::Compat(CompatIntent::SetInputMuted {
+                input: state.resolve_input(required(parameters, "Input")?)?,
+                muted: function == "AudioOff",
+            }))
+        }
+        "SetInputName" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let name = required(parameters, "Value")?;
+            if name.is_empty() {
+                return Err(ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "an input name is not empty",
+                });
+            }
+            Ok(Translation::Compat(CompatIntent::RenameInput {
+                input,
+                name: name.to_owned(),
+            }))
+        }
         "SetText" => translate_set_text(parameters, state),
+        "SetOutputFullscreen" | "SetOutputFullscreen2" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let output = u8::from(function == "SetOutputFullscreen2") + 1;
+            let off = optional(parameters, "Value").is_some_and(|value| value == "0");
+            let input = if off {
+                None
+            } else {
+                optional(parameters, "Input")
+                    .filter(|value| !value.is_empty())
+                    .map(|value| state.resolve_input(value))
+                    .transpose()?
+            };
+            if !off && input.is_none() {
+                return Ok(unsupported(
+                    function,
+                    "fullscreen needs an input or Value=0 to turn it off",
+                ));
+            }
+            Ok(Translation::Compat(CompatIntent::SetOutputFullscreen {
+                output,
+                input,
+            }))
+        }
+        "SetImage" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let url = required(parameters, "Value")?;
+            if url.is_empty() {
+                return Err(ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "an image URL is not empty",
+                });
+            }
+            Ok(Translation::Compat(CompatIntent::SetImage {
+                input,
+                url: url.to_owned(),
+            }))
+        }
+        "AddInput" => translate_add_input(parameters),
+        "SetOutput" | "SetOutput2" | "SetOutput3" | "SetOutput4" => {
+            allowed(parameters, &["Function", "Input"])?;
+            let output = match function {
+                "SetOutput" => 1,
+                "SetOutput2" => 2,
+                "SetOutput3" => 3,
+                _ => 4,
+            };
+            let input = optional(parameters, "Input")
+                .filter(|value| !value.is_empty())
+                .map(|value| state.resolve_input(value))
+                .transpose()?;
+            Ok(Translation::Compat(CompatIntent::SetOutput {
+                output,
+                input,
+            }))
+        }
         "StartRecording" | "StopRecording" => {
             allowed(parameters, &["Function"])?;
             Ok(Translation::Compat(CompatIntent::SetRecording {
@@ -568,6 +978,57 @@ fn translate(
             }))
         }
         _ => {
+            if let Some(channel) = overlay_channel_with_suffix(function, "In") {
+                allowed(parameters, &["Function", "Input", "Mix"])?;
+                if !is_main_mix(parameters) {
+                    return Ok(unsupported(
+                        function,
+                        "only the main mix (0) is represented",
+                    ));
+                }
+                let channel = fm_protocol::WireOverlayChannelId::new(channel).ok_or(
+                    ParseError::InvalidParameter {
+                        parameter: "Function",
+                        reason: "overlay channel is outside 1..=8",
+                    },
+                )?;
+                return Ok(Translation::Protocol(CommandPayload::TakeOverlay {
+                    channel,
+                    source: state.resolve_input(required(parameters, "Input")?)?,
+                }));
+            }
+            if let Some(channel) = overlay_channel_with_suffix(function, "Off")
+                .or_else(|| overlay_channel_with_suffix(function, "Out"))
+            {
+                allowed(parameters, &["Function", "Mix"])?;
+                if !is_main_mix(parameters) {
+                    return Ok(unsupported(
+                        function,
+                        "only the main mix (0) is represented",
+                    ));
+                }
+                let channel = fm_protocol::WireOverlayChannelId::new(channel).ok_or(
+                    ParseError::InvalidParameter {
+                        parameter: "Function",
+                        reason: "overlay channel is outside 1..=8",
+                    },
+                )?;
+                return Ok(Translation::Protocol(CommandPayload::OverlayOff {
+                    channel,
+                }));
+            }
+            if let Some(channel) = overlay_channel_with_suffix(function, "Last") {
+                allowed(parameters, &["Function", "Mix"])?;
+                if !is_main_mix(parameters) {
+                    return Ok(unsupported(
+                        function,
+                        "only the main mix (0) is represented",
+                    ));
+                }
+                return Ok(Translation::Compat(CompatIntent::RestoreOverlay {
+                    channel,
+                }));
+            }
             if let Some(channel) = overlay_channel(function) {
                 allowed(parameters, &["Function", "Input", "Mix"])?;
                 if !is_main_mix(parameters) {
@@ -629,6 +1090,30 @@ fn translate_set_text(
         input,
         field,
         value: required(parameters, "Value")?.to_owned(),
+    }))
+}
+
+fn translate_add_input(parameters: &[(String, String)]) -> Result<Translation, ParseError> {
+    allowed(parameters, &["Function", "Input", "Value"])?;
+    let value = required(parameters, "Value")?.trim();
+    let lower = value.to_ascii_lowercase();
+    if ![
+        "rtmp://", "rtmps://", "srt://", "http://", "https://", "omt://",
+    ]
+    .iter()
+    .any(|scheme| lower.starts_with(scheme))
+    {
+        return Ok(unsupported(
+            "AddInput",
+            "only network stream URLs are represented",
+        ));
+    }
+    let name = optional(parameters, "Input")
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned);
+    Ok(Translation::Compat(CompatIntent::AddNetworkStream {
+        url: value.to_owned(),
+        name,
     }))
 }
 
@@ -734,6 +1219,32 @@ fn is_main_mix(parameters: &[(String, String)]) -> bool {
     optional(parameters, "Mix").is_none_or(|mix| mix == "0")
 }
 
+fn parse_transition_effect(value: &str) -> Option<fm_protocol::TransitionFavoriteEffect> {
+    use fm_protocol::{AutoTransitionKind, TransitionFavoriteEffect};
+    let normalized: String = value
+        .chars()
+        .filter(|character| !matches!(character, ' ' | '_' | '-'))
+        .flat_map(char::to_lowercase)
+        .collect();
+    Some(match normalized.as_str() {
+        "cut" => TransitionFavoriteEffect::Cut,
+        "fade" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Fade),
+        "alphafade" | "alpha" => TransitionFavoriteEffect::Mix(AutoTransitionKind::AlphaFade),
+        "wipe" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Wipe),
+        "verticalwipe" => TransitionFavoriteEffect::Mix(AutoTransitionKind::VerticalWipe),
+        "slide" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Slide),
+        "verticalslide" => TransitionFavoriteEffect::Mix(AutoTransitionKind::VerticalSlide),
+        "zoom" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Zoom),
+        "fly" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Fly),
+        "flyrotate" => TransitionFavoriteEffect::Mix(AutoTransitionKind::FlyRotate),
+        "cube" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Cube),
+        "cubezoom" => TransitionFavoriteEffect::Mix(AutoTransitionKind::CubeZoom),
+        "crosszoom" => TransitionFavoriteEffect::Mix(AutoTransitionKind::CrossZoom),
+        "merge" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Merge),
+        _ => return None,
+    })
+}
+
 fn parse_u32(
     value: &str,
     parameter: &'static str,
@@ -764,6 +1275,15 @@ fn parse_usize(value: &str, parameter: &'static str) -> Result<usize, ParseError
     })
 }
 
+fn overlay_channel_with_suffix(function: &str, suffix: &str) -> Option<u8> {
+    let rest = function.strip_prefix("OverlayInput")?;
+    let number = rest.strip_suffix(suffix)?;
+    number
+        .parse::<u8>()
+        .ok()
+        .filter(|channel| (1..=8).contains(channel))
+}
+
 fn overlay_channel(function: &str) -> Option<u8> {
     let suffix = function.strip_prefix("OverlayInput")?;
     if suffix.len() != 1 {
@@ -778,17 +1298,12 @@ fn overlay_channel(function: &str) -> Option<u8> {
 fn known_unsupported(function: &str) -> bool {
     matches!(
         function,
-        "StartStopRecording"
-            | "StartStopStreaming"
-            | "AudioOn"
-            | "AudioOff"
-            | "AddInput"
-            | "FadeToBlack"
-            | "OverlayInputAllOff"
-    ) || (function.starts_with("OverlayInput")
-        && ["In", "Last", "Off", "Out", "Zoom"]
-            .iter()
-            .any(|suffix| function.ends_with(suffix)))
+        "StartExternal" | "StopExternal" | "StartStopExternal"
+    ) || function.starts_with("SetVolumeChannel")
+        || (function.starts_with("OverlayInput")
+            && ["In", "Last", "Off", "Out", "Zoom"]
+                .iter()
+                .any(|suffix| function.ends_with(suffix)))
 }
 
 fn unsupported(function: &str, reason: &'static str) -> Translation {

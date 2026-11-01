@@ -19,7 +19,9 @@ use fm_automation::{
     PlaylistTransition, PlaylistTransitionKind, SnapshotError as PlaylistSnapshotError, StartAt,
 };
 use fm_command::{Rejection, RejectionCode};
-use fm_switcher::{SwitcherCommand, SwitcherError, SwitcherEvent, SwitcherState, TransitionKind};
+use fm_switcher::{
+    StingerSlotId, SwitcherCommand, SwitcherError, SwitcherEvent, SwitcherState, TransitionKind,
+};
 use fm_types::InputId;
 
 use crate::{EngineCommand, ShowState};
@@ -198,14 +200,22 @@ fn validate_entries(state: &ShowState, entries: &[PlaylistEntry]) -> Result<(), 
                 format!("playlist entry {} must have a fixed duration", entry.id),
             ));
         }
-        if entry.transition.kind == PlaylistTransitionKind::Stinger
-            || entry.transition.duration_ms > u64::from(MAX_PLAYLIST_TRANSITION_FRAMES)
-        {
+        let valid = match entry.transition.kind {
+            PlaylistTransitionKind::Stinger => {
+                entry.transition.duration_ms > 0
+                    && entry
+                        .transition
+                        .stinger_slot
+                        .is_some_and(|slot| (1..=8).contains(&slot))
+            }
+            _ => entry.transition.stinger_slot.is_none(),
+        };
+        if !valid || entry.transition.duration_ms > u64::from(MAX_PLAYLIST_TRANSITION_FRAMES) {
             return Err(Rejection::new(
                 RejectionCode::InvalidCommand,
                 format!(
                     "playlist entry {} transition must be a cut, fade, alpha fade, wipe, slide, \
-                     or zoom of at most {MAX_PLAYLIST_TRANSITION_FRAMES} frames",
+                     zoom, or Stinger 1 through 8 of at most {MAX_PLAYLIST_TRANSITION_FRAMES} frames",
                     entry.id
                 ),
             ));
@@ -270,7 +280,12 @@ pub(crate) fn cue_transition_kind(
         return None;
     }
     match cue.transition.kind {
-        PlaylistTransitionKind::Cut | PlaylistTransitionKind::Stinger => None,
+        PlaylistTransitionKind::Cut => None,
+        PlaylistTransitionKind::Stinger => cue
+            .transition
+            .stinger_slot
+            .and_then(StingerSlotId::new)
+            .map(TransitionKind::Stinger),
         PlaylistTransitionKind::Fade => Some(TransitionKind::Fade),
         PlaylistTransitionKind::AlphaFade => Some(TransitionKind::AlphaFade),
         PlaylistTransitionKind::Wipe => Some(TransitionKind::Wipe),
@@ -344,6 +359,11 @@ impl std::error::Error for PlaylistRestoreError {}
 ///
 /// Returns a [`PlaylistRestoreError`] for structurally invalid entries or an
 /// inconsistent state.
+///
+/// # Panics
+///
+/// Panics when a Stinger transition accepted by `fm_model` validation has no
+/// slot, which model validation forbids.
 pub fn playlist_from_model(model: &fm_model::Playlist) -> Result<Playlist, PlaylistRestoreError> {
     fm_model::validate_playlist_entries(&model.entries).map_err(PlaylistRestoreError::Entries)?;
     let entries = model
@@ -353,14 +373,27 @@ pub fn playlist_from_model(model: &fm_model::Playlist) -> Result<Playlist, Playl
             PlaylistEntry::new(
                 PlaylistEntryId::new(entry.id),
                 entry.input,
-                EntryDuration::Fixed {
-                    ms: entry.duration_frames,
+                if entry.follow_media {
+                    EntryDuration::Media { length_ms: None }
+                } else {
+                    EntryDuration::Fixed {
+                        ms: entry.duration_frames,
+                    }
                 },
             )
-            .with_transition(PlaylistTransition::new(
-                automation_transition_kind(entry.transition.kind),
-                u64::from(entry.transition.duration_frames),
-            ))
+            .with_transition(match entry.transition.kind {
+                fm_model::PlaylistTransitionKind::Stinger => PlaylistTransition::stinger(
+                    entry
+                        .transition
+                        .stinger_slot
+                        .expect("a validated Stinger names its slot"),
+                    u64::from(entry.transition.duration_frames),
+                ),
+                kind => PlaylistTransition::new(
+                    automation_transition_kind(kind),
+                    u64::from(entry.transition.duration_frames),
+                ),
+            })
             .with_enabled(entry.enabled)
         })
         .collect();
@@ -430,11 +463,13 @@ pub fn playlist_to_model(playlist: &Playlist) -> fm_model::Playlist {
                 duration_frames: entry
                     .duration
                     .known_ms()
-                    .expect("engine playlist entries have fixed durations"),
+                    .unwrap_or_else(|| entry.transition.duration_ms.max(1)),
+                follow_media: matches!(entry.duration, EntryDuration::Media { .. }),
                 transition: fm_model::PlaylistTransition {
                     kind: model_transition_kind(entry.transition.kind),
                     duration_frames: u32::try_from(entry.transition.duration_ms)
                         .expect("engine playlist transitions are bounded"),
+                    stinger_slot: entry.transition.stinger_slot,
                 },
                 enabled: entry.enabled,
             })
@@ -502,6 +537,7 @@ const fn automation_transition_kind(
         fm_model::PlaylistTransitionKind::Wipe => PlaylistTransitionKind::Wipe,
         fm_model::PlaylistTransitionKind::Slide => PlaylistTransitionKind::Slide,
         fm_model::PlaylistTransitionKind::Zoom => PlaylistTransitionKind::Zoom,
+        fm_model::PlaylistTransitionKind::Stinger => PlaylistTransitionKind::Stinger,
     }
 }
 
@@ -513,8 +549,6 @@ fn model_transition_kind(kind: PlaylistTransitionKind) -> fm_model::PlaylistTran
         PlaylistTransitionKind::Wipe => fm_model::PlaylistTransitionKind::Wipe,
         PlaylistTransitionKind::Slide => fm_model::PlaylistTransitionKind::Slide,
         PlaylistTransitionKind::Zoom => fm_model::PlaylistTransitionKind::Zoom,
-        PlaylistTransitionKind::Stinger => {
-            unreachable!("the engine never accepts a Stinger playlist transition")
-        }
+        PlaylistTransitionKind::Stinger => fm_model::PlaylistTransitionKind::Stinger,
     }
 }

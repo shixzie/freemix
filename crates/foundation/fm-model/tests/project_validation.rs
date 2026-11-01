@@ -1704,6 +1704,12 @@ fn stream_ladder_rungs_validate_bitrates_and_even_bounded_dimensions() {
             MAX_STREAM_LADDER_WIDTH,
             MAX_STREAM_LADDER_HEIGHT,
         ),
+        // The bounds hold either way round, so portrait 8K fits too.
+        (
+            MAX_VIDEO_BITRATE_KBPS,
+            MAX_STREAM_LADDER_HEIGHT,
+            MAX_STREAM_LADDER_WIDTH,
+        ),
     ] {
         assert!(
             StreamLadderRung::new(bitrate, width, height).is_ok(),
@@ -1745,8 +1751,14 @@ fn stream_ladder_rungs_validate_bitrates_and_even_bounded_dimensions() {
         ),
         (
             MIN_VIDEO_BITRATE_KBPS,
-            640,
+            MAX_STREAM_LADDER_WIDTH,
             MAX_STREAM_LADDER_HEIGHT + 1,
+            StreamLadderError::DimensionTooLarge,
+        ),
+        (
+            MIN_VIDEO_BITRATE_KBPS,
+            MAX_STREAM_LADDER_WIDTH,
+            MAX_STREAM_LADDER_WIDTH,
             StreamLadderError::DimensionTooLarge,
         ),
         (1_000, 641, 360, StreamLadderError::OddDimension),
@@ -2051,7 +2063,7 @@ fn persisted_input_gain_is_exact_and_bounded() {
             muted: false,
             soloed: false,
             follow_video: true,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }
     );
 }
@@ -3631,5 +3643,17 @@ fn source_replacement_refuses_a_key_input_that_would_render_a_scene() {
     project
         .replace_input_source(input_id(98), alias(95), Vec::new())
         .unwrap();
+    assert_eq!(project.validate(), Ok(()));
+}
+
+#[test]
+fn a_project_holds_up_to_sixteen_audio_channels() {
+    assert_eq!(ProjectSettings::MAX_AUDIO_CHANNELS, 16);
+    let channels = (1..=16_u8)
+        .map(|number| fm_types::Channel::Discrete(fm_types::DiscreteChannel::new(number).unwrap()))
+        .collect();
+    let mut settings = settings();
+    settings.audio.channels = ChannelLayout::new(channels).unwrap();
+    let project = Project::new(project_id(7), "Sixteen channels", settings);
     assert_eq!(project.validate(), Ok(()));
 }

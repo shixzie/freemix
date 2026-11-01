@@ -145,6 +145,11 @@ pub enum TitleClockKind {
     /// Time since the title was taken on air, rounded down like every
     /// count-up; zero while the title is off air.
     SinceTake { format: DurationFormat },
+    /// Another clock from the show registry, resolved by name at render
+    /// time (for example a media-remaining, session, or playlist clock the
+    /// template does not define itself). An element that shows this clock
+    /// may give it its own display preset.
+    Reference { clock: ClockName },
 }
 
 impl TitleClockKind {
@@ -156,12 +161,18 @@ impl TitleClockKind {
             Self::CountdownTo { format, .. } | Self::SinceTake { format } => {
                 DisplayFormat::Duration(*format)
             }
+            // The reference has no format of its own; the element's preset
+            // (or the shared clock's own format) decides.
+            Self::Reference { .. } => DisplayFormat::Duration(DurationFormat::MinutesSeconds),
         }
     }
 
     /// Whether an element preset is of this clock's kind.
     #[must_use]
     pub const fn accepts_format(&self, format: DisplayFormat) -> bool {
+        if matches!(self, Self::Reference { .. }) {
+            return true;
+        }
         matches!(
             (self, format),
             (Self::TimeOfDay { .. }, DisplayFormat::TimeOfDay(_))
@@ -265,10 +276,10 @@ pub fn validate_title_clocks(
             continue;
         };
         let Some(kind) = defined.get(&spec.clock) else {
-            return Err(TitleClockError::UndefinedClock {
-                element: element.id,
-                clock: spec.clock.clone(),
-            });
+            // An element may name a show production clock the template does
+            // not define; it resolves from the shared registry at render
+            // time.
+            continue;
         };
         if let Some(format) = spec.format
             && !kind.accepts_format(format)
@@ -345,6 +356,8 @@ pub fn title_clock_registry(
                     format: *format,
                 }
             }
+            // A reference resolves only from the show's shared registry.
+            TitleClockKind::Reference { .. } => continue,
         };
         registry.insert(clock.name.clone(), production)?;
     }
@@ -353,4 +366,45 @@ pub fn title_clock_registry(
 
 fn utc_nanos(instant: UtcInstant) -> i128 {
     i128::from(instant.unix_seconds()) * 1_000_000_000 + i128::from(instant.subsec_nanos())
+}
+
+/// Builds the registry a frame reads from the template's own `clocks` and,
+/// when an element names a clock the template does not define, from the
+/// shared show `registry` (`None` leaves such elements unresolved).
+///
+/// # Errors
+///
+/// Returns [`ProductionClockError`] for more than [`MAX_PRODUCTION_CLOCKS`]
+/// clocks or a duplicate name.
+pub fn title_clock_registry_with(
+    template: &TitleTemplate,
+    clocks: &[TitleClock],
+    time: TitleClockTime,
+    shared: Option<&ProductionClocks>,
+) -> Result<ProductionClocks, ProductionClockError> {
+    let mut registry = title_clock_registry(clocks, time)?;
+    let Some(shared) = shared else {
+        return Ok(registry);
+    };
+    for clock in clocks {
+        let TitleClockKind::Reference { clock: referenced } = &clock.kind else {
+            continue;
+        };
+        if registry.get(&clock.name).is_none()
+            && let Some(shared_clock) = shared.get(referenced)
+        {
+            registry.insert(clock.name.clone(), shared_clock.clone())?;
+        }
+    }
+    for element in &template.elements {
+        let ElementKind::ProductionClock(spec) = &element.kind else {
+            continue;
+        };
+        if registry.get(&spec.clock).is_none()
+            && let Some(clock) = shared.get(&spec.clock)
+        {
+            registry.insert(spec.clock.clone(), clock.clone())?;
+        }
+    }
+    Ok(registry)
 }

@@ -8,8 +8,8 @@ mod desk;
 
 pub use desk::{
     Actor, AuditAction, AuditEntry, AuditResult, DeskCommand, DeskConfig, DeskConfigError,
-    DeskError, ModerationDesk, OnAir, OnAirSource, Role, TitleMappingError, TitleSyncError,
-    TypedTitleBinding, TypedTitleMapping,
+    DeskDocumentError, DeskError, ModerationDesk, OnAir, OnAirSource, Role, TitleMappingError,
+    TitleSyncError, TypedTitleBinding, TypedTitleMapping,
 };
 
 macro_rules! string_id {
@@ -208,6 +208,29 @@ impl RedactionRule {
 pub struct ContentPolicy {
     pub profanity: ProfanityPolicy,
     pub redactions: Vec<RedactionRule>,
+}
+
+/// Opt-in cross-provider duplicate suppression (GX-010).
+///
+/// A message is a duplicate when another provider or account already holds the
+/// same normalized author name and body, ingested within `window_ms` of the
+/// new message. Normalization trims, collapses whitespace, and lowercases.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrossProviderDedup {
+    pub window_ms: u64,
+    /// Most recent messages inspected per ingest, bounding the scan.
+    pub max_scan: usize,
+}
+
+impl CrossProviderDedup {
+    /// A window with the default bounded scan.
+    #[must_use]
+    pub const fn new(window_ms: u64) -> Self {
+        Self {
+            window_ms,
+            max_scan: 1_024,
+        }
+    }
 }
 
 struct PolicyResult {
@@ -573,6 +596,7 @@ struct BlockedAuthor {
 pub struct SocialAggregator {
     queue_capacity: usize,
     policy: ContentPolicy,
+    cross_provider_dedup: Option<CrossProviderDedup>,
     messages: HashMap<MessageKey, SocialMessage>,
     message_order: Vec<MessageKey>,
     pending: VecDeque<MessageKey>,
@@ -588,6 +612,7 @@ impl SocialAggregator {
         Self {
             queue_capacity,
             policy,
+            cross_provider_dedup: None,
             messages: HashMap::new(),
             message_order: Vec::new(),
             pending: VecDeque::new(),
@@ -598,14 +623,48 @@ impl SocialAggregator {
         }
     }
 
+    /// An empty aggregator with no provider state, for a desk restored from a
+    /// document that carries its config, operators, and messages (GX-010).
+    /// Its queue capacity admits any document up to the document message cap.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::new(
+            65_536,
+            ContentPolicy {
+                profanity: ProfanityPolicy::default(),
+                redactions: Vec::new(),
+            },
+        )
+    }
+
     #[must_use]
     pub const fn queue_capacity(&self) -> usize {
         self.queue_capacity
     }
 
+    /// Suppresses the same author and normalized body seen on another
+    /// provider or account within the policy's window.
+    #[must_use]
+    pub fn with_cross_provider_dedup(mut self, dedup: CrossProviderDedup) -> Self {
+        self.cross_provider_dedup = Some(dedup);
+        self
+    }
+
     #[must_use]
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Every aggregated message, including moderated and expired ones.
+    #[must_use]
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Authors blocked on one provider account.
+    #[must_use]
+    pub fn blocked_author_count(&self) -> usize {
+        self.blocked_authors.len()
     }
 
     #[must_use]
@@ -634,6 +693,11 @@ impl SocialAggregator {
         let key = incoming.key();
         if self.messages.contains_key(&key) {
             return Ok(IngestOutcome::Duplicate(key));
+        }
+        if let Some(dedup) = self.cross_provider_dedup
+            && let Some(existing) = self.cross_provider_duplicate(&incoming, now, dedup)
+        {
+            return Ok(IngestOutcome::Duplicate(existing));
         }
 
         let policy_result = self.policy.apply(&incoming.body);
@@ -679,6 +743,42 @@ impl SocialAggregator {
         self.message_order.push(key.clone());
         self.messages.insert(key.clone(), message);
         Ok(IngestOutcome::Accepted(key))
+    }
+
+    /// The existing key when another provider or account already holds the
+    /// same normalized author name and body within the dedup window.
+    fn cross_provider_duplicate(
+        &self,
+        incoming: &IncomingMessage,
+        now: Timestamp,
+        dedup: CrossProviderDedup,
+    ) -> Option<MessageKey> {
+        let body = normalized_text(&incoming.body);
+        let author = normalized_text(&incoming.author_name);
+        let mut scanned = 0;
+        for key in self.message_order.iter().rev() {
+            if scanned >= dedup.max_scan {
+                break;
+            }
+            scanned += 1;
+            let Some(message) = self.messages.get(key) else {
+                continue;
+            };
+            if now.0.saturating_sub(message.ingested_at.0) > dedup.window_ms {
+                continue;
+            }
+            if message.key.provider_id == incoming.provider_id
+                && message.key.account_id == incoming.account_id
+            {
+                continue;
+            }
+            if normalized_text(&message.body) == body
+                && normalized_text(&message.author_name) == author
+            {
+                return Some(message.key.clone());
+            }
+        }
+        None
     }
 
     /// Sorts a provider batch chronologically before ingestion.
@@ -960,6 +1060,20 @@ impl SocialAggregator {
     }
 }
 
+/// Case- and whitespace-insensitive form used by cross-provider dedup.
+fn normalized_text(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    for word in text.split_whitespace() {
+        if !output.is_empty() {
+            output.push(' ');
+        }
+        for character in word.chars() {
+            output.extend(character.to_lowercase());
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1072,6 +1186,73 @@ mod tests {
                 .cursor,
             Some("cursor-1".to_owned())
         );
+    }
+
+    #[test]
+    fn cross_provider_dedup_suppresses_normalized_author_and_body_within_a_window() {
+        let mut social = aggregator(10).with_cross_provider_dedup(CrossProviderDedup::new(5_000));
+        let first = IncomingMessage {
+            provider_id: ProviderId::from("a"),
+            account_id: AccountId::from("1"),
+            message_id: MessageId::from("m1"),
+            author_id: AuthorId::from("u1"),
+            author_name: "Alice".to_owned(),
+            author_handle: None,
+            body: "Hello  World".to_owned(),
+            created_at: Timestamp(10),
+            expires_at: None,
+        };
+        let IngestOutcome::Accepted(first_key) = social.ingest(first, Timestamp(100)).unwrap()
+        else {
+            panic!("the first message is accepted");
+        };
+        let duplicate = IncomingMessage {
+            provider_id: ProviderId::from("b"),
+            account_id: AccountId::from("2"),
+            message_id: MessageId::from("m2"),
+            author_id: AuthorId::from("u2"),
+            author_name: "alice".to_owned(),
+            author_handle: None,
+            body: " hello world ".to_owned(),
+            created_at: Timestamp(20),
+            expires_at: None,
+        };
+        assert_eq!(
+            social.ingest(duplicate, Timestamp(200)).unwrap(),
+            IngestOutcome::Duplicate(first_key)
+        );
+        assert_eq!(social.message_count(), 1);
+        let same_account = IncomingMessage {
+            provider_id: ProviderId::from("a"),
+            account_id: AccountId::from("1"),
+            message_id: MessageId::from("m3"),
+            author_id: AuthorId::from("u1"),
+            author_name: "Alice".to_owned(),
+            author_handle: None,
+            body: "hello world".to_owned(),
+            created_at: Timestamp(30),
+            expires_at: None,
+        };
+        assert!(matches!(
+            social.ingest(same_account, Timestamp(300)).unwrap(),
+            IngestOutcome::Accepted(_)
+        ));
+        let late = IncomingMessage {
+            provider_id: ProviderId::from("b"),
+            account_id: AccountId::from("2"),
+            message_id: MessageId::from("m4"),
+            author_id: AuthorId::from("u2"),
+            author_name: "Alice".to_owned(),
+            author_handle: None,
+            body: "hello world".to_owned(),
+            created_at: Timestamp(40),
+            expires_at: None,
+        };
+        assert!(matches!(
+            social.ingest(late, Timestamp(6_000)).unwrap(),
+            IngestOutcome::Accepted(_)
+        ));
+        assert_eq!(social.message_count(), 3);
     }
 
     #[test]

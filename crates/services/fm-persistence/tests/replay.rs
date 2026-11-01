@@ -94,6 +94,11 @@ fn project() -> Project {
             retention_seconds: 120,
             storage_root: Some("/srv/replay \"angles\"".to_owned()),
             auto_return: Some(12),
+            transition: fm_types::replay::ReplayTransition::new(
+                fm_types::replay::ReplayTransitionKind::Fade,
+                30,
+            )
+            .unwrap(),
         })
         .unwrap();
     project
@@ -129,7 +134,7 @@ fn replay_settings_and_inputs_round_trip_exactly_and_are_strict() {
     let text = fs::read_to_string(&manifest).unwrap();
     for fragment in [
         "\"replay\": {\"sources\": [3, 1], \"retention_seconds\": 120, \"storage_root\": \
-         \"/srv/replay \\\"angles\\\"\", \"auto_return\": 12}",
+         \"/srv/replay \\\"angles\\\"\", \"auto_return\": 12, \"transition\": \"fade:30\"}",
         "\"kind\": {\"type\": \"replay\"}",
     ] {
         assert!(text.contains(fragment), "{fragment} in {text}");

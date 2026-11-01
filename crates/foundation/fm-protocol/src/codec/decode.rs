@@ -151,6 +151,12 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "diagnostics_response" => {
             WireMessage::DiagnosticsResponse(decode_diagnostics_response(&mut fields)?)
         }
+        "clock_control_request" => {
+            WireMessage::ClockControlRequest(decode_clock_control_request(&mut fields)?)
+        }
+        "clock_control_response" => {
+            WireMessage::ClockControlResponse(decode_clock_control_response(&mut fields)?)
+        }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
         "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
         "title_phases" => WireMessage::TitlePhases(crate::TitlePhasesMessage {
@@ -197,6 +203,19 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 revision: fields.canonical_required("revision")?,
                 input: fields.canonical_input("input")?,
                 chain: super::audio_mixer::decode_chain("chain", &fields.required("chain")?)?,
+            })
+        }
+        "audio_strip_send_state" => {
+            let sends = fields.required("sends")?;
+            WireMessage::AudioStripSendState(crate::AudioStripSendStateMessage {
+                revision: fields.canonical_required("revision")?,
+                input: fields.canonical_input("input")?,
+                sends: fm_types::audio_bus::AudioSends::from_token(&sends).ok_or(
+                    CodecError::InvalidField {
+                        field: "sends",
+                        value: sends,
+                    },
+                )?,
             })
         }
         "display_inventory_request" => {
@@ -698,11 +717,11 @@ fn decode_command_payload(
             soloed: fields.boolean("soloed")?,
             follow_video: fields.boolean("follow_video")?,
             delay_samples: fields.parse_required("delay_samples")?,
-            buses: {
-                let value = fields.required("buses")?;
-                fm_types::audio_bus::AudioBusMask::from_token(&value).ok_or(
+            sends: {
+                let value = fields.required("sends")?;
+                fm_types::audio_bus::AudioSends::from_token(&value).ok_or(
                     CodecError::InvalidField {
-                        field: "buses",
+                        field: "sends",
                         value,
                     },
                 )?
@@ -753,7 +772,11 @@ fn decode_command_payload(
         | "audio_loudness_reset"
         | "audio_aux_bus_name"
         | "audio_aux_bus_level"
+        | "audio_aux_bus_dsp"
+        | "audio_aux_bus_device"
+        | "audio_aux_bus_omt"
         | "audio_output_bus"
+        | "audio_output_mix_minus"
         | "audio_plugin_chain") => CommandPayload::AudioMixer(
             super::audio_mixer::decode_operation(mixer, fields)?
                 .expect("every listed payload is a mixer operation"),
@@ -824,7 +847,7 @@ fn decode_command_payload(
             value: super::shortcut::decode_fire_value(fields)?,
         },
         "script_stop" => CommandPayload::StopScript {
-            run: super::script::decode_optional_run_id(fields)?,
+            runs: super::script::decode_run_list(fields)?,
         },
         "input_capture_set" => CommandPayload::SetCaptureSettings {
             input: fields.canonical_input("input")?,
@@ -1997,6 +2020,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         engine: decode_identity(fields)?,
         revision,
         show_name: fields.required("show_name")?,
+        production_clocks: crate::production_clock::decode_names(
+            &fields.required("production_clocks")?,
+        )?,
         inputs,
         outputs: parse_output_statuses(&fields.required("outputs")?)?,
         input_audio_strips: decode_input_audio_strips(fields)?,
@@ -2414,7 +2440,7 @@ fn decode_input_audio_strips(
             let follow_video = parts.next().ok_or_else(invalid)?;
             let delay_samples = parts.next().ok_or_else(invalid)?;
             let group = parts.next().ok_or_else(invalid)?;
-            let buses = parts.next().ok_or_else(invalid)?;
+            let sends = parts.next().ok_or_else(invalid)?;
             if parts.next().is_some() {
                 return Err(invalid());
             }
@@ -2440,7 +2466,9 @@ fn decode_input_audio_strips(
                     _ => return Err(invalid()),
                 },
                 delay_samples: delay_samples.parse().map_err(|_| invalid())?,
-                buses: fm_types::audio_bus::AudioBusMask::from_token(buses).ok_or_else(invalid)?,
+                sends: fm_types::audio_bus::AudioSends::from_mask(
+                    fm_types::audio_bus::AudioBusMask::from_token(sends).ok_or_else(invalid)?,
+                ),
             };
             if !(-96_000..=24_000).contains(&status.gain_millidb)
                 || !(-10_000..=10_000).contains(&status.balance_basis_points)
@@ -4127,6 +4155,9 @@ fn decode_diagnostics_response(fields: &mut Fields) -> Result<DiagnosticsRespons
             &fields.required("source_sync")?,
         )?,
         health: decode_health(fields)?,
+        production_clocks: crate::production_clock::decode_statuses(
+            &fields.required("production_clocks")?,
+        )?,
     })
 }
 
@@ -4138,6 +4169,103 @@ fn decode_health(fields: &mut Fields) -> Result<crate::DaemonHealth, CodecError>
         alerts: fields.required("alerts")?,
         notifications: fields.required("notifications")?,
         silences: fields.required("silences")?,
+    })
+}
+
+fn decode_clock_control_request(
+    fields: &mut Fields,
+) -> Result<crate::ClockControlRequest, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let name = fields.required("name")?;
+    if !crate::clock_name_is_valid(&name) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: name,
+        });
+    }
+    let operation = fields.required("operation")?;
+    let value_ns = fields
+        .optional("value_ns")
+        .map(|value| {
+            let digits = value.strip_prefix('-').unwrap_or(&value);
+            let canonical = !digits.is_empty()
+                && (digits == "0" || !digits.starts_with('0'))
+                && digits.bytes().all(|byte| byte.is_ascii_digit())
+                && value != "-0";
+            if canonical {
+                value.parse::<i64>().map_err(|_| CodecError::InvalidField {
+                    field: "value_ns",
+                    value,
+                })
+            } else {
+                Err(CodecError::InvalidField {
+                    field: "value_ns",
+                    value,
+                })
+            }
+        })
+        .transpose()?;
+    let operation =
+        crate::ClockControlOperation::from_parts(&operation, value_ns).ok_or_else(|| {
+            CodecError::InvalidField {
+                field: "operation",
+                value: operation,
+            }
+        })?;
+    Ok(crate::ClockControlRequest {
+        protocol: parse_version(&protocol).ok_or(CodecError::InvalidField {
+            field: "protocol",
+            value: protocol,
+        })?,
+        request_id,
+        name,
+        operation,
+    })
+}
+
+fn decode_clock_control_response(
+    fields: &mut Fields,
+) -> Result<crate::ClockControlResponse, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let name = fields.required("name")?;
+    if !crate::clock_name_is_valid(&name) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: name,
+        });
+    }
+    let accepted = fields.boolean("accepted")?;
+    let error = fields.optional("error");
+    if accepted && error.is_some() {
+        return Err(CodecError::InvalidField {
+            field: "error",
+            value: "an accepted response cannot carry an error".to_owned(),
+        });
+    }
+    let reading = match fields.optional("reading") {
+        Some(value) => {
+            let mut readings = crate::production_clock::decode_statuses(&value)?;
+            if readings.len() > 1 {
+                return Err(CodecError::TooManyItems("reading"));
+            }
+            readings.pop()
+        }
+        None => None,
+    };
+    Ok(crate::ClockControlResponse {
+        protocol: parse_version(&protocol).ok_or(CodecError::InvalidField {
+            field: "protocol",
+            value: protocol,
+        })?,
+        request_id,
+        name,
+        accepted,
+        error,
+        reading,
     })
 }
 

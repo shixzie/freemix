@@ -8,10 +8,12 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EngineIdentity,
     EventCursor, EventMessage, EventPayload, MAX_REPLAY_PLAYLIST_ENTRIES, ReplayEventStatus,
     ReplayFeed, ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySettings,
-    ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage, ReplayStatusRequest, ReplayStorageLevel,
-    ReplayStorageStatus, ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
+    ReplaySmartHealth, ReplaySmartStatus, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage,
+    ReplayStatusRequest, ReplayStorageLevel, ReplayStorageStatus, ServerIdentity, WireInputId,
+    WireMessage, decode_line, encode_line,
 };
 use fm_types::InputId;
+use fm_types::replay::ReplayTransition;
 
 fn wire(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -70,13 +72,14 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
                 retention_seconds: 600,
                 storage_root: Some("/srv/replay a".to_owned()),
                 auto_return: Some(12),
+                transition: ReplayTransition::CUT,
             })),
             "replay_configure\tsources=3%2C1\tretention_seconds=600\tstorage_root=%2Fsrv%2Freplay%20a\t\
-             auto_return=12",
+             auto_return=12\ttransition=cut",
         ),
         (
             ReplayOperation::Configure(Box::default()),
-            "replay_configure\tsources=\tretention_seconds=600",
+            "replay_configure\tsources=\tretention_seconds=600\ttransition=cut",
         ),
         (ReplayOperation::MarkIn, "replay_mark_in"),
         (ReplayOperation::MarkOut, "replay_mark_out"),
@@ -134,6 +137,13 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
                 speed: ReplaySpeed::Half,
             },
             "replay_play\tinput=9\tspeed=50",
+        ),
+        (
+            ReplayOperation::Shuttle {
+                input: wire(9),
+                rate_milli: -2_000,
+            },
+            "replay_shuttle\tinput=9\trate=-2000",
         ),
         (
             ReplayOperation::Pause { input: wire(9) },
@@ -338,6 +348,7 @@ fn server() -> ServerIdentity {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one field per replay status record
 fn status(request_id: Option<&str>) -> ReplayStatusMessage {
     ReplayStatusMessage {
         server: server(),
@@ -349,6 +360,7 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
             retention_seconds: 120,
             storage_root: None,
             auto_return: None,
+            transition: ReplayTransition::CUT,
         },
         root: "/var/lib/freemix/replay".to_owned(),
         live_frame: Some(3_000),
@@ -394,6 +406,8 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 event: Some(1),
                 angle: Some(wire(2)),
                 speed: ReplaySpeed::Quarter,
+                rate_milli: 0,
+                shuttling: false,
                 playing: true,
                 frame: Some(2_510),
                 playlist: vec![
@@ -416,6 +430,8 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 event: None,
                 angle: None,
                 speed: ReplaySpeed::Full,
+                rate_milli: 0,
+                shuttling: false,
                 playing: false,
                 frame: None,
                 playlist: Vec::new(),
@@ -428,6 +444,11 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
             bytes_per_second: 24_000_000,
             remaining_seconds: Some(300),
             level: ReplayStorageLevel::Warning,
+            smart: Some(ReplaySmartStatus {
+                health: ReplaySmartHealth::Warning,
+                temperature_celsius: Some(41),
+                percentage_used: Some(12),
+            }),
         }),
     }
 }
@@ -438,7 +459,7 @@ fn status_and_its_request_have_an_exact_wire_form() {
     assert!(
         line.starts_with(
             "replay_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\tsequence=7\t\
-             feed=recorded\tsources=1%2C2\tretention_seconds=120\t\
+             feed=recorded\tsources=1%2C2\tretention_seconds=120\ttransition=cut\t\
              root=%2Fvar%2Flib%2Ffreemix%2Freplay\tlive_frame=3000\tmark_in=2900\t\
              recorded=1%3A60%3A9000000%3A0%3A3000%3B2%3A0%3A0%3A%3A\t"
         ),
@@ -446,9 +467,9 @@ fn status_and_its_request_have_an_exact_wire_form() {
     );
     assert!(
         line.contains(
-            "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3B\
-             10%3A%3A%3A100%3A0%3A%3A%3A%3A9\t\
-             storage=7200000000%3A24000000%3A300%3Awarning\n"
+            "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3A0%3A0%3B\
+             10%3A%3A%3A100%3A0%3A%3A%3A%3A9%3A0%3A0\t\
+             storage=7200000000%3A24000000%3A300%3Awarning%3Awarning%3A41%3A12\n"
         ),
         "{line}"
     );

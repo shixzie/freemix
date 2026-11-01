@@ -421,7 +421,7 @@ impl ClockReading {
 }
 
 /// The registry. All mutating operations share one monotonic order.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProductionClocks {
     clocks: BTreeMap<ClockName, ProductionClock>,
     last_operation: Option<ClockTime>,

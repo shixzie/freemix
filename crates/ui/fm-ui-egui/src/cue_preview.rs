@@ -1063,6 +1063,16 @@ impl Walk<'_> {
                 };
                 (LineKind::Action, text)
             }
+            WireCueAction::Clock { name, operation } => (
+                LineKind::Action,
+                l.format(
+                    Msg::CuePvClock,
+                    &[
+                        ("name", Arg::Str(name)),
+                        ("operation", Arg::Str(operation.token())),
+                    ],
+                ),
+            ),
             WireCueAction::Wait { frames } => {
                 let time = frames_time(l, *frames, show.rate);
                 let text = l.format(

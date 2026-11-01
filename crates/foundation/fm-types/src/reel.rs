@@ -85,6 +85,9 @@ pub struct ReelClip {
     pub trim_out_frames: u32,
     /// Playback speed in percent of real time: 25, 50, 75, or 100.
     pub speed_percent: u8,
+    /// Plays the trimmed range backward, from its last frame to its first
+    /// (OR-013). Reverse clips carry no clip audio.
+    pub reverse: bool,
     /// Frames this clip dissolves in over the end of the clip before; zero
     /// is a cut, and the first clip always cuts.
     pub dissolve_frames: u32,
@@ -259,6 +262,7 @@ mod tests {
             trim_in_frames: 0,
             trim_out_frames: 0,
             speed_percent: 100,
+            reverse: false,
             dissolve_frames: 0,
         }
     }

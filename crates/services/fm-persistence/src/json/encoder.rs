@@ -130,6 +130,11 @@ fn write_project_runtime(output: &mut String, project: &fm_model::Project) {
     super::shortcut::write_shortcuts(output, project.shortcuts());
     super::media_list::write_media_lists(output, project);
     super::title_timeline::write_title_timelines(output, project);
+    super::scoreboard::write_scoreboards(output, project);
+    super::production_clock::write_production_clocks(output, project);
+    super::preview::write_previews(output, project);
+    super::crawl::write_crawls(output, project);
+    super::ptz_presets::write_ptz_presets(output, project);
     super::screen_capture_tokens::write_screen_capture_restore_tokens(output, project);
     super::replay::write_replay(output, project);
     super::reel::write_reels(output, project);
@@ -159,14 +164,20 @@ fn write_playlist(output: &mut String, playlist: &Playlist) {
             PlaylistTransitionKind::Wipe => "wipe",
             PlaylistTransitionKind::Slide => "slide",
             PlaylistTransitionKind::Zoom => "zoom",
+            PlaylistTransitionKind::Stinger => "stinger",
         };
+        let slot = entry
+            .transition
+            .stinger_slot
+            .map_or_else(String::new, |slot| format!(", \"stinger_slot\": {slot}"));
         write!(
             output,
-            "{{\"id\": {}, \"input\": {}, \"duration_frames\": {}, \"transition\": \
-             {{\"kind\": \"{kind}\", \"duration_frames\": {}}}, \"enabled\": {}}}",
+            "{{\"id\": {}, \"input\": {}, \"duration_frames\": {}, \"follow_media\": {}, \"transition\": \
+             {{\"kind\": \"{kind}\", \"duration_frames\": {}{slot}}}, \"enabled\": {}}}",
             entry.id,
             entry.input,
             entry.duration_frames,
+            entry.follow_media,
             entry.transition.duration_frames,
             entry.enabled
         )
@@ -562,7 +573,7 @@ fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
         item_prefix(output, index, 6);
         write!(
             output,
-            "{{\"input\": {}, \"gain_milli_db\": {}, \"balance_basis_points\": {}, \"pan_basis_points\": {}, \"delay_samples\": {}, \"muted\": {}, \"soloed\": {}, \"follow_video\": {}, \"buses\": \"{}\", \"label\": \"",
+            "{{\"input\": {}, \"gain_milli_db\": {}, \"balance_basis_points\": {}, \"pan_basis_points\": {}, \"delay_samples\": {}, \"muted\": {}, \"soloed\": {}, \"follow_video\": {}, \"sends\": \"{}\", \"label\": \"",
             strip.input,
             strip.state.gain.get(),
             strip.state.balance.get(),
@@ -571,7 +582,7 @@ fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
             strip.state.muted,
             strip.state.soloed,
             strip.state.follow_video,
-            strip.state.buses.token(),
+            strip.state.sends.token(),
         )
         .expect("writing to a string cannot fail");
         escape_string(output, &strip.label);
@@ -582,6 +593,8 @@ fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
         .expect("writing to a string cannot fail");
         output.push_str(", \"dsp\": ");
         super::strip_dsp::write_strip_dsp(output, &strip.dsp);
+        output.push_str(", \"plugins\": ");
+        super::audio_plugins::write_plugin_chain(output, &strip.plugins);
         output.push('}');
     }
     array_end(output, project.input_audio_strips().is_empty(), 4);

@@ -79,9 +79,11 @@ struct ProjectDto {
     audio_groups: fm_model::AudioGroups,
     aux_buses: fm_model::AuxBuses,
     output_aux_buses: std::collections::BTreeMap<fm_types::OutputId, fm_model::AuxBusNumber>,
+    output_mix_minus: std::collections::BTreeMap<fm_types::OutputId, fm_types::InputId>,
     audio_solo_mode: fm_model::AudioSoloMode,
     audio_monitor_output: fm_model::AudioMonitorOutput,
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
+    master_audio_plugins: fm_types::audio_plugins::PluginChainState,
     fade_to_black_excluded_outputs: std::collections::BTreeSet<fm_types::OutputId>,
     fade_to_black_output_durations: Vec<(fm_types::OutputId, u32)>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
@@ -98,6 +100,11 @@ struct ProjectDto {
     shortcuts: Vec<fm_model::Shortcut>,
     media_lists: std::collections::BTreeMap<fm_types::InputId, fm_model::MediaList>,
     title_timelines: std::collections::BTreeMap<fm_types::InputId, fm_model::TitleTimeline>,
+    scoreboards: std::collections::BTreeMap<fm_types::InputId, String>,
+    production_clocks: Vec<fm_types::ProjectClock>,
+    previews: std::collections::BTreeMap<fm_types::InputId, String>,
+    crawls: std::collections::BTreeMap<fm_types::InputId, String>,
+    ptz_presets: Option<String>,
     screen_capture_restore_tokens: Vec<(fm_types::InputId, String)>,
 }
 
@@ -147,11 +154,16 @@ impl ProjectDto {
             audio_groups: super::audio_mixer::parse_audio_groups(&mut object)?,
             aux_buses: super::audio_mixer::parse_aux_buses(&mut object)?,
             output_aux_buses: super::audio_mixer::parse_output_aux_buses(&mut object)?,
+            output_mix_minus: super::audio_mixer::parse_output_mix_minus(&mut object)?,
             audio_solo_mode: super::audio_mixer::parse_audio_solo_mode(&mut object)?,
             audio_monitor_output: super::audio_mixer::parse_audio_monitor_output(&mut object)?,
             master_audio_dsp: super::strip_dsp::parse_strip_dsp(
                 object.take("master_audio_dsp")?,
                 "master_audio_dsp",
+            )?,
+            master_audio_plugins: super::audio_plugins::parse_plugin_chain(
+                object.take("master_audio_plugins")?,
+                "master_audio_plugins",
             )?,
             fade_to_black_excluded_outputs:
                 super::audio_mixer::parse_fade_to_black_excluded_outputs(&mut object)?,
@@ -168,6 +180,11 @@ impl ProjectDto {
             shortcuts: super::shortcut::parse_shortcuts(&mut object)?,
             media_lists: super::media_list::parse_media_lists(&mut object)?,
             title_timelines: super::title_timeline::parse_title_timelines(&mut object)?,
+            scoreboards: super::scoreboard::parse_scoreboards(&mut object)?,
+            production_clocks: super::production_clock::parse_production_clocks(&mut object)?,
+            previews: super::preview::parse_previews(&mut object)?,
+            crawls: super::crawl::parse_crawls(&mut object)?,
+            ptz_presets: super::ptz_presets::parse_ptz_presets(&mut object)?,
             screen_capture_restore_tokens:
                 super::screen_capture_tokens::parse_screen_capture_restore_tokens(&mut object)?,
         };
@@ -214,15 +231,22 @@ impl ProjectDto {
             project
                 .set_input_audio_dsp(strip.input, strip.dsp)
                 .expect("a parsed strip DSP chain is validated");
+            project
+                .set_input_audio_plugins(strip.input, strip.plugins)
+                .expect("a parsed strip plugin chain is validated");
         }
         project
             .set_master_audio_dsp(self.master_audio_dsp)
             .expect("a parsed Master DSP chain is validated");
+        project
+            .set_master_audio_plugins(self.master_audio_plugins)
+            .expect("a parsed Master plugin chain is validated");
         // Group names are reported by project validation.
         project.restore_audio_groups(self.audio_groups);
         // Bus names and outputs are reported by project validation.
         project.restore_aux_buses(self.aux_buses);
         project.restore_output_aux_buses(self.output_aux_buses);
+        project.restore_output_mix_minus(self.output_mix_minus);
         project.set_audio_solo_mode(self.audio_solo_mode);
         // An unusable device name is reported by project validation.
         project.restore_audio_monitor_output(self.audio_monitor_output);
@@ -312,6 +336,12 @@ impl ProjectDto {
         // A timeline naming an input that is not a title is reported by
         // project validation.
         project.set_title_timelines(self.title_timelines);
+        project.restore_scoreboards(self.scoreboards);
+        // Names, values, and formats are reported by project validation.
+        project.restore_production_clocks(self.production_clocks);
+        project.restore_previews(self.previews);
+        project.restore_crawls(self.crawls);
+        project.restore_ptz_presets(self.ptz_presets);
         // A token of an unknown or other input, or an unusable token, is
         // reported by project validation.
         for (input, token) in self.screen_capture_restore_tokens {
@@ -390,10 +420,10 @@ fn parse_input_audio_strip(value: Value) -> Result<InputAudioStrip, DecodeError>
             muted: object.boolean("muted")?,
             soloed: object.boolean("soloed")?,
             follow_video: object.boolean("follow_video")?,
-            buses: {
-                let token = object.string("buses")?;
-                fm_model::AudioBusMask::from_token(&token).ok_or_else(|| {
-                    syntax("input audio strip buses must be \"-\" or M then bus letters A-G")
+            sends: {
+                let token = object.string("sends")?;
+                fm_model::AudioSends::from_token(&token).ok_or_else(|| {
+                    syntax("input audio strip sends must be \"-\" or bus@level entries in order")
                 })?
             },
         },
@@ -413,6 +443,10 @@ fn parse_input_audio_strip(value: Value) -> Result<InputAudioStrip, DecodeError>
                 })
         })?,
         dsp: super::strip_dsp::parse_strip_dsp(object.take("dsp")?, "input audio strip dsp")?,
+        plugins: super::audio_plugins::parse_plugin_chain(
+            object.take("plugins")?,
+            "input audio strip plugins",
+        )?,
     };
     object.finish()?;
     Ok(strip)
@@ -1196,6 +1230,7 @@ fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
     let id = object.u64("id")?;
     let input = InputId::new(object.nonzero_u128("input")?);
     let duration_frames = object.u64("duration_frames")?;
+    let follow_media = object.boolean("follow_media")?;
     let mut transition = Object::new(object.take("transition")?, "playlist transition")?;
     let kind = match transition.string("kind")?.as_str() {
         "cut" => PlaylistTransitionKind::Cut,
@@ -1204,9 +1239,20 @@ fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
         "wipe" => PlaylistTransitionKind::Wipe,
         "slide" => PlaylistTransitionKind::Slide,
         "zoom" => PlaylistTransitionKind::Zoom,
+        "stinger" => PlaylistTransitionKind::Stinger,
         value => return Err(unknown_enum("playlist transition kind", value)),
     };
     let transition_frames = transition.u32("duration_frames")?;
+    let stinger_slot = if kind == PlaylistTransitionKind::Stinger {
+        Some(transition.u8("stinger_slot")?)
+    } else {
+        if transition.take_optional("stinger_slot").is_some() {
+            return Err(syntax(
+                "a playlist transition that is not a Stinger has no stinger slot",
+            ));
+        }
+        None
+    };
     transition.finish()?;
     let enabled = object.boolean("enabled")?;
     object.finish()?;
@@ -1214,9 +1260,11 @@ fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
         id,
         input,
         duration_frames,
+        follow_media,
         transition: PlaylistTransition {
             kind,
             duration_frames: transition_frames,
+            stinger_slot,
         },
         enabled,
     })

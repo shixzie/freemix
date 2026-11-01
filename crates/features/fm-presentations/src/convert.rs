@@ -26,7 +26,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fm_types::paged::DocumentFormat;
@@ -122,6 +122,25 @@ impl OfficeConverter {
         bytes: &[u8],
         timeout: Duration,
     ) -> Result<Vec<u8>, DocumentError> {
+        self.convert_cancellable(format, bytes, timeout, None)
+    }
+
+    /// [`Self::convert`], stopping the converter when `cancelled` turns true
+    /// (the input went away, so its result is no longer wanted).
+    ///
+    /// # Errors
+    ///
+    /// [`DocumentError::ConversionTimedOut`],
+    /// [`DocumentError::ConversionCancelled`], and
+    /// [`DocumentError::ConversionFailed`] when the converter cannot start,
+    /// fails, or writes no PDF.
+    pub fn convert_cancellable(
+        &self,
+        format: DocumentFormat,
+        bytes: &[u8],
+        timeout: Duration,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Vec<u8>, DocumentError> {
         if !format.needs_conversion() {
             return Err(DocumentError::Unsupported(format));
         }
@@ -181,7 +200,7 @@ impl OfficeConverter {
         let child = command
             .spawn()
             .map_err(|error| DocumentError::ConversionFailed(format!("cannot start: {error}")))?;
-        let status = finish(child, timeout)?;
+        let status = finish(child, timeout, cancelled)?;
         let pdf = output.join("presentation.pdf");
         if !status.success() || !pdf.is_file() {
             let mut detail = String::new();
@@ -217,9 +236,16 @@ impl OfficeConverter {
 fn finish(
     mut child: std::process::Child,
     timeout: Duration,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<std::process::ExitStatus, DocumentError> {
     let started = Instant::now();
     loop {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            stop_group(&child);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DocumentError::ConversionCancelled);
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 // A helper the converter left behind is stopped too.
@@ -357,6 +383,39 @@ mod tests {
             OfficeConverter::locate_in(Some(OsString::new()), Some(OsString::from("/usr/bin"))),
             None
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_conversion_stops_the_converter() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory =
+            std::env::temp_dir().join(format!("fm-convert-cancel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let script = directory.join("soffice");
+        fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let converter = OfficeConverter::with_program(&script);
+        let cancelled = AtomicBool::new(false);
+        let started = Instant::now();
+        let result = std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                converter.convert_cancellable(
+                    DocumentFormat::Pptx,
+                    b"not a presentation",
+                    Duration::from_secs(30),
+                    Some(&cancelled),
+                )
+            });
+            std::thread::sleep(Duration::from_millis(200));
+            cancelled.store(true, Ordering::Release);
+            handle.join().unwrap()
+        });
+        assert_eq!(result, Err(DocumentError::ConversionCancelled));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]

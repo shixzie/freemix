@@ -85,6 +85,7 @@ impl Default for Show {
 #[allow(clippy::too_many_lines)] // one flat snapshot fixture
 fn snapshot(show: &Show) -> WireMessage {
     on_wire(WireMessage::Snapshot(SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
@@ -122,7 +123,7 @@ fn snapshot(show: &Show) -> WireMessage {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 480,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             },
             InputAudioStripStatus {
                 input: wire(SLIDES),
@@ -134,7 +135,7 @@ fn snapshot(show: &Show) -> WireMessage {
                 soloed: false,
                 follow_video: true,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             },
             InputAudioStripStatus {
                 input: wire(GUEST),
@@ -146,7 +147,7 @@ fn snapshot(show: &Show) -> WireMessage {
                 soloed: false,
                 follow_video: true,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             },
         ],
         desired_program: wire(CAMERA),
@@ -406,7 +407,7 @@ fn controls_send_the_exact_wire_commands_the_page_sends() {
             soloed: true,
             follow_video: false,
             delay_samples: 480,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         })
     );
     assert!(matches!(

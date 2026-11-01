@@ -95,7 +95,7 @@ use fm_script::{
     Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, ScriptAction, ScriptFailure,
     ScriptHost, TakeEffect,
 };
-use fm_types::InputId;
+use fm_types::{InputId, paged::PagedNavigation};
 
 use crate::engine::{CueFrame, CuePlan};
 use crate::{Engine, EngineEvent, ShowState};
@@ -460,6 +460,36 @@ fn cue_action(state: &ShowState, action: &ScriptAction) -> Result<CueAction, Str
                 MediaOperation::Restart => CueMediaOperation::Restart,
             },
         },
+        ScriptAction::Page {
+            input: reference,
+            operation,
+        } => CueAction::Page {
+            input: input(reference)?,
+            navigation: match operation {
+                fm_script::PageOperation::Next => PagedNavigation::Next,
+                fm_script::PageOperation::Previous => PagedNavigation::Previous,
+                fm_script::PageOperation::First => PagedNavigation::First,
+                fm_script::PageOperation::Last => PagedNavigation::Last,
+                fm_script::PageOperation::Goto(page) => PagedNavigation::Goto(*page),
+            },
+        },
+        ScriptAction::Clock { name, operation } => CueAction::Clock {
+            name: name.clone(),
+            operation: match operation {
+                fm_script::ClockOperation::Start => fm_model::CueClockOperation::Start,
+                fm_script::ClockOperation::Pause => fm_model::CueClockOperation::Pause,
+                fm_script::ClockOperation::Reset => fm_model::CueClockOperation::Reset,
+                fm_script::ClockOperation::Set(value) => {
+                    fm_model::CueClockOperation::SetValue(*value)
+                }
+                fm_script::ClockOperation::Adjust(value) => {
+                    fm_model::CueClockOperation::Adjust(*value)
+                }
+                fm_script::ClockOperation::SetPreset(value) => {
+                    fm_model::CueClockOperation::SetPreset(*value)
+                }
+            },
+        },
     })
 }
 
@@ -698,6 +728,9 @@ fn run_alone(
                 state: suspension.state.clone(),
             },
         );
+    } else if matches!(entry, Entry::Resume(_)) {
+        // The active run ended: the oldest queued run takes its slot.
+        runs.promote_queued();
     }
     let event = EngineEvent::ScriptRan {
         script,
@@ -744,23 +777,10 @@ pub(crate) fn plan(
         )
         .with_reason(RefusalReason::ScriptRunning { script }));
     }
-    let (outcome, plan) = run_alone(engine, script, Entry::Start, target_frame)?;
+    let (outcome, mut plan) = run_alone(engine, script, Entry::Start, target_frame)?;
     let waits = outcome.report.suspension.is_some();
     if let Some(rejection) = outcome.failure(script) {
         return Err(rejection);
-    }
-    if waits && runs.runs.len() >= fm_model::MAX_SCRIPT_RUNS {
-        return Err(Rejection::new(
-            RejectionCode::ResourceExhausted,
-            format!(
-                "{} script runs already wait; stop one first",
-                fm_model::MAX_SCRIPT_RUNS
-            ),
-        )
-        .with_reason(RefusalReason::bounds(
-            "script_runs",
-            fm_model::MAX_SCRIPT_RUNS as u64,
-        )));
     }
     // A run id is never reused: once the last one is issued (only a
     // hand-edited project gets there), no run may wait again.
@@ -770,6 +790,30 @@ pub(crate) fn plan(
             "the show has issued every script run id; no run can wait",
         )
         .with_reason(RefusalReason::bounds("last_run", u64::MAX)));
+    }
+    if waits && runs.runs.len() >= fm_model::MAX_SCRIPT_RUNS {
+        if runs.queued.len() >= fm_model::MAX_QUEUED_SCRIPT_RUNS {
+            return Err(Rejection::new(
+                RejectionCode::ResourceExhausted,
+                format!(
+                    "{} script runs already wait and {} are queued; stop one first",
+                    fm_model::MAX_SCRIPT_RUNS,
+                    fm_model::MAX_QUEUED_SCRIPT_RUNS
+                ),
+            )
+            .with_reason(RefusalReason::bounds(
+                "script_run_queue",
+                fm_model::MAX_QUEUED_SCRIPT_RUNS as u64,
+            )));
+        }
+        // The first part applied; the run waits in the queue until an
+        // active run ends and frees its slot.
+        let slot = plan.show.script_run_mut();
+        if let Some(index) = slot.runs.iter().position(|run| run.script == script) {
+            let run = slot.runs.remove(index);
+            let at = slot.queued.partition_point(|queued| queued.run < run.run);
+            slot.queued.insert(at, run);
+        }
     }
     Ok(plan)
 }
@@ -843,6 +887,8 @@ pub(crate) fn plan_resume(
             detail,
         },
     );
+    // A faulted active run frees its slot for the oldest queued run.
+    runs.promote_queued();
     Ok(CuePlan {
         show: Box::new(show),
         event: EngineEvent::ScriptRunChanged {
@@ -854,51 +900,69 @@ pub(crate) fn plan_resume(
     })
 }
 
-/// Plans a [`crate::EngineCommand::StopScript`] for `target_frame`: run
-/// `run` ends (nothing more of it runs) or its fault clears; with no
-/// `run`, every run ends and every fault clears. The ids issued so far
-/// stay issued.
+/// Plans a [`crate::EngineCommand::StopScript`] for `target_frame`: the
+/// runs in `runs` end (nothing more of them runs) or their faults clear;
+/// with no run, every run ends and every fault clears. The ids issued so
+/// far stay issued.
 ///
 /// # Errors
 ///
-/// Refuses a stop of a run that neither waits nor faulted, and a stop of
-/// every run with none waiting and no fault to clear.
+/// Refuses a stop naming a run that neither waits nor faulted (the whole
+/// command changes nothing), and a stop of every run with none waiting and
+/// no fault to clear.
 pub(crate) fn plan_stop(
     engine: &Engine,
-    run: Option<u64>,
+    runs: &[u64],
     target_frame: FrameNumber,
 ) -> Result<CuePlan, Rejection> {
-    let runs = engine.show().script_run();
+    let current = engine.show().script_run();
     let mut show = engine.show().clone();
     let frame = target_frame.get();
-    let event = if let Some(run) = run {
-        let Some(script) = runs.script_of(run) else {
-            return Err(Rejection::new(
-                RejectionCode::NotFound,
-                format!("no script run {run} waits or faulted"),
-            )
-            .with_field(FieldIssue::new(
-                "run",
-                "unknown",
-                "the run already ended; refresh the scripts",
-            )));
-        };
-        let slot = show.script_run_mut();
-        slot.runs.retain(|found| found.run != run);
-        slot.faults.retain(|fault| fault.run != run);
-        EngineEvent::ScriptRunChanged { script, frame }
-    } else {
-        if runs.is_empty() {
+    let event = if runs.is_empty() {
+        if current.is_empty() {
             return Err(Rejection::new(
                 RejectionCode::Conflict,
                 "no script is running",
             ));
         }
-        let scripts = runs.scripts();
+        let scripts = current.scripts();
         let slot = show.script_run_mut();
         slot.runs.clear();
+        slot.queued.clear();
         slot.faults.clear();
         EngineEvent::ScriptRunsStopped { scripts, frame }
+    } else {
+        let mut scripts = Vec::with_capacity(runs.len());
+        for run in runs {
+            let Some(script) = current.script_of(*run) else {
+                return Err(Rejection::new(
+                    RejectionCode::NotFound,
+                    format!("no script run {run} waits or faulted"),
+                )
+                .with_field(FieldIssue::new(
+                    "runs",
+                    "unknown",
+                    "the run already ended; refresh the scripts",
+                )));
+            };
+            scripts.push(script);
+        }
+        let slot = show.script_run_mut();
+        for run in runs {
+            slot.runs.retain(|found| found.run != *run);
+            slot.queued.retain(|found| found.run != *run);
+            slot.faults.retain(|fault| fault.run != *run);
+        }
+        // A stopped active run frees its slot for the oldest queued run.
+        while slot.promote_queued() {}
+        if let [script] = scripts.as_slice() {
+            EngineEvent::ScriptRunChanged {
+                script: *script,
+                frame,
+            }
+        } else {
+            EngineEvent::ScriptRunsStopped { scripts, frame }
+        }
     };
     Ok(CuePlan {
         show: Box::new(show),

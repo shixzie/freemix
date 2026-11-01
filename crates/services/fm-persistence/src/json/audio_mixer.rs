@@ -9,10 +9,11 @@
 //!   {"name": "Group 4", "gain_milli_db": 0, "muted": false, "soloed": false, "parent": null}
 //! ],
 //! "aux_buses": [
-//!   {"name": "Bus A", "gain_milli_db": 0, "muted": false},
+//!   {"name": "Bus A", "gain_milli_db": 0, "muted": false, "device": null},
 //!   ... seven buses, A first ...
 //! ],
 //! "output_aux_buses": [{"output": 4, "bus": "B"}],
+//! "output_mix_minus": [{"output": 4, "input": 7}],
 //! "audio_solo_mode": "pfl",
 //! "audio_monitor_output": {"device": "default", "gain_milli_db": -6000, "muted": false},
 //! "fade_to_black_excluded_outputs": [5],
@@ -25,7 +26,9 @@
 //! validation). Exactly [`AUX_BUS_COUNT`] `aux_buses` (schema 90, AU-002),
 //! bus A first, each named like a group; `output_aux_buses` lists the
 //! outputs that hear an aux bus (`A` through `G`) instead of Master,
-//! strictly ascending by output. Every strip in `input_audio_strips` carries
+//! strictly ascending by output; `output_mix_minus` (schema 94) lists the
+//! input each such output's feed leaves out (AU-002 mix-minus), strictly
+//! ascending by output. Every strip in `input_audio_strips` carries
 //! `buses`: `M` when it feeds Master, then the letter of each aux bus it
 //! feeds (`MAC`), or `-` for none. `audio_solo_mode` is `sip`, `pfl`, or
 //! `afl`.
@@ -51,6 +54,7 @@ use fm_types::OutputId;
 use super::{DecodeError, Object, Value, escape_string, parse_array, parse_optional, syntax};
 
 /// Writes `,\n    "audio_groups": [...]` and the FTB output exclusions.
+#[allow(clippy::too_many_lines)] // one block per mixer section
 pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project) {
     output.push_str(",\n    \"audio_groups\": [");
     for (index, (_, group)) in project.audio_groups().iter().enumerate() {
@@ -78,11 +82,22 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
         escape_string(output, &bus.name);
         write!(
             output,
-            "\", \"gain_milli_db\": {}, \"muted\": {}}}",
+            "\", \"gain_milli_db\": {}, \"muted\": {}, \"dsp\": ",
             bus.gain.get(),
             bus.muted
         )
         .expect("writing to a string cannot fail");
+        super::strip_dsp::write_strip_dsp(output, &bus.dsp);
+        output.push_str(", \"device\": ");
+        match &bus.device {
+            Some(device) => {
+                output.push('"');
+                escape_string(output, device);
+                output.push('"');
+            }
+            None => output.push_str("null"),
+        }
+        write!(output, ", \"omt\": {}}}", bus.omt).expect("writing to a string cannot fail");
     }
     output.push_str("\n    ],\n    \"output_aux_buses\": [");
     for (index, (id, bus)) in project.output_aux_buses().iter().enumerate() {
@@ -95,6 +110,14 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
             bus.letter()
         )
         .expect("writing to a string cannot fail");
+    }
+    output.push_str("],\n    \"output_mix_minus\": [");
+    for (index, (id, input)) in project.output_mix_minus().iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(output, "{{\"output\": {id}, \"input\": {input}}}")
+            .expect("writing to a string cannot fail");
     }
     write!(
         output,
@@ -121,6 +144,8 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
     .expect("writing to a string cannot fail");
     output.push_str(",\n    \"master_audio_dsp\": ");
     super::strip_dsp::write_strip_dsp(output, project.master_audio_dsp());
+    output.push_str(",\n    \"master_audio_plugins\": ");
+    super::audio_plugins::write_plugin_chain(output, project.master_audio_plugins());
     output.push_str(",\n    \"fade_to_black_excluded_outputs\": [");
     for (index, id) in project.fade_to_black_excluded_outputs().iter().enumerate() {
         if index != 0 {
@@ -237,8 +262,23 @@ pub(crate) fn parse_aux_buses(object: &mut Object) -> Result<AuxBuses, DecodeErr
             ))
         })?;
         let muted = object.boolean("muted")?;
+        let dsp = super::strip_dsp::parse_strip_dsp(object.take("dsp")?, "aux bus DSP")?;
+        let device = parse_optional(object.take("device")?, |value| {
+            let Value::String(device) = value else {
+                return Err(syntax("aux bus device must be a string or null"));
+            };
+            Ok(device)
+        })?;
+        let omt = object.boolean("omt")?;
         object.finish()?;
-        Ok(AuxBus { name, gain, muted })
+        Ok(AuxBus {
+            name,
+            gain,
+            muted,
+            dsp,
+            device,
+            omt,
+        })
     })?;
     let buses: [AuxBus; AUX_BUS_COUNT] = buses
         .try_into()
@@ -270,6 +310,29 @@ pub(crate) fn parse_output_aux_buses(
     if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(syntax(
             "output_aux_buses must be strictly ascending by output",
+        ));
+    }
+    Ok(entries.into_iter().collect())
+}
+
+/// Parses `"output_mix_minus"` from the project object.
+pub(crate) fn parse_output_mix_minus(
+    object: &mut Object,
+) -> Result<std::collections::BTreeMap<OutputId, fm_types::InputId>, DecodeError> {
+    let entries = parse_array(
+        object.take("output_mix_minus")?,
+        "output_mix_minus",
+        |value| {
+            let mut entry = Object::new(value, "output mix-minus")?;
+            let output = OutputId::new(entry.nonzero_u128("output")?);
+            let input = fm_types::InputId::new(entry.nonzero_u128("input")?);
+            entry.finish()?;
+            Ok((output, input))
+        },
+    )?;
+    if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(syntax(
+            "output_mix_minus must be strictly ascending by output",
         ));
     }
     Ok(entries.into_iter().collect())

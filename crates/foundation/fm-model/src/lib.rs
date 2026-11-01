@@ -31,15 +31,19 @@ pub use audio_mixer::{
     MAX_AUDIO_MONITOR_DEVICE_BYTES, validate_audio_group_name, validate_audio_monitor_device,
     validate_audio_strip_label,
 };
-pub use aux_bus::{AUX_BUS_COUNT, AudioBusMask, AuxBus, AuxBusNumber, AuxBuses};
+pub use aux_bus::{
+    AUX_BUS_COUNT, AUX_OMT_BASE_PORT, AudioBusMask, AudioSends, AudioSendsError, AuxBus,
+    AuxBusNumber, AuxBuses, BusSendState, SendTap, aux_omt_port,
+};
 pub use cue::{
-    CUE_OVERLAY_CHANNELS, Cue, CueAction, CueArmed, CueFault, CueList, CueListError,
-    CueMediaOperation, CueNumberUpdate, CuePending, CueRunState, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS,
-    MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES,
-    MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TITLE_NUMBER,
-    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, ResolvedCueAction,
-    cue_action_is_valid, cue_chain_actions, cue_name_is_valid, delay_frames, title_text_number,
-    validate_cue_list, validate_cue_list_definition, validate_cue_lists,
+    CUE_OVERLAY_CHANNELS, Cue, CueAction, CueArmed, CueClockOperation, CueFault, CueList,
+    CueListError, CueMediaOperation, CueNumberUpdate, CuePending, CueRunState, MAX_CUE_ACTIONS,
+    MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS,
+    MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES,
+    MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
+    ResolvedCueAction, cue_action_is_valid, cue_chain_actions, cue_clock_name_is_valid,
+    cue_name_is_valid, delay_frames, title_text_number, validate_cue_list,
+    validate_cue_list_definition, validate_cue_lists,
 };
 pub use display_output::{
     MAX_DISPLAY_OUTPUTS, SetDisplayOutputError, check_display_output, display_selector_is_valid,
@@ -97,17 +101,20 @@ pub use project::{
     AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DocumentInput, DuplicateInputError,
     DuplicateSceneInputError, Input, InputAudioStrip, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputPanBasisPoints,
-    InputReference, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry, MainMix,
-    MixFeed, Output, OutputFormat, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot,
+    InputReference, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry,
+    MAX_CRAWL_DOCUMENT_BYTES, MAX_CRAWLS, MAX_PREVIEW_DOCUMENT_BYTES, MAX_PREVIEW_STATES,
+    MAX_PTZ_PRESETS_DOCUMENT_BYTES, MAX_SCOREBOARD_DOCUMENT_BYTES, MAX_SCOREBOARDS,
+    MAX_SOURCE_CROP_SIDE, MainMix, MixFeed, Output, OutputFormat, PreviewDocumentError, Project,
+    ProjectCrawlError, ProjectSettings, PtzPresetsDocumentError, RECORDER_SLOT_COUNT, RecorderSlot,
     RecorderSlotError, RectMask, RelinkMediaInputError, RemoveAudioBusError, RemoveInputError,
     RemoveOutputError, RemoveSceneError, RemoveStreamTargetError, RenameAudioBusError,
     RenameOutputError, RenameProjectError, RenameSceneError, ReplaceInputError, RestartPolicy,
     Rgba8, Rotation, Scene, SceneInputAudioSourceError, SceneLayerError, SchemaVersion,
-    SetAudioMixerError, SetInputLockError, SetOutputRouteError, SetOutputStartupError,
-    SetSceneAnimationError, SetSceneBackgroundError, SetSceneLayersError, SetStingerError,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    UpdateStreamTargetError,
+    ScoreboardDocumentError, SetAudioMixerError, SetInputLockError, SetOutputRouteError,
+    SetOutputStartupError, SetSceneAnimationError, SetSceneBackgroundError, SetSceneLayersError,
+    SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    StingerSlotNumber, UpdateStreamTargetError,
 };
 pub use resolve::{
     AudioRoute, FrameContext, LayerSource, MixFeedHistory, MixSelection, RenderSource,
@@ -119,10 +126,11 @@ pub use scene_animation::{
 };
 pub use scene_layer_edit::{SceneLayerChange, SceneLayerEditError, check_scene_layer};
 pub use script::{
-    MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPT_WAIT_SECONDS,
-    MAX_SCRIPT_WAITS, MAX_SCRIPTS, Script, ScriptError, ScriptFault, ScriptRun, ScriptRunState,
-    script_limits, script_name_is_valid, script_source_is_valid, script_wait_frames, script_waits,
-    validate_script_definition, validate_script_run, validate_scripts,
+    MAX_QUEUED_SCRIPT_RUNS, MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES,
+    MAX_SCRIPT_WAIT_SECONDS, MAX_SCRIPT_WAITS, MAX_SCRIPTS, Script, ScriptError, ScriptFault,
+    ScriptRun, ScriptRunState, script_limits, script_name_is_valid, script_source_is_valid,
+    script_wait_frames, script_waits, validate_script_definition, validate_script_run,
+    validate_scripts,
 };
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,

@@ -1,6 +1,6 @@
 //! Instant replay codec (OR-012); see [`crate::replay`] for the contract.
 
-use fm_types::replay::ReplaySourceCheck;
+use fm_types::replay::{ReplaySourceCheck, ReplayTransition, ReplayTransitionKind};
 
 use crate::{
     CodecError, MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_PLAYLIST_ENTRIES,
@@ -147,7 +147,27 @@ fn push_settings(settings: &ReplaySettings, push: &mut Push<'_>) -> Result<(), C
     if let Some(frames) = settings.auto_return {
         push("auto_return", frames.to_string())?;
     }
+    push("transition", encode_transition(settings.transition))?;
     Ok(())
+}
+
+fn encode_transition(transition: ReplayTransition) -> String {
+    match transition.kind {
+        ReplayTransitionKind::Cut => "cut".to_owned(),
+        ReplayTransitionKind::Fade => format!("fade:{}", transition.duration_frames),
+    }
+}
+
+fn decode_transition(value: &str) -> Result<ReplayTransition, CodecError> {
+    if value == "cut" {
+        return Ok(ReplayTransition::CUT);
+    }
+    let Some(frames) = value.strip_prefix("fade:") else {
+        return Err(invalid("transition", value));
+    };
+    let frames = parse_number("transition", frames)?;
+    ReplayTransition::new(ReplayTransitionKind::Fade, frames)
+        .map_err(|_| invalid("transition", value))
 }
 
 fn decode_settings(fields: &mut dyn FieldSource) -> Result<ReplaySettings, CodecError> {
@@ -162,6 +182,7 @@ fn decode_settings(fields: &mut dyn FieldSource) -> Result<ReplaySettings, Codec
             .optional("auto_return")
             .map(|frames| parse_number("auto_return", &frames))
             .transpose()?,
+        transition: decode_transition(&fields.required("transition")?)?,
     };
     check_settings("sources", &settings)?;
     Ok(settings)
@@ -214,6 +235,13 @@ pub(super) fn encode_operation(
         ReplayOperation::Play { input, speed } => {
             push("input", input.to_string())?;
             push("speed", speed.percent().to_string())
+        }
+        ReplayOperation::Shuttle { input, rate_milli } => {
+            if !(-16_000..=16_000).contains(rate_milli) {
+                return Err(invalid("rate", rate_milli.to_string()));
+            }
+            push("input", input.to_string())?;
+            push("rate", rate_milli.to_string())
         }
         ReplayOperation::Pause { input }
         | ReplayOperation::CueIn { input }
@@ -292,6 +320,15 @@ pub(super) fn decode_operation(
             input: input(fields)?,
             speed: parse_speed("speed", &fields.required("speed")?)?,
         },
+        "replay_shuttle" => {
+            let input = input(fields)?;
+            let value = fields.required("rate")?;
+            let rate_milli = super::source_sync::parse_canonical_i64(&value)
+                .and_then(|rate| i32::try_from(rate).ok())
+                .filter(|rate| (-16_000..=16_000).contains(rate))
+                .ok_or_else(|| invalid("rate", value))?;
+            ReplayOperation::Shuttle { input, rate_milli }
+        }
         "replay_pause" => ReplayOperation::Pause {
             input: input(fields)?,
         },
@@ -449,12 +486,14 @@ fn decode_events(value: &str) -> Result<Vec<ReplayEventStatus>, CodecError> {
         .collect()
 }
 
-/// `storage`: `-`, or `<free>:<rate>:<remaining or ->:<level>`.
+/// `storage`: `-`, or `<free>:<rate>:<remaining or ->:<level>`, with the
+/// drive's SMART status appended as `:<health>:<temperature or ->:<used or ->`
+/// when it is known (2.139).
 fn encode_storage(storage: Option<&crate::ReplayStorageStatus>) -> String {
     let Some(storage) = storage else {
         return "-".to_owned();
     };
-    format!(
+    let mut encoded = format!(
         "{}:{}:{}:{}",
         storage.free_bytes,
         storage.bytes_per_second,
@@ -462,16 +501,70 @@ fn encode_storage(storage: Option<&crate::ReplayStorageStatus>) -> String {
             .remaining_seconds
             .map_or_else(|| "-".to_owned(), |seconds| seconds.to_string()),
         storage.level.token()
-    )
+    );
+    if let Some(smart) = storage.smart {
+        encoded.push(':');
+        encoded.push_str(smart.health.token());
+        encoded.push(':');
+        encoded.push_str(
+            &smart
+                .temperature_celsius
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        );
+        encoded.push(':');
+        encoded.push_str(
+            &smart
+                .percentage_used
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        );
+    }
+    encoded
 }
 
 fn decode_storage(value: &str) -> Result<Option<crate::ReplayStorageStatus>, CodecError> {
     if value == "-" {
         return Ok(None);
     }
-    let [free, rate, remaining, level] = value.split(':').collect::<Vec<_>>()[..] else {
-        return Err(invalid("storage", value));
+    let parts = value.split(':').collect::<Vec<_>>();
+    let (fields, smart) = match parts.as_slice() {
+        [free, rate, remaining, level] => ((*free, *rate, *remaining, *level), None),
+        [free, rate, remaining, level, health, temperature, used] => {
+            let health = crate::ReplaySmartHealth::from_token(health)
+                .ok_or_else(|| invalid("storage", value))?;
+            let temperature_celsius = if *temperature == "-" {
+                None
+            } else {
+                let number: u64 = parse_number("storage", temperature)?;
+                Some(
+                    u16::try_from(number)
+                        .ok()
+                        .filter(|value| *value <= 200)
+                        .ok_or_else(|| invalid("storage", value))?,
+                )
+            };
+            let percentage_used = if *used == "-" {
+                None
+            } else {
+                let number: u64 = parse_number("storage", used)?;
+                Some(
+                    u8::try_from(number)
+                        .ok()
+                        .filter(|value| *value <= 100)
+                        .ok_or_else(|| invalid("storage", value))?,
+                )
+            };
+            (
+                (*free, *rate, *remaining, *level),
+                Some(crate::ReplaySmartStatus {
+                    health,
+                    temperature_celsius,
+                    percentage_used,
+                }),
+            )
+        }
+        _ => return Err(invalid("storage", value)),
     };
+    let (free, rate, remaining, level) = fields;
     let free_bytes = parse_number("storage", free)?;
     let bytes_per_second = parse_number("storage", rate)?;
     let remaining_seconds = if remaining == "-" {
@@ -486,6 +579,7 @@ fn decode_storage(value: &str) -> Result<Option<crate::ReplayStorageStatus>, Cod
         bytes_per_second,
         remaining_seconds,
         level,
+        smart,
     }))
 }
 
@@ -497,7 +591,7 @@ fn encode_players(players: &[ReplayPlayerStatus]) -> Result<String, CodecError> 
         .iter()
         .map(|player| {
             Ok(format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 player.input,
                 optional_text(player.event),
                 optional_text(player.angle),
@@ -506,7 +600,9 @@ fn encode_players(players: &[ReplayPlayerStatus]) -> Result<String, CodecError> 
                 optional_text(player.frame),
                 optional_text(player.playlist_index),
                 encode_playlist(&player.playlist)?,
-                optional_text(player.linked)
+                optional_text(player.linked),
+                player.rate_milli,
+                u8::from(player.shuttling)
             ))
         })
         .collect::<Result<Vec<_>, _>>()
@@ -534,6 +630,8 @@ fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
                 index,
                 playlist,
                 linked,
+                rate_milli,
+                shuttling,
             ] = entry.split(':').collect::<Vec<_>>()[..]
             else {
                 return Err(invalid("players", entry));
@@ -545,11 +643,17 @@ fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
             {
                 return Err(invalid("players", entry));
             }
+            let rate_milli = super::source_sync::parse_canonical_i64(rate_milli)
+                .and_then(|rate| i32::try_from(rate).ok())
+                .filter(|rate| (-16_000..=16_000).contains(rate))
+                .ok_or_else(|| invalid("players", entry))?;
             Ok(ReplayPlayerStatus {
                 input: parse_input("players", input)?,
                 event: parse_optional(event, |value| parse_number("players", value))?,
                 angle: parse_optional(angle, |value| parse_input("players", value))?,
                 speed: parse_speed("players", speed)?,
+                rate_milli,
+                shuttling: parse_flag("players", shuttling)?,
                 playing: parse_flag("players", playing)?,
                 frame: parse_optional(frame, |value| parse_number("players", value))?,
                 playlist,

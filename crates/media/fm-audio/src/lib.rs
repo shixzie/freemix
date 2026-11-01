@@ -54,7 +54,7 @@ pub use embedded_audio::{
     EmbeddedAudioMap, EmbeddedPair, EmbeddedSlot, deembed_group, deembed_mono, deembed_pair,
 };
 pub use gain_smoother::{
-    GainSmoother, GainSmootherConfig, GainSmootherError, GainSmootherTelemetry,
+    GainSmoother, GainSmootherConfig, GainSmootherError, GainSmootherTelemetry, GainTaper,
     MAX_GAIN_SMOOTHER_RAMP_SAMPLES,
 };
 pub use live_block::{
@@ -1300,6 +1300,22 @@ pub struct MixerMeterSlices<'a> {
 pub struct AuxBusOutput<'a> {
     pub planes: &'a mut [Vec<f32>],
     pub meters: &'a mut [ChannelMeter],
+    /// Feeds of one bus without one strip (AU-002 mix-minus). Each is summed
+    /// in the same pass as the buses and processed by that bus's chain, so
+    /// it is bit-identical to the bus with the strip's send disabled.
+    pub mix_minus: Option<AuxMixMinusFeeds<'a>>,
+}
+
+/// Aux bus feeds that leave one strip out (AU-002 mix-minus).
+#[derive(Debug)]
+pub struct AuxMixMinusFeeds<'a> {
+    /// One entry per feed: the bus to render and the strip it leaves out.
+    pub configs: &'a [(MixBus, InputId)],
+    /// Feed-major, one plane per Master channel, each at least the render's
+    /// length.
+    pub planes: &'a mut [Vec<f32>],
+    /// Laid out like `planes`: one meter per plane.
+    pub meters: &'a mut [ChannelMeter],
 }
 
 /// Audio summed into (or replacing) the Program bus after the strips and
@@ -1529,6 +1545,9 @@ pub struct MasterMixer {
     master_dsp: Option<Box<LiveStripDsp>>,
     /// The Master bus plugin stage (AU-006), after the Master DSP chain.
     master_plugins: Option<Box<dyn MasterPluginStage>>,
+    /// Why the Master plugin stage was quarantined, if it panicked in a
+    /// render.
+    master_plugins_quarantined: Option<String>,
     /// The Master chain as a render found it, restored when the render is
     /// rejected; present exactly when `master_dsp` is.
     master_checkpoint: Option<Box<LiveStripDsp>>,
@@ -1536,6 +1555,10 @@ pub struct MasterMixer {
     dsp_block_capacity: usize,
     /// The fader and mute of aux buses A–G (AU-002), in bus order.
     aux: [GroupStrip; AUX_BUS_COUNT],
+    /// Each aux bus's DSP chain (AU-002), after its fader and mute.
+    aux_dsp: [Option<Box<LiveStripDsp>>; AUX_BUS_COUNT],
+    /// Each aux chain's state as this render found it.
+    aux_checkpoints: [Option<Box<LiveStripDsp>>; AUX_BUS_COUNT],
 }
 
 impl Clone for MasterMixer {
@@ -1549,9 +1572,12 @@ impl Clone for MasterMixer {
             retained_delay_bytes: self.retained_delay_bytes,
             master_dsp: self.master_dsp.clone(),
             master_plugins: self.master_plugins.clone(),
+            master_plugins_quarantined: self.master_plugins_quarantined.clone(),
             master_checkpoint: self.master_checkpoint.clone(),
             dsp_block_capacity: self.dsp_block_capacity,
             aux: self.aux,
+            aux_dsp: std::array::from_fn(|index| self.aux_dsp[index].clone()),
+            aux_checkpoints: std::array::from_fn(|index| self.aux_checkpoints[index].clone()),
         }
     }
 }
@@ -1568,9 +1594,15 @@ impl fmt::Debug for MasterMixer {
             .field("retained_delay_bytes", &self.retained_delay_bytes)
             .field("master_dsp", &self.master_dsp)
             .field("master_plugins", &self.master_plugins)
+            .field(
+                "master_plugins_quarantined",
+                &self.master_plugins_quarantined,
+            )
             .field("master_checkpoint", &self.master_checkpoint)
             .field("dsp_block_capacity", &self.dsp_block_capacity)
             .field("aux", &self.aux)
+            .field("aux_dsp", &self.aux_dsp)
+            .field("aux_checkpoints", &self.aux_checkpoints)
             .finish()
     }
 }
@@ -1594,9 +1626,12 @@ impl MasterMixer {
             retained_delay_bytes: 0,
             master_dsp: None,
             master_plugins: None,
+            master_plugins_quarantined: None,
             master_checkpoint: None,
             dsp_block_capacity: DEFAULT_DSP_BLOCK_CAPACITY,
             aux: [GroupStrip::unity(); AUX_BUS_COUNT],
+            aux_dsp: std::array::from_fn(|_| None),
+            aux_checkpoints: std::array::from_fn(|_| None),
         })
     }
 
@@ -1670,6 +1705,48 @@ impl MasterMixer {
         self.master_dsp.as_ref().map(|live| live.settings())
     }
 
+    /// An aux bus's DSP chain; `None` until a non-default chain is set.
+    #[must_use]
+    pub fn aux_dsp(&self, bus: MixBus) -> Option<&fm_types::strip_dsp::StripDsp> {
+        self.aux_dsp
+            .get(aux_index(bus).ok()?)?
+            .as_ref()
+            .map(|live| live.settings())
+    }
+
+    /// Retargets an aux bus's DSP chain, which processes the bus after its
+    /// fader and mute and before its meters. A changed chain glides or
+    /// crossfades from the next rendered sample; the first non-default chain
+    /// allocates the bus's chain once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError::NotAuxBus`] for Master or a channel outside A–G,
+    /// or [`AudioError::Dsp`] for an out-of-range chain. Nothing changes.
+    pub fn set_aux_dsp(
+        &mut self,
+        bus: MixBus,
+        settings: &fm_types::strip_dsp::StripDsp,
+    ) -> Result<(), AudioError> {
+        let index = aux_index(bus)?;
+        match &mut self.aux_dsp[index] {
+            Some(live) => live.set_settings(settings).map_err(AudioError::Dsp),
+            None if settings.is_default() => Ok(()),
+            None => {
+                #[allow(clippy::cast_precision_loss)]
+                let live = LiveStripDsp::new(
+                    self.format.sample_rate.hertz() as f32,
+                    self.format.channels.channels().len(),
+                    settings,
+                )
+                .map_err(AudioError::Dsp)?;
+                self.aux_checkpoints[index] = Some(Box::new(live.render_checkpoint()));
+                self.aux_dsp[index] = Some(Box::new(live));
+                Ok(())
+            }
+        }
+    }
+
     /// Retargets the Master bus DSP chain (AU-005), which processes the
     /// summed Program bus before clipping, the Master meters, and the
     /// monitor bus that follows Master.
@@ -1703,12 +1780,21 @@ impl MasterMixer {
     /// Replaces the Master bus plugin stage (AU-006); `None` removes it.
     pub fn set_master_plugins(&mut self, stage: Option<Box<dyn MasterPluginStage>>) {
         self.master_plugins = stage;
+        self.master_plugins_quarantined = None;
     }
 
     /// Whether a Master bus plugin stage is installed.
     #[must_use]
     pub fn has_master_plugins(&self) -> bool {
         self.master_plugins.is_some()
+    }
+
+    /// Why the Master plugin stage was quarantined after it panicked during
+    /// a render, if it was. A quarantined stage is removed; the next render
+    /// is clean.
+    #[must_use]
+    pub fn master_plugins_quarantined(&self) -> Option<&str> {
+        self.master_plugins_quarantined.as_deref()
     }
 
     /// The gain reduction `id`'s strip DSP applied during the last render.
@@ -2081,9 +2167,11 @@ impl MasterMixer {
 
     /// Reconfigures one strip's exact raw-planar delay.
     ///
-    /// A changed delay starts with leading silence. Allocation, bounds, and the
-    /// per-mixer retained-byte budget are checked before the strip is mutated.
-    /// Setting the existing value preserves its history.
+    /// A changed delay preserves the retained history: growing it prepends
+    /// the missing older samples as silence, and shrinking it keeps the most
+    /// recent samples. Allocation, bounds, and the per-mixer retained-byte
+    /// budget are checked before the strip is mutated. Setting the existing
+    /// value changes nothing.
     ///
     /// # Errors
     ///
@@ -2116,11 +2204,10 @@ impl MasterMixer {
                 maximum: MAX_MASTER_MIXER_DELAY_BYTES,
             });
         }
-        let delay = SampleDelay::new(channels, delay_samples)?;
         let Some(strip) = self.inputs.get_mut(&id) else {
             return Err(MasterMixerDelayError::UnknownInput(id));
         };
-        strip.delay = delay;
+        strip.delay.set_delay_samples(delay_samples)?;
         self.retained_delay_bytes = retained;
         Ok(())
     }
@@ -2218,6 +2305,18 @@ impl MasterMixer {
             (None, None) => {}
             _ => self.master_plugins.clone_from(&other.master_plugins),
         }
+        self.master_plugins_quarantined
+            .clone_from(&other.master_plugins_quarantined);
+        for index in 0..AUX_BUS_COUNT {
+            match (&mut self.aux_dsp[index], &other.aux_dsp[index]) {
+                (Some(own), Some(other)) => own
+                    .copy_state_from(other)
+                    .map_err(|_| AudioError::FormatMismatch)?,
+                (None, None) => {}
+                _ => self.aux_dsp[index].clone_from(&other.aux_dsp[index]),
+            }
+        }
+        self.aux_checkpoints = std::array::from_fn(|index| other.aux_checkpoints[index].clone());
         self.groups = other.groups;
         self.aux = other.aux;
         self.solo_mode = other.solo_mode;
@@ -2494,6 +2593,22 @@ impl MasterMixer {
                     actual: aux.meters.len(),
                 });
             }
+            if let Some(feeds) = &aux.mix_minus {
+                for &(bus, _) in feeds.configs {
+                    aux_index(bus)?;
+                }
+                validate_mixer_output_planes(
+                    samples,
+                    feeds.configs.len() * channels,
+                    feeds.planes,
+                )?;
+                if feeds.meters.len() != feeds.configs.len() * channels {
+                    return Err(AudioError::MeterCountMismatch {
+                        expected: feeds.configs.len() * channels,
+                        actual: feeds.meters.len(),
+                    });
+                }
+            }
         }
         let solo = self.monitor_carries_solo();
         self.mix_block_views_into(
@@ -2634,6 +2749,11 @@ impl MasterMixer {
         if let (Some(live), Some(checkpoint)) = (&self.master_dsp, &mut self.master_checkpoint) {
             let _ = checkpoint.copy_render_state_from(live);
         }
+        for (live, checkpoint) in self.aux_dsp.iter().zip(&mut self.aux_checkpoints) {
+            if let (Some(live), Some(checkpoint)) = (live, checkpoint) {
+                let _ = checkpoint.copy_render_state_from(live);
+            }
+        }
     }
 
     /// Restores every DSP chain from its checkpoint.
@@ -2648,6 +2768,11 @@ impl MasterMixer {
         }
         if let (Some(live), Some(checkpoint)) = (&mut self.master_dsp, &self.master_checkpoint) {
             let _ = live.copy_render_state_from(checkpoint);
+        }
+        for (live, checkpoint) in self.aux_dsp.iter_mut().zip(&self.aux_checkpoints) {
+            if let (Some(live), Some(checkpoint)) = (live, checkpoint) {
+                let _ = live.copy_render_state_from(checkpoint);
+            }
         }
     }
 
@@ -2707,6 +2832,11 @@ impl MasterMixer {
         if let Some(aux) = &mut aux {
             for plane in aux.planes.iter_mut() {
                 plane[..samples].fill(0.0);
+            }
+            if let Some(feeds) = &mut aux.mix_minus {
+                for plane in feeds.planes.iter_mut() {
+                    plane[..samples].fill(0.0);
+                }
             }
         }
         self.process_strip_dsp(samples, blocks);
@@ -2791,6 +2921,31 @@ impl MasterMixer {
                         Some(planes),
                     )?;
                 }
+                if let Some(feeds) = &mut aux.mix_minus {
+                    for (index, &(bus, excluded)) in feeds.configs.iter().enumerate() {
+                        if excluded == *id {
+                            continue;
+                        }
+                        let send = strip.aux_sends[aux_index(bus)?];
+                        if !send.enabled {
+                            continue;
+                        }
+                        let tap = match send.tap {
+                            SendTap::PreFader => StripTap::PreFader,
+                            SendTap::PostFader => StripTap::Program,
+                        };
+                        let planes = &mut feeds.planes[index * channels..(index + 1) * channels];
+                        mix_strip_samples(
+                            samples,
+                            &self.format.channels,
+                            block,
+                            strip,
+                            (&mut { ramps }, tap, send.level.linear()),
+                            None,
+                            Some(planes),
+                        )?;
+                    }
+                }
             }
             if metering {
                 let readings = meter_channels.expect("input metering was requested");
@@ -2834,9 +2989,26 @@ impl MasterMixer {
             validate_finite_sample_prefix(output, samples)?;
             live.process(samples, &mut InPlacePlanes(output));
         }
-        if let Some(stage) = &mut self.master_plugins {
+        if let Some(mut stage) = self.master_plugins.take() {
             validate_finite_sample_prefix(output, samples)?;
-            stage.process(output, samples);
+            // A panicking plugin must not end the show: quarantine it,
+            // discard whatever it left, and keep the summed Program bus.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                stage.process(output, samples);
+            }));
+            if outcome.is_err() {
+                self.master_plugins_quarantined =
+                    Some("a Master plugin stage panicked during a render".to_owned());
+                for plane in output.iter_mut() {
+                    for sample in &mut plane[..samples] {
+                        if !sample.is_finite() {
+                            *sample = 0.0;
+                        }
+                    }
+                }
+            } else {
+                self.master_plugins = Some(stage);
+            }
         }
         if self.clipping_policy == ClippingPolicy::Clamp {
             for plane in output.iter_mut() {
@@ -2880,19 +3052,52 @@ impl MasterMixer {
     }
 
     /// Applies each aux bus's fader ramp, mute, and the clipping policy to
-    /// its summed sends, then meters it.
+    /// its summed sends, then meters it. Mix-minus feeds run first through
+    /// the bus chain from the render's checkpoint (which is restored after
+    /// each), so the canonical bus and every feed start from the same state.
     fn finish_aux_buses(
-        &self,
+        &mut self,
         samples: usize,
         channels: usize,
         aux: &mut AuxBusOutput<'_>,
     ) -> Result<(), AudioError> {
-        for ((bus, planes), meters) in self
-            .aux
-            .iter()
-            .zip(aux.planes.chunks_exact_mut(channels))
-            .zip(aux.meters.chunks_exact_mut(channels))
-        {
+        if let Some(feeds) = &mut aux.mix_minus {
+            for index in 0..feeds.configs.len() {
+                let (bus, _) = feeds.configs[index];
+                let bus_index = aux_index(bus)?;
+                let group = self.aux[bus_index];
+                let planes = &mut feeds.planes[index * channels..(index + 1) * channels];
+                let meters = &mut feeds.meters[index * channels..(index + 1) * channels];
+                for plane in planes.iter_mut() {
+                    let plane = &mut plane[..samples];
+                    if group.state.muted {
+                        plane.fill(0.0);
+                        continue;
+                    }
+                    let mut ramp = group.ramp;
+                    for sample in plane {
+                        *sample *= ramp.next();
+                        if self.clipping_policy == ClippingPolicy::Clamp {
+                            *sample = sample.clamp(-1.0, 1.0);
+                        }
+                    }
+                }
+                if let Some(live) = &mut self.aux_dsp[bus_index]
+                    && !live.is_transparent()
+                {
+                    live.process(samples, &mut InPlacePlanes(planes));
+                    if let Some(checkpoint) = &self.aux_checkpoints[bus_index] {
+                        let _ = live.copy_render_state_from(checkpoint);
+                    }
+                }
+                validate_finite_sample_prefix(planes, samples)?;
+                measure_plane_prefix_into(planes, samples, meters);
+            }
+        }
+        for index in 0..AUX_BUS_COUNT {
+            let bus = self.aux[index];
+            let planes = &mut aux.planes[index * channels..(index + 1) * channels];
+            let meters = &mut aux.meters[index * channels..(index + 1) * channels];
             for plane in planes.iter_mut() {
                 let plane = &mut plane[..samples];
                 if bus.state.muted {
@@ -2906,6 +3111,11 @@ impl MasterMixer {
                         *sample = sample.clamp(-1.0, 1.0);
                     }
                 }
+            }
+            if let Some(live) = &mut self.aux_dsp[index]
+                && !live.is_transparent()
+            {
+                live.process(samples, &mut InPlacePlanes(planes));
             }
             validate_finite_sample_prefix(planes, samples)?;
             measure_plane_prefix_into(planes, samples, meters);

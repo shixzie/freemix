@@ -25,7 +25,7 @@ use fm_titles::{
     FieldDefinition, FieldId, FieldValue, FontStyle, ProductionClockSpec, ReferenceRenderer, Style,
     TemplateId, TitleClock, TitleClockError, TitleClockKind, TitleClockTime, TitleId,
     TitleTemplate, ValidationError, evaluate_clock, evaluate_production_clock,
-    title_clock_registry, validate_template, validate_title_clocks,
+    title_clock_registry, title_clock_registry_with, validate_template, validate_title_clocks,
 };
 
 const FAMILY: &str = "test-face";
@@ -769,12 +769,11 @@ fn template_clock_tables_must_match_the_elements_exactly() {
         validate_title_clocks(&build(&elements[1..]), &title_clocks()),
         Err(TitleClockError::UnusedClock(name("doors")))
     );
+    // An element may name a clock the template does not define; the show's
+    // shared registry resolves it at render time.
     assert_eq!(
         validate_title_clocks(&build(&elements), &title_clocks()[1..]),
-        Err(TitleClockError::UndefinedClock {
-            element: ElementId::new(NonZeroU128::new(1).unwrap()),
-            clock: name("doors"),
-        })
+        Ok(())
     );
     elements[3] = element_with_id(
         4,
@@ -789,5 +788,106 @@ fn template_clock_tables_must_match_the_elements_exactly() {
             element: ElementId::new(NonZeroU128::new(4).unwrap()),
             clock: name("eastern"),
         })
+    );
+}
+
+#[test]
+fn a_template_may_show_a_shared_show_clock() {
+    let mut element = clock_element(ProductionClockSpec::new(name("ShowClock")));
+    element.id = ElementId::new(NonZeroU128::new(1).unwrap());
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(1).unwrap()),
+        name: "shared".into(),
+        width: WIDTH,
+        height: HEIGHT,
+        background: Color::TRANSPARENT,
+        fields: Vec::new(),
+        elements: vec![element],
+        animation: fm_titles::TitleAnimation::default(),
+    };
+    assert_eq!(validate_title_clocks(&template, &[]), Ok(()));
+    let mut shared = ProductionClocks::new();
+    shared
+        .insert(
+            name("ShowClock"),
+            ProductionClock::timer(
+                TimerConfig::countdown(
+                    ClockValue::from_secs(60).unwrap(),
+                    OverrunPolicy::StopAtTarget,
+                ),
+                DurationFormat::MinutesSeconds,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let time = TitleClockTime {
+        at: TimeReading::new(mono_ms(0), UtcInstant::new(0, 0).unwrap()),
+        taken_at: None,
+    };
+    let registry = title_clock_registry_with(&template, &[], time, Some(&shared)).unwrap();
+    assert_eq!(
+        evaluate_production_clock(
+            &ProductionClockSpec::new(name("ShowClock")),
+            ClockSource::new(&registry, time.at),
+        ),
+        Ok("01:00".into())
+    );
+}
+
+#[test]
+fn a_template_clock_may_reference_a_shared_show_clock() {
+    let mut element = clock_element(ProductionClockSpec::new(name("MediaRef")));
+    element.id = ElementId::new(NonZeroU128::new(1).unwrap());
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(1).unwrap()),
+        name: "reference".into(),
+        width: WIDTH,
+        height: HEIGHT,
+        background: Color::TRANSPARENT,
+        fields: Vec::new(),
+        elements: vec![element],
+        animation: fm_titles::TitleAnimation::default(),
+    };
+    let clocks = [TitleClock {
+        name: name("MediaRef"),
+        kind: TitleClockKind::Reference {
+            clock: name("Media"),
+        },
+    }];
+    assert_eq!(validate_title_clocks(&template, &clocks), Ok(()));
+    let mut shared = ProductionClocks::new();
+    shared
+        .insert(
+            name("Media"),
+            ProductionClock::timer(
+                TimerConfig::countdown(
+                    ClockValue::from_secs(60).unwrap(),
+                    OverrunPolicy::StopAtTarget,
+                ),
+                DurationFormat::MinutesSeconds,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let time = TitleClockTime {
+        at: TimeReading::new(mono_ms(0), UtcInstant::new(0, 0).unwrap()),
+        taken_at: None,
+    };
+    let registry = title_clock_registry_with(&template, &clocks, time, Some(&shared)).unwrap();
+    assert_eq!(
+        evaluate_production_clock(
+            &ProductionClockSpec::new(name("MediaRef")),
+            ClockSource::new(&registry, time.at),
+        ),
+        Ok("01:00".into())
+    );
+    // Without the shared registry a reference has no reading.
+    let local = title_clock_registry(&clocks, time).unwrap();
+    assert_eq!(
+        evaluate_production_clock(
+            &ProductionClockSpec::new(name("MediaRef")),
+            ClockSource::new(&local, time.at),
+        ),
+        Err(ClockUnresolved::UnknownClock)
     );
 }

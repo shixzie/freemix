@@ -58,6 +58,9 @@ pub(crate) fn latched_stream_failure(notice: &str) -> OutputFailure {
     OutputFailure::new(match (stage, detail) {
         ("capture" | "readback" | "frame", _) => OutputFailureCode::CaptureFailed,
         ("transport", "budget_exhausted") => OutputFailureCode::ReconnectExhausted,
+        // A local HLS output stopped because its filesystem fell below the
+        // recording floor (OR-001).
+        ("storage", "low_space") => OutputFailureCode::DiskFull,
         _ => OutputFailureCode::InternalError,
     })
 }
@@ -118,6 +121,9 @@ pub(crate) fn recorder_failure(notice: &str, stderr: &str) -> OutputFailure {
     let fixed = match stage {
         "capture" | "readback" | "frame" => Some(OutputFailureCode::CaptureFailed),
         "startup" if detail == "mux_readiness_timeout" => Some(OutputFailureCode::StartupTimeout),
+        // The daemon stopped the segment because its filesystem fell below
+        // the recording floor (OR-014).
+        "storage" if detail == "low_space" => Some(OutputFailureCode::DiskFull),
         "enqueue"
             if [
                 "QueueFull",
@@ -290,6 +296,16 @@ mod tests {
                 "{notice}"
             );
         }
+    }
+
+    /// A program recorder stopped because its filesystem fell below the
+    /// recording floor reports a disk-full failure (OR-014).
+    #[test]
+    fn a_recorder_stopped_below_the_disk_floor_is_disk_full() {
+        assert_eq!(
+            recorder_failure("storage:low_space", ""),
+            failure(OutputFailureCode::DiskFull, None)
+        );
     }
 
     #[test]

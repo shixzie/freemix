@@ -578,6 +578,7 @@ mod tests {
     fn view(locks: &EditLocks, history: EditHistoryStatus) -> fm_ui_model::ClientView {
         let project = fm_types::ProjectId::new(NonZeroU128::new(1).unwrap());
         let mut snapshot = fm_protocol::SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -614,7 +615,7 @@ mod tests {
                     soloed: false,
                     follow_video: true,
                     delay_samples: 0,
-                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                    sends: fm_types::audio_bus::AudioSends::MASTER,
                 })
                 .to_vec(),
             desired_program: fm_protocol::WireInputId::from_domain(input(1)),

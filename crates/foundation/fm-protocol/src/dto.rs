@@ -307,6 +307,9 @@ impl fmt::Display for WireStingerSlotId {
 pub struct WireRecorderSlot(u8);
 
 impl WireRecorderSlot {
+    /// Recorder slot 1, the first of the two.
+    pub const FIRST: Self = Self(1);
+
     #[must_use]
     pub const fn new(value: u8) -> Option<Self> {
         if value >= 1 && value <= 2 {
@@ -1643,8 +1646,9 @@ pub enum CommandPayload {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
-        /// Master and the aux buses the strip feeds (Protocol 2.118).
-        buses: fm_types::audio_bus::AudioBusMask,
+        /// Master and each aux bus the strip feeds, with its level and tap
+        /// (Protocol 2.130).
+        sends: fm_types::audio_bus::AudioSends,
     },
     SelectPreview {
         input: WireInputId,
@@ -1891,12 +1895,12 @@ pub enum CommandPayload {
     RunScript {
         script: u64,
     },
-    /// Ends waiting script run `run`, or clears that run's fault
-    /// (Protocol 2.62); with no `run`, ends every waiting run and clears
-    /// every fault (Protocol 2.69). Wire payload `script_stop`, optional
-    /// nonzero `run`.
+    /// Ends the waiting script runs in `runs`, or clears their faults
+    /// (Protocol 2.62; a selection since 2.147); with no run, ends every
+    /// waiting run and clears every fault (Protocol 2.69). Wire payload
+    /// `script_stop`, optional ascending nonzero `runs` (comma separated).
     StopScript {
-        run: Option<u64>,
+        runs: Vec<u64>,
     },
     /// Creates or replaces user shortcut `shortcut` (Protocol 2.72,
     /// RC-004): an undoable project edit. Wire payload `shortcut_set`.
@@ -2372,18 +2376,24 @@ pub enum PlaylistTransitionKind {
     Wipe,
     Slide,
     Zoom,
+    Stinger,
 }
 
 /// One playlist row. Durations are in frames; a cut has zero transition
 /// frames and every other kind between one and
-/// [`MAX_PLAYLIST_TRANSITION_FRAMES`], no longer than the entry.
+/// [`MAX_PLAYLIST_TRANSITION_FRAMES`], no longer than the entry. A Stinger
+/// names its slot (`1..=8`); no other kind has one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlaylistEntrySpec {
     pub id: u64,
     pub input: WireInputId,
     pub duration_frames: u64,
+    /// Whether the entry follows the input's media length; `duration_frames`
+    /// is then the fallback when the length is unknown.
+    pub follow_media: bool,
     pub transition: PlaylistTransitionKind,
     pub transition_frames: u32,
+    pub stinger_slot: Option<u8>,
     pub enabled: bool,
 }
 
@@ -2521,8 +2531,9 @@ pub struct InputAudioStripStatus {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
-    /// Master and the aux buses the strip feeds (Protocol 2.118).
-    pub buses: fm_types::audio_bus::AudioBusMask,
+    /// Master and each aux bus the strip feeds, with its level and tap
+    /// (Protocol 2.130).
+    pub sends: fm_types::audio_bus::AudioSends,
 }
 
 /// One canonical show input exposed to clients in project order.
@@ -2542,6 +2553,9 @@ pub struct OutputStatus {
     pub name: String,
     /// The aux bus the output hears, or `None` for Master (2.118).
     pub aux_bus: Option<fm_types::audio_bus::AuxBusNumber>,
+    /// The input the output's aux feed leaves out (AU-002 mix-minus, 2.134),
+    /// or `None` for a full mix. Applies only while `aux_bus` is `Some`.
+    pub mix_minus: Option<WireInputId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2549,6 +2563,10 @@ pub struct SnapshotMessage {
     pub engine: EngineIdentity,
     pub revision: u64,
     pub show_name: String,
+    /// Every project production clock's name, in project order (SW-013,
+    /// Protocol 2.152), at most [`fm_types::MAX_PROJECT_CLOCKS`]. Studio
+    /// offers these names when authoring a clock cue step.
+    pub production_clocks: Vec<String>,
     pub inputs: Vec<InputStatus>,
     pub outputs: Vec<OutputStatus>,
     pub input_audio_strips: Vec<InputAudioStripStatus>,
@@ -3424,6 +3442,9 @@ pub struct DiagnosticsResponse {
     /// The daemon's latest health sample (Protocol 2.100): utilization and
     /// alerts.
     pub health: crate::DaemonHealth,
+    /// Every project production clock's reading (SW-013, Protocol 2.149), in
+    /// strictly ascending name order.
+    pub production_clocks: Vec<crate::ProductionClockStatus>,
 }
 
 // A snapshot is sent once per (re)connection, so its inline size is not worth
@@ -3457,6 +3478,10 @@ pub enum WireMessage {
     CapabilityReport(CapabilityReportMessage),
     DiagnosticsRequest(DiagnosticsRequest),
     DiagnosticsResponse(DiagnosticsResponse),
+    /// A client's production-clock timer control (SW-013, Protocol 2.150).
+    ClockControlRequest(crate::ClockControlRequest),
+    /// The daemon's answer to a production-clock control request.
+    ClockControlResponse(crate::ClockControlResponse),
     Error(ErrorMessage),
     TitleState(TitleStateMessage),
     /// Every title input's animation phase (Protocol 2.90), a lossy
@@ -3483,6 +3508,7 @@ pub enum WireMessage {
     AnimationPresetState(AnimationPresetStateMessage),
     /// One input strip's DSP chain after a snapshot (Protocol 2.75).
     AudioStripDspState(crate::AudioStripDspStateMessage),
+    AudioStripSendState(crate::AudioStripSendStateMessage),
     MediaState(crate::MediaStateMessage),
     /// One paged input after a snapshot (IN-014).
     PagedState(crate::PagedStateMessage),

@@ -593,3 +593,146 @@ fn replacing_a_section_that_strands_references_is_a_conflict() {
         Some(ChangeKind::Removed)
     );
 }
+
+#[test]
+fn apply_updates_an_existing_stream_target_and_preserves_its_key() {
+    let snapshot = with(current(), "stream_targets.40.name", text("Backup ingest"));
+    let mut project = project();
+    snapshot.apply_exported(&mut project).unwrap();
+    let target = project
+        .stream_targets()
+        .iter()
+        .find(|target| target.id().get() == nz(40))
+        .unwrap();
+    assert_eq!(target.name(), "Backup ingest");
+    assert!(target.key().is_some());
+}
+
+#[test]
+fn apply_refuses_stream_target_additions_and_protocol_changes() {
+    let mut project = project();
+    let added = with(current(), "stream_targets.41.name", text("New"));
+    assert!(added.apply_exported(&mut project).is_err());
+    let changed = with(current(), "stream_targets.40.protocol", text("rtmp"));
+    assert!(changed.apply_exported(&mut project).is_err());
+}
+
+#[test]
+fn apply_adds_a_keyless_hls_stream_target() {
+    let mut snapshot = current();
+    snapshot = with(snapshot, "stream_targets.41.name", text("Archive"));
+    snapshot = with(snapshot, "stream_targets.41.protocol", text("hls"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.endpoint",
+        text("/archive/live"),
+    );
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.output",
+        SettingValue::Reference(SettingReference {
+            kind: ReferenceKind::Output,
+            id: nz(30),
+        }),
+    );
+    snapshot = with(snapshot, "stream_targets.41.startup", text("stopped"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.video_bitrate_kbps",
+        SettingValue::Integer(4500),
+    );
+    let mut project = project();
+    snapshot.apply_exported(&mut project).unwrap();
+    let target = project
+        .stream_targets()
+        .iter()
+        .find(|target| target.id().get() == nz(41))
+        .unwrap();
+    assert_eq!(target.name(), "Archive");
+    assert_eq!(target.protocol(), StreamProtocol::Hls);
+}
+
+#[test]
+fn apply_refuses_a_keyed_stream_target_addition() {
+    let mut snapshot = current();
+    snapshot = with(snapshot, "stream_targets.41.name", text("Live"));
+    snapshot = with(snapshot, "stream_targets.41.protocol", text("rtmp"));
+    let mut project = project();
+    assert!(snapshot.apply_exported(&mut project).is_err());
+}
+
+#[test]
+fn apply_adds_a_keyed_stream_target_with_a_supplied_key() {
+    let mut snapshot = current();
+    snapshot = with(snapshot, "stream_targets.41.name", text("Live"));
+    snapshot = with(snapshot, "stream_targets.41.protocol", text("rtmp"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.endpoint",
+        text("live.example.test/app"),
+    );
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.output",
+        SettingValue::Reference(SettingReference {
+            kind: ReferenceKind::Output,
+            id: nz(30),
+        }),
+    );
+    snapshot = with(snapshot, "stream_targets.41.startup", text("stopped"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.video_bitrate_kbps",
+        SettingValue::Integer(4500),
+    );
+    let mut project = project();
+    let keys = std::collections::BTreeMap::from([(41, "live-key-1234".to_owned())]);
+    snapshot
+        .apply_exported_with_keys(&mut project, &keys)
+        .unwrap();
+    let target = project
+        .stream_targets()
+        .iter()
+        .find(|target| target.id().get() == nz(41))
+        .unwrap();
+    assert_eq!(target.protocol(), StreamProtocol::Rtmp);
+    assert_eq!(target.key().unwrap().expose_secret(), "live-key-1234");
+}
+
+#[test]
+fn apply_removes_a_stream_target_absent_from_the_snapshot() {
+    let snapshot = without_entity(&current(), entity(SettingsSection::StreamTargets, Some(40)));
+    let mut project = project();
+    snapshot.apply_exported(&mut project).unwrap();
+    assert!(project.stream_targets().is_empty());
+}
+
+#[test]
+fn apply_removes_an_output_and_bus_after_the_stream_target_that_uses_them() {
+    let mut snapshot = without_entity(&current(), entity(SettingsSection::StreamTargets, Some(40)));
+    snapshot = without_entity(&snapshot, entity(SettingsSection::Outputs, Some(30)));
+    snapshot = without_entity(&snapshot, entity(SettingsSection::AudioBuses, Some(20)));
+    let mut project = project();
+    snapshot.apply_exported(&mut project).unwrap();
+    assert!(project.stream_targets().is_empty());
+    assert!(project.outputs().is_empty());
+    assert!(project.audio_buses().is_empty());
+}
+
+#[test]
+fn apply_refuses_to_remove_an_output_a_kept_stream_target_uses() {
+    let snapshot = without_entity(&current(), entity(SettingsSection::Outputs, Some(30)));
+    let mut project = project();
+    assert!(snapshot.apply_exported(&mut project).is_err());
+    assert_eq!(project.outputs().len(), 1);
+    assert_eq!(project.stream_targets().len(), 1);
+}
+
+#[test]
+fn apply_refuses_to_remove_a_bus_a_kept_output_uses() {
+    let snapshot = without_entity(&current(), entity(SettingsSection::AudioBuses, Some(20)));
+    let mut project = project();
+    assert!(snapshot.apply_exported(&mut project).is_err());
+    assert_eq!(project.audio_buses().len(), 1);
+    assert_eq!(project.outputs().len(), 1);
+}

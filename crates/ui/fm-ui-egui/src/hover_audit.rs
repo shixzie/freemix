@@ -263,6 +263,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
         // group, strip 1 is labelled, and the Clean Feed stays live under
         // Fade to Black, so group strips, labels, and the FTB output menu
         // are audited (AU-001, SW-004).
+        production_clocks: Vec::new(),
         audio_mixer: {
             let mut mixer = fm_protocol::AudioMixerStatus::default();
             mixer.groups[0].name = "Mics".into();
@@ -386,11 +387,13 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                 output: output(1),
                 name: "Program Output".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
             OutputStatus {
                 output: output(2),
                 name: "Clean Feed".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
         ],
         input_audio_strips: (1..=6)
@@ -408,7 +411,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                 soloed: false,
                 follow_video: value != 2,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
             .collect(),
         // A timed transition in flight has swapped the desired buses; the
@@ -621,8 +624,10 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
         id,
         input: wire(source),
         duration_frames: 250,
+        follow_media: false,
         transition,
         transition_frames,
+        stinger_slot: None,
         enabled,
     };
     model
@@ -1792,7 +1797,7 @@ fn still_scenes(locale: Locale) -> Vec<Scene> {
                 draft.kind = NewInputKind::Slideshow;
                 draft.slideshow.folder_mode = false;
                 draft.slideshow.pictures = "/photos/one.jpg\nclip.mov".into();
-                draft.slideshow.fade = false;
+                draft.slideshow.transition = fm_protocol::SlideTransitionStyle::Cut;
             }),
             operator.clone(),
         ),
@@ -2498,12 +2503,14 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
                 bypassed: false,
                 latency_frames: 0,
                 state: (-12_000_i32).to_le_bytes().to_vec(),
+                parameters: Vec::new(),
             },
             fm_protocol::PluginChainSlot {
                 plugin: "freemix.reference.polarity".into(),
                 bypassed: true,
                 latency_frames: 2,
                 state: Vec::new(),
+                parameters: Vec::new(),
             },
         ],
     });
@@ -2597,6 +2604,7 @@ fn daemon_health() -> fm_protocol::HealthStatusMessage {
 
 /// OR-012: two recorded sources, a mark, a complete and a partial event,
 /// and two Replay inputs, one playing and one with nothing cued.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
     use fm_protocol::{
         ReplayEventStatus, ReplayFeed, ReplayPlayerStatus, ReplaySettings, ReplaySourceStatus,
@@ -2617,6 +2625,7 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
             retention_seconds: 600,
             storage_root: None,
             auto_return: None,
+            transition: fm_types::replay::ReplayTransition::CUT,
         },
         root: "/var/lib/freemix/replay".into(),
         live_frame: Some(3_000),
@@ -2662,6 +2671,8 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 event: Some(1),
                 angle: Some(wire(2)),
                 speed: ReplaySpeed::Half,
+                rate_milli: 0,
+                shuttling: false,
                 playing: true,
                 frame: Some(2_600),
                 playlist: vec![
@@ -2684,6 +2695,8 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 event: None,
                 angle: None,
                 speed: ReplaySpeed::Full,
+                rate_milli: 0,
+                shuttling: false,
                 playing: false,
                 frame: None,
                 playlist: Vec::new(),
@@ -2696,6 +2709,11 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
             bytes_per_second: 24_000_000,
             remaining_seconds: Some(300),
             level: fm_protocol::ReplayStorageLevel::Warning,
+            smart: Some(fm_protocol::ReplaySmartStatus {
+                health: fm_protocol::ReplaySmartHealth::Passed,
+                temperature_celsius: Some(35),
+                percentage_used: Some(4),
+            }),
         }),
     }
 }
@@ -2736,6 +2754,7 @@ pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
         trim_in_frames: trim_in,
         trim_out_frames: trim_out,
         speed_percent: speed,
+        reverse: false,
         dissolve_frames: 0,
     };
     let reel = |id, name: &str, clips, total_frames, error: Option<&str>| ReelStatus {
@@ -5222,6 +5241,18 @@ fn failed(findings: &Findings) -> bool {
 /// every control whose help is missing, unexplained, too long, or
 /// untranslated.
 pub fn check(language: Language) {
+    // Building one console per audited configuration gives `scenes` a frame
+    // larger than a test thread's default stack, so the audit gets its own.
+    std::thread::Builder::new()
+        .name("hover-audit".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || check_inner(language))
+        .expect("the hover audit thread starts")
+        .join()
+        .expect("the hover audit does not panic");
+}
+
+fn check_inner(language: Language) {
     let (findings, controls) = audit(language, scenes(language));
     dump("hover", language, &controls);
     println!("{}", report(language, &findings));

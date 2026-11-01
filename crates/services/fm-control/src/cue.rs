@@ -3,15 +3,16 @@
 
 use fm_engine::{Engine, EngineCommand, EngineCueListDefinition, EngineCueOperation};
 use fm_model::{
-    Cue, CueAction, CueList, CueMediaOperation, CueNumberUpdate, CueRunState, RecorderSlot,
-    StreamTargetId, TargetBindings, TitleFieldId,
+    Cue, CueAction, CueClockOperation, CueList, CueMediaOperation, CueNumberUpdate, CueRunState,
+    RecorderSlot, StreamTargetId, TargetBindings, TitleFieldId,
 };
 use fm_protocol::{
     CommandPayload, CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage,
     CueListStatus, CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus,
     CueTitleText, CueTitleValue, EventPayload, RecordingStatus, WireCue, WireCueAction,
-    WireCueMediaOperation, WireInputId, WireInputTarget, WireOverlayChannelId, WireRecorderSlot,
-    WireStreamTargetId, WireTargetBindings, WireTitleFieldId,
+    WireCueClockOperation, WireCueMediaOperation, WireInputId, WireInputTarget,
+    WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTargetBindings,
+    WireTitleFieldId,
 };
 use fm_titles::FieldId;
 use fm_types::InputId;
@@ -168,6 +169,17 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
         WireCueAction::Wait { frames } => CueAction::Wait { frames: *frames },
         WireCueAction::Delay { millis } => CueAction::Delay { millis: *millis },
         WireCueAction::RunScript { script } => CueAction::RunScript { script: *script },
+        WireCueAction::Clock { name, operation } => CueAction::Clock {
+            name: name.clone(),
+            operation: match *operation {
+                WireCueClockOperation::Start => CueClockOperation::Start,
+                WireCueClockOperation::Pause => CueClockOperation::Pause,
+                WireCueClockOperation::Reset => CueClockOperation::Reset,
+                WireCueClockOperation::SetValue(value) => CueClockOperation::SetValue(value),
+                WireCueClockOperation::Adjust(value) => CueClockOperation::Adjust(value),
+                WireCueClockOperation::SetPreset(value) => CueClockOperation::SetPreset(value),
+            },
+        },
     }
 }
 
@@ -263,6 +275,17 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
         CueAction::Wait { frames } => WireCueAction::Wait { frames: *frames },
         CueAction::Delay { millis } => WireCueAction::Delay { millis: *millis },
         CueAction::RunScript { script } => WireCueAction::RunScript { script: *script },
+        CueAction::Clock { name, operation } => WireCueAction::Clock {
+            name: name.clone(),
+            operation: match *operation {
+                CueClockOperation::Start => WireCueClockOperation::Start,
+                CueClockOperation::Pause => WireCueClockOperation::Pause,
+                CueClockOperation::Reset => WireCueClockOperation::Reset,
+                CueClockOperation::SetValue(value) => WireCueClockOperation::SetValue(value),
+                CueClockOperation::Adjust(value) => WireCueClockOperation::Adjust(value),
+                CueClockOperation::SetPreset(value) => WireCueClockOperation::SetPreset(value),
+            },
+        },
     }
 }
 

@@ -831,14 +831,14 @@ fn two_script_runs_interleave_and_survive_sigkill() {
     client.command("rerun-1", CommandPayload::RunScript { script: 1 });
     let again = script_ran(&mut client);
     assert!(matches!(again.run, ScriptRunStatus::Waiting { run: 3, .. }));
-    client.command("stop-3", CommandPayload::StopScript { run: Some(3) });
+    client.command("stop-3", CommandPayload::StopScript { runs: vec![3] });
     match client.script_event() {
         EventPayload::ScriptRunChanged { script, run, .. } => {
             assert_eq!((script, run), (1, ScriptRunStatus::Idle));
         }
         other => panic!("expected script_run_changed, got {other:?}"),
     }
-    client.command("stop-all", CommandPayload::StopScript { run: None });
+    client.command("stop-all", CommandPayload::StopScript { runs: Vec::new() });
     match client.script_event() {
         EventPayload::ScriptRunsStopped { scripts, .. } => assert_eq!(scripts, vec![2]),
         other => panic!("expected script_runs_stopped, got {other:?}"),

@@ -12,7 +12,14 @@ use std::{
     num::NonZeroU128,
 };
 
-use fm_model::Project;
+use fm_model::{
+    AudioBus, Output, Project, ProjectSettings, RestartPolicy, StartupPolicy, StreamEndpoint,
+    StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
+};
+use fm_types::{
+    AudioFormat, BusId, Channel, ChannelLayout, DiscreteChannel, FrameRate, OutputId, SampleRate,
+    SceneId, VideoDimensions, VideoFormat,
+};
 
 use crate::settings_export::{
     EntityKey, ReferenceKind, Secret, SecretSlot, SettingKey, SettingReference, SettingValue,
@@ -601,5 +608,666 @@ impl ImportPlan {
             }
         }
         origins
+    }
+}
+
+/// Why a merged settings snapshot could not be applied to a project.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettingsApplyError {
+    /// A required key is missing from the snapshot.
+    Missing { key: String },
+    /// A key holds the wrong value type or an out-of-range value.
+    Invalid { key: String },
+    /// The project model refused an entity edit.
+    Model { key: String, reason: String },
+    /// The project rejected the new format.
+    Project(Vec<fm_model::ValidationError>),
+}
+
+impl fmt::Display for SettingsApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing { key } => write!(formatter, "settings snapshot has no `{key}`"),
+            Self::Invalid { key } => write!(formatter, "setting `{key}` is not applicable"),
+            Self::Model { key, reason } => {
+                write!(formatter, "setting `{key}` was refused: {reason}")
+            }
+            Self::Project(errors) => {
+                write!(
+                    formatter,
+                    "project rejected the imported settings: {errors:?}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SettingsApplyError {}
+
+impl SettingsSnapshot {
+    /// Applies the format, restart policy, audio bus, output, and existing
+    /// stream-target sections to `project`.
+    ///
+    /// A keyless HLS stream target may be added and a keyed addition is
+    /// permitted through [`Self::apply_exported_with_keys`]; a protocol
+    /// change is refused, and a change to an existing target must keep its
+    /// protocol so unexported options keep their meaning. Entities absent
+    /// from the snapshot are removed once everything else has been applied,
+    /// in reference order (stream targets, outputs, then buses), and a
+    /// removal still referenced elsewhere refuses the whole import. The
+    /// whole import is applied to a clone and committed only when every
+    /// section succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsApplyError`] for a missing or malformed entry, a
+    /// model refusal, or an invalid resulting format; nothing changes on
+    /// error.
+    pub fn apply_exported(&self, project: &mut Project) -> Result<(), SettingsApplyError> {
+        self.apply_exported_with_keys(project, &BTreeMap::new())
+    }
+
+    /// Like [`Self::apply_exported`], with `stream_keys` supplying the key for
+    /// each keyed stream target the snapshot adds, by target id.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply_exported`]; a keyed addition without a key is
+    /// refused.
+    pub fn apply_exported_with_keys(
+        &self,
+        project: &mut Project,
+        stream_keys: &BTreeMap<u128, String>,
+    ) -> Result<(), SettingsApplyError> {
+        let mut candidate = project.clone();
+        apply_format(self, &mut candidate)?;
+        apply_restart(self, &mut candidate)?;
+        apply_audio_buses(self, &mut candidate)?;
+        apply_outputs(self, &mut candidate)?;
+        apply_stream_targets(self, &mut candidate, stream_keys)?;
+        remove_absent_stream_targets(self, &mut candidate)?;
+        remove_absent_outputs(self, &mut candidate)?;
+        remove_absent_audio_buses(self, &mut candidate)?;
+        *project = candidate;
+        Ok(())
+    }
+}
+
+fn setting_integer(snapshot: &SettingsSnapshot, key: &str) -> Result<i64, SettingsApplyError> {
+    match snapshot.get_path(key) {
+        Some(SettingValue::Integer(value)) => Ok(*value),
+        Some(_) => Err(SettingsApplyError::Invalid {
+            key: key.to_owned(),
+        }),
+        None => Err(SettingsApplyError::Missing {
+            key: key.to_owned(),
+        }),
+    }
+}
+
+fn setting_text<'a>(
+    snapshot: &'a SettingsSnapshot,
+    key: &str,
+) -> Result<&'a str, SettingsApplyError> {
+    match snapshot.get_path(key) {
+        Some(SettingValue::Text(value)) => Ok(value.as_str()),
+        Some(_) => Err(SettingsApplyError::Invalid {
+            key: key.to_owned(),
+        }),
+        None => Err(SettingsApplyError::Missing {
+            key: key.to_owned(),
+        }),
+    }
+}
+
+fn setting_reference(
+    snapshot: &SettingsSnapshot,
+    key: &str,
+    kind: ReferenceKind,
+) -> Result<SettingReference, SettingsApplyError> {
+    match snapshot.get_path(key) {
+        Some(SettingValue::Reference(reference)) if reference.kind == kind => Ok(*reference),
+        Some(_) => Err(SettingsApplyError::Invalid {
+            key: key.to_owned(),
+        }),
+        None => Err(SettingsApplyError::Missing {
+            key: key.to_owned(),
+        }),
+    }
+}
+
+fn bounded_u32(value: i64, key: &str) -> Result<u32, SettingsApplyError> {
+    u32::try_from(value).map_err(|_| SettingsApplyError::Invalid {
+        key: key.to_owned(),
+    })
+}
+
+fn apply_format(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let numerator = bounded_u32(
+        setting_integer(snapshot, "format.frame_rate.numerator")?,
+        "format.frame_rate.numerator",
+    )?;
+    let denominator = bounded_u32(
+        setting_integer(snapshot, "format.frame_rate.denominator")?,
+        "format.frame_rate.denominator",
+    )?;
+    let frame_rate =
+        FrameRate::new(numerator, denominator).map_err(|_| SettingsApplyError::Invalid {
+            key: "format.frame_rate".to_owned(),
+        })?;
+    let width = bounded_u32(
+        setting_integer(snapshot, "format.video.width")?,
+        "format.video.width",
+    )?;
+    let height = bounded_u32(
+        setting_integer(snapshot, "format.video.height")?,
+        "format.video.height",
+    )?;
+    let dimensions = VideoDimensions::new(width, height).ok_or(SettingsApplyError::Invalid {
+        key: "format.video.width".to_owned(),
+    })?;
+    let sample_rate = SampleRate::new(bounded_u32(
+        setting_integer(snapshot, "format.audio.sample_rate_hz")?,
+        "format.audio.sample_rate_hz",
+    )?)
+    .ok_or(SettingsApplyError::Invalid {
+        key: "format.audio.sample_rate_hz".to_owned(),
+    })?;
+    let channel_count = usize::try_from(setting_integer(snapshot, "format.audio.channel_count")?)
+        .ok()
+        .filter(|count| (1..=ChannelLayout::MAX_CHANNELS).contains(count))
+        .ok_or(SettingsApplyError::Invalid {
+            key: "format.audio.channel_count".to_owned(),
+        })?;
+
+    let current = project.settings().clone();
+    let channels = if channel_count == current.audio.channels.channels().len() {
+        current.audio.channels.clone()
+    } else {
+        let labels = (1..=channel_count)
+            .map(|number| {
+                u8::try_from(number)
+                    .ok()
+                    .and_then(DiscreteChannel::new)
+                    .map(Channel::Discrete)
+                    .ok_or(SettingsApplyError::Invalid {
+                        key: "format.audio.channel_count".to_owned(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ChannelLayout::new(labels).ok_or(SettingsApplyError::Invalid {
+            key: "format.audio.channel_count".to_owned(),
+        })?
+    };
+    let settings = ProjectSettings {
+        frame_rate,
+        video: VideoFormat {
+            dimensions,
+            frame_rate,
+            ..current.video
+        },
+        audio: AudioFormat {
+            sample_rate,
+            channels,
+            ..current.audio
+        },
+    };
+    project
+        .set_settings(settings)
+        .map_err(SettingsApplyError::Project)
+}
+
+fn apply_restart(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let restart = match setting_text(snapshot, "restart_policy.mode")? {
+        "never" => RestartPolicy::Never,
+        "always" => RestartPolicy::Always,
+        "on_failure" => {
+            let attempts = u8::try_from(setting_integer(snapshot, "restart_policy.max_attempts")?)
+                .ok()
+                .filter(|attempts| {
+                    *attempts > 0 && *attempts <= RestartPolicy::MAX_RESTART_ATTEMPTS
+                })
+                .ok_or(SettingsApplyError::Invalid {
+                    key: "restart_policy.max_attempts".to_owned(),
+                })?;
+            RestartPolicy::OnFailure {
+                max_attempts: attempts,
+            }
+        }
+        _ => {
+            return Err(SettingsApplyError::Invalid {
+                key: "restart_policy.mode".to_owned(),
+            });
+        }
+    };
+    project.set_restart_policy(restart);
+    Ok(())
+}
+
+fn apply_audio_buses(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    for entity in snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::AudioBuses)
+    {
+        let Some(id) = entity.id() else {
+            return Err(SettingsApplyError::Invalid {
+                key: "audio_buses".to_owned(),
+            });
+        };
+        let bus = BusId::new(id);
+        let key = format!("audio_buses.{id}");
+        let name = snapshot
+            .entity_name(entity)
+            .ok_or_else(|| SettingsApplyError::Missing {
+                key: format!("{key}.name"),
+            })?
+            .to_owned();
+        if project
+            .audio_buses()
+            .iter()
+            .any(|candidate| candidate.id == bus)
+        {
+            project
+                .rename_audio_bus(bus, name)
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+        } else {
+            project
+                .add_audio_bus_checked(AudioBus {
+                    id: bus,
+                    name,
+                    sends: Vec::new(),
+                })
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_outputs(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    for entity in snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::Outputs)
+    {
+        let Some(id) = entity.id() else {
+            return Err(SettingsApplyError::Invalid {
+                key: "outputs".to_owned(),
+            });
+        };
+        let output = OutputId::new(id);
+        let key = format!("outputs.{id}");
+        let name = snapshot
+            .entity_name(entity)
+            .ok_or_else(|| SettingsApplyError::Missing {
+                key: format!("{key}.name"),
+            })?
+            .to_owned();
+        let scene = SceneId::new(
+            setting_reference(
+                snapshot,
+                &format!("{key}.video_source"),
+                ReferenceKind::Scene,
+            )?
+            .id,
+        );
+        let bus = BusId::new(
+            setting_reference(
+                snapshot,
+                &format!("{key}.audio_source"),
+                ReferenceKind::AudioBus,
+            )?
+            .id,
+        );
+        let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
+        if project
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.id == output)
+        {
+            project
+                .rename_output(output, name)
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+            project
+                .set_output_route(output, scene, bus)
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+            project
+                .set_output_startup(output, startup)
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+        } else {
+            project
+                .add_output_checked(Output {
+                    id: output,
+                    name,
+                    video_source: scene,
+                    audio_source: bus,
+                    startup,
+                    required_capabilities: Vec::new(),
+                })
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_stream_targets(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+    stream_keys: &BTreeMap<u128, String>,
+) -> Result<(), SettingsApplyError> {
+    for entity in snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::StreamTargets)
+    {
+        let Some(id) = entity.id() else {
+            return Err(SettingsApplyError::Invalid {
+                key: "stream_targets".to_owned(),
+            });
+        };
+        let key = format!("stream_targets.{id}");
+        let existing = project
+            .stream_targets()
+            .iter()
+            .find(|target| target.id().get() == id)
+            .cloned();
+        if let Some(target) = existing {
+            apply_existing_stream_target(snapshot, &key, entity, target, project)?;
+        } else {
+            add_stream_target(snapshot, &key, entity, id, project, stream_keys)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_absent_stream_targets(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let present: BTreeSet<NonZeroU128> = snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::StreamTargets)
+        .filter_map(EntityKey::id)
+        .collect();
+    let absent: Vec<_> = project
+        .stream_targets()
+        .iter()
+        .map(fm_model::StreamTarget::id)
+        .filter(|target| !present.contains(&target.get()))
+        .collect();
+    for target in absent {
+        project
+            .remove_stream_target(target)
+            .map_err(|error| SettingsApplyError::Model {
+                key: format!("stream_targets.{}", target.get()),
+                reason: error.to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+fn remove_absent_outputs(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let present: BTreeSet<NonZeroU128> = snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::Outputs)
+        .filter_map(EntityKey::id)
+        .collect();
+    let absent: Vec<_> = project
+        .outputs()
+        .iter()
+        .map(|output| output.id)
+        .filter(|output| !present.contains(&output.get()))
+        .collect();
+    for output in absent {
+        project
+            .remove_output(output)
+            .map_err(|error| SettingsApplyError::Model {
+                key: format!("outputs.{}", output.get()),
+                reason: error.to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+fn remove_absent_audio_buses(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let present: BTreeSet<NonZeroU128> = snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::AudioBuses)
+        .filter_map(EntityKey::id)
+        .collect();
+    let absent: Vec<_> = project
+        .audio_buses()
+        .iter()
+        .map(|bus| bus.id)
+        .filter(|bus| !present.contains(&bus.get()))
+        .collect();
+    for bus in absent {
+        project
+            .remove_audio_bus(bus)
+            .map_err(|error| SettingsApplyError::Model {
+                key: format!("audio_buses.{}", bus.get()),
+                reason: error.to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+fn apply_existing_stream_target(
+    snapshot: &SettingsSnapshot,
+    key: &str,
+    entity: EntityKey,
+    target: StreamTarget,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let name = snapshot
+        .entity_name(entity)
+        .ok_or_else(|| SettingsApplyError::Missing {
+            key: format!("{key}.name"),
+        })?
+        .to_owned();
+    let protocol = setting_text(snapshot, &format!("{key}.protocol"))?;
+    if protocol != target.protocol().scheme() {
+        return Err(SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: "changing a stream target's protocol is not applied yet".to_owned(),
+        });
+    }
+    let endpoint = StreamEndpoint::parse_for(
+        target.protocol(),
+        setting_text(snapshot, &format!("{key}.endpoint"))?,
+    )
+    .map_err(|_| SettingsApplyError::Invalid {
+        key: format!("{key}.endpoint"),
+    })?;
+    let backup = match snapshot.get_path(&format!("{key}.backup_endpoint")) {
+        Some(SettingValue::Text(text)) => Some(
+            StreamEndpoint::parse_for(target.protocol(), text).map_err(|_| {
+                SettingsApplyError::Invalid {
+                    key: format!("{key}.backup_endpoint"),
+                }
+            })?,
+        ),
+        Some(_) => {
+            return Err(SettingsApplyError::Invalid {
+                key: format!("{key}.backup_endpoint"),
+            });
+        }
+        None => None,
+    };
+    let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
+    let bitrate = bounded_u32(
+        setting_integer(snapshot, &format!("{key}.video_bitrate_kbps"))?,
+        &format!("{key}.video_bitrate_kbps"),
+    )?;
+    let output = OutputId::new(
+        setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
+    );
+    let mut updated = target;
+    updated
+        .apply_exported(name, endpoint, backup, startup, bitrate, output)
+        .map_err(|error| SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: error.to_string(),
+        })?;
+    project
+        .replace_stream_target(updated)
+        .map_err(|error| SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: error.to_string(),
+        })
+}
+
+fn add_stream_target(
+    snapshot: &SettingsSnapshot,
+    key: &str,
+    entity: EntityKey,
+    id: NonZeroU128,
+    project: &mut Project,
+    stream_keys: &BTreeMap<u128, String>,
+) -> Result<(), SettingsApplyError> {
+    let protocol = match setting_text(snapshot, &format!("{key}.protocol"))? {
+        "rtmp" => StreamProtocol::Rtmp,
+        "rtmps" => StreamProtocol::Rtmps,
+        "srt" => StreamProtocol::Srt,
+        "hls" => StreamProtocol::Hls,
+        _ => {
+            return Err(SettingsApplyError::Invalid {
+                key: format!("{key}.protocol"),
+            });
+        }
+    };
+    let name = snapshot
+        .entity_name(entity)
+        .ok_or_else(|| SettingsApplyError::Missing {
+            key: format!("{key}.name"),
+        })?
+        .to_owned();
+    let backup = match snapshot.get_path(&format!("{key}.backup_endpoint")) {
+        Some(SettingValue::Text(text)) => {
+            Some(StreamEndpoint::parse_for(protocol, text).map_err(|_| {
+                SettingsApplyError::Invalid {
+                    key: format!("{key}.backup_endpoint"),
+                }
+            })?)
+        }
+        Some(_) => {
+            return Err(SettingsApplyError::Invalid {
+                key: format!("{key}.backup_endpoint"),
+            });
+        }
+        None => None,
+    };
+    let stream_key = if protocol.carries_key() {
+        let text = stream_keys.get(&id.get()).ok_or_else(|| {
+            SettingsApplyError::Model {
+                key: key.to_owned(),
+                reason: "adding a keyed stream target needs its stream key (pass                          --stream-key <id>=<key>)"
+                    .to_owned(),
+            }
+        })?;
+        Some(
+            StreamKey::parse(text).map_err(|error| SettingsApplyError::Model {
+                key: key.to_owned(),
+                reason: error.to_string(),
+            })?,
+        )
+    } else {
+        None
+    };
+    let endpoint = StreamEndpoint::parse_for(
+        protocol,
+        setting_text(snapshot, &format!("{key}.endpoint"))?,
+    )
+    .map_err(|_| SettingsApplyError::Invalid {
+        key: format!("{key}.endpoint"),
+    })?;
+    let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
+    let bitrate = bounded_u32(
+        setting_integer(snapshot, &format!("{key}.video_bitrate_kbps"))?,
+        &format!("{key}.video_bitrate_kbps"),
+    )?;
+    let output = OutputId::new(
+        setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
+    );
+    let target = StreamTarget::new(
+        StreamTargetId::new(id),
+        name,
+        protocol,
+        endpoint,
+        stream_key,
+        output,
+    )
+    .map_err(|error| SettingsApplyError::Model {
+        key: key.to_owned(),
+        reason: error.to_string(),
+    })?
+    .with_backup_endpoint(backup)
+    .map_err(|error| SettingsApplyError::Model {
+        key: key.to_owned(),
+        reason: error.to_string(),
+    })?
+    .with_video_bitrate(bitrate)
+    .map_err(|error| SettingsApplyError::Model {
+        key: key.to_owned(),
+        reason: error.to_string(),
+    })?
+    .with_startup(startup);
+    project
+        .add_stream_target_checked(target)
+        .map_err(|error| SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: error.to_string(),
+        })
+}
+
+fn startup_policy(
+    snapshot: &SettingsSnapshot,
+    key: &str,
+) -> Result<StartupPolicy, SettingsApplyError> {
+    match setting_text(snapshot, key)? {
+        "stopped" => Ok(StartupPolicy::Stopped),
+        "reconcile_desired_state" => Ok(StartupPolicy::ReconcileDesiredState),
+        _ => Err(SettingsApplyError::Invalid {
+            key: key.to_owned(),
+        }),
     }
 }

@@ -1296,3 +1296,45 @@ fn an_edit_keeping_the_active_item_keeps_a_pending_transition() {
     );
     assert_eq!(blend_step(&mut engine), (100, Some((13, 1, 2_000))));
 }
+
+#[test]
+fn a_page_step_drives_a_media_list() {
+    let mut engine = engine();
+    create(&mut engine, MediaListOptions::default());
+    assert_eq!(
+        engine.show().media_list(input(LIST)).unwrap().active,
+        1,
+        "a new list starts on its first item"
+    );
+    // The generic page command steps the list with the list's own order.
+    for (key, navigation, expected) in [
+        ("page-next", fm_types::paged::PagedNavigation::Next, 2),
+        ("page-last", fm_types::paged::PagedNavigation::Last, 3),
+        (
+            "page-previous",
+            fm_types::paged::PagedNavigation::Previous,
+            2,
+        ),
+        ("page-first", fm_types::paged::PagedNavigation::First, 1),
+        ("page-goto", fm_types::paged::PagedNavigation::Goto(2), 3),
+    ] {
+        let outcome = execute(
+            &mut engine,
+            key,
+            EngineCommand::PageNavigate {
+                input: input(LIST),
+                navigation,
+            },
+        );
+        assert!(
+            outcome.receipt.accepted().is_some(),
+            "{key}: {:?}",
+            outcome.receipt
+        );
+        assert_eq!(
+            engine.show().media_list(input(LIST)).unwrap().active,
+            expected,
+            "{key}"
+        );
+    }
+}

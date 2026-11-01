@@ -24,9 +24,10 @@ use fm_protocol::{
 use fm_types::OutputId;
 use fm_ui_egui::{
     CatalogueRefusal, CatalogueRequest, CommandRefusalNotice, ExternalStudioAction, GradeLutFile,
-    GradeRefusal, InputAudioStripUpdate, InputMoveDirection, PlaylistIntent, ReconnectStatus,
-    RecordingAction, StreamAction, StreamGroupAction, StudioConnectionStatus, StudioIntent,
-    StudioShell, StudioUiState, TerminalUncertaintyNotice, TitleUpdate, external_intent,
+    GradeRefusal, InputAudioStripUpdate, InputMoveDirection, MidiFeedback, OmtSource,
+    PlaylistIntent, ReconnectStatus, RecordingAction, StreamAction, StreamGroupAction,
+    StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice,
+    TitleUpdate, external_intent,
 };
 use fm_ui_model::ClientView;
 use fm_ui_model::grade_editor::GradeCommand;
@@ -146,7 +147,7 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             current_update.soloed = update.soloed.or(current_update.soloed);
             current_update.follow_video = update.follow_video.or(current_update.follow_video);
             current_update.delay_samples = update.delay_samples.or(current_update.delay_samples);
-            current_update.buses = update.buses.or(current_update.buses);
+            current_update.sends = update.sends.or(current_update.sends);
             true
         }
         // A group fader drag sends the latest level, never a backlog.
@@ -389,6 +390,17 @@ struct StudioApp {
     osc: Option<OscReceiver>,
     /// The MIDI controllers this console reads (RC-005).
     midi: Option<crate::midi::MidiReader>,
+    /// The HID button panels this console reads (RC-005).
+    hid: Option<crate::hid::HidReader>,
+    /// Lamp feedback to those controllers.
+    midi_output: crate::midi::MidiOutput,
+    /// The lamp states last sent, so only changes reach the controllers.
+    sent_midi_feedback: Vec<MidiFeedback>,
+    /// The LAN's OMT sources for the Add Input form (IN-019).
+    omt: crate::omt::OmtDiscovery,
+    /// The sources last handed to the shell, so the form only redraws on a
+    /// change.
+    sent_omt_sources: Vec<OmtSource>,
     osc_rejected: u64,
     osc_notice: Option<String>,
     /// Saves the language, clock, layout, UI scale, and theme for the next
@@ -483,6 +495,14 @@ impl StudioApp {
                 std::path::PathBuf::from(crate::midi::MIDI_ROOT),
                 creation_context.egui_ctx.clone(),
             )),
+            hid: Some(crate::hid::HidReader::start(
+                std::path::PathBuf::from(crate::hid::HID_ROOT),
+                creation_context.egui_ctx.clone(),
+            )),
+            midi_output: crate::midi::MidiOutput::start(),
+            sent_midi_feedback: Vec::new(),
+            omt: crate::omt::OmtDiscovery::start(),
+            sent_omt_sources: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences,
@@ -622,6 +642,58 @@ impl StudioApp {
         }
     }
 
+    /// Hands the console this frame's HID button-panel messages (RC-005):
+    /// the panels read, and the buttons its bindings act on.
+    fn drain_hid(&mut self) {
+        let mut inputs = Vec::new();
+        for _ in 0..MIDI_EVENTS_PER_FRAME {
+            match self.hid.as_ref().map(crate::hid::HidReader::try_recv) {
+                Some(Ok(crate::hid::HidEvent::Devices(names))) => {
+                    self.shell.set_hid_devices(names);
+                }
+                Some(Ok(crate::hid::HidEvent::Input(input))) => inputs.push(input),
+                _ => break,
+            }
+        }
+        if inputs.is_empty() {
+            return;
+        }
+        for intent in self.shell.receive_hid(&self.state, &inputs) {
+            self.enqueue_intent(intent);
+        }
+    }
+
+    /// Hands the console the OMT sources the LAN browse found (IN-019), only
+    /// when the list changed.
+    fn drain_omt(&mut self) {
+        let sources = self.omt.latest();
+        if sources == self.sent_omt_sources.as_slice() {
+            return;
+        }
+        self.sent_omt_sources = sources.to_vec();
+        self.shell.set_omt_sources(self.sent_omt_sources.clone());
+    }
+
+    /// Sends each bound control's lamp state when it changes (RC-005).
+    fn refresh_midi_feedback(&mut self) {
+        let feedback = self.shell.midi_feedback(&self.state);
+        if feedback == self.sent_midi_feedback {
+            return;
+        }
+        for item in &feedback {
+            let changed = self
+                .sent_midi_feedback
+                .iter()
+                .find(|old| old.trigger == item.trigger)
+                .is_none_or(|old| old.value != item.value);
+            if changed {
+                self.midi_output.send(*item);
+            }
+        }
+        self.sent_midi_feedback = feedback;
+    }
+
+    #[allow(clippy::too_many_lines)] // one arm per OSC action
     fn drain_osc(&mut self) {
         for drained in 1..=OSC_ACTIONS_PER_FRAME {
             let Some(action) = self.osc.as_ref().and_then(|osc| osc.try_recv().ok()) else {
@@ -642,6 +714,47 @@ impl StudioApp {
                     self.enqueue_osc_fire(intent, selected);
                     continue;
                 }
+                // A list-addressed cue key (RC-017) names its list by 1-based
+                // project order, whether or not the Cues panel shows it.
+                OscAction::CueList(key, number, selected) => {
+                    let list = usize::try_from(number.get())
+                        .ok()
+                        .and_then(|number| number.checked_sub(1))
+                        .and_then(|index| {
+                            self.state
+                                .project_state
+                                .as_ref()
+                                .and_then(|project| project.cue_lists().get(index))
+                                .map(|list| list.id)
+                        });
+                    let intent = list
+                        .and_then(|list| self.shell.cue_list_key_intent(&self.state, list, key));
+                    self.enqueue_osc_fire(intent, selected);
+                    continue;
+                }
+                // A per-cue key (RC-017) fires or arms one cue by its 1-based
+                // position in a list named by 1-based project order.
+                OscAction::CueAt(key, list_number, cue_number, selected) => {
+                    let list = usize::try_from(list_number.get())
+                        .ok()
+                        .and_then(|number| number.checked_sub(1))
+                        .and_then(|index| {
+                            self.state
+                                .project_state
+                                .as_ref()
+                                .and_then(|project| project.cue_lists().get(index))
+                                .map(|list| list.id)
+                        });
+                    let cue = usize::try_from(cue_number.get()).ok();
+                    let intent = match (list, cue) {
+                        (Some(list), Some(cue)) => {
+                            self.shell.cue_at_key_intent(&self.state, list, cue, key)
+                        }
+                        _ => None,
+                    };
+                    self.enqueue_osc_fire(intent, selected);
+                    continue;
+                }
                 // A project shortcut fires under its key's gates (RC-004);
                 // one this session cannot fire is announced.
                 OscAction::User(name, selected, value) => {
@@ -649,6 +762,17 @@ impl StudioApp {
                         self.shell
                             .user_shortcut_osc_intent(&self.state, name.as_str(), value);
                     self.enqueue_osc_fire(intent, selected);
+                    continue;
+                }
+                // A page step names its paged input by 1-based bank position
+                // (IN-014); an absent input is refused like a malformed fire.
+                OscAction::Page(number, navigation) => {
+                    match osc_input(&self.state, number) {
+                        Some(input) => {
+                            self.enqueue_intent(StudioIntent::PageNavigate { input, navigation });
+                        }
+                        None => self.osc_rejected = self.osc_rejected.saturating_add(1),
+                    }
                     continue;
                 }
                 OscAction::SelectPreview(number) => ExternalStudioAction::SelectPreview(number),
@@ -734,6 +858,9 @@ impl eframe::App for StudioApp {
         self.check_worker_health();
         self.drain_osc();
         self.drain_midi();
+        self.drain_hid();
+        self.drain_omt();
+        self.refresh_midi_feedback();
         if self.state.external_notice.is_none() {
             self.state
                 .external_notice
@@ -2132,7 +2259,7 @@ fn resolve_input_audio_strip(
         soloed: update.soloed.unwrap_or(strip.soloed),
         follow_video: update.follow_video.unwrap_or(strip.follow_video),
         delay_samples: update.delay_samples.unwrap_or(strip.delay_samples),
-        buses: update.buses.unwrap_or(strip.buses),
+        sends: update.sends.unwrap_or(strip.sends),
     })
 }
 
@@ -3195,7 +3322,7 @@ fn script_payload(intent: fm_ui_egui::ScriptIntent) -> CommandPayload {
         },
         fm_ui_egui::ScriptIntent::Remove { script } => CommandPayload::RemoveScript { script },
         fm_ui_egui::ScriptIntent::Run { script } => CommandPayload::RunScript { script },
-        fm_ui_egui::ScriptIntent::Stop { run } => CommandPayload::StopScript { run },
+        fm_ui_egui::ScriptIntent::Stop { runs } => CommandPayload::StopScript { runs },
     }
 }
 
@@ -3237,6 +3364,10 @@ fn playlist_payload(intent: PlaylistIntent) -> CommandPayload {
         }
         PlaylistIntent::Start { from } => PlaylistOperation::Start {
             at: PlaylistStart::Now,
+            from,
+        },
+        PlaylistIntent::StartAfter { from, after_frames } => PlaylistOperation::Start {
+            at: PlaylistStart::AfterFrames(after_frames),
             from,
         },
         PlaylistIntent::Stop => PlaylistOperation::Stop,
@@ -3889,6 +4020,7 @@ mod tests {
     fn heartbeat_snapshot() -> SnapshotMessage {
         let input = WireInputId::new(NonZeroU128::new(2).unwrap());
         SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -3922,7 +4054,7 @@ mod tests {
                 soloed: false,
                 follow_video: false,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             }],
             desired_program: input,
             desired_preview: input,
@@ -4418,6 +4550,11 @@ mod tests {
             shutdown_sent: false,
             osc: None,
             midi: None,
+            hid: None,
+            midi_output: crate::midi::MidiOutput::start(),
+            sent_midi_feedback: Vec::new(),
+            omt: crate::omt::OmtDiscovery::disabled(),
+            sent_omt_sources: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences: PreferenceStore::new(
@@ -4578,7 +4715,7 @@ mod tests {
                 soloed: Some(false),
                 follow_video: Some(false),
                 delay_samples: Some(0),
-                buses: None,
+                sends: None,
             },
         };
         assert_eq!(pending.intents, VecDeque::from([coalesced.clone()]));
@@ -4648,6 +4785,7 @@ mod tests {
                         listen: "127.0.0.1:0".parse().unwrap(),
                         web_listen: None,
                         web: crate::SupervisedWeb::default(),
+                        live_lan_listen: None,
                     }),
                     client_id: "idle-exit-worker-test".to_owned(),
                     desired_role: Role::Operator,
@@ -5781,6 +5919,7 @@ mod tests {
             },
         )));
         peer.send(&WireMessage::Snapshot(SnapshotMessage {
+            production_clocks: Vec::new(),
             media_states: 1,
             paged_states: 0,
             cue_list_states: 0,
@@ -6179,7 +6318,7 @@ mod tests {
                 soloed: false,
                 follow_video: false,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
         let mut input_audio_strips = confirmed.input_audio_strips.clone();
@@ -6218,7 +6357,7 @@ mod tests {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
     }
@@ -6707,8 +6846,10 @@ mod tests {
             id: 7,
             input: WireInputId::new(NonZeroU128::new(2).unwrap()),
             duration_frames: 250,
+            follow_media: false,
             transition: PlaylistTransitionKind::Fade,
             transition_frames: 12,
+            stinger_slot: None,
             enabled: true,
         }];
         assert_eq!(
@@ -6737,6 +6878,16 @@ mod tests {
                 PlaylistOperation::Start {
                     at: PlaylistStart::Now,
                     from: Some(7),
+                },
+            ),
+            (
+                PlaylistIntent::StartAfter {
+                    from: None,
+                    after_frames: 90,
+                },
+                PlaylistOperation::Start {
+                    at: PlaylistStart::AfterFrames(90),
+                    from: None,
                 },
             ),
             (PlaylistIntent::Stop, PlaylistOperation::Stop),
@@ -6970,6 +7121,7 @@ mod tests {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                reverse: false,
                 dissolve_frames: 0,
             }],
             music: None,
@@ -7160,6 +7312,7 @@ mod tests {
             output: config.output.to_domain(),
             name: "Program".to_owned(),
             aux_bus: None,
+            mix_minus: None,
         });
         assert_eq!(
             intent_payload(
@@ -7535,6 +7688,11 @@ mod tests {
             shutdown_sent: false,
             osc: Some(receiver),
             midi: None,
+            hid: None,
+            midi_output: crate::midi::MidiOutput::start(),
+            sent_midi_feedback: Vec::new(),
+            omt: crate::omt::OmtDiscovery::disabled(),
+            sent_omt_sources: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences: PreferenceStore::new(
@@ -7695,6 +7853,7 @@ mod tests {
             output,
             name: "Program".into(),
             aux_bus: None,
+            mix_minus: None,
         }];
         let channel = snapshot.desired_overlays[0].channel;
         let mut model = ClientModel::new(project);
@@ -8320,6 +8479,7 @@ mod tests {
             });
             peer.send(&WireMessage::HandshakeResponse(handshake));
             peer.send(&WireMessage::Snapshot(SnapshotMessage {
+                production_clocks: Vec::new(),
                 animation_preset_states: 1,
                 media_states: 0,
                 paged_states: 0,

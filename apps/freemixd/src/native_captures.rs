@@ -226,7 +226,9 @@ impl NativeCaptures {
                 });
                 continue;
             }
-            let capture = self.captures.get_mut(input).expect("checked above");
+            let Some(capture) = self.captures.get_mut(input) else {
+                continue;
+            };
             capture.supervisor.set_settings(settings.clone());
             if closed != capture.closed {
                 capture.closed = closed;

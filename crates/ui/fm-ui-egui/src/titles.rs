@@ -1665,6 +1665,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let snapshot = SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -1701,7 +1702,7 @@ mod tests {
                     soloed: false,
                     follow_video: true,
                     delay_samples: 0,
-                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                    sends: fm_types::audio_bus::AudioSends::MASTER,
                 })
                 .collect(),
             desired_program: wire(input(1)),

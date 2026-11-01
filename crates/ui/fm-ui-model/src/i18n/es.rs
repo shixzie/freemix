@@ -961,6 +961,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::TransitionAlphaFade, t("Fundido alfa")),
     (Msg::TransitionSlide, t("Deslizar")),
     (Msg::TransitionZoom, t("Zoom")),
+    (Msg::TransitionStingerName, t("Stinger")),
     (Msg::TransitionVerticalWipe, t("Cortina vertical")),
     (Msg::TransitionVerticalSlide, t("Deslizar vertical")),
     (Msg::TransitionFly, t("Vuelo")),
@@ -2570,6 +2571,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::NsDetailKeySet, t("establecida")),
     (Msg::NsDetailKeyNone, t("sin establecer")),
     (Msg::NsDetailOmt, t("Fuente Open Media Transport")),
+    (Msg::NsDiscovered, t("Descubierto en la red local")),
+    (
+        Msg::NsDiscoveredNone,
+        t("Aún no se ha encontrado ninguna fuente OMT"),
+    ),
     (
         Msg::NsDetailSrt,
         t("SRT {mode}, {latency} ms de latencia, {encryption}"),
@@ -3491,6 +3497,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::PlaylistStartHover,
         t("Iniciar la lista ahora desde su primer elemento activo"),
     ),
+    (Msg::PlaylistStartIn, t("Empezar en")),
+    (
+        Msg::PlaylistStartInHover,
+        t("Segundos desde ahora antes de que suene la primera entrada; cero empieza ya"),
+    ),
     (Msg::PlaylistStop, t("Detener")),
     (
         Msg::PlaylistStopHover,
@@ -3540,6 +3551,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("{position}. {name} · {transition} · {duration}"),
     ),
     (Msg::PlaylistTransitionFrames, t("{transition} {frames} fr")),
+    (Msg::PlaylistStingerSlot, t("Ranura de Stinger")),
+    (
+        Msg::PlaylistStingerSlotHover,
+        t("La ranura de Stinger que toma esta transición, de 1 a 8"),
+    ),
     (Msg::PlaylistEditorNew, t("Nuevo elemento")),
     (Msg::PlaylistEditorEdit, t("Elemento {position}")),
     (Msg::PlaylistInput, t("Entrada")),
@@ -3552,6 +3568,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::PlaylistDurationHover,
         t("HH:MM:SS:FF, MM:SS o segundos. Intro añade el elemento o actualiza el seleccionado"),
     ),
+    (Msg::PlaylistFollowMedia, t("Seguir la duración del medio")),
+    (
+        Msg::PlaylistFollowMediaHover,
+        t(
+            "Permanecer al aire hasta que termine el medio de la entrada, en lugar de una duración fija; la duración de arriba es el respaldo",
+        ),
+    ),
+    (Msg::PlaylistFollowsMedia, t("duración del medio")),
     (Msg::PlaylistFramesLabel, t("Fotogramas")),
     (Msg::PlaylistAdd, t("Añadir")),
     (
@@ -3808,6 +3832,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::BusMixerMuteHover,
         t("Silenciar o reactivar este bus en su salida"),
     ),
+    (Msg::BusMixerDsp, t("DSP del bus")),
+    (
+        Msg::BusMixerDspHover,
+        t("Cargar una cadena inicial de puerta/EQ/dinámica en este bus"),
+    ),
+    (Msg::BusMixerDspApply, t("Aplicar al bus")),
     (Msg::BusMixerOutputs, t("Salidas")),
     (
         Msg::BusMixerOutputHover,
@@ -3815,6 +3845,32 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::BusMixerMaster, t("Mezcla Master")),
     (Msg::BusMixerBus, t("Bus {bus}")),
+    (Msg::BusMixerMixMinus, t("Mezcla sin")),
+    (
+        Msg::BusMixerMixMinusHover,
+        t(
+            "Deja esta entrada fuera del envío auxiliar de la salida: un retorno de invitado sin su propio micrófono",
+        ),
+    ),
+    (Msg::BusMixerFullMix, t("Mezcla completa")),
+    (Msg::BusMixerDevice, t("Salida del bus")),
+    (
+        Msg::BusMixerDeviceHover,
+        t(
+            "La salida de audio local en la que suena este bus; Solo medidor lo mantiene en silencio",
+        ),
+    ),
+    (Msg::BusMixerDeviceNone, t("Solo medidor, sin salida")),
+    (Msg::BusMixerDeviceMissing, t("Dispositivo no listado")),
+    (
+        Msg::BusMixerNoDeviceList,
+        t("Este servidor no lista salidas de audio"),
+    ),
+    (Msg::BusMixerOmt, t("OMT")),
+    (
+        Msg::BusMixerOmtHover,
+        t("Publicar este bus como emisor de audio OMT en su puerto fijo, o detenerlo"),
+    ),
     (Msg::BusMixerNoOutputs, t("Este proyecto no tiene salidas.")),
     (
         Msg::BusMixerMeterHover,
@@ -3824,6 +3880,23 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::BusMixerNoMeterHover,
         t("Este servidor no mide los buses auxiliares"),
     ),
+    (Msg::BusMixerSends, t("Niveles de envío")),
+    (Msg::BusMixerSendInput, t("Tira de envío")),
+    (
+        Msg::BusMixerSendInputHover,
+        t("La tira cuyos envíos estás editando"),
+    ),
+    (
+        Msg::BusMixerSendLevelHover,
+        t("El nivel de este envío; un envío prefader ignora el fader de la tira"),
+    ),
+    (
+        Msg::BusMixerSendTapHover,
+        t("Envía antes del fader de la tira (Pre) o después (Post)"),
+    ),
+    (Msg::BusMixerPreFader, t("Pre")),
+    (Msg::BusMixerPostFader, t("Post")),
+    (Msg::BusMixerNoInputs, t("Este proyecto no tiene entradas.")),
     (Msg::MixerDetailsKey, t("GAN · BAL · RET")),
     (Msg::DetailsKey, t("DETALLES")),
     (
@@ -4285,6 +4358,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AnimPropCropBottomHover,
         t("Píxeles recortados del borde inferior"),
+    ),
+    (Msg::AnimPropMatteInvert, t("Invertir máscara")),
+    (
+        Msg::AnimPropMatteInvertHover,
+        t("Si la máscara conserva el polígono o todo lo que queda fuera"),
+    ),
+    (Msg::AnimPropMatteFeather, t("Suavizado de máscara")),
+    (
+        Msg::AnimPropMatteFeatherHover,
+        t("Píxeles que el borde de la máscara suaviza hacia cada lado"),
     ),
     (
         Msg::AnimPropColourHover,
@@ -6171,6 +6254,8 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::DesignMatteAddPoint, t("Añadir punto")),
     (Msg::MidiNote, t("Nota {number} · canal {channel}")),
+    (Msg::MidiNrpn, t("NRPN {number} · canal {channel}")),
+    (Msg::MidiRpn, t("RPN {number} · canal {channel}")),
     (Msg::MidiColumn, t("Control MIDI")),
     (Msg::MidiDevices, t("Controladores MIDI: {names}")),
     (
@@ -6181,6 +6266,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::MidiDevicesHover,
         t(
             "Los controladores MIDI que lee esta consola; sus notas y controles accionan las acciones asignadas abajo, solo en esta consola",
+        ),
+    ),
+    (Msg::HidTriggerText, t("{device} · tecla {code}")),
+    (Msg::HidColumn, t("Botón HID")),
+    (Msg::HidDevices, t("Paneles de botones HID: {names}")),
+    (
+        Msg::HidNoDevices,
+        t("No hay ningún panel de botones HID conectado"),
+    ),
+    (
+        Msg::HidDevicesHover,
+        t(
+            "Los paneles de botones HID, como X-keys, que lee esta consola; sus botones accionan las acciones asignadas abajo, solo en esta consola",
         ),
     ),
     (Msg::MidiLearn, t("Aprender")),
@@ -6199,6 +6297,30 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("esta acción no tiene control MIDI"),
     ),
     (Msg::MidiControl, t("CC {number} · canal {channel}")),
+    (Msg::MidiValues, t("Valores MIDI")),
+    (Msg::MidiReplayTransport, t("Transporte de repetición")),
+    (
+        Msg::MidiReplayTransportHover,
+        t(
+            "Asigna las notas 36–43 del canal 1 a marcar entrada, marcar salida, capturar, reproducir/pausar, paso atrás, paso adelante, retroceso y avance de la repetición",
+        ),
+    ),
+    (Msg::MidiReplayTransportB, t("Transporte de repetición B")),
+    (
+        Msg::MidiReplayTransportBHover,
+        t(
+            "Asigna las notas 39–43 del canal 2 a reproducir/pausar, paso atrás, paso adelante, retroceso y avance de la segunda entrada de repetición",
+        ),
+    ),
+    (Msg::MidiValueMonitorLevel, t("Nivel de monitores")),
+    (
+        Msg::MidiValueLearnHover,
+        t("Asignar el próximo controlador que reciba esta consola a este valor"),
+    ),
+    (
+        Msg::MidiValueControlHover,
+        t("El controlador que mueve este valor; su rango 0–127 se asigna al rango del valor"),
+    ),
     (Msg::DesignEffectDeinterlace, t("Desentrelazar")),
     (
         Msg::DesignEffectDeinterlaceHover,
@@ -7381,6 +7503,23 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Detener todas las ejecuciones de guion en pausa y borrar todos los informes de ejecuciones fallidas, en todas las consolas; lo que las ejecuciones ya hicieron se mantiene",
         ),
     ),
+    (Msg::ScriptSelectRun, t("Seleccionar esta ejecución")),
+    (
+        Msg::ScriptSelectRunHover,
+        t(
+            "Añadir esta ejecución a la selección sobre la que actúa el botón Detener ejecuciones seleccionadas",
+        ),
+    ),
+    (
+        Msg::ScriptStopSelected,
+        t("Detener ejecuciones seleccionadas"),
+    ),
+    (
+        Msg::ScriptStopSelectedHover,
+        t(
+            "Detener las ejecuciones de guion seleccionadas en pausa y borrar los informes de las ejecuciones fallidas seleccionadas, en todas las consolas; lo que ya hicieron se mantiene",
+        ),
+    ),
     (Msg::MenuScripts, t("Guiones…")),
     (
         Msg::MenuScriptsHover,
@@ -7754,6 +7893,8 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CueActMediaRestart, t("Reiniciar medio")),
     (Msg::CueActDelay, t("Retardo")),
     (Msg::CueActRunScript, t("Guion")),
+    (Msg::CueActClock, t("Paso de reloj")),
+    (Msg::CuePvClock, t("{name}: reloj {operation}")),
     (
         Msg::CueParamScriptHover,
         t(
@@ -9684,9 +9825,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::StFadeHover,
         t("Cada diapositiva se funde sobre la anterior"),
     ),
+    (Msg::StWipe, t("BARRIDO AL SIGUIENTE")),
+    (
+        Msg::StWipeHover,
+        t("Cada diapositiva entra barriendo desde la izquierda sobre la anterior"),
+    ),
+    (Msg::StSlide, t("DESLIZAR AL SIGUIENTE")),
+    (
+        Msg::StSlideHover,
+        t("Cada diapositiva empuja la anterior fuera por la izquierda"),
+    ),
     (
         Msg::StFadeSecondsHover,
-        t("Cuánto dura el fundido entre diapositivas, en segundos"),
+        t("Cuánto dura la transición entre diapositivas, en segundos"),
     ),
     (Msg::StKenBurns, t("Ken Burns")),
     (
@@ -9845,6 +9996,20 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::FxPluginTrimHover,
         t("La ganancia guardada del ajuste en dB"),
+    ),
+    (Msg::FxPluginSoftClipDown, t("-1 dB")),
+    (
+        Msg::FxPluginSoftClipDownHover,
+        t("Bajar este umbral de recorte 1 dB"),
+    ),
+    (Msg::FxPluginSoftClipUp, t("+1 dB")),
+    (
+        Msg::FxPluginSoftClipUpHover,
+        t("Subir este umbral de recorte 1 dB"),
+    ),
+    (
+        Msg::FxPluginSoftClipHover,
+        t("El umbral guardado del recortador en dBFS"),
     ),
     (Msg::FxPluginLatency, t("{frames} fotogramas")),
     (
@@ -10551,6 +10716,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayStorageNoSpace,
         t("{free} libres · la grabación se detendrá"),
     ),
+    (Msg::ReplaySmartPassed, t("SMART correcto")),
+    (Msg::ReplaySmartWarning, t("Aviso SMART")),
+    (Msg::ReplaySmartFailed, t("SMART con fallos")),
+    (Msg::ReplaySmartUnknown, t("SMART desconocido")),
+    (
+        Msg::ReplaySmartHover,
+        t("El estado que el disco de la raíz de repetición informa al servidor"),
+    ),
+    (Msg::ReplaySmartTemperature, t("{temperature} °C")),
+    (Msg::ReplaySmartUsed, t("{used}% de resistencia usada")),
+    (Msg::RecorderFreeSpace, t("{free} libres")),
+    (Msg::RecorderRemaining, t("quedan {time}")),
     (Msg::ReplayLink, t("VINCULAR")),
     (
         Msg::ReplayLinkHover,
@@ -10734,6 +10911,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReelClipSpeedHover,
         t("Velocidad de reproducción de este clip"),
     ),
+    (Msg::ReelClipReverse, t("Invertir")),
+    (
+        Msg::ReelClipReverseHover,
+        t(
+            "Reproduce este clip al revés, desde su último fotograma recortado hasta el primero; los clips invertidos no llevan audio",
+        ),
+    ),
     (Msg::ReelClipDissolve, t("Fundido")),
     (
         Msg::ReelClipDissolveHover,
@@ -10774,6 +10958,46 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ConsoleActionReplayCapture,
         t("Capturar el evento de repetición marcado"),
+    ),
+    (
+        Msg::ConsoleActionReplayPlayPause,
+        t("Reproducir/pausar repetición"),
+    ),
+    (
+        Msg::ConsoleActionReplayStepBack,
+        t("Retroceder un fotograma de repetición"),
+    ),
+    (
+        Msg::ConsoleActionReplayStepForward,
+        t("Avanzar un fotograma de repetición"),
+    ),
+    (
+        Msg::ConsoleActionReplayShuttleBack,
+        t("Repetición rápida hacia atrás"),
+    ),
+    (
+        Msg::ConsoleActionReplayShuttleForward,
+        t("Repetición rápida hacia adelante"),
+    ),
+    (
+        Msg::ConsoleActionReplayPlayPauseB,
+        t("Repetición B reproducir/pausar"),
+    ),
+    (
+        Msg::ConsoleActionReplayStepBackB,
+        t("Repetición B paso atrás"),
+    ),
+    (
+        Msg::ConsoleActionReplayStepForwardB,
+        t("Repetición B paso adelante"),
+    ),
+    (
+        Msg::ConsoleActionReplayShuttleBackB,
+        t("Repetición B rápida hacia atrás"),
+    ),
+    (
+        Msg::ConsoleActionReplayShuttleForwardB,
+        t("Repetición B rápida hacia adelante"),
     ),
     (
         Msg::ConsoleActionPreviewRun,
@@ -10899,10 +11123,37 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayAutoReturnFramesHover,
         t("Fotogramas del fundido de vuelta a la fuente en directo; 0 corta"),
     ),
+    (Msg::ReplayTransition, t("Transición de entrada")),
+    (
+        Msg::ReplayTransitionHover,
+        t("Cómo entra en Programa una entrada de repetición al tomarla"),
+    ),
+    (
+        Msg::ReplayTransitionFramesHover,
+        t("Fotogramas que dura el fundido"),
+    ),
     (Msg::ReplayStepBackHover, t("Un fotograma atrás, en pausa")),
     (
         Msg::ReplayStepForwardHover,
         t("Un fotograma adelante, en pausa"),
+    ),
+    (
+        Msg::ReplayShuttleRate,
+        t("Velocidad de reproducción rápida"),
+    ),
+    (
+        Msg::ReplayShuttleRateHover,
+        t("Velocidad de los botones de reproducción rápida: {rate}x"),
+    ),
+    (
+        Msg::ReplayShuttleBackHover,
+        t("Reproducción rápida hacia atrás a {rate}x, con pausa en el primer fotograma del evento"),
+    ),
+    (
+        Msg::ReplayShuttleForwardHover,
+        t(
+            "Reproducción rápida hacia adelante a {rate}x, con pausa en el último fotograma del evento",
+        ),
     ),
     (Msg::ReelMusicSection, t("Música de fondo")),
     (
@@ -11009,6 +11260,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::HealthRuleHoldHover,
         t("Cuánto debe mantenerse la lectura de activación antes de que la regla se active"),
+    ),
+    (Msg::HealthRuleSeverity, t("Gravedad")),
+    (
+        Msg::HealthRuleSeverityHover,
+        t("La urgencia de las notificaciones de esta regla"),
     ),
     (Msg::HealthRuleUseDefaults, t("Usar valores por defecto")),
     (

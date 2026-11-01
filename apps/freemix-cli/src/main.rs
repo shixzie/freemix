@@ -2,6 +2,7 @@ mod app;
 mod args;
 mod auto_key;
 mod grading;
+mod media_list_import;
 mod presets;
 mod project_bundle;
 mod remote;
@@ -9,6 +10,7 @@ mod scene_animation;
 mod scene_render;
 mod shortcut_sets;
 mod title_animation;
+mod title_row;
 
 use std::process::ExitCode;
 

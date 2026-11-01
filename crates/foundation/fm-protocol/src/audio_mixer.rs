@@ -96,14 +96,19 @@ use crate::{WireInputId, WireOutputId};
 /// Most [`AudioStripDspStateMessage`] records one snapshot announces: one per
 /// show input.
 pub const MAX_AUDIO_STRIP_DSP_STATES: u16 = 256;
+/// Most `audio_strip_send_state` records one snapshot announces: one per
+/// strip whose sends are not the plain enable mask (2.130).
+pub const MAX_AUDIO_SEND_STATES: u16 = 256;
 
-/// The chain a DSP edit or gain-reduction meter names (2.75).
+/// The chain a DSP edit or gain-reduction meter names (2.75, aux buses 2.133).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AudioDspTarget {
     /// The Master bus (`master`).
     Master,
     /// One input's strip (its decimal id).
     Input(WireInputId),
+    /// One aux bus (`aux:a` through `aux:g`).
+    Aux(AuxBusNumber),
 }
 
 /// Largest gain reduction a dynamics meter reports, in millidecibels.
@@ -174,6 +179,15 @@ pub struct AudioStripDspStateMessage {
     pub revision: u64,
     pub input: WireInputId,
     pub chain: StripDsp,
+}
+
+/// One input strip's send levels and taps at a snapshot's `revision`
+/// (record `audio_strip_send_state`, 2.130).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioStripSendStateMessage {
+    pub revision: u64,
+    pub input: WireInputId,
+    pub sends: fm_types::audio_bus::AudioSends,
 }
 
 /// How many strip groups a show has.
@@ -255,16 +269,27 @@ pub struct AuxBusStatus {
     pub name: String,
     pub gain_millidb: i32,
     pub muted: bool,
+    /// The bus's DSP chain, after its fader and mute (2.133).
+    pub dsp: StripDsp,
+    /// The local audio output device the bus plays on (2.135), or `None`
+    /// for meter-only.
+    pub device: Option<String>,
+    /// Whether the bus is published as an OMT audio sender (2.138).
+    pub omt: bool,
 }
 
 impl AuxBusStatus {
-    /// The default aux bus `bus`: "Bus A" through "Bus G" at unity, unmuted.
+    /// The default aux bus `bus`: "Bus A" through "Bus G" at unity,
+    /// unmuted, metered only.
     #[must_use]
     pub fn default_for(bus: AuxBusNumber) -> Self {
         Self {
             name: format!("Bus {}", bus.letter()),
             gain_millidb: 0,
             muted: false,
+            dsp: StripDsp::DEFAULT,
+            device: None,
+            omt: false,
         }
     }
 }
@@ -331,6 +356,9 @@ pub struct AudioMixerStatus {
     /// How many [`AudioStripDspStateMessage`] records follow the snapshot
     /// (2.75); not maintained by [`Self::apply`].
     pub strip_dsp_states: u16,
+    /// How many `audio_strip_send_state` records follow the snapshot, one
+    /// per strip whose sends are not the plain enable mask (2.130).
+    pub send_states: u16,
     /// The aux buses, bus A first (2.118). Each output's bus rides its
     /// [`crate::OutputStatus`].
     pub aux_buses: [AuxBusStatus; AUX_BUS_COUNT],
@@ -345,6 +373,7 @@ impl Default for AudioMixerStatus {
             monitor: AudioMonitorStatus::default(),
             master_dsp: StripDsp::DEFAULT,
             strip_dsp_states: 0,
+            send_states: 0,
             aux_buses: AuxBusNumber::ALL.map(AuxBusStatus::default_for),
         }
     }
@@ -406,12 +435,22 @@ impl AudioMixerStatus {
                     );
                 }
             }
-            // Membership lives in the strip records and an output's bus in its
-            // output status; a loudness reset changes no status (2.92).
+            // Membership lives in the strip records, an output's bus in its
+            // output status, and a loudness reset changes no status (2.92).
             AudioMixerOperation::SetGroup { .. }
             | AudioMixerOperation::ResetLoudness { .. }
             | AudioMixerOperation::SetOutputBus { .. }
+            | AudioMixerOperation::SetOutputMixMinus { .. }
             | AudioMixerOperation::SetPluginChain { .. } => {}
+            AudioMixerOperation::SetAuxBusDsp { bus, chain } => {
+                self.aux_buses[bus.index()].dsp = **chain;
+            }
+            AudioMixerOperation::SetAuxBusDevice { bus, device } => {
+                self.aux_buses[bus.index()].device.clone_from(device);
+            }
+            AudioMixerOperation::SetAuxBusOmt { bus, omt } => {
+                self.aux_buses[bus.index()].omt = *omt;
+            }
             AudioMixerOperation::RenameGroup { group, name } => {
                 if audio_group_is_valid(*group) {
                     self.groups[usize::from(*group) - 1].name.clone_from(name);
@@ -449,11 +488,11 @@ impl AudioMixerStatus {
                 self.monitor.gain_millidb = *gain_millidb;
                 self.monitor.muted = *muted;
             }
-            AudioMixerOperation::SetStripDsp { target, chain, .. } => {
-                if *target == AudioDspTarget::Master {
-                    self.master_dsp = **chain;
-                }
-            }
+            AudioMixerOperation::SetStripDsp { target, chain, .. } => match target {
+                AudioDspTarget::Master => self.master_dsp = **chain,
+                AudioDspTarget::Aux(bus) => self.aux_buses[bus.index()].dsp = **chain,
+                AudioDspTarget::Input(_) => {}
+            },
             AudioMixerOperation::RenameAuxBus { bus, name } => {
                 self.aux_buses[bus.index()].name.clone_from(name);
             }
@@ -479,6 +518,46 @@ pub const MAX_PLUGIN_LATENCY_FRAMES: u32 = 60_000;
 /// Largest opaque plugin state one slot carries, in bytes (2.128).
 pub const MAX_PLUGIN_STATE_BYTES: usize = 64 * 1024;
 
+/// Most named parameters one plugin slot carries (2.148).
+pub const MAX_PLUGIN_PARAMETERS: usize = 64;
+/// Longest plugin parameter name, in bytes (2.148).
+pub const MAX_PLUGIN_PARAMETER_NAME_BYTES: usize = 64;
+
+/// One named plugin parameter value, carried exactly as its `f32` bits
+/// (2.148).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginParameter {
+    /// `[A-Za-z0-9._-]` and unique in the slot.
+    pub name: String,
+    /// The value's `f32` bit pattern; it is always finite.
+    pub value_bits: u32,
+}
+
+impl PluginParameter {
+    #[must_use]
+    pub fn new(name: impl Into<String>, value: f32) -> Self {
+        Self {
+            name: name.into(),
+            value_bits: value.to_bits(),
+        }
+    }
+
+    #[must_use]
+    pub fn value(&self) -> f32 {
+        f32::from_bits(self.value_bits)
+    }
+
+    /// Whether `name` is a usable wire parameter name.
+    #[must_use]
+    pub fn name_is_valid(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= MAX_PLUGIN_PARAMETER_NAME_BYTES
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    }
+}
+
 /// One plugin's place in a chain, on the wire (2.128, AU-006).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginChainSlot {
@@ -488,6 +567,8 @@ pub struct PluginChainSlot {
     pub latency_frames: u32,
     /// Opaque plugin state, empty when it has none.
     pub state: Vec<u8>,
+    /// Named parameters, strictly sorted by name (2.148).
+    pub parameters: Vec<PluginParameter>,
 }
 
 impl PluginChainSlot {
@@ -569,11 +650,34 @@ pub enum AudioMixerOperation {
         gain_millidb: i32,
         muted: bool,
     },
+    /// Replaces an aux bus's DSP chain (AU-002, 2.132). A whole-chain set
+    /// for presets, the CLI, and the Web pages; the FX editor sends
+    /// `SetStripDsp` with an aux target so a drag folds into one undo step.
+    SetAuxBusDsp {
+        bus: AuxBusNumber,
+        chain: Box<StripDsp>,
+    },
     /// Makes `output` hear aux bus `bus`, or Master for `None` (2.118).
     SetOutputBus {
         output: WireOutputId,
         bus: Option<AuxBusNumber>,
     },
+    /// Makes `output`'s aux feed leave `input` out (AU-002 mix-minus, 2.134),
+    /// or restores its full mix for `None`. A project edit; it applies only
+    /// while the output hears an aux bus.
+    SetOutputMixMinus {
+        output: WireOutputId,
+        input: Option<WireInputId>,
+    },
+    /// Plays aux bus `bus` on a local audio output device, or on none
+    /// (meter-only) (2.135). A project edit.
+    SetAuxBusDevice {
+        bus: AuxBusNumber,
+        device: Option<String>,
+    },
+    /// Publishes aux bus `bus` as an OMT audio sender, or stops it (2.138).
+    /// A project edit.
+    SetAuxBusOmt { bus: AuxBusNumber, omt: bool },
     /// Replaces a strip's or the Master's plugin chain (2.128, AU-006). A
     /// live operation: chains are runtime state.
     SetPluginChain {
@@ -600,7 +704,11 @@ impl AudioMixerOperation {
             Self::ResetLoudness { .. } => "audio_loudness_reset",
             Self::RenameAuxBus { .. } => "audio_aux_bus_name",
             Self::SetAuxBusLevel { .. } => "audio_aux_bus_level",
+            Self::SetAuxBusDsp { .. } => "audio_aux_bus_dsp",
             Self::SetOutputBus { .. } => "audio_output_bus",
+            Self::SetOutputMixMinus { .. } => "audio_output_mix_minus",
+            Self::SetAuxBusDevice { .. } => "audio_aux_bus_device",
+            Self::SetAuxBusOmt { .. } => "audio_aux_bus_omt",
             Self::SetPluginChain { .. } => "audio_plugin_chain",
         }
     }

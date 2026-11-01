@@ -23,10 +23,15 @@
 //!
 //! * `audio_aux_buses` (Protocol 2.118) is seven comma-separated
 //!   `<name>~<gain_millidb>~<muted 0|1>` entries, bus A first, each name
-//!   percent-escaped and non-blank.
+//!   percent-escaped and non-blank. `audio_aux_bus_devices` (Protocol
+//!   2.135) lists the buses that play on a local output device as
+//!   `<bus>~<device>` entries, bus A first, each device percent-escaped.
 //! * Each `outputs` entry ends with the aux bus letter the output hears, or
-//!   `-` for Master (Protocol 2.118). An `audio_output_bus` command or event
-//!   `bus` is a letter or `-` for Master; an aux bus operation's `bus` is a
+//!   `-` for Master (Protocol 2.118), then the input its mix-minus feed
+//!   leaves out or `-` for a full mix (Protocol 2.134). An
+//!   `audio_output_bus` command or event `bus` is a letter or `-` for
+//!   Master; an `audio_output_mix_minus` command or event `input` is an
+//!   input id or `-` for a full mix; an aux bus operation's `bus` is a
 //!   letter.
 //!
 //! Group names inside `audio_groups` are percent-escaped before they are
@@ -211,12 +216,19 @@ fn encode_aux_buses(buses: &[AuxBusStatus; AUX_BUS_COUNT]) -> Result<String, Cod
                 return Err(invalid("audio_aux_buses", bus.name.clone()));
             }
             check_gain("audio_aux_buses", bus.gain_millidb)?;
-            Ok(format!(
+            let mut encoded = format!(
                 "{}~{}~{}",
                 escape_bounded(&bus.name)?,
                 bus.gain_millidb,
                 u8::from(bus.muted)
-            ))
+            );
+            // The chain follows only when the bus has one, so a show with
+            // every bus flat keeps the line short.
+            if bus.dsp != StripDsp::DEFAULT {
+                encoded.push('~');
+                encoded.push_str(&encode_chain("audio_aux_buses", &bus.dsp)?);
+            }
+            Ok(encoded)
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|buses| buses.join(","))
@@ -228,8 +240,12 @@ fn decode_aux_buses(value: &str) -> Result<[AuxBusStatus; AUX_BUS_COUNT], CodecE
         .split(',')
         .map(|entry| {
             let parts: Vec<&str> = entry.split('~').collect();
-            let [name, gain, muted] = parts.as_slice() else {
-                return Err(invalid("audio_aux_buses", entry));
+            let (name, gain, muted, dsp) = match parts.as_slice() {
+                [name, gain, muted] => (*name, *gain, *muted, StripDsp::DEFAULT),
+                [name, gain, muted, dsp] => {
+                    (*name, *gain, *muted, decode_chain("audio_aux_buses", dsp)?)
+                }
+                _ => return Err(invalid("audio_aux_buses", entry)),
             };
             let name = unescape(name)?;
             if !audio_label_is_valid(&name, false) {
@@ -239,6 +255,9 @@ fn decode_aux_buses(value: &str) -> Result<[AuxBusStatus; AUX_BUS_COUNT], CodecE
                 name,
                 gain_millidb: parse_gain("audio_aux_buses", gain)?,
                 muted: parse_flag("audio_aux_buses", muted)?,
+                dsp,
+                device: None,
+                omt: false,
             })
         })
         .take(AUX_BUS_COUNT + 1)
@@ -246,6 +265,82 @@ fn decode_aux_buses(value: &str) -> Result<[AuxBusStatus; AUX_BUS_COUNT], CodecE
     buses
         .try_into()
         .map_err(|_| invalid("audio_aux_buses", value))
+}
+
+/// Encodes a snapshot's `audio_aux_bus_devices`: sparse `<bus>~<device>`
+/// entries, bus A first, each device percent-escaped (2.135).
+fn encode_aux_bus_devices(buses: &[AuxBusStatus; AUX_BUS_COUNT]) -> Result<String, CodecError> {
+    let mut entries = Vec::new();
+    for (bus, status) in AuxBusNumber::ALL.into_iter().zip(buses) {
+        let Some(device) = &status.device else {
+            continue;
+        };
+        if !audio_monitor_device_is_valid(device) {
+            return Err(invalid("audio_aux_bus_devices", device.clone()));
+        }
+        entries.push(format!("{}~{}", bus.letter(), escape_bounded(device)?));
+    }
+    Ok(entries.join(","))
+}
+
+/// Applies a snapshot's sparse `audio_aux_bus_devices` to `buses`.
+fn decode_aux_bus_devices(
+    value: &str,
+    buses: &mut [AuxBusStatus; AUX_BUS_COUNT],
+) -> Result<(), CodecError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let mut previous = None;
+    for entry in value.split(',') {
+        let mut parts = entry.split('~');
+        let (Some(bus), Some(device), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(CodecError::InvalidRecord);
+        };
+        let bus = parse_bus("audio_aux_bus_devices", bus)?;
+        if previous.is_some_and(|previous| bus <= previous) {
+            return Err(invalid("audio_aux_bus_devices", entry));
+        }
+        previous = Some(bus);
+        let device = unescape(device)?;
+        if !audio_monitor_device_is_valid(&device) {
+            return Err(invalid("audio_aux_bus_devices", device));
+        }
+        buses[bus.index()].device = Some(device);
+    }
+    Ok(())
+}
+
+/// Encodes a snapshot's `audio_aux_bus_omt`: the letters of the buses
+/// published as OMT audio senders, bus A first (2.138).
+fn encode_aux_bus_omt(buses: &[AuxBusStatus; AUX_BUS_COUNT]) -> String {
+    AuxBusNumber::ALL
+        .into_iter()
+        .zip(buses)
+        .filter(|(_, bus)| bus.omt)
+        .map(|(number, _)| number.letter().to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Applies a snapshot's `audio_aux_bus_omt` letters to `buses`.
+fn decode_aux_bus_omt(
+    value: &str,
+    buses: &mut [AuxBusStatus; AUX_BUS_COUNT],
+) -> Result<(), CodecError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let mut previous = None;
+    for entry in value.split(',') {
+        let bus = parse_bus("audio_aux_bus_omt", entry)?;
+        if previous.is_some_and(|previous| bus <= previous) {
+            return Err(invalid("audio_aux_bus_omt", entry));
+        }
+        previous = Some(bus);
+        buses[bus.index()].omt = true;
+    }
+    Ok(())
 }
 
 /// Encodes a snapshot's `input_audio_labels`: each label raw behind its
@@ -531,11 +626,12 @@ pub(super) fn decode_chain(field: &'static str, value: &str) -> Result<StripDsp,
     StripDsp::from_code(value).map_err(|_| invalid(field, value))
 }
 
-/// Encodes a DSP target: `master` or a canonical input id.
+/// Encodes a DSP target: `master`, a canonical input id, or `aux:a`..`aux:g`.
 pub(super) fn encode_target(target: AudioDspTarget) -> String {
     match target {
         AudioDspTarget::Master => "master".to_owned(),
         AudioDspTarget::Input(input) => input.to_string(),
+        AudioDspTarget::Aux(bus) => format!("aux:{}", bus.letter().to_ascii_lowercase()),
     }
 }
 
@@ -546,6 +642,15 @@ pub(super) fn decode_target(
 ) -> Result<AudioDspTarget, CodecError> {
     if value == "master" {
         return Ok(AudioDspTarget::Master);
+    }
+    if let Some(letter) = value.strip_prefix("aux:") {
+        let mut letters = letter.chars();
+        return match (letters.next(), letters.next()) {
+            (Some(letter), None) => AuxBusNumber::from_letter(letter.to_ascii_uppercase()),
+            _ => None,
+        }
+        .map(AudioDspTarget::Aux)
+        .ok_or_else(|| invalid(field, value));
     }
     parse_canonical_input(value)
         .map(AudioDspTarget::Input)
@@ -575,11 +680,26 @@ pub(super) fn encode_status(
         "audio_strip_dsp_states",
         status.strip_dsp_states.to_string(),
     )?;
-    push("audio_aux_buses", encode_aux_buses(&status.aux_buses)?)
+    if status.send_states > crate::MAX_AUDIO_SEND_STATES {
+        return Err(invalid(
+            "audio_strip_send_states",
+            status.send_states.to_string(),
+        ));
+    }
+    push("audio_strip_send_states", status.send_states.to_string())?;
+    push("audio_aux_buses", encode_aux_buses(&status.aux_buses)?)?;
+    push(
+        "audio_aux_bus_devices",
+        encode_aux_bus_devices(&status.aux_buses)?,
+    )?;
+    push("audio_aux_bus_omt", encode_aux_bus_omt(&status.aux_buses))
 }
 
 /// Decodes the snapshot mixer fields.
 pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerStatus, CodecError> {
+    let mut aux_buses = decode_aux_buses(&fields.required("audio_aux_buses")?)?;
+    decode_aux_bus_devices(&fields.required("audio_aux_bus_devices")?, &mut aux_buses)?;
+    decode_aux_bus_omt(&fields.required("audio_aux_bus_omt")?, &mut aux_buses)?;
     Ok(AudioMixerStatus {
         groups: decode_groups(&fields.required("audio_groups")?)?,
         solo_mode: parse_solo_mode("audio_solo_mode", &fields.required("audio_solo_mode")?)?,
@@ -593,7 +713,14 @@ pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerSt
                 .filter(|count| *count <= crate::MAX_AUDIO_STRIP_DSP_STATES)
                 .ok_or_else(|| invalid("audio_strip_dsp_states", value))?
         },
-        aux_buses: decode_aux_buses(&fields.required("audio_aux_buses")?)?,
+        send_states: {
+            let value = fields.required("audio_strip_send_states")?;
+            parse_canonical_u64(&value)
+                .and_then(|count| u16::try_from(count).ok())
+                .filter(|count| *count <= crate::MAX_AUDIO_SEND_STATES)
+                .ok_or_else(|| invalid("audio_strip_send_states", value))?
+        },
+        aux_buses,
     })
 }
 
@@ -905,11 +1032,30 @@ pub(super) fn encode_operation(
             push("gain_millidb", gain_millidb.to_string())?;
             push("muted", u8::from(*muted).to_string())
         }
+        AudioMixerOperation::SetAuxBusDsp { bus, chain } => {
+            push("bus", bus.letter().to_string())?;
+            push("chain", encode_chain("chain", chain)?)
+        }
+        AudioMixerOperation::SetAuxBusDevice { bus, device } => {
+            push("bus", bus.letter().to_string())?;
+            push("device", device.clone().unwrap_or_default())
+        }
+        AudioMixerOperation::SetAuxBusOmt { bus, omt } => {
+            push("bus", bus.letter().to_string())?;
+            push("omt", u8::from(*omt).to_string())
+        }
         AudioMixerOperation::SetOutputBus { output, bus } => {
             push("output", output.to_string())?;
             push(
                 "bus",
                 bus.map_or_else(|| "-".to_owned(), |bus| bus.letter().to_string()),
+            )
+        }
+        AudioMixerOperation::SetOutputMixMinus { output, input } => {
+            push("output", output.to_string())?;
+            push(
+                "input",
+                input.map_or_else(|| "-".to_owned(), |input| input.to_string()),
             )
         }
         AudioMixerOperation::SetPluginChain { target, slots } => {
@@ -940,12 +1086,36 @@ pub(super) fn encode_plugin_slots(slots: &[crate::PluginChainSlot]) -> Result<St
         if slot.state.len() > crate::MAX_PLUGIN_STATE_BYTES {
             return Err(invalid("plugins", slot.state.len().to_string()));
         }
+        if slot.parameters.len() > crate::MAX_PLUGIN_PARAMETERS {
+            return Err(invalid("plugins", slot.parameters.len().to_string()));
+        }
+        let mut parameters = String::new();
+        let mut previous: Option<&str> = None;
+        for parameter in &slot.parameters {
+            if !crate::PluginParameter::name_is_valid(&parameter.name) {
+                return Err(invalid("plugins", parameter.name.clone()));
+            }
+            if previous.is_some_and(|name| name >= parameter.name.as_str()) {
+                return Err(invalid("plugins", parameter.name.clone()));
+            }
+            if !parameter.value().is_finite() {
+                return Err(invalid("plugins", parameter.name.clone()));
+            }
+            if !parameters.is_empty() {
+                parameters.push(';');
+            }
+            parameters.push_str(&parameter.name);
+            parameters.push('=');
+            parameters.push_str(&parameter.value_bits.to_string());
+            previous = Some(&parameter.name);
+        }
         encoded.push(format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}",
             slot.plugin,
             u8::from(slot.bypassed),
             slot.latency_frames,
-            crate::monitor_image::base64url_encode(&slot.state)
+            crate::monitor_image::base64url_encode(&slot.state),
+            parameters
         ));
     }
     Ok(encoded.join(","))
@@ -964,7 +1134,7 @@ pub(super) fn decode_plugin_slots(value: &str) -> Result<Vec<crate::PluginChainS
     let mut slots = Vec::with_capacity(entries.len());
     for entry in entries {
         let fields: Vec<&str> = entry.split(':').collect();
-        let [plugin, bypassed, latency, state] = fields[..] else {
+        let [plugin, bypassed, latency, state, parameters] = fields[..] else {
             return Err(invalid("plugins", entry.to_owned()));
         };
         if !crate::PluginChainSlot::plugin_id_is_valid(plugin) || !ids.insert(plugin) {
@@ -988,17 +1158,47 @@ pub(super) fn decode_plugin_slots(value: &str) -> Result<Vec<crate::PluginChainS
         if state.len() > crate::MAX_PLUGIN_STATE_BYTES {
             return Err(invalid("plugins", entry.to_owned()));
         }
+        let mut parsed = Vec::new();
+        if !parameters.is_empty() {
+            let mut previous: Option<&str> = None;
+            for parameter in parameters.split(';') {
+                if parsed.len() >= crate::MAX_PLUGIN_PARAMETERS {
+                    return Err(invalid("plugins", entry.to_owned()));
+                }
+                let Some((name, bits)) = parameter.split_once('=') else {
+                    return Err(invalid("plugins", entry.to_owned()));
+                };
+                if !crate::PluginParameter::name_is_valid(name)
+                    || previous.is_some_and(|previous| previous >= name)
+                {
+                    return Err(invalid("plugins", entry.to_owned()));
+                }
+                let value_bits: u32 = bits
+                    .parse()
+                    .map_err(|_| invalid("plugins", entry.to_owned()))?;
+                if bits != value_bits.to_string() || !f32::from_bits(value_bits).is_finite() {
+                    return Err(invalid("plugins", entry.to_owned()));
+                }
+                parsed.push(crate::PluginParameter {
+                    name: name.to_owned(),
+                    value_bits,
+                });
+                previous = Some(name);
+            }
+        }
         slots.push(crate::PluginChainSlot {
             plugin: plugin.to_owned(),
             bypassed,
             latency_frames,
             state,
+            parameters: parsed,
         });
     }
     Ok(slots)
 }
 
 /// Decodes an operation named by `payload`, or `None` for another payload.
+#[allow(clippy::too_many_lines)] // one arm per audio mixer operation
 pub(super) fn decode_operation(
     payload: &str,
     fields: &mut dyn FieldSource,
@@ -1077,6 +1277,28 @@ pub(super) fn decode_operation(
             gain_millidb: parse_gain("gain_millidb", &fields.required("gain_millidb")?)?,
             muted: parse_flag("muted", &fields.required("muted")?)?,
         },
+        "audio_aux_bus_dsp" => AudioMixerOperation::SetAuxBusDsp {
+            bus: parse_bus("bus", &fields.required("bus")?)?,
+            chain: Box::new(decode_chain("chain", &fields.required("chain")?)?),
+        },
+        "audio_aux_bus_device" => {
+            let bus = parse_bus("bus", &fields.required("bus")?)?;
+            let device = fields.required("device")?;
+            AudioMixerOperation::SetAuxBusDevice {
+                bus,
+                device: if device.is_empty() {
+                    None
+                } else if audio_monitor_device_is_valid(&device) {
+                    Some(device)
+                } else {
+                    return Err(invalid("device", device));
+                },
+            }
+        }
+        "audio_aux_bus_omt" => AudioMixerOperation::SetAuxBusOmt {
+            bus: parse_bus("bus", &fields.required("bus")?)?,
+            omt: parse_flag("omt", &fields.required("omt")?)?,
+        },
         "audio_plugin_chain" => AudioMixerOperation::SetPluginChain {
             target: decode_target("target", &fields.required("target")?)?,
             slots: decode_plugin_slots(&fields.required("plugins")?)?,
@@ -1091,6 +1313,22 @@ pub(super) fn decode_operation(
                     None
                 } else {
                     Some(parse_bus("bus", &bus)?)
+                },
+            }
+        }
+        "audio_output_mix_minus" => {
+            let value = fields.required("output")?;
+            let output = parse_canonical_output(&value).ok_or_else(|| invalid("output", value))?;
+            let input = fields.required("input")?;
+            AudioMixerOperation::SetOutputMixMinus {
+                output,
+                input: if input == "-" {
+                    None
+                } else {
+                    Some(
+                        parse_canonical_input(&input)
+                            .ok_or_else(|| invalid("input", input.clone()))?,
+                    )
                 },
             }
         }

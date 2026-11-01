@@ -111,6 +111,10 @@ pub enum ReplayOperation {
         input: WireInputId,
         speed: ReplaySpeed,
     },
+    /// Shuttles a Replay input at `rate_milli` thousandths of real time
+    /// (negative plays backwards; zero pauses), pausing at the event's
+    /// first or last frame (Protocol 2.131).
+    Shuttle { input: WireInputId, rate_milli: i32 },
     /// Pauses a Replay input.
     Pause { input: WireInputId },
     /// Jumps a Replay input back to its event's first frame, paused.
@@ -144,7 +148,7 @@ pub enum ReplayOperation {
 
 impl ReplayOperation {
     /// Every payload token, in table order.
-    pub const TOKENS: [&'static str; 18] = [
+    pub const TOKENS: [&'static str; 19] = [
         "replay_configure",
         "replay_mark_in",
         "replay_mark_out",
@@ -155,6 +159,7 @@ impl ReplayOperation {
         "replay_cue",
         "replay_angle",
         "replay_play",
+        "replay_shuttle",
         "replay_pause",
         "replay_cue_in",
         "replay_step",
@@ -179,6 +184,7 @@ impl ReplayOperation {
             Self::Cue { .. } => "replay_cue",
             Self::Angle { .. } => "replay_angle",
             Self::Play { .. } => "replay_play",
+            Self::Shuttle { .. } => "replay_shuttle",
             Self::Pause { .. } => "replay_pause",
             Self::CueIn { .. } => "replay_cue_in",
             Self::Step { .. } => "replay_step",
@@ -261,6 +267,9 @@ pub struct ReplayPlayerStatus {
     pub event: Option<u32>,
     pub angle: Option<WireInputId>,
     pub speed: ReplaySpeed,
+    /// The shuttle rate, or zero when not shuttling (Protocol 2.131).
+    pub rate_milli: i32,
+    pub shuttling: bool,
     pub playing: bool,
     /// The source frame shown, while cued.
     pub frame: Option<u64>,
@@ -308,6 +317,53 @@ impl ReplayStorageLevel {
     }
 }
 
+/// A drive's SMART self-assessment (OR-014, 2.139).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ReplaySmartHealth {
+    Passed,
+    /// The drive reports a failing condition short of an outright failure.
+    Warning,
+    Failed,
+    /// The drive answers but does not report a verdict.
+    Unknown,
+}
+
+impl ReplaySmartHealth {
+    /// Every health token.
+    pub const TOKENS: [&'static str; 4] = ["passed", "warning", "failed", "unknown"];
+
+    /// The wire token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Warning => "warning",
+            Self::Failed => "failed",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Parses [`Self::token`].
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        [Self::Passed, Self::Warning, Self::Failed, Self::Unknown]
+            .into_iter()
+            .find(|health| health.token() == token)
+    }
+}
+
+/// The SMART health of the drive holding the replay root, when the daemon
+/// could ask it (OR-014, 2.139).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplaySmartStatus {
+    pub health: ReplaySmartHealth,
+    /// The drive's current temperature in whole degrees Celsius, when
+    /// reported.
+    pub temperature_celsius: Option<u16>,
+    /// The drive's endurance used, in whole percent, when reported.
+    pub percentage_used: Option<u8>,
+}
+
 /// Free space and the predicted recording time of the replay root (2.125,
 /// OR-014).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -318,6 +374,8 @@ pub struct ReplayStorageStatus {
     /// Seconds of recording left at that rate, when it is nonzero.
     pub remaining_seconds: Option<u64>,
     pub level: ReplayStorageLevel,
+    /// The root drive's SMART health, when the daemon samples it (2.139).
+    pub smart: Option<ReplaySmartStatus>,
 }
 
 /// Lossy, latest-wins replay status (OR-012).

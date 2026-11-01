@@ -120,10 +120,12 @@ const MAX_LADDER_RUNGS: usize = 8;
 const MIN_LADDER_BITRATE_KBPS: u32 = 1_000;
 const MAX_LADDER_BITRATE_KBPS: u32 = 100_000;
 /// Dimension envelope of one ladder rung. The lower bound is the smallest
-/// macroblock-bearing frame; the upper bound is 8K UHD.
+/// macroblock-bearing frame; the upper bound is 8K UHD in either orientation:
+/// the long edge at most 7680 and the short edge at most 4320, so a portrait
+/// 4320x7680 rung is as valid as a landscape 7680x4320 one.
 const MIN_LADDER_DIMENSION: u32 = 16;
-const MAX_LADDER_WIDTH: u32 = 7_680;
-const MAX_LADDER_HEIGHT: u32 = 4_320;
+const MAX_LADDER_LONG_EDGE: u32 = 7_680;
+const MAX_LADDER_SHORT_EDGE: u32 = 4_320;
 const REDACTED_KEY: &str = "****";
 const REDACTED_TOKEN: &[u8] = b"<input-token>";
 const STATS_PERIOD: &str = "0.25";
@@ -571,7 +573,9 @@ impl HlsLadder {
             if rung.width < MIN_LADDER_DIMENSION || rung.height < MIN_LADDER_DIMENSION {
                 return Err(HlsLadderError::DimensionTooSmall);
             }
-            if rung.width > MAX_LADDER_WIDTH || rung.height > MAX_LADDER_HEIGHT {
+            let long_edge = rung.width.max(rung.height);
+            let short_edge = rung.width.min(rung.height);
+            if long_edge > MAX_LADDER_LONG_EDGE || short_edge > MAX_LADDER_SHORT_EDGE {
                 return Err(HlsLadderError::DimensionTooLarge);
             }
             if rung.width % 2 != 0 || rung.height % 2 != 0 {
@@ -629,7 +633,7 @@ pub enum HlsLadderError {
     BitrateTooHigh,
     /// A rung narrower or shorter than 16 pixels.
     DimensionTooSmall,
-    /// A rung wider than `7_680` or taller than `4_320` pixels.
+    /// A rung whose long edge exceeds 7680 or short edge exceeds 4320 pixels.
     DimensionTooLarge,
     /// A rung whose width or height is not even; 4:2:0 needs even dimensions.
     OddDimension,
@@ -647,7 +651,9 @@ impl fmt::Display for HlsLadderError {
             Self::BitrateTooLow => "a ladder rung bitrate is below 1000 kbps",
             Self::BitrateTooHigh => "a ladder rung bitrate is above 100000 kbps",
             Self::DimensionTooSmall => "a ladder rung is smaller than 16x16",
-            Self::DimensionTooLarge => "a ladder rung is larger than 7680x4320",
+            Self::DimensionTooLarge => {
+                "a ladder rung's long edge is larger than 7680 or its short edge is larger than 4320"
+            }
             Self::OddDimension => "a ladder rung has an odd dimension",
             Self::BitratesNotIncreasing => {
                 "ladder bitrates must strictly increase from the first rung to the last"
@@ -1880,9 +1886,8 @@ impl Streamer {
                 }
             }
         }
-        let layout =
-            output_channel_layout(config.destination.kind(), config.format.channel_layout())
-                .ok_or_else(|| StartError::complete(StartErrorKind::UnsupportedChannelLayout))?;
+        let layout = output_channel_layout(config.destination.kind(), &config.format)
+            .ok_or_else(|| StartError::complete(StartErrorKind::UnsupportedChannelLayout))?;
         let executable = streamer_executable(config.ffmpeg.clone())?;
         let video_token = random_token()?;
         let audio_token = random_token()?;
@@ -2549,36 +2554,16 @@ fn flv_channel_layout(layout: &ChannelLayout) -> Option<&'static str> {
     }
 }
 
-/// MPEG-TS carries AAC with more channels than FLV's stereo ceiling: the
-/// standard mono, stereo, and 5.1 channel configurations are all expressible
-/// exactly. Anything else is refused rather than silently downmixed or guessed
-/// at a layout name the child would reject.
-///
-/// The 5.1 surround pair (`LeftSurround`/`RightSurround`) is labelled with
-/// ffmpeg's plain `5.1` (`BL`/`BR`), the configuration AAC reports for 5.1;
-/// sample order is identical to `5.1(side)`. 7.1 (rear surrounds) and
-/// discrete layouts are refused here.
-fn mpegts_channel_layout(layout: &ChannelLayout) -> Option<&'static str> {
-    match layout.channels() {
-        [Channel::Mono] => Some("mono"),
-        [Channel::Left, Channel::Right] => Some("stereo"),
-        [
-            Channel::Left,
-            Channel::Right,
-            Channel::Center,
-            Channel::LowFrequency,
-            Channel::LeftSurround,
-            Channel::RightSurround,
-        ] => Some("5.1"),
-        _ => None,
-    }
-}
-
 /// The audio channel-layout descriptor the output muxer can carry exactly.
-fn output_channel_layout(kind: DestinationKind, layout: &ChannelLayout) -> Option<&'static str> {
+///
+/// FLV (RTMP/RTMPS) carries one or two channels; MPEG-TS (SRT/HLS) carries
+/// the format's exact ffmpeg layout, including 7.1 and discrete `{n}C`.
+fn output_channel_layout(kind: DestinationKind, format: &RecordFormat) -> Option<&'static str> {
     match kind {
-        DestinationKind::Rtmp | DestinationKind::Rtmps => flv_channel_layout(layout),
-        DestinationKind::Srt | DestinationKind::Hls => mpegts_channel_layout(layout),
+        DestinationKind::Rtmp | DestinationKind::Rtmps => {
+            flv_channel_layout(format.channel_layout())
+        }
+        DestinationKind::Srt | DestinationKind::Hls => Some(format.ffmpeg_channel_layout()),
     }
 }
 
@@ -4245,6 +4230,17 @@ mod tests {
 
     #[test]
     fn mpegts_carries_wider_audio_than_flv() {
+        let format_with = |layout| {
+            RecordFormat::new(
+                64,
+                48,
+                fm_types::FrameRate::new(30, 1).unwrap(),
+                fm_types::SampleRate::new(48_000).unwrap(),
+                layout,
+                SequenceNumber::new(0),
+            )
+            .unwrap()
+        };
         let surround = ChannelLayout::new(vec![
             Channel::Left,
             Channel::Right,
@@ -4255,37 +4251,48 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(flv_channel_layout(&surround), None);
-        assert_eq!(mpegts_channel_layout(&surround), Some("5.1"));
+        let surround = format_with(surround);
         assert_eq!(
             output_channel_layout(DestinationKind::Srt, &surround),
-            Some("5.1")
+            Some("5.1(side)")
         );
         // HLS is MPEG-TS underneath and follows the same layout rules.
         assert_eq!(
             output_channel_layout(DestinationKind::Hls, &surround),
-            Some("5.1")
+            Some("5.1(side)")
         );
-        let seven_one = ChannelLayout::new(vec![
-            Channel::Left,
-            Channel::Right,
-            Channel::Center,
-            Channel::LowFrequency,
-            Channel::LeftSurround,
-            Channel::RightSurround,
-            Channel::LeftRearSurround,
-            Channel::RightRearSurround,
-        ])
-        .unwrap();
-        let discrete = ChannelLayout::new(
-            (1..=16)
-                .map(|number| Channel::Discrete(fm_types::DiscreteChannel::new(number).unwrap()))
-                .collect(),
-        )
-        .unwrap();
+        let seven_one = format_with(
+            ChannelLayout::new(vec![
+                Channel::Left,
+                Channel::Right,
+                Channel::Center,
+                Channel::LowFrequency,
+                Channel::LeftSurround,
+                Channel::RightSurround,
+                Channel::LeftRearSurround,
+                Channel::RightRearSurround,
+            ])
+            .unwrap(),
+        );
+        let discrete = format_with(
+            ChannelLayout::new(
+                (1..=16)
+                    .map(|number| {
+                        Channel::Discrete(fm_types::DiscreteChannel::new(number).unwrap())
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        );
         for wider in [&seven_one, &discrete] {
-            assert_eq!(flv_channel_layout(wider), None);
-            assert_eq!(mpegts_channel_layout(wider), None);
+            assert_eq!(flv_channel_layout(wider.channel_layout()), None);
+            assert_eq!(
+                output_channel_layout(DestinationKind::Srt, wider),
+                Some(wider.ffmpeg_channel_layout())
+            );
         }
+        assert_eq!(seven_one.ffmpeg_channel_layout(), "7.1");
+        assert_eq!(discrete.ffmpeg_channel_layout(), "16C");
         assert_eq!(
             output_channel_layout(DestinationKind::Rtmp, &surround),
             None
@@ -4303,22 +4310,17 @@ mod tests {
                 DestinationKind::Rtmps,
                 flv_channel_layout(&ChannelLayout::stereo()),
             ),
-            (
-                DestinationKind::Srt,
-                mpegts_channel_layout(&ChannelLayout::stereo()),
-            ),
         ] {
             assert_eq!(
-                output_channel_layout(kind, &ChannelLayout::stereo()),
+                output_channel_layout(kind, &format_with(ChannelLayout::stereo())),
                 layout
             );
             assert_eq!(layout, Some("stereo"));
         }
-        // A duplicated-channel pseudo-layout is not a named configuration and
-        // is refused rather than guessed.
-        let doubled = ChannelLayout::new(vec![Channel::Mono, Channel::Mono]).unwrap();
-        assert_eq!(mpegts_channel_layout(&doubled), None);
-        assert_eq!(output_channel_layout(DestinationKind::Srt, &doubled), None);
+        assert_eq!(
+            output_channel_layout(DestinationKind::Srt, &format_with(ChannelLayout::stereo())),
+            Some("stereo")
+        );
     }
 
     fn format() -> RecordFormat {
@@ -4715,7 +4717,10 @@ mod tests {
                 HlsLadderError::DimensionTooLarge,
             ),
             (
-                vec![ladder_rung(1_000, 320, 180), ladder_rung(1_500, 640, 4_322)],
+                vec![
+                    ladder_rung(1_000, 320, 180),
+                    ladder_rung(1_500, 4_322, 7_682),
+                ],
                 HlsLadderError::DimensionTooLarge,
             ),
             (

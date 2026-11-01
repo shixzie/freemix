@@ -163,6 +163,11 @@ pub fn script_limits(rate: fm_types::FrameRate) -> fm_script::Limits {
 /// script already waiting is refused, so each run is a different script.
 pub const MAX_SCRIPT_RUNS: usize = 8;
 
+/// Most script runs one show queues behind the active bound (schema 103):
+/// a run that reaches a wait while [`MAX_SCRIPT_RUNS`] already wait joins
+/// this FIFO queue and is promoted when an active run ends.
+pub const MAX_QUEUED_SCRIPT_RUNS: usize = 8;
+
 /// A run waiting at a `wait` (schema 56): what it resumes and when.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScriptRun {
@@ -195,11 +200,12 @@ pub struct ScriptFault {
     pub detail: fm_command::FaultDetail,
 }
 
-/// The show's script runs (schema 60): up to [`MAX_SCRIPT_RUNS`] runs
-/// waiting at once, and the fault each script's last run ended with. A
-/// script has at most one of either: a new run of it clears its fault, and
-/// a run of a script already waiting is refused. Both lists are in
-/// ascending run order.
+/// The show's script runs (schema 60; a queue since schema 103): up to
+/// [`MAX_SCRIPT_RUNS`] active runs waiting at once, up to
+/// [`MAX_QUEUED_SCRIPT_RUNS`] more queued behind them, and the fault each
+/// script's last run ended with. A script has at most one run or fault: a
+/// new run of it clears its fault, and a run of a script already waiting
+/// (active or queued) is refused. Every list is in ascending run order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScriptRunState {
     /// The last run id the show issued (zero before the first run): the
@@ -207,14 +213,20 @@ pub struct ScriptRunState {
     /// save and restore.
     pub last_run: u64,
     pub runs: Vec<ScriptRun>,
+    /// Runs waiting behind the active bound (schema 103), oldest first; the
+    /// cue clock never resumes one until it is promoted.
+    pub queued: Vec<ScriptRun>,
     pub faults: Vec<ScriptFault>,
 }
 
 impl ScriptRunState {
-    /// Script `script`'s waiting run, if any.
+    /// Script `script`'s waiting run, active or queued, if any.
     #[must_use]
     pub fn run_of(&self, script: u64) -> Option<&ScriptRun> {
-        self.runs.iter().find(|run| run.script == script)
+        self.runs
+            .iter()
+            .chain(self.queued.iter())
+            .find(|run| run.script == script)
     }
 
     /// Script `script`'s last fault, if any.
@@ -223,10 +235,13 @@ impl ScriptRunState {
         self.faults.iter().find(|fault| fault.script == script)
     }
 
-    /// The waiting run `run`, if any.
+    /// The waiting run `run`, active or queued, if any.
     #[must_use]
     pub fn run(&self, run: u64) -> Option<&ScriptRun> {
-        self.runs.iter().find(|found| found.run == run)
+        self.runs
+            .iter()
+            .chain(self.queued.iter())
+            .find(|found| found.run == run)
     }
 
     /// The waiting run the cue clock resumes first: the earliest due, the
@@ -247,12 +262,13 @@ impl ScriptRunState {
         })
     }
 
-    /// Every script waiting or faulted, ascending.
+    /// Every script waiting (active or queued) or faulted, ascending.
     #[must_use]
     pub fn scripts(&self) -> Vec<u64> {
         let mut scripts: Vec<u64> = self
             .runs
             .iter()
+            .chain(self.queued.iter())
             .map(|run| run.script)
             .chain(self.faults.iter().map(|fault| fault.script))
             .collect();
@@ -261,10 +277,23 @@ impl ScriptRunState {
         scripts
     }
 
-    /// Whether nothing waits and nothing faulted.
+    /// Whether nothing waits (active or queued) and nothing faulted.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.runs.is_empty() && self.faults.is_empty()
+        self.runs.is_empty() && self.queued.is_empty() && self.faults.is_empty()
+    }
+
+    /// Moves the oldest queued run into the active set when a slot is free,
+    /// returning whether one moved. The cue clock resumes it from the next
+    /// frame its due time allows.
+    pub fn promote_queued(&mut self) -> bool {
+        if self.runs.len() >= MAX_SCRIPT_RUNS || self.queued.is_empty() {
+            return false;
+        }
+        let run = self.queued.remove(0);
+        let at = self.runs.partition_point(|active| active.run < run.run);
+        self.runs.insert(at, run);
+        true
     }
 
     /// Clears script `script`'s fault, if any.
@@ -274,12 +303,13 @@ impl ScriptRunState {
 }
 
 /// Checks the script runs against the project's `scripts` at `rate`: at
-/// most [`MAX_SCRIPT_RUNS`] runs; run ids nonzero, at most
-/// [`ScriptRunState::last_run`], ascending in each list and unique across
-/// both; each script at most once across both; a run names a script whose
-/// source parses and accepts the saved state under [`script_limits`], and
-/// resumes no earlier than its waits allow; a fault names a script, a
-/// position, and a valid detail (schema 57).
+/// most [`MAX_SCRIPT_RUNS`] active runs and [`MAX_QUEUED_SCRIPT_RUNS`]
+/// queued; run ids nonzero, at most [`ScriptRunState::last_run`], ascending
+/// in each list and unique across all of them; each script at most once
+/// across all of them; a run names a script whose source parses and accepts
+/// the saved state under [`script_limits`], and resumes no earlier than its
+/// waits allow; a fault names a script, a position, and a valid detail
+/// (schema 57).
 ///
 /// # Errors
 ///
@@ -292,27 +322,35 @@ pub fn validate_script_run(
     let known = |script: u64| scripts.iter().find(|found| found.id == script);
     let ascending = |ids: &[u64]| ids.windows(2).all(|pair| pair[0] < pair[1]);
     let run_ids: Vec<u64> = state.runs.iter().map(|run| run.run).collect();
+    let queued_ids: Vec<u64> = state.queued.iter().map(|run| run.run).collect();
     let fault_ids: Vec<u64> = state.faults.iter().map(|fault| fault.run).collect();
+    let mut all_ids: Vec<u64> = run_ids
+        .iter()
+        .chain(&queued_ids)
+        .chain(&fault_ids)
+        .copied()
+        .collect();
+    all_ids.sort_unstable();
     let mut owners: Vec<u64> = state
         .runs
         .iter()
+        .chain(state.queued.iter())
         .map(|run| run.script)
         .chain(state.faults.iter().map(|fault| fault.script))
         .collect();
     owners.sort_unstable();
     let shape = state.runs.len() <= MAX_SCRIPT_RUNS
+        && state.queued.len() <= MAX_QUEUED_SCRIPT_RUNS
         && ascending(&run_ids)
+        && ascending(&queued_ids)
         && ascending(&fault_ids)
-        && run_ids
-            .iter()
-            .chain(&fault_ids)
-            .all(|id| (1..=state.last_run).contains(id))
-        && !run_ids.iter().any(|id| fault_ids.contains(id))
+        && all_ids.iter().all(|id| (1..=state.last_run).contains(id))
+        && all_ids.windows(2).all(|pair| pair[0] != pair[1])
         && owners.windows(2).all(|pair| pair[0] != pair[1]);
     if !shape {
         return Err(ScriptError::InvalidRun);
     }
-    for run in &state.runs {
+    for run in state.runs.iter().chain(state.queued.iter()) {
         let valid = known(run.script).is_some_and(|script| {
             fm_script::parse(&script.source)
                 .is_ok_and(|program| program.accepts(&run.state, &script_limits(rate)))

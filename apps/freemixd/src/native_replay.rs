@@ -19,9 +19,12 @@
 //! over, like the engine's recording.
 //!
 //! The files live in one `freemixd-replay-<pid>-<random>` session directory
-//! under the storage root (`<input>-<run>/segment-NNNNNN.mp4`), removed on
-//! shutdown; one left behind by a daemon that is gone is removed when the
-//! next daemon records into the same root (on Linux).
+//! under the storage root (`<input>-<run>/segment-NNNNNN.mp4`). A session's
+//! `manifest.tsv` names every closed segment's input, engine-frame origin,
+//! stream-frame origin, frame count, byte count, and file; on startup the
+//! next daemon restores the newest compatible session's closed segments
+//! (marking its manifest restored) and removes the other stale sessions.
+//! Files a config change drops are still removed on the spot.
 //!
 //! Each Replay input has a decode worker that opens the segment file the
 //! projected frame's player shows ([`fm_engine::EngineReplayFrame`]) and
@@ -51,7 +54,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Write as _,
     fs, io,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroU128},
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, PoisonError,
@@ -88,6 +91,8 @@ use crate::source_wait::SourceWait;
 pub(crate) const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// How often the storage root's free space is sampled, at most.
 const STORAGE_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the root drive's SMART status is sampled, at most (OR-014).
+const SMART_SAMPLE_INTERVAL: Duration = Duration::from_mins(1);
 /// One-second fragments per segment file.
 const FRAGMENTS_PER_SEGMENT: NonZeroU32 = NonZeroU32::MIN.saturating_add(1);
 /// Frames a run's worker may fall behind before the run ends.
@@ -98,6 +103,10 @@ const ENQUEUE_RETRY: Duration = Duration::from_millis(2);
 /// The name of every session directory starts with this, followed by
 /// `<pid>-<16 hex digits>`.
 pub(crate) const SESSION_PREFIX: &str = "freemixd-replay-";
+/// The manifest a session writes for the next run to reload (OR-012).
+const MANIFEST_FILE: &str = "manifest.tsv";
+/// The manifest name after its segments were restored.
+const RESTORED_MANIFEST_FILE: &str = "manifest.restored";
 const SEGMENT_PREFIX: &str = "segment";
 /// Most decoded audio blocks read from one segment file: the adapter's
 /// bound, well over its two seconds of AAC frames.
@@ -125,6 +134,43 @@ pub(crate) trait ReplayHost {
     /// Records the free bytes on the replay storage root, or `None` when it
     /// cannot be sampled (Protocol 2.125, OR-014).
     fn set_storage_free(&mut self, free: Option<u64>);
+    /// Records the root drive's SMART status, or `None` when the daemon
+    /// cannot ask it (Protocol 2.139, OR-014). A daemon that does not probe
+    /// SMART keeps the default.
+    fn set_storage_smart(&mut self, _smart: Option<fm_engine::EngineReplaySmartStatus>) {}
+    /// Catalogs a segment restored from a previous run, observing every
+    /// frame it holds so the segment resolves exactly (OR-012).
+    #[allow(clippy::too_many_arguments)]
+    fn restore_segment(
+        &mut self,
+        input: InputId,
+        index: u64,
+        path: PathBuf,
+        first_frame: u64,
+        first_stream_frame: u64,
+        frames: u64,
+        bytes: u64,
+    ) -> bool {
+        let closed = self.segment_closed(
+            input,
+            index,
+            path,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+        );
+        if closed {
+            for offset in 0..frames {
+                let _ = self.observe(
+                    input,
+                    first_frame.saturating_add(offset),
+                    first_stream_frame.saturating_add(offset),
+                );
+            }
+        }
+        closed
+    }
 }
 
 impl ReplayHost for ControlService<Policy> {
@@ -168,6 +214,10 @@ impl ReplayHost for ControlService<Policy> {
 
     fn set_storage_free(&mut self, free: Option<u64>) {
         self.set_replay_storage_free(free);
+    }
+
+    fn set_storage_smart(&mut self, smart: Option<fm_engine::EngineReplaySmartStatus>) {
+        self.set_replay_storage_smart(smart);
     }
 }
 
@@ -277,16 +327,131 @@ struct Source {
 }
 
 /// The replay recording and players of one native daemon.
+/// The decode side of replay playback: one player per Replay input, owned by
+/// the video realizer (structural item 1).
+pub(crate) struct ReplayPlayers {
+    format: ReplayFormat,
+    players: BTreeMap<InputId, Player>,
+    wait: SourceWait,
+}
+
+impl ReplayPlayers {
+    pub(crate) fn new(format: ReplayFormat) -> Self {
+        Self {
+            format,
+            players: BTreeMap::new(),
+            wait: SourceWait::new(crate::native_files::MAX_MEDIA_FRAME_WAIT),
+        }
+    }
+
+    pub(crate) fn present(
+        &mut self,
+        projected: &FrameResult,
+        deadline: Instant,
+        runtime: &NativeMediaRuntime,
+        playback: &mut NativeSourcePlayback,
+        push_audio: &mut dyn FnMut(InputId, &AudioBlock),
+    ) -> bool {
+        let frame = projected.frame.get();
+        self.players
+            .retain(|input, _| projected.replay.iter().any(|replay| replay.input == *input));
+        let mut pending = false;
+        for replay in &projected.replay {
+            let player = self
+                .players
+                .entry(replay.input)
+                .or_insert_with(|| Player::start(replay.input, self.format));
+            let wanted = Shown::of(replay);
+            if let Shown::Frame(path, index) = &wanted
+                && player.requested.as_ref() != Some(&(path.clone(), *index))
+            {
+                player.request(path.clone(), *index);
+            }
+            if let Some(decoded) = player.take_decoded() {
+                player.decoded = Some(decoded);
+            }
+            if !playback.registry().contains(replay.input) || player.shown == wanted {
+                continue;
+            }
+            let picture = match &wanted {
+                Shown::Nothing | Shown::Hold => continue,
+                Shown::Blank => crate::native_files::output_timing(
+                    frame,
+                    self.format.rate,
+                    self.format.clock_domain,
+                )
+                .and_then(|timing| {
+                    crate::native_files::blank_picture(
+                        (self.format.width, self.format.height),
+                        timing,
+                    )
+                }),
+                Shown::Frame(path, index) => match &player.decoded {
+                    Some((key, picture, audio)) if key.0 == *path && key.1 == *index => {
+                        // Forward play at 100% plays the frame's recorded
+                        // audio; slow motion stays silent.
+                        if replay.playing
+                            && !replay.shuttling
+                            && replay.speed == fm_types::replay::ReplaySpeed::Full
+                            && let Some(block) = audio.as_deref().and_then(|planes| {
+                                recorded_audio(
+                                    self.format.rate,
+                                    self.format.clock_domain,
+                                    frame,
+                                    planes,
+                                )
+                            })
+                        {
+                            push_audio(replay.input, &block);
+                        }
+                        picture
+                            .as_ref()
+                            .and_then(|picture| retimed(picture, frame, self.format))
+                    }
+                    _ => {
+                        pending = true;
+                        continue;
+                    }
+                },
+            };
+            player.shown = wanted;
+            // A picture the source refuses is reported, never fatal: the
+            // Replay input holds its previous picture.
+            if let Some(picture) = picture
+                && let Err(error) =
+                    runtime.ingest_live_video_frame_blocking(playback, replay.input, picture)
+            {
+                eprintln!(
+                    "FREEMIXD_REPLAY_FAILURE\tv=1\tinput={}\tfailure={}",
+                    replay.input,
+                    crate::diagnostic_field(&format!("present:{error}"))
+                );
+            }
+        }
+        !pending || self.wait.waited_out(frame, deadline, Instant::now())
+    }
+}
+
 pub(crate) struct NativeReplay {
     format: ReplayFormat,
     /// The sources and root recorded, as the engine last asked.
     recording: Option<(Vec<InputId>, PathBuf)>,
     session: Option<PathBuf>,
     sources: BTreeMap<InputId, Source>,
-    players: BTreeMap<InputId, Player>,
-    wait: SourceWait,
+    /// Whether a previous run's segments were already looked for.
+    restored: bool,
     /// When the storage root was last sampled.
     storage_sample: Option<Instant>,
+    /// When the root drive's SMART status was last sampled (OR-014).
+    smart_sample: Option<Instant>,
+    /// A running SMART probe's result.
+    smart_pending: Option<std::sync::mpsc::Receiver<Option<crate::smart::SmartSample>>>,
+    /// The root's free bytes fell below [`Self::min_free_bytes`]; recording
+    /// is paused until the next sample clears it (OR-014).
+    low_space: bool,
+    /// Free bytes a replay root keeps before recording pauses, matching the
+    /// recorder's floor.
+    min_free_bytes: u64,
 }
 
 impl NativeReplay {
@@ -296,9 +461,12 @@ impl NativeReplay {
             recording: None,
             session: None,
             sources: BTreeMap::new(),
-            players: BTreeMap::new(),
-            wait: SourceWait::new(crate::native_files::MAX_MEDIA_FRAME_WAIT),
+            restored: false,
             storage_sample: None,
+            smart_sample: None,
+            smart_pending: None,
+            low_space: false,
+            min_free_bytes: crate::disk::RECORDING_MINIMUM_FREE_BYTES,
         }
     }
 
@@ -309,7 +477,12 @@ impl NativeReplay {
         if wanted != self.recording {
             self.end_session();
             self.recording = wanted;
-            if let Some((sources, _)) = &self.recording {
+            // The new root may sit on another drive: forget the old health
+            // and probe the new one on this pass.
+            self.smart_sample = None;
+            self.smart_pending = None;
+            host.set_storage_smart(None);
+            if let Some((sources, root)) = self.recording.clone() {
                 self.sources = sources
                     .iter()
                     .map(|input| {
@@ -323,24 +496,44 @@ impl NativeReplay {
                         )
                     })
                     .collect();
+                // The first configuration after startup may find the
+                // previous run's closed segments; later configurations
+                // started a new recording and must not resurrect them.
+                if !self.restored {
+                    self.restored = true;
+                    self.restore(&root, host);
+                }
             }
         }
         let inputs: Vec<InputId> = self.sources.keys().copied().collect();
-        for input in inputs {
-            self.advance(host, input);
+        // Sample the root before starting or stopping runs: a root below the
+        // recorder's floor pauses recording, and a recovered one resumes it.
+        self.sample_storage(host);
+        self.sample_smart(host);
+        if self.low_space {
+            for input in inputs {
+                if matches!(self.sources[&input].state, SourceState::Running(_)) {
+                    self.fail(input, "storage:low_space");
+                }
+            }
+        } else {
+            for input in inputs {
+                self.advance(host, input);
+            }
         }
         for path in host.take_pruned() {
             let _ = fs::remove_file(path);
         }
-        self.sample_storage(host);
     }
 
     /// Samples the storage root's free space at most once a second and
     /// reports it to the engine, in whole mebibytes so the lossy status
-    /// does not churn on every write.
+    /// does not churn on every write. A root below
+    /// [`Self::min_free_bytes`] pauses recording (OR-014).
     fn sample_storage(&mut self, host: &mut dyn ReplayHost) {
         let Some((_, root)) = &self.recording else {
             self.storage_sample = None;
+            self.low_space = false;
             host.set_storage_free(None);
             return;
         };
@@ -355,7 +548,47 @@ impl NativeReplay {
         let free = crate::disk::existing_ancestor(root)
             .and_then(|path| crate::disk::available_bytes(path).ok())
             .map(|free| free / (1024 * 1024) * (1024 * 1024));
+        self.low_space = free.is_some_and(|free| free < self.min_free_bytes);
         host.set_storage_free(free);
+    }
+
+    /// Samples the root drive's SMART status once a minute on a worker
+    /// thread, so a slow `smartctl` never delays a pass, and reports the
+    /// result on the tick it arrives (OR-014, 2.139).
+    fn sample_smart(&mut self, host: &mut dyn ReplayHost) {
+        if let Some(pending) = &self.smart_pending {
+            match pending.try_recv() {
+                Ok(sample) => {
+                    self.smart_pending = None;
+                    host.set_storage_smart(sample.map(engine_smart_status));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.smart_pending = None;
+                    host.set_storage_smart(None);
+                    return;
+                }
+            }
+        }
+        let Some((_, root)) = &self.recording else {
+            self.smart_sample = None;
+            host.set_storage_smart(None);
+            return;
+        };
+        let now = Instant::now();
+        if self
+            .smart_sample
+            .is_some_and(|last| now.duration_since(last) < SMART_SAMPLE_INTERVAL)
+        {
+            return;
+        }
+        self.smart_sample = Some(now);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let root = root.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::smart::sample(&root));
+        });
+        self.smart_pending = Some(receiver);
     }
 
     /// Records engine frame `frame`: every running source's newest picture
@@ -399,9 +632,11 @@ impl NativeReplay {
             return;
         };
         match &mut source.state {
-            SourceState::Idle => self.start(input),
-            SourceState::Failed { at } if at.elapsed() >= RETRY_DELAY => self.start(input),
-            SourceState::Failed { .. } => {}
+            SourceState::Idle if !self.low_space => self.start(input),
+            SourceState::Failed { at } if !self.low_space && at.elapsed() >= RETRY_DELAY => {
+                self.start(input);
+            }
+            SourceState::Idle | SourceState::Failed { .. } => {}
             SourceState::Running(run) => {
                 let mut failure = None;
                 loop {
@@ -413,7 +648,16 @@ impl NativeReplay {
                             frames,
                             bytes,
                         }) => {
-                            Self::catalog(host, input, run, index, path, frames, bytes);
+                            Self::catalog(
+                                &self.session,
+                                host,
+                                input,
+                                run,
+                                index,
+                                path,
+                                frames,
+                                bytes,
+                            );
                         }
                         Ok(RunEvent::Failed(reason)) => {
                             failure = Some(reason);
@@ -434,7 +678,13 @@ impl NativeReplay {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::ref_option,
+        clippy::needless_pass_by_value
+    )]
     fn catalog(
+        session: &Option<PathBuf>,
         host: &mut dyn ReplayHost,
         input: InputId,
         run: &mut Run,
@@ -447,15 +697,27 @@ impl NativeReplay {
             return;
         };
         let first_stream_frame = run.base + run.closed;
-        host.segment_closed(
+        let closed = host.segment_closed(
             input,
             index,
-            path,
+            path.clone(),
             first_frame,
             first_stream_frame,
             frames,
             bytes,
         );
+        if closed && let Some(session) = session {
+            append_segment_manifest(
+                session,
+                input,
+                index,
+                &path,
+                first_frame,
+                first_stream_frame,
+                frames,
+                bytes,
+            );
+        }
         let taken = usize::try_from(frames)
             .unwrap_or(usize::MAX)
             .min(run.engine_frames.len());
@@ -470,7 +732,6 @@ impl NativeReplay {
         }
         let (_, root) = self.recording.as_ref()?;
         fs::create_dir_all(root).ok()?;
-        crate::native_live_lan::remove_stale_prefixed_roots(root, SESSION_PREFIX);
         let mut suffix = [0_u8; 8];
         let _ = getrandom::fill(&mut suffix);
         let suffix = suffix.iter().fold(String::new(), |mut text, byte| {
@@ -484,8 +745,76 @@ impl NativeReplay {
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
         builder.create(&session).ok()?;
+        // The manifest lets the next daemon reload these closed segments.
+        write_session_manifest(&session, self.format, self.sources.keys().copied()).ok()?;
         self.session = Some(session.clone());
         Some(session)
+    }
+
+    /// Reloads the newest compatible previous session's closed segments and
+    /// removes the other sessions (OR-012).
+    fn restore(&mut self, root: &Path, host: &mut dyn ReplayHost) {
+        let Ok(entries) = fs::read_dir(root) else {
+            return;
+        };
+        let mut sessions: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(SESSION_PREFIX)
+            })
+            .map(|entry| entry.path())
+            .collect();
+        sessions.sort_by_key(|path| {
+            std::cmp::Reverse(
+                fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok(),
+            )
+        });
+        let mut restored_session = None;
+        for session in &sessions {
+            let manifest = session.join(MANIFEST_FILE);
+            let Ok(text) = fs::read_to_string(&manifest) else {
+                continue;
+            };
+            if !manifest_header_matches(&text, self.format) {
+                continue;
+            }
+            for segment in parse_manifest_segments(&text, session) {
+                if !self.sources.contains_key(&segment.input) || !segment.path.is_file() {
+                    continue;
+                }
+                if host.restore_segment(
+                    segment.input,
+                    segment.index,
+                    segment.path,
+                    segment.first_frame,
+                    segment.first_stream_frame,
+                    segment.frames,
+                    segment.bytes,
+                ) && let Some(source) = self.sources.get_mut(&segment.input)
+                {
+                    source.next_base = source
+                        .next_base
+                        .max(segment.first_stream_frame.saturating_add(segment.frames));
+                }
+            }
+            // The files stay for playback; the manifest is marked so the
+            // next restart does not catalog them twice.
+            let _ = fs::rename(&manifest, session.join(RESTORED_MANIFEST_FILE));
+            restored_session = Some(session.clone());
+            break;
+        }
+        for session in &sessions {
+            if restored_session.as_ref() == Some(session) {
+                continue;
+            }
+            let _ = fs::remove_dir_all(session);
+        }
     }
 
     fn start(&mut self, input: InputId) {
@@ -575,7 +904,9 @@ impl NativeReplay {
                         path,
                         frames,
                         bytes,
-                    }) => Self::catalog(host, input, run, index, path, frames, bytes),
+                    }) => {
+                        Self::catalog(&self.session, host, input, run, index, path, frames, bytes);
+                    }
                     Ok(RunEvent::Stopped) => {
                         self.sources.get_mut(&input).expect("source").state = SourceState::Idle;
                         break;
@@ -601,102 +932,174 @@ impl NativeReplay {
                 .values()
                 .all(|source| matches!(&source.state, SourceState::Running(run) if run.ready))
     }
-
-    /// Presents what every Replay input shows on the projected frame:
-    /// requests each player's recorded frame and ingests what the decode
-    /// workers finished. Returns whether every Replay input's frame is
-    /// ready (or has waited out its bound).
-    pub(crate) fn present(
-        &mut self,
-        projected: &FrameResult,
-        deadline: Instant,
-        runtime: &NativeMediaRuntime,
-        playback: &mut NativeSourcePlayback,
-        push_audio: &mut dyn FnMut(InputId, &AudioBlock),
-    ) -> bool {
-        let frame = projected.frame.get();
-        self.players
-            .retain(|input, _| projected.replay.iter().any(|replay| replay.input == *input));
-        let mut pending = false;
-        for replay in &projected.replay {
-            let player = self
-                .players
-                .entry(replay.input)
-                .or_insert_with(|| Player::start(replay.input, self.format));
-            let wanted = Shown::of(replay);
-            if let Shown::Frame(path, index) = &wanted
-                && player.requested.as_ref() != Some(&(path.clone(), *index))
-            {
-                player.request(path.clone(), *index);
-            }
-            if let Some(decoded) = player.take_decoded() {
-                player.decoded = Some(decoded);
-            }
-            if !playback.registry().contains(replay.input) || player.shown == wanted {
-                continue;
-            }
-            let picture = match &wanted {
-                Shown::Nothing | Shown::Hold => continue,
-                Shown::Blank => crate::native_files::output_timing(
-                    frame,
-                    self.format.rate,
-                    self.format.clock_domain,
-                )
-                .and_then(|timing| {
-                    crate::native_files::blank_picture(
-                        (self.format.width, self.format.height),
-                        timing,
-                    )
-                }),
-                Shown::Frame(path, index) => match &player.decoded {
-                    Some((key, picture, audio)) if key.0 == *path && key.1 == *index => {
-                        // Forward play at 100% plays the frame's recorded
-                        // audio; slow motion stays silent.
-                        if replay.playing
-                            && replay.speed == fm_types::replay::ReplaySpeed::Full
-                            && let Some(block) = audio.as_deref().and_then(|planes| {
-                                recorded_audio(
-                                    self.format.rate,
-                                    self.format.clock_domain,
-                                    frame,
-                                    planes,
-                                )
-                            })
-                        {
-                            push_audio(replay.input, &block);
-                        }
-                        picture
-                            .as_ref()
-                            .and_then(|picture| retimed(picture, frame, self.format))
-                    }
-                    _ => {
-                        pending = true;
-                        continue;
-                    }
-                },
-            };
-            player.shown = wanted;
-            // A picture the source refuses is reported, never fatal: the
-            // Replay input holds its previous picture.
-            if let Some(picture) = picture
-                && let Err(error) =
-                    runtime.ingest_live_video_frame_blocking(playback, replay.input, picture)
-            {
-                eprintln!(
-                    "FREEMIXD_REPLAY_FAILURE\tv=1\tinput={}\tfailure={}",
-                    replay.input,
-                    crate::diagnostic_field(&format!("present:{error}"))
-                );
-            }
-        }
-        !pending || self.wait.waited_out(frame, deadline, Instant::now())
-    }
 }
 
 impl Drop for NativeReplay {
     fn drop(&mut self) {
-        self.players.clear();
-        self.end_session();
+        // Keep the session and its manifest so the next daemon reloads its
+        // closed segments (OR-012). The workers stop with the process; a
+        // segment they did not close is not in the manifest.
+        self.sources.clear();
+        self.session = None;
+    }
+}
+
+/// The engine form of one SMART sample (OR-014, 2.139).
+fn engine_smart_status(sample: crate::smart::SmartSample) -> fm_engine::EngineReplaySmartStatus {
+    fm_engine::EngineReplaySmartStatus {
+        health: match sample.health {
+            crate::smart::SmartHealth::Passed => fm_engine::EngineReplaySmartHealth::Passed,
+            crate::smart::SmartHealth::Warning => fm_engine::EngineReplaySmartHealth::Warning,
+            crate::smart::SmartHealth::Failed => fm_engine::EngineReplaySmartHealth::Failed,
+            crate::smart::SmartHealth::Unknown => fm_engine::EngineReplaySmartHealth::Unknown,
+        },
+        temperature_celsius: sample.temperature_celsius,
+        percentage_used: sample.percentage_used,
+    }
+}
+
+/// Writes a new session's manifest header: the format and the sources.
+fn write_session_manifest(
+    session: &Path,
+    format: ReplayFormat,
+    sources: impl Iterator<Item = InputId>,
+) -> io::Result<()> {
+    let sources = sources
+        .map(|input| input.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let text = format!(
+        "format\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        format.width,
+        format.height,
+        format.rate.numerator(),
+        format.rate.denominator(),
+        format.clock_domain.get(),
+        sources
+    );
+    fs::write(session.join(MANIFEST_FILE), text)
+}
+
+/// Whether `text`'s header describes the same picture format and clock.
+fn manifest_header_matches(text: &str, format: ReplayFormat) -> bool {
+    let Some(line) = text.lines().next() else {
+        return false;
+    };
+    let parts: Vec<&str> = line.split('\t').collect();
+    let [
+        "format",
+        width,
+        height,
+        numerator,
+        denominator,
+        clock,
+        _sources,
+    ] = parts.as_slice()
+    else {
+        return false;
+    };
+    width.parse::<u32>().ok() == Some(format.width)
+        && height.parse::<u32>().ok() == Some(format.height)
+        && numerator.parse::<u32>().ok() == Some(format.rate.numerator())
+        && denominator.parse::<u32>().ok() == Some(format.rate.denominator())
+        && clock.parse::<u128>().ok().and_then(NonZeroU128::new) == Some(format.clock_domain.get())
+}
+
+/// One closed segment a session manifest names.
+struct RestoredSegment {
+    input: InputId,
+    index: u64,
+    path: PathBuf,
+    first_frame: u64,
+    first_stream_frame: u64,
+    frames: u64,
+    bytes: u64,
+}
+
+/// Parses a session's segment lines, skipping a torn or malformed one.
+fn parse_manifest_segments(text: &str, session: &Path) -> Vec<RestoredSegment> {
+    let mut segments = Vec::new();
+    for line in text.lines().skip(1) {
+        let parts: Vec<&str> = line.split('\t').collect();
+        let [
+            "segment",
+            input,
+            index,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+            relative,
+        ] = parts.as_slice()
+        else {
+            continue;
+        };
+        let Some(input) = input
+            .parse::<u128>()
+            .ok()
+            .and_then(NonZeroU128::new)
+            .map(InputId::new)
+        else {
+            continue;
+        };
+        let (Ok(index), Ok(first_frame), Ok(first_stream_frame), Ok(frames), Ok(bytes)) = (
+            index.parse::<u64>(),
+            first_frame.parse::<u64>(),
+            first_stream_frame.parse::<u64>(),
+            frames.parse::<u64>(),
+            bytes.parse::<u64>(),
+        ) else {
+            continue;
+        };
+        if frames == 0 {
+            continue;
+        }
+        let path = session.join(relative);
+        if !path.starts_with(session) {
+            continue;
+        }
+        segments.push(RestoredSegment {
+            input,
+            index,
+            path,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+        });
+    }
+    segments.sort_by_key(|segment| segment.first_frame);
+    segments
+}
+
+/// Appends one closed segment to its session's manifest.
+#[allow(clippy::too_many_arguments)] // one field per recorded segment
+fn append_segment_manifest(
+    session: &Path,
+    input: InputId,
+    index: u64,
+    path: &Path,
+    first_frame: u64,
+    first_stream_frame: u64,
+    frames: u64,
+    bytes: u64,
+) {
+    let Ok(relative) = path.strip_prefix(session) else {
+        return;
+    };
+    let Some(relative) = relative.to_str() else {
+        return;
+    };
+    if relative.contains(['\t', '\n', '\r']) {
+        return;
+    }
+    let line = format!(
+        "segment\t{input}\t{index}\t{first_frame}\t{first_stream_frame}\t{frames}\t{bytes}\t\
+         {relative}\n"
+    );
+    let manifest = session.join(MANIFEST_FILE);
+    if let Ok(mut file) = fs::OpenOptions::new().append(true).open(manifest) {
+        let _ = std::io::Write::write_all(&mut file, line.as_bytes());
     }
 }
 
@@ -1391,6 +1794,7 @@ mod tests {
                 retention_seconds: 10,
                 storage_root: Some(root.to_string_lossy().into_owned()),
                 auto_return: None,
+                transition: fm_types::replay::ReplayTransition::CUT,
             }))),
         );
         let format = ReplayFormat {
@@ -1576,5 +1980,134 @@ mod tests {
         for (_, count) in &runs[1..runs.len() - 1] {
             assert_eq!(*count, 2, "{runs:?}");
         }
+    }
+
+    #[test]
+    fn a_previous_run_session_is_restored_and_its_manifest_marked() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("replay");
+        fs::create_dir_all(&root).unwrap();
+        let rate = FrameRate::new(25, 1).unwrap();
+        let format = ReplayFormat {
+            width: WIDTH,
+            height: HEIGHT,
+            rate,
+            clock_domain: clock_domain(),
+        };
+        let session = root.join(format!("{SESSION_PREFIX}1-00"));
+        fs::create_dir(&session).unwrap();
+        write_session_manifest(&session, format, [input(1)].into_iter()).unwrap();
+        let source = session.join("1-0");
+        fs::create_dir(&source).unwrap();
+        let segment = source.join("segment-000001.mp4");
+        fs::write(&segment, b"segment").unwrap();
+        append_segment_manifest(&session, input(1), 1, &segment, 100, 0, 50, 7);
+
+        let manifest = session.join(MANIFEST_FILE);
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(manifest_header_matches(&text, format));
+        assert!(!manifest_header_matches(
+            &text,
+            ReplayFormat {
+                width: 100,
+                ..format
+            }
+        ));
+        let segments = parse_manifest_segments(&text, &session);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(
+            (
+                segments[0].input,
+                segments[0].first_frame,
+                segments[0].first_stream_frame,
+                segments[0].frames,
+            ),
+            (input(1), 100, 0, 50)
+        );
+
+        let show = ShowState::new(
+            "replay",
+            (1..=2)
+                .map(|value| (input(value), format!("Camera {value}")))
+                .collect(),
+            input(1),
+            input(2),
+        )
+        .unwrap();
+        let mut engine = Engine::new(
+            show,
+            rate,
+            fm_clock::ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+        );
+        engine.set_replay_feed(EngineReplayFeed::External);
+        accept(
+            &mut engine,
+            "configure",
+            EngineCommand::Replay(EngineReplayOperation::Configure(Box::new(ReplaySettings {
+                sources: vec![input(1)],
+                retention_seconds: 10,
+                storage_root: Some(root.to_string_lossy().into_owned()),
+                auto_return: None,
+                transition: fm_types::replay::ReplayTransition::CUT,
+            }))),
+        );
+        // The configure command is realized on the next frame; the restore
+        // runs once the runtime records the source.
+        let _ = engine.tick().unwrap();
+        let mut replay = NativeReplay::new(format);
+        replay.sync(&mut engine);
+        assert_eq!(engine.replay_status().sources[0].segments, 1);
+        // The old manifest is marked so a later restart does not restore the
+        // same segment twice, while the file stays playable.
+        assert!(!manifest.exists());
+        assert!(session.join(RESTORED_MANIFEST_FILE).exists());
+        assert!(segment.exists());
+    }
+
+    #[test]
+    fn a_replay_root_below_the_floor_pauses_recording() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("replay");
+        fs::create_dir_all(&root).unwrap();
+        let rate = FrameRate::new(25, 1).unwrap();
+        let format = ReplayFormat {
+            width: WIDTH,
+            height: HEIGHT,
+            rate,
+            clock_domain: clock_domain(),
+        };
+        let show = ShowState::new(
+            "replay",
+            (1..=2)
+                .map(|value| (input(value), format!("Camera {value}")))
+                .collect(),
+            input(1),
+            input(2),
+        )
+        .unwrap();
+        let mut engine = Engine::new(
+            show,
+            rate,
+            fm_clock::ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+        );
+        engine.set_replay_feed(EngineReplayFeed::External);
+        accept(
+            &mut engine,
+            "configure",
+            EngineCommand::Replay(EngineReplayOperation::Configure(Box::new(ReplaySettings {
+                sources: vec![input(1)],
+                retention_seconds: 10,
+                storage_root: Some(root.to_string_lossy().into_owned()),
+                auto_return: None,
+                transition: fm_types::replay::ReplayTransition::CUT,
+            }))),
+        );
+        let _ = engine.tick().unwrap();
+        let mut replay = NativeReplay::new(format);
+        // A root whose free space is below this floor is low on space.
+        replay.min_free_bytes = u64::MAX;
+        replay.sync(&mut engine);
+        assert!(replay.low_space);
+        assert!(matches!(replay.sources[&input(1)].state, SourceState::Idle));
     }
 }

@@ -1259,7 +1259,12 @@ impl StudioShell {
                         );
                         if draft.kind == NewInputKind::Network {
                             ui.add_space(6.0);
-                            crate::network_stream_ui::draw_stream_form(ui, l, &mut draft.stream);
+                            crate::network_stream_ui::draw_stream_form(
+                                ui,
+                                l,
+                                &mut draft.stream,
+                                &self.omt_sources,
+                            );
                         }
                         if draft.kind == NewInputKind::SystemAudio {
                             ui.add_space(6.0);
@@ -1846,6 +1851,7 @@ mod tests {
     /// `Solid Colour 1`, and `Guest`.
     fn snapshot() -> fm_protocol::SnapshotMessage {
         fm_protocol::SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -1887,7 +1893,7 @@ mod tests {
                     soloed: false,
                     follow_video: true,
                     delay_samples: 0,
-                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                    sends: fm_types::audio_bus::AudioSends::MASTER,
                 })
                 .to_vec(),
             desired_program: wire(1),

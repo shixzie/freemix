@@ -12,9 +12,11 @@ mod lut;
 mod media;
 mod model;
 mod recent;
+mod recorder_track_map;
 mod settings_export;
 mod settings_import;
 mod store;
+mod title_design;
 mod title_template;
 
 pub use append::{
@@ -71,6 +73,9 @@ pub use recent::{
     RECENT_PROJECTS_CONTRACT, RecentProject, RecentProjectStatus, RecentProjects,
     RecentProjectsError,
 };
+pub use recorder_track_map::{
+    RECORDER_TRACK_MAP_DIRECTORY, RECORDER_TRACK_MAP_EXTENSION, TrackMapStoreError,
+};
 pub use settings_export::{
     EntityKey, MAX_SECRET_BYTES, MAX_SETTING_KEY_BYTES, MAX_SETTING_KEY_SEGMENT_BYTES,
     MAX_SETTING_KEY_SEGMENTS, MAX_SETTING_TEXT_BYTES, MAX_SETTINGS_ENTRIES,
@@ -80,9 +85,13 @@ pub use settings_export::{
 };
 pub use settings_import::{
     ChangeKind, ChangePreview, ContentInventory, ImportConflict, ImportError, ImportOutcome,
-    ImportPlan, ImportResolutions, KeyChange, MergeStrategy, SectionChoice,
+    ImportPlan, ImportResolutions, KeyChange, MergeStrategy, SectionChoice, SettingsApplyError,
 };
 pub use store::{MAX_MANIFEST_BYTES, ProjectStore, StoreError};
+pub use title_design::{
+    MAX_TITLE_DESIGN_BYTES, TITLE_DESIGN_CONTRACT, TitleDesignError, decode_title_design,
+    encode_title_design, read_title_design_file, write_title_design_file,
+};
 pub use title_template::{
     ImportedTitleFont, ImportedTitleTemplate, MAX_TITLE_TEMPLATE_BYTES, StoredTitleTemplate,
     TITLE_TEMPLATE_EXTENSION, TitleFontAsset, TitleImportError, TitleIssue, TitleProblem,

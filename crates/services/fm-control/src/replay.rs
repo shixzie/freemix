@@ -2,12 +2,12 @@
 
 use fm_engine::{
     EngineCommand, EngineEvent, EngineReplayFeed, EngineReplayOperation, EngineReplayPlaylistEntry,
-    EngineReplayStatus, EngineReplayStorageLevel,
+    EngineReplaySmartHealth, EngineReplayStatus, EngineReplayStorageLevel,
 };
 use fm_protocol::{
     CommandPayload, EventPayload, ReplayEventStatus, ReplayFeed, ReplayOperation,
-    ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySourceStatus, ReplayStatusMessage,
-    ServerIdentity, WireInputId,
+    ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySmartHealth, ReplaySmartStatus,
+    ReplaySourceStatus, ReplayStatusMessage, ServerIdentity, WireInputId,
 };
 
 /// The engine operation of a wire replay command.
@@ -45,6 +45,10 @@ pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOpera
         ReplayOperation::Play { input, speed } => EngineReplayOperation::Play {
             input: input.to_domain(),
             speed: *speed,
+        },
+        ReplayOperation::Shuttle { input, rate_milli } => EngineReplayOperation::Shuttle {
+            input: input.to_domain(),
+            rate_milli: *rate_milli,
         },
         ReplayOperation::Pause { input } => EngineReplayOperation::Pause {
             input: input.to_domain(),
@@ -119,6 +123,10 @@ pub(super) fn wire_operation(operation: &EngineReplayOperation) -> ReplayOperati
         EngineReplayOperation::Play { input, speed } => ReplayOperation::Play {
             input: WireInputId::from_domain(*input),
             speed: *speed,
+        },
+        EngineReplayOperation::Shuttle { input, rate_milli } => ReplayOperation::Shuttle {
+            input: WireInputId::from_domain(*input),
+            rate_milli: *rate_milli,
         },
         EngineReplayOperation::Pause { input } => ReplayOperation::Pause {
             input: WireInputId::from_domain(*input),
@@ -236,6 +244,16 @@ pub(super) fn status_message(
                     EngineReplayStorageLevel::Critical => fm_protocol::ReplayStorageLevel::Critical,
                     EngineReplayStorageLevel::Full => fm_protocol::ReplayStorageLevel::Full,
                 },
+                smart: storage.smart.map(|smart| ReplaySmartStatus {
+                    health: match smart.health {
+                        EngineReplaySmartHealth::Passed => ReplaySmartHealth::Passed,
+                        EngineReplaySmartHealth::Warning => ReplaySmartHealth::Warning,
+                        EngineReplaySmartHealth::Failed => ReplaySmartHealth::Failed,
+                        EngineReplaySmartHealth::Unknown => ReplaySmartHealth::Unknown,
+                    },
+                    temperature_celsius: smart.temperature_celsius,
+                    percentage_used: smart.percentage_used,
+                }),
             }),
         players: status
             .players
@@ -245,6 +263,8 @@ pub(super) fn status_message(
                 event: player.event,
                 angle: player.angle.map(WireInputId::from_domain),
                 speed: player.speed,
+                rate_milli: player.rate_milli,
+                shuttling: player.shuttling,
                 playing: player.playing,
                 frame: player.frame,
                 playlist: player

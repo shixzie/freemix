@@ -52,8 +52,9 @@ pub use fm_types::alert_rules::HealthAlertRule;
 /// A show's settings for its alert rules (Protocol 2.112): see
 /// [`fm_types::alert_rules`].
 pub use fm_types::alert_rules::{
-    AlertReading, AlertRuleDefaults, AlertRuleError, AlertRuleSetting, MAX_ALERT_HOLD_MS,
-    check_settings as check_alert_rule_settings, effective_setting as effective_alert_rule,
+    AlertReading, AlertRuleDefaults, AlertRuleError, AlertRuleSetting, AlertSeverity,
+    MAX_ALERT_HOLD_MS, check_settings as check_alert_rule_settings,
+    effective_setting as effective_alert_rule,
 };
 
 /// How serious an alert is.

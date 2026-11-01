@@ -431,6 +431,107 @@ pub enum RemoveAudioBusError {
     IncomingSend { bus: BusId, source: BusId },
 }
 
+/// Why a scoreboard document could not be stored on a project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScoreboardDocumentError {
+    UnknownInput(InputId),
+    /// The input exists but is not a title.
+    NotATitle(InputId),
+    Empty,
+    TooLarge {
+        maximum: usize,
+    },
+}
+
+impl std::fmt::Display for ScoreboardDocumentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+            Self::NotATitle(input) => write!(formatter, "input {input} is not a title"),
+            Self::Empty => formatter.write_str("scoreboard document is empty"),
+            Self::TooLarge { maximum } => {
+                write!(formatter, "scoreboard document exceeds {maximum} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ScoreboardDocumentError {}
+
+/// Why a preview-state document could not be stored on a project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreviewDocumentError {
+    UnknownInput(InputId),
+    /// The input exists but is not a title.
+    NotATitle(InputId),
+    Empty,
+    TooLarge {
+        maximum: usize,
+    },
+}
+
+impl std::fmt::Display for PreviewDocumentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+            Self::NotATitle(input) => write!(formatter, "input {input} is not a title"),
+            Self::Empty => formatter.write_str("preview document is empty"),
+            Self::TooLarge { maximum } => {
+                write!(formatter, "preview document exceeds {maximum} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PreviewDocumentError {}
+
+/// Why a crawl document could not be stored on a project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectCrawlError {
+    UnknownInput(InputId),
+    /// The input exists but is not a title.
+    NotATitle(InputId),
+    Empty,
+    TooLarge {
+        maximum: usize,
+    },
+}
+
+impl std::fmt::Display for ProjectCrawlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+            Self::NotATitle(input) => write!(formatter, "input {input} is not a title"),
+            Self::Empty => formatter.write_str("crawl document is empty"),
+            Self::TooLarge { maximum } => {
+                write!(formatter, "crawl document exceeds {maximum} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProjectCrawlError {}
+
+/// Why the PTZ preset virtual-input document could not be stored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PtzPresetsDocumentError {
+    Empty,
+    TooLarge { maximum: usize },
+}
+
+impl std::fmt::Display for PtzPresetsDocumentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("PTZ preset document is empty"),
+            Self::TooLarge { maximum } => {
+                write!(formatter, "PTZ preset document exceeds {maximum} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PtzPresetsDocumentError {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddSceneLayerError {
     UnknownScene(SceneId),
@@ -933,7 +1034,32 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(90);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(106);
+
+/// Maximum stored scoreboard documents on one project (GX-003).
+pub const MAX_SCOREBOARDS: usize = 256;
+
+/// Maximum bytes of one canonical scoreboard document (GX-003), matching
+/// `fm_titles::MAX_SCOREBOARD_DOCUMENT_BYTES`.
+pub const MAX_SCOREBOARD_DOCUMENT_BYTES: usize = 256 * 1024;
+
+/// Maximum stored preview-state documents on one project (GX-005).
+pub const MAX_PREVIEW_STATES: usize = 256;
+
+/// Maximum bytes of one canonical preview-state document (GX-005),
+/// matching `fm_data::MAX_PREVIEW_DOCUMENT_BYTES`.
+pub const MAX_PREVIEW_DOCUMENT_BYTES: usize = 256 * 1024;
+
+/// Maximum stored crawl documents on one project (GX-003).
+pub const MAX_CRAWLS: usize = 256;
+
+/// Maximum bytes of one canonical crawl document (GX-003), matching
+/// `fm_titles::MAX_CRAWL_DOCUMENT_BYTES`.
+pub const MAX_CRAWL_DOCUMENT_BYTES: usize = 256 * 1024;
+
+/// Maximum bytes of the canonical PTZ preset virtual-input document
+/// (IN-028), matching `fm_ptz::MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES`.
+pub const MAX_PTZ_PRESETS_DOCUMENT_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -983,9 +1109,15 @@ pub struct Project {
     audio_groups: crate::AudioGroups,
     aux_buses: crate::AuxBuses,
     output_aux_buses: BTreeMap<OutputId, crate::AuxBusNumber>,
+    /// The input each output's aux feed leaves out (AU-002 mix-minus, schema
+    /// 94), ascending. An entry only applies while the output hears an aux
+    /// bus.
+    output_mix_minus: BTreeMap<OutputId, InputId>,
     audio_solo_mode: crate::AudioSoloMode,
     audio_monitor_output: crate::AudioMonitorOutput,
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
+    /// The Master bus audio plugin chain (AU-006, schema 91).
+    master_audio_plugins: fm_types::audio_plugins::PluginChainState,
     fade_to_black_excluded_outputs: BTreeSet<OutputId>,
     fade_to_black_output_durations: BTreeMap<OutputId, u32>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
@@ -1002,6 +1134,21 @@ pub struct Project {
     /// The show's own settings for health alert rules, in rule order, none
     /// equal to its rule's default (RC-015, schema 85).
     alert_rules: Vec<fm_types::alert_rules::AlertRuleSetting>,
+    /// Each title input's canonical scoreboard document (GX-003, schema
+    /// 106), by input. Runtime state the engine owns.
+    scoreboards: BTreeMap<InputId, String>,
+    /// The show's named production clocks (SW-013, schema 106), in
+    /// definition order.
+    production_clocks: Vec<fm_types::ProjectClock>,
+    /// Each title input's canonical preview-state document (GX-005, schema
+    /// 106), by input. Staged data-binding values, not live title values.
+    previews: BTreeMap<InputId, String>,
+    /// Each title input's canonical crawl document (GX-003, schema 106), by
+    /// input.
+    crawls: BTreeMap<InputId, String>,
+    /// The canonical PTZ preset virtual-input document (IN-028, schema 106),
+    /// if the show defines any.
+    ptz_presets: Option<String>,
 }
 
 impl Project {
@@ -1039,9 +1186,11 @@ impl Project {
             audio_groups: crate::AudioGroups::default(),
             aux_buses: crate::AuxBuses::default(),
             output_aux_buses: BTreeMap::new(),
+            output_mix_minus: BTreeMap::new(),
             audio_solo_mode: crate::AudioSoloMode::InPlace,
             audio_monitor_output: crate::AudioMonitorOutput::default(),
             master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
+            master_audio_plugins: fm_types::audio_plugins::PluginChainState::new(),
             fade_to_black_excluded_outputs: BTreeSet::new(),
             fade_to_black_output_durations: BTreeMap::new(),
             fade_to_black_curve: fm_types::FadeToBlackCurve::Linear,
@@ -1051,6 +1200,11 @@ impl Project {
             replay: fm_types::replay::ReplaySettings::default(),
             reels: Vec::new(),
             alert_rules: Vec::new(),
+            scoreboards: BTreeMap::new(),
+            production_clocks: Vec::new(),
+            previews: BTreeMap::new(),
+            crawls: BTreeMap::new(),
+            ptz_presets: None,
         }
     }
 
@@ -1094,6 +1248,23 @@ impl Project {
     #[must_use]
     pub const fn settings(&self) -> &ProjectSettings {
         &self.settings
+    }
+
+    /// Replaces the project's frame rate, video, and audio format.
+    ///
+    /// The replacement is validated on a clone and applied only when the
+    /// whole project stays valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns the project's validation errors, leaving the project
+    /// unchanged.
+    pub fn set_settings(&mut self, settings: ProjectSettings) -> Result<(), Vec<ValidationError>> {
+        let mut candidate = self.clone();
+        candidate.settings = settings;
+        candidate.validate()?;
+        self.settings = candidate.settings;
+        Ok(())
     }
 
     #[must_use]
@@ -1215,6 +1386,60 @@ impl Project {
         Ok(())
     }
 
+    /// `input`'s audio plugin chain (AU-006, schema 91), or `None` when the
+    /// input is not part of this project.
+    #[must_use]
+    pub fn input_audio_plugins(
+        &self,
+        input: InputId,
+    ) -> Option<&fm_types::audio_plugins::PluginChainState> {
+        self.input_audio_strips
+            .iter()
+            .find(|strip| strip.input == input)
+            .map(|strip| &strip.plugins)
+    }
+
+    /// Replaces `input`'s audio plugin chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::UnknownInput`] or
+    /// [`SetAudioMixerError::Plugins`]; nothing changes on error.
+    pub fn set_input_audio_plugins(
+        &mut self,
+        input: InputId,
+        chain: fm_types::audio_plugins::PluginChainState,
+    ) -> Result<(), SetAudioMixerError> {
+        chain.validate().map_err(SetAudioMixerError::Plugins)?;
+        let strip = self
+            .input_audio_strips
+            .iter_mut()
+            .find(|strip| strip.input == input)
+            .ok_or(SetAudioMixerError::UnknownInput(input))?;
+        strip.plugins = chain;
+        Ok(())
+    }
+
+    /// The Master bus audio plugin chain (AU-006, schema 91).
+    #[must_use]
+    pub const fn master_audio_plugins(&self) -> &fm_types::audio_plugins::PluginChainState {
+        &self.master_audio_plugins
+    }
+
+    /// Replaces the Master bus audio plugin chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::Plugins`]; nothing changes on error.
+    pub fn set_master_audio_plugins(
+        &mut self,
+        chain: fm_types::audio_plugins::PluginChainState,
+    ) -> Result<(), SetAudioMixerError> {
+        chain.validate().map_err(SetAudioMixerError::Plugins)?;
+        self.master_audio_plugins = chain;
+        Ok(())
+    }
+
     /// Assigns `input`'s strip to `group`, or to none.
     ///
     /// Returns `false` when `input` is not part of this project.
@@ -1324,6 +1549,10 @@ impl Project {
         value: crate::AuxBus,
     ) -> Result<(), SetAudioMixerError> {
         crate::validate_audio_group_name(&value.name).map_err(SetAudioMixerError::Label)?;
+        if let Some(device) = &value.device {
+            crate::validate_audio_monitor_device(device)
+                .map_err(SetAudioMixerError::MonitorDevice)?;
+        }
         self.aux_buses.set(bus, value);
         Ok(())
     }
@@ -1331,6 +1560,61 @@ impl Project {
     /// Replaces every aux bus; names are reported by [`Self::validate`].
     pub fn restore_aux_buses(&mut self, buses: crate::AuxBuses) {
         self.aux_buses = buses;
+    }
+
+    /// The DSP chain of aux bus `bus` (AU-002).
+    #[must_use]
+    pub const fn aux_bus_dsp(&self, bus: crate::AuxBusNumber) -> &fm_types::strip_dsp::StripDsp {
+        &self.aux_buses.get(bus).dsp
+    }
+
+    /// Restores aux bus `bus`'s DSP chain (persistence and replay).
+    pub fn set_aux_bus_dsp(
+        &mut self,
+        bus: crate::AuxBusNumber,
+        dsp: fm_types::strip_dsp::StripDsp,
+    ) {
+        self.aux_buses.set_dsp(bus, dsp);
+    }
+
+    /// The local output device aux bus `bus` plays on, or `None`.
+    #[must_use]
+    pub fn aux_bus_device(&self, bus: crate::AuxBusNumber) -> Option<&str> {
+        self.aux_buses.get(bus).device.as_deref()
+    }
+
+    /// Whether aux bus `bus` is published as an OMT audio sender (AU-002).
+    #[must_use]
+    pub const fn aux_bus_omt(&self, bus: crate::AuxBusNumber) -> bool {
+        self.aux_buses.get(bus).omt
+    }
+
+    /// Publishes aux bus `bus` as an OMT audio sender, or stops it.
+    pub fn set_aux_bus_omt(&mut self, bus: crate::AuxBusNumber, omt: bool) {
+        let mut value = self.aux_buses.get(bus).clone();
+        value.omt = omt;
+        self.aux_buses.set(bus, value);
+    }
+
+    /// Sets aux bus `bus`'s local output device, or `None` for meter-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::MonitorDevice`] for an unusable name;
+    /// nothing changes.
+    pub fn set_aux_bus_device(
+        &mut self,
+        bus: crate::AuxBusNumber,
+        device: Option<String>,
+    ) -> Result<(), SetAudioMixerError> {
+        if let Some(device) = &device {
+            crate::validate_audio_monitor_device(device)
+                .map_err(SetAudioMixerError::MonitorDevice)?;
+        }
+        let mut value = self.aux_buses.get(bus).clone();
+        value.device = device;
+        self.aux_buses.set(bus, value);
+        Ok(())
     }
 
     /// The outputs that hear an aux bus instead of Master (AU-002, schema
@@ -1367,6 +1651,46 @@ impl Project {
     /// [`Self::validate`].
     pub fn restore_output_aux_buses(&mut self, buses: BTreeMap<OutputId, crate::AuxBusNumber>) {
         self.output_aux_buses = buses;
+    }
+
+    /// The input each output's aux feed leaves out (AU-002 mix-minus, schema
+    /// 94), ascending. An entry applies only while the output hears an aux
+    /// bus instead of Master.
+    #[must_use]
+    pub const fn output_mix_minus(&self) -> &BTreeMap<OutputId, InputId> {
+        &self.output_mix_minus
+    }
+
+    /// The input `output`'s aux feed leaves out, or `None` for a full mix.
+    #[must_use]
+    pub fn output_mix_minus_input(&self, output: OutputId) -> Option<InputId> {
+        self.output_mix_minus.get(&output).copied()
+    }
+
+    /// Makes `output`'s aux feed leave `input` out, or nothing for `None`.
+    /// Returns `false`, changing nothing, for an unknown output or input.
+    pub fn set_output_mix_minus(&mut self, output: OutputId, input: Option<InputId>) -> bool {
+        if !self.outputs.iter().any(|candidate| candidate.id == output) {
+            return false;
+        }
+        match input {
+            Some(input) => {
+                if !self.inputs.iter().any(|candidate| candidate.id == input) {
+                    return false;
+                }
+                self.output_mix_minus.insert(output, input);
+            }
+            None => {
+                self.output_mix_minus.remove(&output);
+            }
+        }
+        true
+    }
+
+    /// Replaces every output's mix-minus feed; unknown outputs and inputs
+    /// are reported by [`Self::validate`].
+    pub fn restore_output_mix_minus(&mut self, inputs: BTreeMap<OutputId, InputId>) {
+        self.output_mix_minus = inputs;
     }
 
     /// The project outputs Fade to Black leaves live (SW-004, schema 39).
@@ -1749,6 +2073,250 @@ impl Project {
         self.title_timelines = timelines;
     }
 
+    /// Every title input's canonical scoreboard document (GX-003, schema
+    /// 106), ascending by input. Runtime state the engine owns.
+    #[must_use]
+    pub const fn scoreboard_documents(&self) -> &BTreeMap<InputId, String> {
+        &self.scoreboards
+    }
+
+    /// One title input's canonical scoreboard document, if stored.
+    #[must_use]
+    pub fn scoreboard_document(&self, input: InputId) -> Option<&str> {
+        self.scoreboards.get(&input).map(String::as_str)
+    }
+
+    /// Stores `document` as `input`'s scoreboard, replacing any previous one.
+    ///
+    /// The document is parsed and canonicalized by the persistence layer;
+    /// this stores the text only, checking the input and the byte bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScoreboardDocumentError::UnknownInput`] when `input` does
+    /// not exist, [`ScoreboardDocumentError::NotATitle`] when it is not a
+    /// title input, and [`ScoreboardDocumentError::TooLarge`] past the
+    /// document bound. Nothing changes on error.
+    pub fn set_scoreboard_document(
+        &mut self,
+        input: InputId,
+        document: String,
+    ) -> Result<(), ScoreboardDocumentError> {
+        let Some(candidate) = self.inputs.iter().find(|candidate| candidate.id == input) else {
+            return Err(ScoreboardDocumentError::UnknownInput(input));
+        };
+        if !matches!(candidate.kind, InputKind::Title(_)) {
+            return Err(ScoreboardDocumentError::NotATitle(input));
+        }
+        if document.len() > MAX_SCOREBOARD_DOCUMENT_BYTES {
+            return Err(ScoreboardDocumentError::TooLarge {
+                maximum: MAX_SCOREBOARD_DOCUMENT_BYTES,
+            });
+        }
+        if document.is_empty() {
+            return Err(ScoreboardDocumentError::Empty);
+        }
+        self.scoreboards.insert(input, document);
+        Ok(())
+    }
+
+    /// Removes `input`'s scoreboard, returning the stored document.
+    pub fn remove_scoreboard_document(&mut self, input: InputId) -> Option<String> {
+        self.scoreboards.remove(&input)
+    }
+
+    /// Replaces every scoreboard document without checking them;
+    /// [`Project::validate`] reports one on a non-title input or past the
+    /// bound. Documents are parsed by the persistence layer.
+    pub fn restore_scoreboards(&mut self, documents: BTreeMap<InputId, String>) {
+        self.scoreboards = documents;
+    }
+
+    /// The show's named production clocks (SW-013, schema 106), in
+    /// definition order.
+    #[must_use]
+    pub fn production_clocks(&self) -> &[fm_types::ProjectClock] {
+        &self.production_clocks
+    }
+
+    /// Replaces the production clock definitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fm_types::ProjectClockError`] for too many clocks, an
+    /// invalid or duplicate name, an out-of-range value, a countdown limit,
+    /// or an invalid format. Nothing changes on error.
+    pub fn set_production_clocks(
+        &mut self,
+        clocks: Vec<fm_types::ProjectClock>,
+    ) -> Result<(), fm_types::ProjectClockError> {
+        fm_types::validate_project_clocks(&clocks)?;
+        self.production_clocks = clocks;
+        Ok(())
+    }
+
+    /// Replaces the production clocks without checking them;
+    /// [`Project::validate`] reports invalid definitions.
+    pub fn restore_production_clocks(&mut self, clocks: Vec<fm_types::ProjectClock>) {
+        self.production_clocks = clocks;
+    }
+
+    /// Every title input's canonical preview-state document (GX-005, schema
+    /// 106), ascending by input. Staged data-binding values, not live title
+    /// values.
+    #[must_use]
+    pub const fn preview_documents(&self) -> &BTreeMap<InputId, String> {
+        &self.previews
+    }
+
+    /// One title input's canonical preview-state document, if stored.
+    #[must_use]
+    pub fn preview_document(&self, input: InputId) -> Option<&str> {
+        self.previews.get(&input).map(String::as_str)
+    }
+
+    /// Stores `document` as `input`'s preview state, replacing any previous
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewDocumentError::UnknownInput`] when `input` does not
+    /// exist, [`PreviewDocumentError::NotATitle`] when it is not a title
+    /// input, and [`PreviewDocumentError::TooLarge`] past the document
+    /// bound. Nothing changes on error.
+    pub fn set_preview_document(
+        &mut self,
+        input: InputId,
+        document: String,
+    ) -> Result<(), PreviewDocumentError> {
+        let Some(candidate) = self.inputs.iter().find(|candidate| candidate.id == input) else {
+            return Err(PreviewDocumentError::UnknownInput(input));
+        };
+        if !matches!(candidate.kind, InputKind::Title(_)) {
+            return Err(PreviewDocumentError::NotATitle(input));
+        }
+        if document.len() > MAX_PREVIEW_DOCUMENT_BYTES {
+            return Err(PreviewDocumentError::TooLarge {
+                maximum: MAX_PREVIEW_DOCUMENT_BYTES,
+            });
+        }
+        if document.is_empty() {
+            return Err(PreviewDocumentError::Empty);
+        }
+        self.previews.insert(input, document);
+        Ok(())
+    }
+
+    /// Removes `input`'s preview state, returning the stored document.
+    pub fn remove_preview_document(&mut self, input: InputId) -> Option<String> {
+        self.previews.remove(&input)
+    }
+
+    /// Replaces every preview-state document without checking them;
+    /// [`Project::validate`] reports one on a non-title input or past the
+    /// bound. Documents are parsed by the persistence layer.
+    pub fn restore_previews(&mut self, documents: BTreeMap<InputId, String>) {
+        self.previews = documents;
+    }
+
+    /// Every title input's canonical crawl document (GX-003, schema 106),
+    /// ascending by input.
+    #[must_use]
+    pub const fn crawl_documents(&self) -> &BTreeMap<InputId, String> {
+        &self.crawls
+    }
+
+    /// One title input's canonical crawl document, if stored.
+    #[must_use]
+    pub fn crawl_document(&self, input: InputId) -> Option<&str> {
+        self.crawls.get(&input).map(String::as_str)
+    }
+
+    /// Stores `document` as `input`'s crawl, replacing any previous one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectCrawlError::UnknownInput`] when `input` does not
+    /// exist, [`ProjectCrawlError::NotATitle`] when it is not a title input,
+    /// and [`ProjectCrawlError::TooLarge`] past the document bound. Nothing
+    /// changes on error.
+    pub fn set_crawl_document(
+        &mut self,
+        input: InputId,
+        document: String,
+    ) -> Result<(), ProjectCrawlError> {
+        let Some(candidate) = self.inputs.iter().find(|candidate| candidate.id == input) else {
+            return Err(ProjectCrawlError::UnknownInput(input));
+        };
+        if !matches!(candidate.kind, InputKind::Title(_)) {
+            return Err(ProjectCrawlError::NotATitle(input));
+        }
+        if document.len() > MAX_CRAWL_DOCUMENT_BYTES {
+            return Err(ProjectCrawlError::TooLarge {
+                maximum: MAX_CRAWL_DOCUMENT_BYTES,
+            });
+        }
+        if document.is_empty() {
+            return Err(ProjectCrawlError::Empty);
+        }
+        self.crawls.insert(input, document);
+        Ok(())
+    }
+
+    /// Removes `input`'s crawl, returning the stored document.
+    pub fn remove_crawl_document(&mut self, input: InputId) -> Option<String> {
+        self.crawls.remove(&input)
+    }
+
+    /// Replaces every crawl document without checking them;
+    /// [`Project::validate`] reports one on a non-title input or past the
+    /// bound. Documents are parsed by the persistence layer.
+    pub fn restore_crawls(&mut self, documents: BTreeMap<InputId, String>) {
+        self.crawls = documents;
+    }
+
+    /// The canonical PTZ preset virtual-input document (IN-028, schema 106),
+    /// if the show defines any.
+    #[must_use]
+    pub fn ptz_presets_document(&self) -> Option<&str> {
+        self.ptz_presets.as_deref()
+    }
+
+    /// Stores the canonical PTZ preset virtual-input document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtzPresetsDocumentError::Empty`] for an empty document and
+    /// [`PtzPresetsDocumentError::TooLarge`] past the bound. Nothing changes
+    /// on error.
+    pub fn set_ptz_presets_document(
+        &mut self,
+        document: String,
+    ) -> Result<(), PtzPresetsDocumentError> {
+        if document.is_empty() {
+            return Err(PtzPresetsDocumentError::Empty);
+        }
+        if document.len() > MAX_PTZ_PRESETS_DOCUMENT_BYTES {
+            return Err(PtzPresetsDocumentError::TooLarge {
+                maximum: MAX_PTZ_PRESETS_DOCUMENT_BYTES,
+            });
+        }
+        self.ptz_presets = Some(document);
+        Ok(())
+    }
+
+    /// Removes the PTZ preset virtual-input document.
+    pub fn remove_ptz_presets_document(&mut self) -> Option<String> {
+        self.ptz_presets.take()
+    }
+
+    /// Replaces the PTZ preset virtual-input document without checking it;
+    /// [`Project::validate`] reports one past the bound. The persistence
+    /// layer parses it.
+    pub fn restore_ptz_presets(&mut self, document: Option<String>) {
+        self.ptz_presets = document;
+    }
+
     /// Every screen capture input's desktop restore token (IN-011, schema
     /// 72), by input: what a Wayland desktop's screen sharing dialog last
     /// granted, so the same screen or window is shared again without
@@ -2066,6 +2634,7 @@ impl Project {
             label: String::new(),
             group: None,
             dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
+            plugins: fm_types::audio_plugins::PluginChainState::new(),
         });
         self.inputs.push(input);
     }
@@ -2213,6 +2782,9 @@ impl Project {
         self.input_lifecycle.remove(&input);
         self.media_lists.remove(&input);
         self.title_timelines.remove(&input);
+        self.scoreboards.remove(&input);
+        self.previews.remove(&input);
+        self.crawls.remove(&input);
         self.screen_capture_restore_tokens.remove(&input);
         Ok(())
     }
@@ -4099,6 +4671,7 @@ impl Project {
         self.fade_to_black_excluded_outputs.remove(&output);
         self.fade_to_black_output_durations.remove(&output);
         self.output_aux_buses.remove(&output);
+        self.output_mix_minus.remove(&output);
         Ok(())
     }
 
@@ -4472,7 +5045,9 @@ impl ProjectSettings {
     pub const MAX_VIDEO_HEIGHT: u32 = 8_192;
     pub const MIN_AUDIO_SAMPLE_RATE_HZ: u32 = 8_000;
     pub const MAX_AUDIO_SAMPLE_RATE_HZ: u32 = 384_000;
-    pub const MAX_AUDIO_CHANNELS: usize = 8;
+    /// Widest program audio layout: every channel [`ChannelLayout`] holds
+    /// (1 through 16, including 7.1 and 16 discrete channels).
+    pub const MAX_AUDIO_CHANNELS: usize = 16;
 
     #[must_use]
     pub fn new(frame_rate: FrameRate, output: OutputFormat) -> Self {
@@ -4624,8 +5199,9 @@ pub struct InputAudioStripState {
     pub muted: bool,
     pub soloed: bool,
     pub follow_video: bool,
-    /// Master and the aux buses the strip feeds (AU-002, schema 90).
-    pub buses: crate::AudioBusMask,
+    /// Master and the aux buses the strip feeds, with each send's level and
+    /// tap point (AU-002, schema 92).
+    pub sends: crate::AudioSends,
 }
 
 impl Default for InputAudioStripState {
@@ -4638,7 +5214,7 @@ impl Default for InputAudioStripState {
             muted: false,
             soloed: false,
             follow_video: true,
-            buses: crate::AudioBusMask::MASTER,
+            sends: crate::AudioSends::MASTER,
         }
     }
 }
@@ -4654,6 +5230,8 @@ pub struct InputAudioStrip {
     pub group: Option<crate::AudioGroupNumber>,
     /// The strip's DSP chain (schema 65, AU-005).
     pub dsp: fm_types::strip_dsp::StripDsp,
+    /// The strip's audio plugin chain (schema 91, AU-006).
+    pub plugins: fm_types::audio_plugins::PluginChainState,
 }
 
 /// Why a mixer label, group, or group name edit is refused.
@@ -4667,6 +5245,8 @@ pub enum SetAudioMixerError {
     MonitorDevice(crate::AudioMonitorDeviceError),
     /// A strip DSP chain value is out of range (AU-005).
     Dsp(fm_types::strip_dsp::StripDspError),
+    /// An audio plugin chain value is out of range (AU-006).
+    Plugins(fm_types::audio_plugins::PluginChainStateError),
 }
 
 impl std::fmt::Display for SetAudioMixerError {
@@ -4679,6 +5259,7 @@ impl std::fmt::Display for SetAudioMixerError {
             }
             Self::MonitorDevice(error) => error.fmt(formatter),
             Self::Dsp(error) => error.fmt(formatter),
+            Self::Plugins(error) => error.fmt(formatter),
         }
     }
 }
@@ -5349,6 +5930,10 @@ pub struct CropRect {
     pub height: u32,
 }
 
+/// The largest source frame an input crop may address, in pixels on either
+/// side (a source crop is in the source's own space, not the project's).
+pub const MAX_SOURCE_CROP_SIDE: u32 = 16_384;
+
 impl CropRect {
     #[must_use]
     pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
@@ -5358,6 +5943,23 @@ impl CropRect {
             width,
             height,
         }
+    }
+
+    /// Whether this crop is nonempty and lies inside the largest source frame
+    /// the show accepts (a source crop is in the source's own pixels, not the
+    /// project's).
+    #[must_use]
+    pub fn fits_source(self) -> bool {
+        self.width != 0
+            && self.height != 0
+            && self
+                .x
+                .checked_add(self.width)
+                .is_some_and(|right| right <= MAX_SOURCE_CROP_SIDE)
+            && self
+                .y
+                .checked_add(self.height)
+                .is_some_and(|bottom| bottom <= MAX_SOURCE_CROP_SIDE)
     }
 }
 

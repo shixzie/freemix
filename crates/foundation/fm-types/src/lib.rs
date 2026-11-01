@@ -4,6 +4,8 @@ pub mod alert_rules;
 mod audio;
 pub mod audio_bus;
 pub mod audio_output;
+pub mod audio_plugins;
+mod base64url;
 pub mod capture;
 mod color;
 pub mod display;
@@ -15,6 +17,7 @@ pub mod media_list_files;
 mod memory;
 pub mod network_stream;
 pub mod paged;
+pub mod production_clock;
 pub mod reel;
 pub mod replay;
 mod scaling;
@@ -39,6 +42,12 @@ pub use garbage_matte::{
 };
 pub use id::{BusId, InputId, OutputId, ProjectId, SceneId};
 pub use memory::MemoryDomain;
+pub use production_clock::{
+    MAX_PROJECT_CLOCK_NAME_LEN, MAX_PROJECT_CLOCK_NANOS, MAX_PROJECT_CLOCK_ZONE_LEN,
+    MAX_PROJECT_CLOCKS, ProjectClock, ProjectClockDirection, ProjectClockError, ProjectClockKind,
+    ProjectClockOverrun, ProjectDurationFormat, ProjectSessionKind, ProjectTimeFormat,
+    validate_project_clocks,
+};
 pub use scaling::{OutputScaling, ParseOutputScalingError, ScaledViewport};
 pub use target::{InputTarget, TargetBindings};
 pub use time::{

@@ -213,6 +213,53 @@ impl SampleDelay {
         Ok(())
     }
 
+    /// Changes the delay while preserving the retained history.
+    ///
+    /// The newest `min(old, new)` samples per channel carry over. Growing
+    /// the delay prepends the missing older samples as silence, because they
+    /// were never retained; shrinking it keeps the most recent samples. The
+    /// next block therefore continues the delay line instead of restarting
+    /// with full leading silence. Setting the existing delay is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SampleDelayError::DelayOutOfRange`] above
+    /// [`MAX_SAMPLE_DELAY_SAMPLES`], or an allocation error, before changing
+    /// the delay.
+    pub fn set_delay_samples(&mut self, delay_samples: usize) -> Result<(), SampleDelayError> {
+        if delay_samples == self.delay_samples {
+            return Ok(());
+        }
+        let capacity = validated_capacity(self.channels, delay_samples)?;
+        if delay_samples == 0 {
+            self.delay_samples = 0;
+            self.cursor = 0;
+            self.ring.clear();
+            self.version.rewrote();
+            return Ok(());
+        }
+        let mut ring = Vec::new();
+        ring.try_reserve_exact(capacity)
+            .map_err(|_| SampleDelayError::AllocationFailed { samples: capacity })?;
+        ring.resize(capacity, 0.0);
+        let keep = self.delay_samples.min(delay_samples);
+        let silence = delay_samples - keep;
+        for channel in 0..self.channels {
+            let old_base = channel * self.delay_samples;
+            let new_base = channel * delay_samples;
+            for offset in 0..keep {
+                let old_offset =
+                    (self.cursor + self.delay_samples - keep + offset) % self.delay_samples;
+                ring[new_base + silence + offset] = self.ring[old_base + old_offset];
+            }
+        }
+        self.delay_samples = delay_samples;
+        self.cursor = 0;
+        self.ring = ring;
+        self.version.rewrote();
+        Ok(())
+    }
+
     /// Clears retained samples and returns to leading-silence state.
     pub fn reset(&mut self) {
         self.ring.fill(0.0);
@@ -346,7 +393,7 @@ fn validate_plane_count(
 
 #[cfg(test)]
 mod tests {
-    use super::SampleDelay;
+    use super::{MAX_SAMPLE_DELAY_SAMPLES, SampleDelay, SampleDelayError};
 
     fn preview_and_commit(delay: &mut SampleDelay, input: &[f32]) -> Vec<f32> {
         let output = (0..input.len())
@@ -386,5 +433,79 @@ mod tests {
         actual.extend(preview_and_commit(&mut partitioned, &input[4..]));
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_longer_delay_keeps_the_retained_samples_and_prepends_silence() {
+        let mut delay = SampleDelay::new(1, 2).unwrap();
+        assert_eq!(
+            preview_and_commit(&mut delay, &[1.0, 2.0, 3.0, 4.0]),
+            [0.0, 0.0, 1.0, 2.0]
+        );
+        delay.set_delay_samples(3).unwrap();
+        assert_eq!(delay.delay_samples(), 3);
+        // Times 5 and 6: the three-sample delay wants inputs from times 2
+        // and 3. Time 2 was not retained, so it is silence; time 3 is 3.0.
+        assert_eq!(preview_and_commit(&mut delay, &[5.0, 6.0]), [0.0, 3.0]);
+    }
+
+    #[test]
+    fn a_shorter_delay_keeps_the_most_recent_samples() {
+        let mut delay = SampleDelay::new(1, 3).unwrap();
+        assert_eq!(
+            preview_and_commit(&mut delay, &[1.0, 2.0, 3.0, 4.0]),
+            [0.0, 0.0, 0.0, 1.0]
+        );
+        delay.set_delay_samples(2).unwrap();
+        assert_eq!(delay.delay_samples(), 2);
+        // Times 5 and 6 want inputs from times 3 and 4, both retained.
+        assert_eq!(preview_and_commit(&mut delay, &[5.0, 6.0]), [3.0, 4.0]);
+    }
+
+    #[test]
+    fn changing_the_delay_is_transactional_at_the_bound() {
+        let mut delay = SampleDelay::new(1, 2).unwrap();
+        preview_and_commit(&mut delay, &[1.0, 2.0, 3.0]);
+        assert_eq!(
+            delay.set_delay_samples(MAX_SAMPLE_DELAY_SAMPLES + 1),
+            Err(SampleDelayError::DelayOutOfRange {
+                actual: MAX_SAMPLE_DELAY_SAMPLES + 1,
+                maximum: MAX_SAMPLE_DELAY_SAMPLES,
+            })
+        );
+        assert_eq!(delay.delay_samples(), 2);
+        assert_eq!(preview_and_commit(&mut delay, &[4.0]), [2.0]);
+    }
+
+    #[test]
+    fn zeroing_the_delay_discards_history_and_growing_restarts_with_silence() {
+        let mut delay = SampleDelay::new(1, 2).unwrap();
+        assert_eq!(preview_and_commit(&mut delay, &[1.0, 2.0]), [0.0, 0.0]);
+        delay.set_delay_samples(0).unwrap();
+        assert_eq!(preview_and_commit(&mut delay, &[3.0, 4.0]), [3.0, 4.0]);
+        delay.set_delay_samples(1).unwrap();
+        assert_eq!(preview_and_commit(&mut delay, &[5.0]), [0.0]);
+    }
+
+    #[test]
+    fn changing_the_delay_preserves_every_channel() {
+        let mut delay = SampleDelay::new(2, 1).unwrap();
+        let left = [1.0_f32, 2.0];
+        let right = [10.0_f32, 20.0];
+        let mut out_left = [0.0_f32];
+        let mut out_right = [0.0_f32];
+        {
+            let input: [&[f32]; 2] = [&left[..1], &right[..1]];
+            let mut output: [&mut [f32]; 2] = [&mut out_left[..], &mut out_right[..]];
+            delay.process_into(&input, &mut output).unwrap();
+        }
+        delay.set_delay_samples(2).unwrap();
+        {
+            let input: [&[f32]; 2] = [&left[1..], &right[1..]];
+            let mut output: [&mut [f32]; 2] = [&mut out_left[..], &mut out_right[..]];
+            delay.process_into(&input, &mut output).unwrap();
+        }
+        assert_eq!(out_left[0].to_bits(), 0.0_f32.to_bits());
+        assert_eq!(out_right[0].to_bits(), 0.0_f32.to_bits());
     }
 }

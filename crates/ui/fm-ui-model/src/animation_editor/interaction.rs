@@ -905,6 +905,157 @@ impl<T: Copy + Ord> AnimDocument<T> {
         }
     }
 
+    /// Applies a built-in or user preset to every target in `targets` as one
+    /// undo step, so one pick can animate several selected elements. The
+    /// phase grows once to `duration` when it is shorter.
+    ///
+    /// # Errors
+    ///
+    /// [`AnimEditorError::UnknownTarget`] for any target, a limit, or
+    /// [`AnimEditorError::DragActive`].
+    pub fn apply_preset_source_to_targets(
+        &mut self,
+        targets: &[T],
+        phase: Phase,
+        preset: &PresetSource,
+        duration: u32,
+        properties: &[Property],
+    ) -> Result<(), AnimEditorError<T>> {
+        match preset {
+            PresetSource::BuiltIn(preset) => {
+                self.apply_preset_to_targets(targets, phase, *preset, duration)
+            }
+            PresetSource::User { motion, .. } => {
+                self.apply_motion_to_targets(targets, phase, motion, duration, properties)
+            }
+        }
+    }
+
+    /// Applies built-in `preset` to every target in `targets` as one undo
+    /// step; see [`Self::apply_preset`].
+    ///
+    /// # Errors
+    ///
+    /// [`AnimEditorError::UnknownTarget`] for any target, a limit, or
+    /// [`AnimEditorError::DragActive`].
+    pub fn apply_preset_to_targets(
+        &mut self,
+        targets: &[T],
+        phase: Phase,
+        preset: AnimationPreset,
+        duration: u32,
+    ) -> Result<(), AnimEditorError<T>> {
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let mut geometries = Vec::with_capacity(targets.len());
+        for target in targets {
+            let outline = self
+                .target(*target)
+                .ok_or(AnimEditorError::UnknownTarget(*target))?;
+            geometries.push((
+                *target,
+                PresetGeometry {
+                    x: outline.bounds.x,
+                    y: outline.bounds.y,
+                    width: outline.bounds.width,
+                    height: outline.bounds.height,
+                    canvas_width: self.canvas.0,
+                    canvas_height: self.canvas.1,
+                },
+            ));
+        }
+        self.ensure_idle()?;
+        let shown = self.phase;
+        self.phase = phase;
+        let result = self.edit(|clip, _| {
+            if clip.phase_frames(phase) < duration {
+                clip.set_phase_frames_keeping_keys(phase, duration)?;
+            }
+            let mut keys = KeySelection::new();
+            for (target, geometry) in &geometries {
+                clip.apply_preset(*target, phase, preset, duration, *geometry)?;
+                for (property, track_keys) in preset.keys(phase, duration, *geometry) {
+                    for key in track_keys {
+                        keys.insert(TrackKey::new(*target, phase, property), key.frame);
+                    }
+                }
+            }
+            Ok(keys)
+        });
+        if result.is_err() {
+            self.phase = shown;
+        } else if shown != phase {
+            self.transport.playing = false;
+        }
+        result
+    }
+
+    /// Applies user `motion` to every target in `targets` as one undo step;
+    /// see [`Self::apply_motion`].
+    ///
+    /// # Errors
+    ///
+    /// [`AnimEditorError::UnknownTarget`] for any target, a retime collision,
+    /// a limit, or [`AnimEditorError::DragActive`].
+    pub fn apply_motion_to_targets(
+        &mut self,
+        targets: &[T],
+        phase: Phase,
+        motion: &PhaseMotion,
+        duration: u32,
+        properties: &[Property],
+    ) -> Result<(), AnimEditorError<T>> {
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let mut boxes = Vec::with_capacity(targets.len());
+        for target in targets {
+            let outline = self
+                .target(*target)
+                .ok_or(AnimEditorError::UnknownTarget(*target))?;
+            boxes.push((*target, outline.crop_box()));
+        }
+        self.ensure_idle()?;
+        let shown = self.phase;
+        self.phase = phase;
+        let result = self.edit(|clip, _| {
+            let mut keys = KeySelection::new();
+            for (target, (width, height)) in &boxes {
+                clip.apply_motion(
+                    *target,
+                    phase,
+                    motion,
+                    duration,
+                    *width,
+                    *height,
+                    |property| properties.contains(&property),
+                )?;
+                for property in motion
+                    .properties()
+                    .filter(|property| properties.contains(property))
+                {
+                    let track = TrackKey::new(*target, phase, property);
+                    for key in clip
+                        .track(track)
+                        .map(|track| &track.keys)
+                        .into_iter()
+                        .flatten()
+                    {
+                        keys.insert(track, key.frame);
+                    }
+                }
+            }
+            Ok(keys)
+        });
+        if result.is_err() {
+            self.phase = shown;
+        } else if shown != phase {
+            self.transport.playing = false;
+        }
+        result
+    }
+
     /// `target`'s tracks in `phase` of the draft as a motion measured
     /// against its outline, for saving as a user preset.
     ///

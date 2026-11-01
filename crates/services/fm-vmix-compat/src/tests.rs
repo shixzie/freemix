@@ -92,6 +92,9 @@ fn every_mapped_command_has_stable_output() {
             "Function=Fade&Duration=1000",
             Translation::Compat(CompatIntent::Fade {
                 input: None,
+                effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                    fm_protocol::AutoTransitionKind::Fade,
+                ),
                 duration_millis: 1000,
             }),
         ),
@@ -99,6 +102,9 @@ fn every_mapped_command_has_stable_output() {
             "Function=Fade&Duration=250&Input=Camera+%26+One",
             Translation::Compat(CompatIntent::Fade {
                 input: Some(id(1)),
+                effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                    fm_protocol::AutoTransitionKind::Fade,
+                ),
                 duration_millis: 250,
             }),
         ),
@@ -158,7 +164,11 @@ fn xml_golden_is_deterministic_and_escaped() {
             "</inputs><overlays><overlay number=\"1\"></overlay><overlay number=\"2\">3</overlay>",
             "<overlay number=\"3\"></overlay><overlay number=\"4\"></overlay><overlay number=\"5\"></overlay>",
             "<overlay number=\"6\"></overlay><overlay number=\"7\"></overlay><overlay number=\"8\"></overlay>",
-            "</overlays><preview>2</preview><active>1</active><recording>True</recording><streaming>False</streaming></vmix>"
+            "</overlays><outputs><output number=\"1\"></output><output number=\"2\"></output>",
+            "<output number=\"3\"></output><output number=\"4\"></output></outputs>",
+            "<transitions><transition number=\"1\"><effect>fade</effect>",
+            "<duration_millis>500</duration_millis></transition></transitions>",
+            "<preview>2</preview><active>1</active><recording>True</recording><streaming>False</streaming></vmix>"
         )
     );
 }
@@ -184,16 +194,59 @@ fn malformed_unknown_and_unsupported_are_distinct() {
         Err(ParseError::UnknownFunction("NoSuchFunction".to_owned()))
     );
     assert_eq!(
-        parse_http_query("Function=AudioOn&Input=1", &state),
+        parse_http_query("Function=AddInput&Value=file.mp4", &state),
         Ok(Translation::Unsupported(UnsupportedReport {
-            function: "AudioOn".to_owned(),
-            reason: "the function has no semantics in the current compatibility core",
+            function: "AddInput".to_owned(),
+            reason: "only network stream URLs are represented",
         }))
     );
-    assert!(matches!(
+    assert_eq!(
         parse_http_query("Function=Fade", &state),
-        Ok(Translation::Unsupported(_))
-    ));
+        Ok(Translation::Compat(CompatIntent::Fade {
+            input: None,
+            effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Fade,
+            ),
+            duration_millis: 500,
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetTransitionDuration&Value=1200", &state),
+        Ok(Translation::Compat(CompatIntent::SetTransitionDuration {
+            millis: 1200,
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetTransitionEffect&Value=Zoom", &state),
+        Ok(Translation::Compat(CompatIntent::SetTransitionEffect {
+            effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Zoom,
+            ),
+        }))
+    );
+    let mut zoomed = state.clone();
+    zoomed.transition_effect =
+        fm_protocol::TransitionFavoriteEffect::Mix(fm_protocol::AutoTransitionKind::Zoom);
+    assert_eq!(
+        parse_http_query("Function=Fade&Duration=300", &zoomed),
+        Ok(Translation::Compat(CompatIntent::Fade {
+            input: None,
+            effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Zoom,
+            ),
+            duration_millis: 300,
+        }))
+    );
+    let mut cut = state.clone();
+    cut.transition_effect = fm_protocol::TransitionFavoriteEffect::Cut;
+    assert_eq!(
+        parse_http_query("Function=Fade&Input=2", &cut),
+        Ok(Translation::Compat(CompatIntent::CutTo { input: id(2) }))
+    );
+    assert_eq!(
+        parse_http_query("Function=Fade", &cut),
+        Ok(Translation::Protocol(CommandPayload::Cut))
+    );
     assert_eq!(
         parse_http_query("Function=Cut&Function=Fade", &state),
         Err(ParseError::DuplicateParameter("Function".to_owned()))
@@ -298,4 +351,652 @@ fn state_rejects_invalid_references_and_input_bounds() {
         CompatState::new("29", inputs, id(1), id(2)),
         Err(StateError::TooManyInputs)
     );
+}
+
+#[test]
+fn list_navigation_verbs_translate_to_page_navigation() {
+    let state = state();
+    for (function, navigation) in [
+        ("NextItem", fm_protocol::PagedNavigation::Next),
+        ("NextPicture", fm_protocol::PagedNavigation::Next),
+        ("PreviousItem", fm_protocol::PagedNavigation::Previous),
+        ("PreviousPicture", fm_protocol::PagedNavigation::Previous),
+    ] {
+        assert_eq!(
+            parse_http_query(&format!("Function={function}&Input=2"), &state),
+            Ok(Translation::Protocol(CommandPayload::PageNavigate {
+                input: id(2),
+                navigation,
+            }))
+        );
+    }
+    assert_eq!(
+        parse_http_query("Function=SelectIndex&Input=2&Value=3", &state),
+        Ok(Translation::Protocol(CommandPayload::PageNavigate {
+            input: id(2),
+            navigation: fm_protocol::PagedNavigation::Goto(2),
+        }))
+    );
+    // Values are one-based, and the verbs take no extra parameters.
+    for query in [
+        "Function=SelectIndex&Input=2&Value=0",
+        "Function=SelectIndex&Input=2",
+        "Function=NextItem",
+        "Function=NextItem&Input=2&Value=1",
+    ] {
+        assert!(parse_http_query(query, &state).is_err(), "{query}");
+    }
+}
+
+#[test]
+fn media_transport_verbs_translate_exactly() {
+    let state = state();
+    for (function, operation) in [
+        ("Play", fm_protocol::MediaOperation::Play),
+        ("Pause", fm_protocol::MediaOperation::Pause),
+        ("Stop", fm_protocol::MediaOperation::Stop),
+    ] {
+        assert_eq!(
+            parse_http_query(&format!("Function={function}&Input=2"), &state),
+            Ok(Translation::Protocol(CommandPayload::Media {
+                input: id(2),
+                operation,
+            }))
+        );
+    }
+    assert_eq!(
+        parse_http_query("Function=PlayPause&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleMediaPlayback {
+            input: id(2)
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=Restart&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::RestartMedia {
+            input: id(2)
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetPosition&Input=2&Value=1500", &state),
+        Ok(Translation::Protocol(CommandPayload::Media {
+            input: id(2),
+            operation: fm_protocol::MediaOperation::Seek(fm_protocol::MediaSeekTarget::Time {
+                numerator: 1_500,
+                denominator: 1_000,
+            },),
+        }))
+    );
+    for query in [
+        "Function=Play",
+        "Function=Play&Input=2&Value=1",
+        "Function=PlayPause&Input=2&Input=3",
+    ] {
+        assert!(parse_http_query(query, &state).is_err(), "{query}");
+    }
+}
+
+#[test]
+fn overlay_in_and_off_translate_exactly() {
+    let state = state();
+    let channel = fm_protocol::WireOverlayChannelId::new(3).unwrap();
+    assert_eq!(
+        parse_http_query("Function=OverlayInput3In&Input=2", &state),
+        Ok(Translation::Protocol(CommandPayload::TakeOverlay {
+            channel,
+            source: id(2),
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=OverlayInput3Off", &state),
+        Ok(Translation::Protocol(CommandPayload::OverlayOff {
+            channel
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=OverlayInput3Out", &state),
+        Ok(Translation::Protocol(CommandPayload::OverlayOff {
+            channel
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=OverlayInput3Last", &state),
+        Ok(Translation::Compat(CompatIntent::RestoreOverlay {
+            channel: 3
+        }))
+    );
+    assert!(matches!(
+        parse_http_query("Function=OverlayInput3In&Input=2&Mix=1", &state),
+        Ok(Translation::Unsupported(_))
+    ));
+    assert!(parse_http_query("Function=OverlayInput3Off&Input=2", &state).is_err());
+}
+
+#[test]
+fn xpath_descendant_and_wildcard_steps_select_nodes() {
+    let state = state();
+    assert_eq!(
+        state.xml_text("//input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("/vmix//text[@name='Headline\"']"),
+        Ok("A < B & C > D 'ok' \"yes\"".into())
+    );
+    assert_eq!(
+        state.xml_text("//*[@name='Headline\"']"),
+        Ok("A < B & C > D 'ok' \"yes\"".into())
+    );
+    assert_eq!(
+        state.xml_text("//inputs/input[2]/text[1]/@index"),
+        Ok("0".into())
+    );
+    assert!(matches!(
+        state.xml_text("//missing"),
+        Err(XPathError::NotFound)
+    ));
+    assert!(matches!(
+        state.xml_text("/vmix//@title"),
+        Err(XPathError::Syntax(_))
+    ));
+}
+
+#[test]
+fn xpath_functions_select_attribute_matches_and_text_values() {
+    let state = state();
+    assert_eq!(
+        state.xml_text("/vmix/inputs/input[1]/text()"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("/vmix/inputs/input[contains(@title,'Cam')]/@number"),
+        Ok("1".into())
+    );
+    assert_eq!(
+        state.xml_text("/vmix/inputs/input[starts-with(@title,'News')]/@number"),
+        Ok("2".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[contains(@title,'Spare')]"),
+        Ok("Spare".into())
+    );
+    assert!(matches!(
+        state.xml_text("/vmix/inputs/input[contains(@title)]"),
+        Err(XPathError::Syntax(_))
+    ));
+    assert!(matches!(
+        state.xml_text("/vmix/inputs/input[unknown(@title,'Cam')]"),
+        Err(XPathError::Syntax(_))
+    ));
+}
+
+#[test]
+fn xpath_unions_pick_the_first_node_in_document_order() {
+    let state = state();
+    // The second operand names an earlier node, so document order wins
+    // over operand order.
+    assert_eq!(
+        state.xml_text("//input[2]/@title | //input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//missing | /vmix/version"),
+        Ok("29<&\"'".into())
+    );
+    assert_eq!(
+        state.xml_text("/vmix/overlays | /vmix/version"),
+        Ok("29<&\"'".into())
+    );
+    // A `|` inside a quoted literal does not split the expression.
+    assert_eq!(
+        state.xml_text("//text[@name='Headline\"'] | //missing"),
+        Ok("A < B & C > D 'ok' \"yes\"".into())
+    );
+    assert!(matches!(
+        state.xml_text("//missing | //missing"),
+        Err(XPathError::NotFound)
+    ));
+    assert!(matches!(
+        state.xml_text("//input[1] |"),
+        Err(XPathError::Syntax(_))
+    ));
+    assert!(matches!(
+        state.xml_text("| //input[1]"),
+        Err(XPathError::Syntax(_))
+    ));
+    assert!(matches!(
+        state.xml_text("//a | //b | //c | //d | //e"),
+        Err(XPathError::TooComplex)
+    ));
+}
+
+#[test]
+fn xpath_numeric_comparisons_select_nodes() {
+    let state = state();
+    assert_eq!(
+        state.xml_text("//input[@number>1]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number>=2][1]/@number"),
+        Ok("2".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number<=2]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number!=2]/@number"),
+        Ok("1".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[position()>1]/@number"),
+        Ok("2".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[position()=3]/@title"),
+        Ok("Spare".into())
+    );
+    // A quoted literal still compares as text, not a number.
+    assert_eq!(
+        state.xml_text("//input[@number='2']/@title"),
+        Ok("News <GT>".into())
+    );
+    // Bounded arithmetic: +, -, *, div, mod, and parentheses.
+    assert_eq!(
+        state.xml_text("//input[@number+1=2]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number*2>2]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[position()+1=3]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number div 2 = 1]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number mod 2 = 1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[(1+1)=@number]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert!(matches!(
+        state.xml_text("//input[position() div 0 = 1]/@title"),
+        Err(XPathError::NotFound)
+    ));
+    assert_eq!(
+        state.xml_text("//input[position()=last()]/@title"),
+        Ok("Spare".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[last()-1=@number]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//inputs[count(input)=3]/input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[count(text)=1]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[count(*)=1]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[string-length(@title)>10]/@number"),
+        Ok("1".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[string-length(@title)=5]/@title"),
+        Ok("Spare".into())
+    );
+    for path in [
+        "//input[@number>x]",
+        "//input[@number>02]",
+        "//input[@number>-0]",
+        "//input[position()]",
+        "//input[@number]",
+        "//input[1+]/@title",
+        "//input[(1+1]/@title",
+        "//input[count()=1]/@title",
+        "//input[count(@title)=1]/@title",
+        "//input[string-length(title)=1]/@title",
+    ] {
+        assert!(
+            matches!(state.xml_text(path), Err(XPathError::Syntax(_))),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn xpath_axes_select_parents_ancestors_and_siblings() {
+    let state = state();
+    assert_eq!(
+        state.xml_text("//input/parent::inputs/input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input/self::input[2]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[2]/ancestor::vmix/version"),
+        Ok("29<&\"'".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[1]/following-sibling::input[1]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[3]/preceding-sibling::input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input/child::text[1]"),
+        Ok("A < B & C > D 'ok' \"yes\"".into())
+    );
+    assert!(matches!(
+        state.xml_text("//parent::vmix"),
+        Err(XPathError::Syntax(_))
+    ));
+    assert!(matches!(
+        state.xml_text("//input/following::input"),
+        Err(XPathError::Syntax(_))
+    ));
+}
+
+#[test]
+fn overlay_last_restores_the_previous_input() {
+    let mut state = state();
+    state.set_overlay(1, Some(id(1))).unwrap();
+    state.set_overlay(1, Some(id(2))).unwrap();
+    assert_eq!(state.restore_overlay(1), Ok(Some(id(1))));
+    assert_eq!(state.overlays[0], Some(id(1)));
+    assert_eq!(state.previous_overlays[0], Some(id(2)));
+    assert_eq!(state.restore_overlay(1), Ok(Some(id(2))));
+    assert_eq!(
+        state.restore_overlay(9),
+        Err(StateError::InvalidOverlayChannel)
+    );
+}
+
+#[test]
+fn set_output_translates_exactly() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=SetOutput&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutput {
+            output: 1,
+            input: Some(id(2)),
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetOutput2&Input=3", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutput {
+            output: 2,
+            input: Some(id(3)),
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetOutput&Input=", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutput {
+            output: 1,
+            input: None,
+        }))
+    );
+    assert!(parse_http_query("Function=SetOutput&Input=99", &state).is_err());
+    assert!(parse_http_query("Function=SetOutput&Input=2&Extra=1", &state).is_err());
+}
+
+#[test]
+fn output_sources_reach_the_xml_and_xpath_documents() {
+    let mut state = state();
+    state.set_output(1, Some(id(3))).unwrap();
+    let xml = state.xml();
+    assert!(
+        xml.contains("<outputs><output number=\"1\">3</output><output number=\"2\"></output>"),
+        "{xml}"
+    );
+    assert_eq!(state.xml_text("//outputs/output[1]"), Ok("3".into()));
+    assert_eq!(state.xml_text("//outputs/output[2]"), Ok(String::new()));
+    assert_eq!(
+        state.xml_text("//transitions/transition[1]/effect"),
+        Ok("fade".into())
+    );
+    assert_eq!(
+        state.xml_text("//transitions/transition[1]/duration_millis"),
+        Ok("500".into())
+    );
+    assert_eq!(
+        state.set_output(5, Some(id(1))),
+        Err(StateError::InvalidOutput)
+    );
+}
+
+#[test]
+fn fullscreen_outputs_translate_exactly() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=SetOutputFullscreen&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutputFullscreen {
+            output: 1,
+            input: Some(id(2)),
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetOutputFullscreen2&Value=0", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutputFullscreen {
+            output: 2,
+            input: None,
+        }))
+    );
+    assert!(matches!(
+        parse_http_query("Function=SetOutputFullscreen", &state),
+        Ok(Translation::Unsupported(_))
+    ));
+    assert!(parse_http_query("Function=SetOutputFullscreen&Input=2&Extra=1", &state).is_err());
+    assert!(parse_http_query("Function=SetOutputFullscreen&Input=99", &state).is_err());
+}
+
+#[test]
+fn set_image_translates_still_sources() {
+    let state = state();
+    assert_eq!(
+        parse_http_query(
+            "Function=SetImage&Input=2&Value=https://example.com/a.png",
+            &state
+        ),
+        Ok(Translation::Compat(CompatIntent::SetImage {
+            input: id(2),
+            url: "https://example.com/a.png".to_owned(),
+        }))
+    );
+    assert!(parse_http_query("Function=SetImage&Input=2", &state).is_err());
+    assert!(parse_http_query("Function=SetImage&Input=2&Value=", &state).is_err());
+    assert!(parse_http_query("Function=SetImage&Input=2&Value=a.png&Extra=1", &state).is_err());
+}
+
+#[test]
+fn add_input_translates_network_streams() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=AddInput&Value=rtmp://host/live", &state),
+        Ok(Translation::Compat(CompatIntent::AddNetworkStream {
+            url: "rtmp://host/live".to_owned(),
+            name: None,
+        }))
+    );
+    assert_eq!(
+        parse_http_query(
+            "Function=AddInput&Input=Guest&Value=srt://host:9000",
+            &state
+        ),
+        Ok(Translation::Compat(CompatIntent::AddNetworkStream {
+            url: "srt://host:9000".to_owned(),
+            name: Some("Guest".to_owned()),
+        }))
+    );
+    assert!(matches!(
+        parse_http_query("Function=AddInput&Value=file.mp4", &state),
+        Ok(Translation::Unsupported(_))
+    ));
+    assert!(parse_http_query("Function=AddInput", &state).is_err());
+    assert!(parse_http_query("Function=AddInput&Value=rtmp://x&Extra=1", &state).is_err());
+}
+
+#[test]
+fn media_state_reaches_the_xml_and_xpath_documents() {
+    let mut state = state();
+    state.inputs[1] = state.inputs[1]
+        .clone()
+        .with_media("Running", 1_500, Some(5_000));
+    let xml = state.xml();
+    assert!(
+        xml.contains("<state>Running</state><position>1500</position><duration>5000</duration>"),
+        "{xml}"
+    );
+    assert_eq!(state.xml_text("//input[2]/state"), Ok("Running".into()));
+    assert_eq!(state.xml_text("//input[2]/position"), Ok("1500".into()));
+    assert_eq!(state.xml_text("//input[2]/duration"), Ok("5000".into()));
+    state.inputs[1] = state.inputs[1].clone().with_audio(true, 75);
+    let xml = state.xml();
+    assert!(
+        xml.contains("<muted>True</muted><volume>75</volume>"),
+        "{xml}"
+    );
+    assert_eq!(state.xml_text("//input[2]/muted"), Ok("True".into()));
+    assert_eq!(state.xml_text("//input[2]/volume"), Ok("75".into()));
+    assert!(matches!(
+        state.xml_text("//input[1]/state"),
+        Err(XPathError::NotFound)
+    ));
+}
+
+#[test]
+fn set_volume_translates_the_percentage() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=SetVolume&Input=2&Value=75", &state),
+        Ok(Translation::Compat(CompatIntent::SetInputVolume {
+            input: id(2),
+            percent: 75,
+        }))
+    );
+    for value in ["-1", "101", "x", ""] {
+        assert!(
+            parse_http_query(&format!("Function=SetVolume&Input=2&Value={value}"), &state).is_err(),
+            "{value}"
+        );
+    }
+    assert!(parse_http_query("Function=SetVolume&Input=2", &state).is_err());
+}
+
+#[test]
+fn audio_on_and_off_translate_to_a_mute_intent() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=AudioOff&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::SetInputMuted {
+            input: id(2),
+            muted: true,
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=AudioOn&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::SetInputMuted {
+            input: id(2),
+            muted: false,
+        }))
+    );
+    assert!(parse_http_query("Function=AudioOn", &state).is_err());
+}
+
+#[test]
+fn start_stop_verbs_become_toggle_intents() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=StartStopRecording", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleRecording))
+    );
+    assert_eq!(
+        parse_http_query("Function=StartStopStreaming", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleStreaming {
+            stream: None
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=StartStopStreaming&Value=1", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleStreaming {
+            stream: Some(1)
+        }))
+    );
+    assert!(parse_http_query("Function=StartStopRecording&Value=1", &state).is_err());
+}
+
+#[test]
+fn all_overlays_off_and_fade_to_black_are_toggle_intents() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=OverlayInputAllOff", &state),
+        Ok(Translation::Compat(CompatIntent::AllOverlaysOff))
+    );
+    assert_eq!(
+        parse_http_query("Function=FadeToBlack", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleFadeToBlack))
+    );
+    assert!(parse_http_query("Function=FadeToBlack&Input=1", &state).is_err());
+}
+
+#[test]
+fn set_input_name_becomes_a_rename_intent() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=SetInputName&Input=2&Value=Games", &state),
+        Ok(Translation::Compat(CompatIntent::RenameInput {
+            input: id(2),
+            name: "Games".into(),
+        }))
+    );
+    assert!(parse_http_query("Function=SetInputName&Input=2&Value=", &state).is_err());
+    assert!(parse_http_query("Function=SetInputName&Value=Games", &state).is_err());
+}
+
+#[test]
+fn playlist_verbs_translate_to_playlist_control() {
+    let state = state();
+    for (function, operation) in [
+        (
+            "StartPlayList",
+            fm_protocol::PlaylistOperation::Start {
+                at: fm_protocol::PlaylistStart::Now,
+                from: None,
+            },
+        ),
+        ("StopPlayList", fm_protocol::PlaylistOperation::Stop),
+        ("NextPlayListEntry", fm_protocol::PlaylistOperation::Next),
+        (
+            "PreviousPlayListEntry",
+            fm_protocol::PlaylistOperation::Previous,
+        ),
+    ] {
+        assert_eq!(
+            parse_http_query(&format!("Function={function}"), &state),
+            Ok(Translation::Protocol(CommandPayload::PlaylistControl {
+                operation,
+            }))
+        );
+        assert!(
+            parse_http_query(&format!("Function={function}&Input=1"), &state).is_err(),
+            "{function}"
+        );
+    }
 }

@@ -138,7 +138,8 @@ pub const fn cue_action_class(action: &CueAction) -> Option<CommandClass> {
         | CueAction::Record { .. }
         | CueAction::Stream { .. }
         | CueAction::Media { .. }
-        | CueAction::Page { .. } => CommandClass::Transition,
+        | CueAction::Page { .. }
+        | CueAction::Clock { .. } => CommandClass::Transition,
         // Saving a title's field values (`title_fields_set`) edits project
         // content.
         CueAction::TitleText { .. } | CueAction::TitleNumber { .. } => CommandClass::EditProject,
@@ -176,7 +177,13 @@ pub const fn verb_class(verb: Verb) -> CommandClass {
         | Verb::Play
         | Verb::Pause
         | Verb::Seek
-        | Verb::Restart => CommandClass::Transition,
+        | Verb::Restart
+        | Verb::PageNext
+        | Verb::PagePrevious
+        | Verb::PageFirst
+        | Verb::PageLast
+        | Verb::PageGoto
+        | Verb::Clock => CommandClass::Transition,
     }
 }
 

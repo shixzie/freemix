@@ -311,20 +311,27 @@ pub(crate) struct PendingStill {
 
 impl NativeDaemon {
     /// What a catalogue change may use of this runtime now.
-    pub(crate) fn catalogue_budget(&self) -> NativeCatalogueBudget {
-        let registry = self.playback.registry();
-        let limits = registry.limits();
+    pub(crate) fn catalogue_budget(&mut self) -> NativeCatalogueBudget {
+        let budget =
+            self.video
+                .playback_budget()
+                .unwrap_or(crate::native_video_realizer::PlaybackBudget {
+                    limit: freemixd::native_media::NativeSourceLimits::default(),
+                    retained_bytes: 0,
+                });
+        let sources = self.latest_frames.snapshot().into_keys().collect();
+        let limits = budget.limit;
         let (width, height) = self.picture_size;
         NativeCatalogueBudget {
-            sources: registry.inputs().collect(),
+            sources,
             max_sources: limits.max_media_inputs,
-            retained_bytes: registry.retained_rgba16f_bytes(),
+            retained_bytes: budget.retained_bytes,
             max_retained_bytes: limits.max_retained_rgba16f_bytes,
             frame_bytes: u64::from(width)
                 .saturating_mul(u64::from(height))
                 .saturating_mul(8)
                 .max(1),
-            decoded: self.master.decoded_inputs().collect(),
+            decoded: self.audio.decoded_inputs().unwrap_or_default(),
             capture_live: self.captures.is_some(),
         }
     }
@@ -373,9 +380,10 @@ impl NativeDaemon {
             .iter()
             .filter(|input| project.media_list(**input).is_some())
             .filter_map(|input| {
-                self.playback
-                    .latest_frames()
-                    .get(*input)
+                self.latest_frames
+                    .snapshot()
+                    .get(input)
+                    .cloned()
                     .map(|frame| (*input, frame))
             })
             .collect::<BTreeMap<_, _>>();
@@ -383,12 +391,12 @@ impl NativeDaemon {
         for input in removed.iter().chain(&replaced) {
             self.files.remove(*input);
             self.stills.retain(|still| still.input != *input);
-            self.slides.forget(*input);
+            self.video.forget_slide(*input).map_err(AppFailure)?;
             resolved.retain(|source| source.input() != *input);
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tretired");
         }
         for input in &removed {
-            self.playback.remove_source(*input);
+            self.video.remove_source(*input).map_err(AppFailure)?;
         }
 
         let settings = project.settings();
@@ -497,7 +505,7 @@ impl NativeDaemon {
                 // A slideshow composes its slides into its source each frame
                 // they change (IN-009).
                 NativeSourceKey::Slideshow(_) => {
-                    self.slides.forget(input);
+                    self.video.forget_slide(input).map_err(AppFailure)?;
                     let frame = blank()?;
                     resolved.push(NativeResolvedSource::LiveFrame {
                         input,
@@ -539,18 +547,18 @@ impl NativeDaemon {
                 }
             };
             if let Some(seed) = seed {
-                self.runtime
-                    .insert_live_source_blocking(&mut self.playback, input, seed)
+                self.video
+                    .insert_live_source(input, seed)
                     .map_err(|error| {
                         AppFailure(format!("native input {input} cannot start: {error}"))
                     })?;
             } else if replaced.contains(&input) {
-                self.playback.remove_source(input);
+                self.video.remove_source(input).map_err(AppFailure)?;
             }
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tstarted");
         }
 
-        self.master
+        self.audio
             .follow_catalogue(&plan, &replaced, &pushed)
             .map_err(|error| AppFailure(format!("native Master cannot follow inputs: {error}")))?;
         if let Some(mutation) = self.pending_stinger_mutation.as_mut() {
@@ -582,8 +590,8 @@ impl NativeDaemon {
             let input = self.stills.swap_remove(index).input;
             match outcome {
                 Ok(frame) => {
-                    self.runtime
-                        .insert_live_source_blocking(&mut self.playback, input, frame.clone())
+                    self.video
+                        .insert_live_source(input, frame.clone())
                         .map_err(|error| {
                             AppFailure(format!("native still input {input} cannot start: {error}"))
                         })?;
@@ -606,13 +614,14 @@ impl NativeDaemon {
         Ok(())
     }
 
-    /// Opens every media list's next item ahead of need (IN-006): the item
-    /// Auto Next or Next steps to from the active one ([`next_list_item`]),
-    /// when it is another file (an item of the file already open re-cues
-    /// in place). A still image is recognized on the standby's own thread
-    /// (reading the file never blocks the loop) and holds nothing. A closed
-    /// list prefetches nothing; a list that no longer has a next item drops
-    /// its standby.
+    /// Opens every media list's neighbouring items ahead of need (IN-006):
+    /// the item Auto Next or Next steps to from the active one
+    /// ([`next_list_item`]) and the item Previous steps to
+    /// ([`previous_list_item`]), when each is another file (an item of the
+    /// file already open re-cues in place). A still image is recognized on
+    /// the standby's own thread (reading the file never blocks the loop) and
+    /// holds nothing. A closed list prefetches nothing; a neighbour a list no
+    /// longer has drops its standby.
     pub(crate) fn sync_media_list_prefetch(&mut self, project: &Project) {
         let mut wanted = BTreeSet::new();
         for input in project.inputs() {
@@ -625,35 +634,45 @@ impl NativeDaemon {
             if project.input_lifecycle(input.id).closed {
                 continue;
             }
-            let Some(next) = next_list_item(list) else {
-                continue;
-            };
             let current = match &input.kind {
                 InputKind::Media { asset_uri, .. } => Some(asset_uri.as_str()),
                 _ => None,
             };
-            if current == Some(next.asset_uri.as_str()) {
-                continue;
+            for (role, item) in [
+                (native_files::PrefetchRole::Next, next_list_item(list)),
+                (
+                    native_files::PrefetchRole::Previous,
+                    previous_list_item(list),
+                ),
+                (native_files::PrefetchRole::First, first_list_item(list)),
+                (native_files::PrefetchRole::Last, last_list_item(list)),
+            ] {
+                let Some(item) = item else {
+                    continue;
+                };
+                if current == Some(item.asset_uri.as_str()) {
+                    continue;
+                }
+                let Some(path) = self.asset_path(&item.asset_uri) else {
+                    continue;
+                };
+                wanted.insert((input.id, role));
+                let mut settings = *settings;
+                settings.trim_in = item.mark_in;
+                settings.trim_out = item.mark_out;
+                settings.start_frame = item.mark_in;
+                let assets_root = self.assets_root.clone();
+                self.files.prefetch(input.id, role, path, &settings, || {
+                    Adapter::new(FfmpegConfig {
+                        allowed_root: Some(assets_root),
+                        ..FfmpegConfig::default()
+                    })
+                    .ok()
+                });
             }
-            let Some(path) = self.asset_path(&next.asset_uri) else {
-                continue;
-            };
-            wanted.insert(input.id);
-            let mut settings = *settings;
-            settings.trim_in = next.mark_in;
-            settings.trim_out = next.mark_out;
-            settings.start_frame = next.mark_in;
-            let assets_root = self.assets_root.clone();
-            self.files.prefetch(input.id, path, &settings, || {
-                Adapter::new(FfmpegConfig {
-                    allowed_root: Some(assets_root),
-                    ..FfmpegConfig::default()
-                })
-                .ok()
-            });
         }
         self.files
-            .retain_prefetched(|input| wanted.contains(&input));
+            .retain_prefetched(|input, role| wanted.contains(&(input, role)));
     }
 
     /// Switches every media list whose accepted command moved it to the
@@ -753,6 +772,33 @@ pub(crate) fn next_list_item(list: &fm_model::MediaList) -> Option<&fm_model::Me
         return None;
     };
     list.item(id)
+}
+
+/// The item Previous steps to from the active one: the one before it in play
+/// order, then the last under Loop (the cycle does not change), and nothing
+/// at the start of a list that does not loop (matching the engine's
+/// clamp).
+pub(crate) fn previous_list_item(list: &fm_model::MediaList) -> Option<&fm_model::MediaListItem> {
+    let order = list.play_order();
+    let position = list.position().unwrap_or(0);
+    let id = if position > 0 {
+        order[position - 1]
+    } else if list.options.loop_list {
+        *order.last()?
+    } else {
+        return None;
+    };
+    list.item(id)
+}
+
+/// The item First steps to: the first of the current cycle's play order.
+pub(crate) fn first_list_item(list: &fm_model::MediaList) -> Option<&fm_model::MediaListItem> {
+    list.item(*list.play_order().first()?)
+}
+
+/// The item Last steps to: the last of the current cycle's play order.
+pub(crate) fn last_list_item(list: &fm_model::MediaList) -> Option<&fm_model::MediaListItem> {
+    list.item(*list.play_order().last()?)
 }
 
 /// Whether the file at `path` starts like a still image (one read of its
@@ -1075,5 +1121,52 @@ mod tests {
         let mut wrapped = list.clone();
         wrapped.cycle += 1;
         assert_eq!(next(&list), Some(wrapped.play_order()[0]));
+    }
+
+    /// The other prefetched item is the one Previous steps to: the one
+    /// before the active item in play order, the last under Loop, and
+    /// nothing at the start of a list that does not loop.
+    #[test]
+    fn the_previous_list_item_clamps_or_wraps_like_previous() {
+        let items = (1..=3)
+            .map(|id| fm_model::MediaListItem::new(id, format!("asset://{id}.mkv")))
+            .collect();
+        let mut list =
+            fm_model::MediaList::new(items, fm_model::MediaListOptions::default()).unwrap();
+        let previous = |list: &fm_model::MediaList| previous_list_item(list).map(|item| item.id);
+        assert_eq!(previous(&list), None);
+        list.active = 2;
+        assert_eq!(previous(&list), Some(1));
+        list.options.loop_list = true;
+        list.active = 1;
+        assert_eq!(previous(&list), Some(3));
+        list.options.shuffle_seed = Some(7);
+        let order = list.play_order();
+        let tail = *order.last().unwrap();
+        list.active = order[0];
+        assert_eq!(previous(&list), Some(tail));
+    }
+
+    /// First goes to the first item of the current cycle's play order, which
+    /// is what the third standby opens.
+    #[test]
+    fn the_first_list_item_is_the_first_of_the_cycle() {
+        let items = (1..=4)
+            .map(|id| fm_model::MediaListItem::new(id, format!("asset://{id}.mkv")))
+            .collect();
+        let mut list =
+            fm_model::MediaList::new(items, fm_model::MediaListOptions::default()).unwrap();
+        let first = |list: &fm_model::MediaList| first_list_item(list).map(|item| item.id);
+        assert_eq!(first(&list), Some(1));
+        list.active = 3;
+        assert_eq!(first(&list), Some(1));
+        list.options.shuffle_seed = Some(9);
+        assert_eq!(first(&list), Some(list.play_order()[0]));
+        let mut next_cycle = list.clone();
+        next_cycle.cycle += 1;
+        assert_eq!(
+            first_list_item(&next_cycle).map(|item| item.id),
+            Some(next_cycle.play_order()[0])
+        );
     }
 }

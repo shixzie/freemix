@@ -138,6 +138,7 @@ fn recording_roster(desired: [bool; 2]) -> Vec<fm_protocol::RecordingStatus> {
 
 fn snapshot(revision: u64) -> SnapshotMessage {
     SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
@@ -233,7 +234,7 @@ fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         })
         .collect()
 }
@@ -965,6 +966,7 @@ fn websocket_diagnose_uses_current_session_contract() {
                 subscriber_limit: 8,
                 subscriber_queue_limit: 16,
                 source_sync: Vec::new(),
+                production_clocks: Vec::new(),
                 health: fm_protocol::DaemonHealth::default(),
             }),
             deadline,
@@ -1204,6 +1206,7 @@ fn diagnose_reports_validated_heartbeat_and_control_diagnostics() {
                 subscriber_limit: 8,
                 subscriber_queue_limit: 16,
                 source_sync: Vec::new(),
+                production_clocks: Vec::new(),
                 health: fm_protocol::DaemonHealth::default(),
             }),
             deadline,
@@ -1287,6 +1290,7 @@ fn diagnose_swallows_monitor_frames_during_heartbeat_and_diagnostics_waits() {
                 subscriber_limit: 8,
                 subscriber_queue_limit: 16,
                 source_sync: Vec::new(),
+                production_clocks: Vec::new(),
                 health: fm_protocol::DaemonHealth::default(),
             }),
             deadline,
@@ -1388,6 +1392,7 @@ fn supervised(directory: &TestDirectory, executable: &Path) -> SupervisedConfig 
         listen: "127.0.0.1:0".parse().unwrap(),
         web_listen: None,
         web: freemix_studio::SupervisedWeb::default(),
+        live_lan_listen: None,
     }
 }
 

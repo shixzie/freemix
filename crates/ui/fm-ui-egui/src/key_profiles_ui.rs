@@ -45,6 +45,10 @@ pub(crate) struct KeyProfilesWindow {
     pub(crate) file_requests: Vec<PresetFileRequest>,
     /// The action the next MIDI press binds (RC-005).
     pub(crate) midi_learning: Option<ConsoleAction>,
+    /// The continuous value the next MIDI controller binds.
+    pub(crate) midi_value_learning: Option<crate::midi_bindings::MidiValueTarget>,
+    /// The action the next HID press binds (RC-005).
+    pub(crate) hid_learning: Option<ConsoleAction>,
 }
 
 /// Every profile the picker offers: the built-in ones, then the
@@ -195,6 +199,7 @@ impl StudioShell {
         let profiles = &mut self.key_profiles;
         let window = &mut self.key_profiles_window;
         let devices = &self.midi_devices;
+        let hid_devices = &self.hid_devices;
         if profiles.keymap(window.selected).is_none() {
             window.selected = profiles.active();
         }
@@ -361,6 +366,48 @@ impl StudioShell {
         };
         ui.label(caption(&device_text))
             .on_hover_text(l.text(Msg::MidiDevicesHover));
+        let hid_text = if hid_devices.is_empty() {
+            l.text(Msg::HidNoDevices).to_owned()
+        } else {
+            l.format(
+                Msg::HidDevices,
+                &[("names", Arg::Str(&hid_devices.join(", ")))],
+            )
+        };
+        ui.label(caption(&hid_text))
+            .on_hover_text(l.text(Msg::HidDevicesHover));
+        if ui
+            .add(small_button(l.text(Msg::MidiReplayTransport)))
+            .on_hover_text(l.text(Msg::MidiReplayTransportHover))
+            .clicked()
+        {
+            profiles.midi.bind_replay_transport();
+        }
+        if ui
+            .add(small_button(l.text(Msg::MidiReplayTransportB)))
+            .on_hover_text(l.text(Msg::MidiReplayTransportBHover))
+            .clicked()
+        {
+            profiles.midi.bind_replay_transport_b();
+        }
+        ui.label(caption(l.text(Msg::MidiValues)));
+        for target in crate::midi_bindings::MidiValueTarget::all() {
+            ui.horizontal(|ui| {
+                let name = match target {
+                    crate::midi_bindings::MidiValueTarget::MonitorLevel => {
+                        l.text(Msg::MidiValueMonitorLevel)
+                    }
+                };
+                ui.label(name);
+                midi_value_cell(
+                    ui,
+                    l,
+                    &mut profiles.midi,
+                    &mut window.midi_value_learning,
+                    target,
+                );
+            });
+        }
         let Some(keymap) = profiles.keymap(selected) else {
             return;
         };
@@ -380,6 +427,7 @@ impl StudioShell {
                         ui.label(caption(l.text(Msg::KeyProfilesKey)));
                         ui.label("");
                         ui.label(caption(l.text(Msg::MidiColumn)));
+                        ui.label(caption(l.text(Msg::HidColumn)));
                         ui.end_row();
                         for action in ConsoleAction::all() {
                             let stroke = keymap.stroke(action);
@@ -449,10 +497,48 @@ impl StudioShell {
                                 }
                             });
                             midi_cell(ui, l, &mut profiles.midi, &mut window.midi_learning, action);
+                            hid_cell(ui, l, &mut profiles.hid, &mut window.hid_learning, action);
                             ui.end_row();
                         }
                     });
             });
+    }
+}
+
+/// One continuous value's MIDI binding: its controller, Learn, and Unbind.
+fn midi_value_cell(
+    ui: &mut Ui,
+    l: Locale,
+    midi: &mut crate::midi_bindings::MidiBindings,
+    learning: &mut Option<crate::midi_bindings::MidiValueTarget>,
+    target: crate::midi_bindings::MidiValueTarget,
+) {
+    let bound = midi.value_trigger(target);
+    let text = bound.map_or_else(
+        || l.text(Msg::KeyProfilesNoKeyText).to_owned(),
+        |trigger| trigger.text(l),
+    );
+    ui.label(RichText::new(text).monospace())
+        .on_hover_text(l.text(Msg::MidiValueControlHover));
+    let waiting = *learning == Some(target);
+    let learn_text = if waiting {
+        l.text(Msg::MidiLearning)
+    } else {
+        l.text(Msg::MidiLearn)
+    };
+    if ui
+        .button(learn_text)
+        .on_hover_text(l.text(Msg::MidiValueLearnHover))
+        .clicked()
+    {
+        *learning = if waiting { None } else { Some(target) };
+    }
+    if ui
+        .add_enabled(bound.is_some(), Button::new(l.text(Msg::MidiUnbind)))
+        .hint(l.text(Msg::MidiUnbindHover), Msg::MidiReasonUnbound.en())
+        .clicked()
+    {
+        midi.unbind_value(target);
     }
 }
 
@@ -490,6 +576,44 @@ fn midi_cell(
             .clicked()
         {
             midi.unbind(action);
+        }
+    });
+}
+
+/// One action's HID binding (RC-005): its button, Learn, and Unbind.
+fn hid_cell(
+    ui: &mut Ui,
+    l: Locale,
+    hid: &mut crate::hid_bindings::HidBindings,
+    learning: &mut Option<ConsoleAction>,
+    action: ConsoleAction,
+) {
+    ui.horizontal(|ui| {
+        let bound = hid.trigger_of(action);
+        let text = bound.map_or_else(
+            || l.text(Msg::KeyProfilesNoKeyText).to_owned(),
+            |trigger| trigger.text(l),
+        );
+        ui.label(RichText::new(text).monospace());
+        let waiting = *learning == Some(action);
+        let learn_text = if waiting {
+            l.text(Msg::MidiLearning)
+        } else {
+            l.text(Msg::MidiLearn)
+        };
+        if ui
+            .button(learn_text)
+            .on_hover_text(l.text(Msg::MidiLearnHover))
+            .clicked()
+        {
+            *learning = if waiting { None } else { Some(action) };
+        }
+        if ui
+            .add_enabled(bound.is_some(), Button::new(l.text(Msg::MidiUnbind)))
+            .hint(l.text(Msg::MidiUnbindHover), Msg::MidiReasonUnbound.en())
+            .clicked()
+        {
+            hid.unbind(action);
         }
     });
 }

@@ -2,9 +2,9 @@
 
 use crate::parser::{BinaryOp, Builtin, Expr, ExprKind, Statement, StatementKind, UnaryOp};
 use crate::{
-    Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, Program, ResumePoint,
-    ScriptAction, ScriptFailure, ScriptHost, ScriptReport, Span, Suspended, Suspension, TakeEffect,
-    Verb,
+    Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, PageOperation, Program,
+    ResumePoint, ScriptAction, ScriptFailure, ScriptHost, ScriptReport, Span, Suspended,
+    Suspension, TakeEffect, Verb,
 };
 
 use crate::ScriptValue as Value;
@@ -845,6 +845,61 @@ fn build_action(
                 input,
                 operation: MediaOperation::Seek(arguments.integer("a frame")?),
             }
+        }
+        Verb::PageNext | Verb::PagePrevious | Verb::PageFirst | Verb::PageLast => {
+            ScriptAction::Page {
+                input: arguments.input()?,
+                operation: match verb {
+                    Verb::PageNext => PageOperation::Next,
+                    Verb::PagePrevious => PageOperation::Previous,
+                    Verb::PageFirst => PageOperation::First,
+                    _ => PageOperation::Last,
+                },
+            }
+        }
+        Verb::PageGoto => {
+            let input = arguments.input()?;
+            let page = arguments.integer("a page")?;
+            ScriptAction::Page {
+                input,
+                operation: PageOperation::Goto(page),
+            }
+        }
+        Verb::Clock => {
+            let name = arguments.text()?;
+            if !crate::clock_name_is_valid(&name) {
+                return Err(runtime(
+                    at,
+                    "clock needs a name of 1-64 letters, digits, _ or -",
+                ));
+            }
+            let operation = arguments.text()?;
+            let operation = match operation.as_str() {
+                "start" => crate::ClockOperation::Start,
+                "pause" => crate::ClockOperation::Pause,
+                "reset" => crate::ClockOperation::Reset,
+                "set" => {
+                    crate::ClockOperation::Set(arguments.integer("a clock value in nanoseconds")?)
+                }
+                "adjust" => {
+                    crate::ClockOperation::Adjust(arguments.integer("an amount in nanoseconds")?)
+                }
+                "preset" => crate::ClockOperation::SetPreset(
+                    arguments.integer("a clock value in nanoseconds")?,
+                ),
+                other => {
+                    return Err(runtime(
+                        at,
+                        format!(
+                            "unknown clock operation {other}; use start, pause, reset, set, adjust, or preset"
+                        ),
+                    ));
+                }
+            };
+            if !operation.is_valid() {
+                return Err(runtime(at, "the clock value is out of range"));
+            }
+            ScriptAction::Clock { name, operation }
         }
     })
 }

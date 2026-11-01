@@ -367,6 +367,17 @@ pub enum MediaOperation {
     Restart,
 }
 
+/// A paged-input (slideshow or document) step.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PageOperation {
+    Next,
+    Previous,
+    First,
+    Last,
+    /// Zero-based page `n`, clamped to the last page.
+    Goto(u32),
+}
+
 /// One show action a script asks the host to perform. Numbers are only
 /// range-checked to their type here; the host checks them against the show.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -428,6 +439,79 @@ pub enum ScriptAction {
         input: InputRef,
         operation: MediaOperation,
     },
+    /// Steps paged input `input` (a slideshow or document).
+    Page {
+        input: InputRef,
+        operation: PageOperation,
+    },
+    /// Starts, pauses, resets, sets, adjusts, or presets production clock
+    /// `name` (SW-013). Values are in nanoseconds.
+    Clock {
+        name: String,
+        operation: ClockOperation,
+    },
+}
+
+/// How a script operates a production clock (SW-013).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ClockOperation {
+    Start,
+    Pause,
+    Reset,
+    Set(i64),
+    Adjust(i64),
+    SetPreset(i64),
+}
+
+impl ClockOperation {
+    /// The operation's script word.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Pause => "pause",
+            Self::Reset => "reset",
+            Self::Set(_) => "set",
+            Self::Adjust(_) => "adjust",
+            Self::SetPreset(_) => "preset",
+        }
+    }
+}
+
+/// Longest clock name a script action may name, in bytes.
+pub const MAX_CLOCK_NAME_BYTES: usize = 64;
+/// Largest magnitude a clock action sets, adjusts, or presets, in
+/// nanoseconds (the production clock value range's bound).
+pub const MAX_CLOCK_VALUE_NS: i64 = 360_000_000_000_000_000;
+
+/// Whether `name` is a valid production clock name.
+#[must_use]
+pub fn clock_name_is_valid(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CLOCK_NAME_BYTES
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+impl ClockOperation {
+    /// Whether the value or delta is in range.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        match self.value() {
+            None => true,
+            Some(value) => value <= MAX_CLOCK_VALUE_NS && value >= -MAX_CLOCK_VALUE_NS,
+        }
+    }
+
+    /// The value or delta the operation carries, in nanoseconds.
+    #[must_use]
+    pub const fn value(self) -> Option<i64> {
+        match self {
+            Self::Start | Self::Pause | Self::Reset => None,
+            Self::Set(value) | Self::Adjust(value) | Self::SetPreset(value) => Some(value),
+        }
+    }
 }
 
 /// The action verbs, one per statement kind that acts on the show.
@@ -485,11 +569,23 @@ pub enum Verb {
     Seek,
     /// `restart INPUT`
     Restart,
+    /// `page_next INPUT`
+    PageNext,
+    /// `page_previous INPUT`
+    PagePrevious,
+    /// `page_first INPUT`
+    PageFirst,
+    /// `page_last INPUT`
+    PageLast,
+    /// `page_goto INPUT, PAGE`
+    PageGoto,
+    /// `clock NAME, OPERATION[, VALUE]` operates a production clock.
+    Clock,
 }
 
 impl Verb {
     /// Every verb, in declaration order.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 32] = [
         Self::Preview,
         Self::Cut,
         Self::Transition,
@@ -516,6 +612,12 @@ impl Verb {
         Self::Pause,
         Self::Seek,
         Self::Restart,
+        Self::PageNext,
+        Self::PagePrevious,
+        Self::PageFirst,
+        Self::PageLast,
+        Self::PageGoto,
+        Self::Clock,
     ];
 
     /// The word a script writes.
@@ -548,6 +650,12 @@ impl Verb {
             Self::Pause => "pause",
             Self::Seek => "seek",
             Self::Restart => "restart",
+            Self::PageNext => "page_next",
+            Self::PagePrevious => "page_previous",
+            Self::PageFirst => "page_first",
+            Self::PageLast => "page_last",
+            Self::PageGoto => "page_goto",
+            Self::Clock => "clock",
         }
     }
 
@@ -565,7 +673,8 @@ impl Verb {
             Self::Cut => (0, 1),
             Self::Transition => (1, 2),
             Self::Stinger => (2, 3),
-            Self::Overlay | Self::TitleOn | Self::Gain | Self::Seek => (2, 2),
+            Self::Clock => (2, 3),
+            Self::Overlay | Self::TitleOn | Self::Gain | Self::Seek | Self::PageGoto => (2, 2),
             Self::TitleText | Self::TitleNumber | Self::TitleAdd => (3, 3),
             Self::Preview
             | Self::OverlayOff
@@ -580,7 +689,11 @@ impl Verb {
             | Self::StreamStop
             | Self::Play
             | Self::Pause
-            | Self::Restart => (1, 1),
+            | Self::Restart
+            | Self::PageNext
+            | Self::PagePrevious
+            | Self::PageFirst
+            | Self::PageLast => (1, 1),
         }
     }
 }
