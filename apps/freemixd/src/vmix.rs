@@ -10,8 +10,8 @@ use fm_auth::Policy;
 use fm_control::ControlService;
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, CommandResult,
-    SnapshotMessage, TitleAirRequirement, TitleFieldUpdate, TitleFieldValue,
-    TransitionFavoriteEffect, WireOverlayChannelId, WireRecorderSlot,
+    LiveInputSource, NetworkStreamConfig, SnapshotMessage, TitleAirRequirement, TitleFieldUpdate,
+    TitleFieldValue, TransitionFavoriteEffect, WireInputId, WireOverlayChannelId, WireRecorderSlot,
 };
 use fm_vmix_compat::{
     CompatInput, CompatIntent, CompatState, TextFieldSelector, Translation, VmixTcpServer,
@@ -325,8 +325,7 @@ fn execute_compat(
             input,
             field,
             value,
-        } => {
-            let title = control
+        } => {            let title = control
                 .title_states()
                 .into_iter()
                 .find(|title| title.input == input)
@@ -372,6 +371,23 @@ fn execute_compat(
                 next_command,
             )
         }
+        CompatIntent::AddNetworkStream { url, name } => {
+            let input = free_input_id(snapshot)
+                .ok_or_else(|| "no free input identifier".to_owned())?;
+            submit(
+                control,
+                principal,
+                now_millis,
+                CommandPayload::AddInput {
+                    input,
+                    name: name.unwrap_or_else(|| "Network stream".to_owned()),
+                    source: LiveInputSource::NetworkStream(Box::new(
+                        NetworkStreamConfig::new(url),
+                    )),
+                },
+                next_command,
+            )
+        }
         other => Err(format!(
             "vMix function is not supported by this daemon yet: {other:?}"
         )),
@@ -380,6 +396,22 @@ fn execute_compat(
 
 fn wire_channel(channel: u8) -> Result<WireOverlayChannelId, String> {
     WireOverlayChannelId::new(channel).ok_or_else(|| format!("invalid overlay channel: {channel}"))
+}
+
+/// The lowest positive input identifier the snapshot does not use.
+fn free_input_id(snapshot: &SnapshotMessage) -> Option<WireInputId> {
+    let used = snapshot
+        .inputs
+        .iter()
+        .map(|input| input.input.get().get())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut candidate = 1_u128;
+    loop {
+        if !used.contains(&candidate) {
+            return std::num::NonZeroU128::new(candidate).map(WireInputId::new);
+        }
+        candidate = candidate.checked_add(1)?;
+    }
 }
 
 /// vMix's 0 through 100 volume as a fader curve: 100 is unity and 0 is the

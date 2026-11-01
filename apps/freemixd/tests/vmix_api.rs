@@ -193,6 +193,11 @@ fn the_daemon_serves_the_vmix_tcp_api() {
     writer.write_all(b"FUNCTION Cut\r\n").unwrap();
     assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
 
+    writer
+        .write_all(b"FUNCTION AddInput Value=http://127.0.0.1:9/stream&Name=Extra\r\n")
+        .unwrap();
+    assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
+
     writer.write_all(b"FUNCTION Nope\r\n").unwrap();
     assert_eq!(
         read_line(&mut reader),
@@ -212,5 +217,6 @@ fn the_daemon_serves_the_vmix_tcp_api() {
     let xml = String::from_utf8(xml).unwrap();
     assert!(xml.starts_with("<vmix>"), "{xml}");
     assert!(xml.contains("<inputs><input key="), "{xml}");
+    assert!(xml.contains("title=\"Extra\""), "{xml}");
     assert!(xml.contains("<active>"), "{xml}");
 }
