@@ -363,6 +363,15 @@ impl CompatState {
                 children: Vec::new(),
             })
             .collect();
+        let transitions = vec![Node {
+            name: "transition",
+            attributes: vec![("number", "1".to_owned())],
+            text: String::new(),
+            children: vec![
+                Node::leaf("effect", self.transition_effect.token()),
+                Node::leaf("duration_millis", self.transition_millis.to_string()),
+            ],
+        }];
         let ordinal_text = |id| {
             self.ordinal(id)
                 .map(|ordinal| ordinal.to_string())
@@ -391,6 +400,12 @@ impl CompatState {
                     attributes: Vec::new(),
                     text: String::new(),
                     children: outputs,
+                },
+                Node {
+                    name: "transitions",
+                    attributes: Vec::new(),
+                    text: String::new(),
+                    children: transitions,
                 },
                 Node::leaf("preview", ordinal_text(self.preview)),
                 Node::leaf("active", ordinal_text(self.active)),

@@ -375,9 +375,17 @@ impl CompatState {
             }
             output.push_str("</output>");
         }
+        output.push_str("</outputs><transitions><transition number=\"1\"><effect>");
+        escape_xml_into(&mut output, &self.transition_effect.token());
         write!(
             output,
-            "</outputs><preview>{}</preview><active>{}</active><recording>{}</recording><streaming>{}</streaming></vmix>",
+            "</effect><duration_millis>{}</duration_millis></transition></transitions>",
+            self.transition_millis
+        )
+        .expect("writing to a String cannot fail");
+        write!(
+            output,
+            "<preview>{}</preview><active>{}</active><recording>{}</recording><streaming>{}</streaming></vmix>",
             self.ordinal(self.preview).unwrap_or_default(),
             self.ordinal(self.active).unwrap_or_default(),
             vmix_bool(self.recording),

@@ -166,6 +166,8 @@ fn xml_golden_is_deterministic_and_escaped() {
             "<overlay number=\"6\"></overlay><overlay number=\"7\"></overlay><overlay number=\"8\"></overlay>",
             "</overlays><outputs><output number=\"1\"></output><output number=\"2\"></output>",
             "<output number=\"3\"></output><output number=\"4\"></output></outputs>",
+            "<transitions><transition number=\"1\"><effect>fade</effect>",
+            "<duration_millis>500</duration_millis></transition></transitions>",
             "<preview>2</preview><active>1</active><recording>True</recording><streaming>False</streaming></vmix>"
         )
     );
@@ -766,6 +768,14 @@ fn output_sources_reach_the_xml_and_xpath_documents() {
     );
     assert_eq!(state.xml_text("//outputs/output[1]"), Ok("3".into()));
     assert_eq!(state.xml_text("//outputs/output[2]"), Ok(String::new()));
+    assert_eq!(
+        state.xml_text("//transitions/transition[1]/effect"),
+        Ok("fade".into())
+    );
+    assert_eq!(
+        state.xml_text("//transitions/transition[1]/duration_millis"),
+        Ok("500".into())
+    );
     assert_eq!(
         state.set_output(5, Some(id(1))),
         Err(StateError::InvalidOutput)
