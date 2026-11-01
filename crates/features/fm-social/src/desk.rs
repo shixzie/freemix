@@ -861,6 +861,8 @@ pub enum DeskDocumentError {
     TooManyRotation,
     /// The on-air line names an invalid state.
     OnAir,
+    /// An audit line is malformed, out of sequence, or too large.
+    Audit,
 }
 
 impl fmt::Display for DeskDocumentError {
@@ -883,6 +885,7 @@ impl fmt::Display for DeskDocumentError {
             Self::TooManyHidden => "moderation desk document has too many hidden keys",
             Self::TooManyRotation => "moderation desk document rotation exceeds its capacity",
             Self::OnAir => "moderation desk document on-air state is invalid",
+            Self::Audit => "moderation desk document audit line is malformed or out of sequence",
         })
     }
 }
@@ -916,10 +919,10 @@ impl Role {
 
 impl ModerationDesk {
     /// Encodes the desk's config, operators, hidden, rotation, on-air, and
-    /// audit-counter state as canonical text:
+    /// audit state as canonical text:
     ///
     /// ```text
-    /// freemix-social-desk 2
+    /// freemix-social-desk 3
     /// config <audit> <rotation> <max operators> <dwell ms>
     /// operator <id hex> <role>
     /// sequence <next audit sequence>
@@ -929,16 +932,18 @@ impl ModerationDesk {
     /// hidden <provider hex> <account hex> <message hex>
     /// rotation <provider hex> <account hex> <message hex>
     /// on-air <provider hex> <account hex> <message hex> <since ms> <manual|rotation> <generation>
+    /// audit <seq> <at ms> <actor> <action> <result>
     /// ```
     ///
     /// Hidden keys ascend, rotation keys keep their rotation order, and the
-    /// on-air line is present only while a message is on air. The audit log
-    /// itself is not part of the document; its next sequence survives so
-    /// restored entries never reuse one.
+    /// on-air line is present only while a message is on air. Audit entries
+    /// follow in sequence order. Aggregated messages are not part of the
+    /// document; restored keys resolve only against messages the caller
+    /// supplies.
     #[must_use]
     pub fn to_document(&self) -> String {
         use std::fmt::Write as _;
-        let mut output = String::from("freemix-social-desk 2\n");
+        let mut output = String::from("freemix-social-desk 3\n");
         writeln!(
             output,
             "config {} {} {} {}",
@@ -983,6 +988,10 @@ impl ModerationDesk {
             )
             .expect("writing to a string cannot fail");
         }
+        for entry in &self.audit {
+            writeln!(output, "audit {}", audit_entry_document(entry))
+                .expect("writing to a string cannot fail");
+        }
         output
     }
 
@@ -998,7 +1007,7 @@ impl ModerationDesk {
         social: SocialAggregator,
     ) -> Result<Self, DeskDocumentError> {
         let mut lines = document.lines();
-        if lines.next() != Some("freemix-social-desk 2") {
+        if lines.next() != Some("freemix-social-desk 3") {
             return Err(DeskDocumentError::Header);
         }
         let Some(config_line) = lines.next() else {
@@ -1122,7 +1131,8 @@ impl ModerationDesk {
 
         let mut on_air = None;
         let mut on_air_generation = 0;
-        if let Some(line) = state.next() {
+        if state.peek().is_some_and(|line| line.starts_with("on-air ")) {
+            let line = state.next().unwrap_or_default();
             let Some(rest) = line.strip_prefix("on-air ") else {
                 return Err(DeskDocumentError::State);
             };
@@ -1153,6 +1163,25 @@ impl ModerationDesk {
             on_air = Some(OnAir { key, since, source });
             on_air_generation = generation;
         }
+        let mut audit = VecDeque::new();
+        let mut previous_sequence = 0;
+        let mut previous_at = Timestamp(0);
+        while state.peek().is_some_and(|line| line.starts_with("audit ")) {
+            let line = state.next().unwrap_or_default();
+            let entry = audit_entry_from_line(line)?;
+            if entry.sequence == 0
+                || entry.sequence >= next_sequence
+                || entry.sequence <= previous_sequence
+                || entry.at < previous_at
+                || entry.at > last_time
+                || audit.len() >= config.audit_capacity
+            {
+                return Err(DeskDocumentError::Audit);
+            }
+            previous_sequence = entry.sequence;
+            previous_at = entry.at;
+            audit.push_back(entry);
+        }
         if state.next().is_some() {
             return Err(DeskDocumentError::State);
         }
@@ -1166,7 +1195,7 @@ impl ModerationDesk {
             rotation_cursor,
             on_air,
             on_air_generation,
-            audit: VecDeque::new(),
+            audit,
             next_sequence,
             evicted_audit_entries,
             last_time,
@@ -1254,6 +1283,331 @@ fn identity_text(text: &str) -> Option<String> {
     }
 }
 
+fn audit_entry_document(entry: &AuditEntry) -> String {
+    let mut parts = Vec::new();
+    parts.push(entry.sequence.to_string());
+    parts.push(entry.at.0.to_string());
+    match &entry.actor {
+        Actor::System => parts.push("system".to_owned()),
+        Actor::Operator(operator) => {
+            parts.push("operator".to_owned());
+            parts.push(identity_document(operator.as_str()));
+        }
+    }
+    match &entry.action {
+        AuditAction::RotationAdvanced(key) => {
+            parts.push("rotation-advanced".to_owned());
+            push_key(&mut parts, key);
+        }
+        AuditAction::Command(command) => {
+            parts.push("command".to_owned());
+            push_command(&mut parts, command);
+        }
+    }
+    match &entry.result {
+        AuditResult::Applied => parts.push("applied".to_owned()),
+        AuditResult::Denied(error) => {
+            parts.push("denied".to_owned());
+            push_desk_error(&mut parts, error);
+        }
+        AuditResult::Failed(error) => {
+            parts.push("failed".to_owned());
+            push_desk_error(&mut parts, error);
+        }
+    }
+    parts.join(" ")
+}
+
+fn push_key(parts: &mut Vec<String>, key: &MessageKey) {
+    parts.push(identity_document(key.provider_id.as_str()));
+    parts.push(identity_document(key.account_id.as_str()));
+    parts.push(identity_document(key.message_id.as_str()));
+}
+
+fn push_command(parts: &mut Vec<String>, command: &DeskCommand) {
+    match command {
+        DeskCommand::Approve(key) => {
+            parts.push("approve".to_owned());
+            push_key(parts, key);
+        }
+        DeskCommand::Reject { key, reason } => {
+            parts.push("reject".to_owned());
+            push_key(parts, key);
+            parts.push(identity_document(reason));
+        }
+        DeskCommand::Block(key) => {
+            parts.push("block".to_owned());
+            push_key(parts, key);
+        }
+        DeskCommand::Unblock {
+            provider_id,
+            account_id,
+            author_id,
+        } => {
+            parts.push("unblock".to_owned());
+            parts.push(identity_document(provider_id.as_str()));
+            parts.push(identity_document(account_id.as_str()));
+            parts.push(identity_document(author_id.as_str()));
+        }
+        DeskCommand::Hide(key) => {
+            parts.push("hide".to_owned());
+            push_key(parts, key);
+        }
+        DeskCommand::Unhide(key) => {
+            parts.push("unhide".to_owned());
+            push_key(parts, key);
+        }
+        DeskCommand::Feature(key) => {
+            parts.push("feature".to_owned());
+            push_key(parts, key);
+        }
+        DeskCommand::ClearOnAir => parts.push("clear-on-air".to_owned()),
+        DeskCommand::AddToRotation(key) => {
+            parts.push("add-rotation".to_owned());
+            push_key(parts, key);
+        }
+        DeskCommand::RemoveFromRotation(key) => {
+            parts.push("remove-rotation".to_owned());
+            push_key(parts, key);
+        }
+        DeskCommand::SetRole { operator, role } => {
+            parts.push("set-role".to_owned());
+            parts.push(identity_document(operator.as_str()));
+            parts.push(role.token().to_owned());
+        }
+        DeskCommand::RemoveOperator(operator) => {
+            parts.push("remove-operator".to_owned());
+            parts.push(identity_document(operator.as_str()));
+        }
+    }
+}
+
+fn push_desk_error(parts: &mut Vec<String>, error: &DeskError) {
+    match error {
+        DeskError::UnknownOperator(operator) => {
+            parts.push("unknown-operator".to_owned());
+            parts.push(identity_document(operator.as_str()));
+        }
+        DeskError::PermissionDenied {
+            operator,
+            role,
+            required,
+        } => {
+            parts.push("permission-denied".to_owned());
+            parts.push(identity_document(operator.as_str()));
+            parts.push(role.token().to_owned());
+            parts.push(required.token().to_owned());
+        }
+        DeskError::Social(error) => {
+            parts.push("social".to_owned());
+            push_social_error(parts, error);
+        }
+        DeskError::NotApproved(key) => {
+            parts.push("not-approved".to_owned());
+            push_key(parts, key);
+        }
+        DeskError::Hidden(key) => {
+            parts.push("hidden".to_owned());
+            push_key(parts, key);
+        }
+        DeskError::NotHidden(key) => {
+            parts.push("not-hidden".to_owned());
+            push_key(parts, key);
+        }
+        DeskError::AlreadyInRotation(key) => {
+            parts.push("already-in-rotation".to_owned());
+            push_key(parts, key);
+        }
+        DeskError::NotInRotation(key) => {
+            parts.push("not-in-rotation".to_owned());
+            push_key(parts, key);
+        }
+        DeskError::RotationFull { capacity } => {
+            parts.push("rotation-full".to_owned());
+            parts.push(capacity.to_string());
+        }
+        DeskError::AuthorNotBlocked => parts.push("author-not-blocked".to_owned()),
+        DeskError::OperatorLimit { capacity } => {
+            parts.push("operator-limit".to_owned());
+            parts.push(capacity.to_string());
+        }
+        DeskError::LastAdmin(operator) => {
+            parts.push("last-admin".to_owned());
+            parts.push(identity_document(operator.as_str()));
+        }
+        DeskError::ClockRegression { last, now } => {
+            parts.push("clock-regression".to_owned());
+            parts.push(last.0.to_string());
+            parts.push(now.0.to_string());
+        }
+    }
+}
+
+fn push_social_error(parts: &mut Vec<String>, error: &SocialError) {
+    match error {
+        SocialError::QueueFull { capacity } => {
+            parts.push("queue-full".to_owned());
+            parts.push(capacity.to_string());
+        }
+        SocialError::MessageNotFound(key) => {
+            parts.push("message-not-found".to_owned());
+            push_key(parts, key);
+        }
+        SocialError::MessageNotPending(key) => {
+            parts.push("message-not-pending".to_owned());
+            push_key(parts, key);
+        }
+    }
+}
+
+struct AuditTokens<'a> {
+    parts: std::vec::IntoIter<&'a str>,
+}
+
+impl<'a> AuditTokens<'a> {
+    fn new(rest: &'a str) -> Self {
+        Self {
+            parts: rest.split(' ').collect::<Vec<_>>().into_iter(),
+        }
+    }
+
+    fn take(&mut self) -> Result<&'a str, DeskDocumentError> {
+        self.parts.next().ok_or(DeskDocumentError::Audit)
+    }
+
+    fn identity(&mut self) -> Result<String, DeskDocumentError> {
+        identity_text(self.take()?).ok_or(DeskDocumentError::Audit)
+    }
+
+    fn u64(&mut self) -> Result<u64, DeskDocumentError> {
+        self.take()?.parse().map_err(|_| DeskDocumentError::Audit)
+    }
+
+    fn usize(&mut self) -> Result<usize, DeskDocumentError> {
+        self.take()?.parse().map_err(|_| DeskDocumentError::Audit)
+    }
+
+    fn key(&mut self) -> Result<MessageKey, DeskDocumentError> {
+        key_from_parts(self.take()?, self.take()?, self.take()?)
+            .map_err(|_| DeskDocumentError::Audit)
+    }
+
+    fn role(&mut self) -> Result<Role, DeskDocumentError> {
+        Role::from_token(self.take()?).ok_or(DeskDocumentError::Audit)
+    }
+
+    fn command(&mut self) -> Result<DeskCommand, DeskDocumentError> {
+        Ok(match self.take()? {
+            "approve" => DeskCommand::Approve(self.key()?),
+            "reject" => {
+                let key = self.key()?;
+                let reason = self.identity()?;
+                DeskCommand::Reject { key, reason }
+            }
+            "block" => DeskCommand::Block(self.key()?),
+            "unblock" => DeskCommand::Unblock {
+                provider_id: ProviderId::new(self.identity()?),
+                account_id: AccountId::new(self.identity()?),
+                author_id: AuthorId::new(self.identity()?),
+            },
+            "hide" => DeskCommand::Hide(self.key()?),
+            "unhide" => DeskCommand::Unhide(self.key()?),
+            "feature" => DeskCommand::Feature(self.key()?),
+            "clear-on-air" => DeskCommand::ClearOnAir,
+            "add-rotation" => DeskCommand::AddToRotation(self.key()?),
+            "remove-rotation" => DeskCommand::RemoveFromRotation(self.key()?),
+            "set-role" => DeskCommand::SetRole {
+                operator: OperatorId::new(self.identity()?),
+                role: self.role()?,
+            },
+            "remove-operator" => DeskCommand::RemoveOperator(OperatorId::new(self.identity()?)),
+            _ => return Err(DeskDocumentError::Audit),
+        })
+    }
+
+    fn social_error(&mut self) -> Result<SocialError, DeskDocumentError> {
+        Ok(match self.take()? {
+            "queue-full" => SocialError::QueueFull {
+                capacity: self.usize()?,
+            },
+            "message-not-found" => SocialError::MessageNotFound(self.key()?),
+            "message-not-pending" => SocialError::MessageNotPending(self.key()?),
+            _ => return Err(DeskDocumentError::Audit),
+        })
+    }
+
+    fn desk_error(&mut self) -> Result<DeskError, DeskDocumentError> {
+        Ok(match self.take()? {
+            "unknown-operator" => DeskError::UnknownOperator(OperatorId::new(self.identity()?)),
+            "permission-denied" => DeskError::PermissionDenied {
+                operator: OperatorId::new(self.identity()?),
+                role: self.role()?,
+                required: self.role()?,
+            },
+            "social" => DeskError::Social(self.social_error()?),
+            "not-approved" => DeskError::NotApproved(self.key()?),
+            "hidden" => DeskError::Hidden(self.key()?),
+            "not-hidden" => DeskError::NotHidden(self.key()?),
+            "already-in-rotation" => DeskError::AlreadyInRotation(self.key()?),
+            "not-in-rotation" => DeskError::NotInRotation(self.key()?),
+            "rotation-full" => DeskError::RotationFull {
+                capacity: self.usize()?,
+            },
+            "author-not-blocked" => DeskError::AuthorNotBlocked,
+            "operator-limit" => DeskError::OperatorLimit {
+                capacity: self.usize()?,
+            },
+            "last-admin" => DeskError::LastAdmin(OperatorId::new(self.identity()?)),
+            "clock-regression" => DeskError::ClockRegression {
+                last: Timestamp(self.u64()?),
+                now: Timestamp(self.u64()?),
+            },
+            _ => return Err(DeskDocumentError::Audit),
+        })
+    }
+
+    fn done(mut self) -> Result<(), DeskDocumentError> {
+        if self.parts.next().is_some() {
+            Err(DeskDocumentError::Audit)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn audit_entry_from_line(line: &str) -> Result<AuditEntry, DeskDocumentError> {
+    let rest = line
+        .strip_prefix("audit ")
+        .ok_or(DeskDocumentError::Audit)?;
+    let mut tokens = AuditTokens::new(rest);
+    let sequence = tokens.u64()?;
+    let at = Timestamp(tokens.u64()?);
+    let actor = match tokens.take()? {
+        "system" => Actor::System,
+        "operator" => Actor::Operator(OperatorId::new(tokens.identity()?)),
+        _ => return Err(DeskDocumentError::Audit),
+    };
+    let action = match tokens.take()? {
+        "rotation-advanced" => AuditAction::RotationAdvanced(tokens.key()?),
+        "command" => AuditAction::Command(tokens.command()?),
+        _ => return Err(DeskDocumentError::Audit),
+    };
+    let result = match tokens.take()? {
+        "applied" => AuditResult::Applied,
+        "denied" => AuditResult::Denied(tokens.desk_error()?),
+        "failed" => AuditResult::Failed(tokens.desk_error()?),
+        _ => return Err(DeskDocumentError::Audit),
+    };
+    tokens.done()?;
+    Ok(AuditEntry {
+        sequence,
+        at,
+        actor,
+        action,
+        result,
+    })
+}
+
 impl OnAirSource {
     /// The document token of the source.
     #[must_use]
@@ -1317,19 +1671,25 @@ mod document_tests {
     }
 
     #[test]
-    fn desk_documents_round_trip_config_operators_and_state() {
-        let document = "freemix-social-desk 2\n\
+    fn desk_documents_round_trip_config_operators_state_and_audit() {
+        let document = "freemix-social-desk 3\n\
                         config 512 16 4 4000\n\
                         operator 616c696365 admin\n\
                         operator 626f62 moderator\n\
-                        sequence 9\n\
+                        sequence 12\n\
                         rotation-cursor 1\n\
                         evicted 3\n\
                         last 9000\n\
                         hidden 70726f76 61636374 6d31\n\
                         rotation 70726f76 61636374 6d32\n\
                         rotation 70726f76 61636374 6d33\n\
-                        on-air 70726f76 61636374 6d32 8000 rotation 5\n";
+                        on-air 70726f76 61636374 6d32 8000 rotation 5\n\
+                        audit 6 7000 operator 616c696365 command feature 70726f76 61636374 6d32 applied\n\
+                        audit 7 8000 system rotation-advanced 70726f76 61636374 6d32 applied\n\
+                        audit 8 8500 operator 626f62 command approve 70726f76 61636374 6d34 denied permission-denied 626f62 moderator producer\n\
+                        audit 9 8700 operator 616c696365 command hide 70726f76 61636374 6d33 failed hidden 70726f76 61636374 6d33\n\
+                        audit 10 8900 operator 616c696365 command unblock 70726f76 61636374 617574686f72 failed author-not-blocked\n\
+                        audit 11 9000 operator 616c696365 command reject 70726f76 61636374 6d34 7370616d applied\n";
         let desk = ModerationDesk::from_document(document, social()).unwrap();
         assert_eq!(desk.config().audit_capacity, 512);
         assert_eq!(desk.config().rotation_capacity, 16);
@@ -1351,13 +1711,50 @@ mod document_tests {
         assert_eq!(on_air.source, OnAirSource::Rotation);
         assert_eq!(desk.on_air_generation(), 5);
         assert_eq!(desk.evicted_audit_entries(), 3);
-        assert_eq!(desk.audit().len(), 0);
+        let audit: Vec<&AuditEntry> = desk.audit().collect();
+        assert_eq!(audit.len(), 6);
+        assert_eq!(audit[0].sequence, 6);
+        assert_eq!(audit[0].at, Timestamp(7000));
+        assert_eq!(audit[0].actor, Actor::Operator(OperatorId::new("alice")));
+        assert_eq!(
+            audit[0].action,
+            AuditAction::Command(DeskCommand::Feature(MessageKey::new("prov", "acct", "m2")))
+        );
+        assert_eq!(audit[0].result, AuditResult::Applied);
+        assert_eq!(audit[1].actor, Actor::System);
+        assert_eq!(
+            audit[1].action,
+            AuditAction::RotationAdvanced(MessageKey::new("prov", "acct", "m2"))
+        );
+        assert_eq!(
+            audit[2].result,
+            AuditResult::Denied(DeskError::PermissionDenied {
+                operator: OperatorId::new("bob"),
+                role: Role::Moderator,
+                required: Role::Producer,
+            })
+        );
+        assert_eq!(
+            audit[3].result,
+            AuditResult::Failed(DeskError::Hidden(MessageKey::new("prov", "acct", "m3")))
+        );
+        assert_eq!(
+            audit[4].result,
+            AuditResult::Failed(DeskError::AuthorNotBlocked)
+        );
+        assert_eq!(
+            audit[5].action,
+            AuditAction::Command(DeskCommand::Reject {
+                key: MessageKey::new("prov", "acct", "m4"),
+                reason: "spam".to_owned(),
+            })
+        );
         assert_eq!(desk.to_document(), document);
     }
 
     #[test]
     fn desk_documents_round_trip_an_empty_state() {
-        let document = "freemix-social-desk 2\n\
+        let document = "freemix-social-desk 3\n\
                         config 512 16 4 4000\n\
                         operator 616c696365 admin\n\
                         sequence 1\n\
@@ -1369,19 +1766,20 @@ mod document_tests {
         assert!(desk.rotation().is_empty());
         assert!(desk.on_air().is_none());
         assert_eq!(desk.on_air_generation(), 0);
+        assert_eq!(desk.audit().len(), 0);
         assert_eq!(desk.to_document(), document);
     }
 
     #[test]
     fn desk_documents_are_strict() {
-        let base = "freemix-social-desk 2\n\
+        let base = "freemix-social-desk 3\n\
                     config 512 16 4 4000\n\
                     operator 616c696365 admin\n\
                     sequence 1\n\
                     rotation-cursor 0\n\
                     evicted 0\n\
                     last 9000\n";
-        let rotation = "freemix-social-desk 2\n\
+        let rotation = "freemix-social-desk 3\n\
                         config 512 1 4 4000\n\
                         operator 616c696365 admin\n\
                         sequence 1\n\
@@ -1389,17 +1787,27 @@ mod document_tests {
                         evicted 0\n\
                         last 9000\n\
                         rotation 70726f76 61636374 6d32\n";
+        let auditable = "freemix-social-desk 3\n\
+                         config 512 16 4 4000\n\
+                         operator 616c696365 admin\n\
+                         sequence 3\n\
+                         rotation-cursor 0\n\
+                         evicted 0\n\
+                         last 9000\n";
+        let applied =
+            "audit 1 1000 operator 616c696365 command feature 70726f76 61636374 6d32 applied\n";
         for document in [
             String::new(),
-            "freemix-social-desk 3\nconfig 1 1 1 1\n".to_owned(),
-            "freemix-social-desk 2\n".to_owned(),
+            "freemix-social-desk 4\nconfig 1 1 1 1\n".to_owned(),
+            "freemix-social-desk 2\nconfig 1 1 1 1\n".to_owned(),
+            "freemix-social-desk 3\n".to_owned(),
             base.replacen("config 512 16 4 4000", "config 0 16 4 4000", 1),
             base.replacen("config 512 16 4 4000", "config 512 16 4 0", 1),
-            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator 61 viewer\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
-            "freemix-social-desk 2\nconfig 512 16 1 4000\noperator 61 admin\noperator 62 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
-            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator 62 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
-            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator 61 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
-            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator zz admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator 61 viewer\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 3\nconfig 512 16 1 4000\noperator 61 admin\noperator 62 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator 62 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator 61 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator zz admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
             base.replacen("sequence 1", "sequence 0", 1),
             base.replacen("rotation-cursor 0", "rotation-cursor 1", 1),
             base.replacen("last 9000", "last nine", 1),
@@ -1426,12 +1834,75 @@ mod document_tests {
                 "{base}hidden 70726f76 61636374 6d32\non-air 70726f76 61636374 6d32 8000 manual 1\n"
             ),
             format!("{rotation}on-air 70726f76 61636374 6d33 8000 rotation 1\n"),
-            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\nextra\n".to_owned(),
+            format!("{base}{applied}"),
+            format!("{auditable}audit 0 1000 system rotation-advanced 70726f76 61636374 6d32 applied\n"),
+            format!("{auditable}audit 3 1000 system rotation-advanced 70726f76 61636374 6d32 applied\n"),
+            format!("{auditable}audit 2 1000 system rotation-advanced 70726f76 61636374 6d32 applied\naudit 2 2000 system rotation-advanced 70726f76 61636374 6d32 applied\n"),
+            format!("{auditable}audit 1 2000 system rotation-advanced 70726f76 61636374 6d32 applied\naudit 2 1000 system rotation-advanced 70726f76 61636374 6d32 applied\n"),
+            format!("{auditable}audit 1 9001 system rotation-advanced 70726f76 61636374 6d32 applied\n"),
+            format!("{auditable}audit 1 1000 system rotation-advanced 70726f76 61636374 6d32 unknown\n"),
+            format!("{auditable}audit 1 1000 system unknown 70726f76 61636374 6d32 applied\n"),
+            format!("{auditable}audit 1 1000 operator 616c696365 command approve 70726f76 61636374 6d32\n"),
+            format!("{auditable}audit 1 1000 operator 616c696365 command approve 70726f76 61636374 6d32 applied extra\n"),
+            format!("{auditable}audit 1 1000 operator 616c696365 command unknown 70726f76 61636374 6d32 applied\n"),
+            format!("{auditable}audit 1 1000 operator 616c696365 command approve 70726f76 61636374 6d32 failed unknown-error\n"),
+            format!("{auditable}audit 1 1000 operator 616c696365 command approve 70726f76 61636374 6d32 failed social unknown-error\n"),
+            format!("{auditable}audit 1 1000 operator 616c696365 command set-role 616c696365 superuser applied\n"),
+            format!("{auditable}{applied}on-air 70726f76 61636374 6d32 8000 manual 1\n"),
+            format!("{auditable}audit 1 1000 operator 616c696365 command feature 70726f76 61636374 6d32 applied\naudit 2 2000 operator 616c696365 command feature 70726f76 61636374 6d32 applied\n").replacen("config 512 16 4", "config 1 16 4", 1),
+            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\nextra\n".to_owned(),
         ] {
             assert!(
                 ModerationDesk::from_document(&document, social()).is_err(),
                 "{document:?}"
             );
         }
+    }
+
+    #[test]
+    fn desk_audit_documents_carry_every_command_and_error() {
+        let social = social();
+        let mut desk = ModerationDesk::new(social, DeskConfig::default(), "alice").unwrap();
+        desk.execute(
+            &OperatorId::new("alice"),
+            DeskCommand::ClearOnAir,
+            Timestamp(10),
+        )
+        .unwrap();
+        desk.execute(
+            &OperatorId::new("alice"),
+            DeskCommand::SetRole {
+                operator: OperatorId::new("bob"),
+                role: Role::Moderator,
+            },
+            Timestamp(20),
+        )
+        .unwrap();
+        let _ = desk.execute(
+            &OperatorId::new("bob"),
+            DeskCommand::RemoveOperator(OperatorId::new("alice")),
+            Timestamp(30),
+        );
+        let document = desk.to_document();
+        let restored = ModerationDesk::from_document(&document, SocialAggregator::empty()).unwrap();
+        assert_eq!(restored.to_document(), document);
+        let audit: Vec<&AuditEntry> = restored.audit().collect();
+        assert_eq!(audit.len(), 3);
+        assert_eq!(audit[0].result, AuditResult::Applied);
+        assert_eq!(
+            audit[1].action,
+            AuditAction::Command(DeskCommand::SetRole {
+                operator: OperatorId::new("bob"),
+                role: Role::Moderator,
+            })
+        );
+        assert_eq!(
+            audit[2].result,
+            AuditResult::Denied(DeskError::PermissionDenied {
+                operator: OperatorId::new("bob"),
+                role: Role::Moderator,
+                required: Role::Admin,
+            })
+        );
     }
 }

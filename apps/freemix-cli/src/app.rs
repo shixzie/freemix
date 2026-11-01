@@ -6314,7 +6314,7 @@ fn social_desk_check(path: &Path) -> AppResult<()> {
         );
     }
     println!(
-        "SocialDeskState(hidden={}, rotation={}, on_air={}, evicted_audit={})",
+        "SocialDeskState(hidden={}, rotation={}, on_air={}, audit={}, evicted_audit={})",
         desk.hidden().len(),
         desk.rotation().len(),
         desk.on_air().map_or_else(
@@ -6326,6 +6326,7 @@ fn social_desk_check(path: &Path) -> AppResult<()> {
                 on_air.source.token()
             )
         ),
+        desk.audit().len(),
         desk.evicted_audit_entries(),
     );
     Ok(())
