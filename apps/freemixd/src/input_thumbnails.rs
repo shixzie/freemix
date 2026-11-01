@@ -2317,6 +2317,7 @@ mod native_tests {
             titles: Vec::new(),
             media: Vec::new(),
             slideshows: Vec::new(),
+            clocks: fm_clock::production::ProductionClocks::new(),
             live: Some(LiveSourceFrames::from_frames(frames)),
         };
         let mut out = BTreeMap::new();
