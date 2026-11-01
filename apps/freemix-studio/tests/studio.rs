@@ -2608,9 +2608,13 @@ fn dependency_tree_contains_only_client_side_freemix_crates() {
 
     let allowed = [
         "fm-animation",
+        "fm-capabilities",
         "fm-client",
         "fm-command",
+        "fm-frame",
         "fm-grade",
+        "fm-io-api",
+        "fm-io-omt",
         "fm-preset-file",
         "fm-protocol",
         "fm-script",
@@ -2643,7 +2647,6 @@ fn dependency_tree_contains_only_client_side_freemix_crates() {
         "fm-compositor",
         "fm-scopes",
         "fm-clock",
-        "fm-frame",
         "fm-graph",
         "fm-video",
         "fm-audio",
