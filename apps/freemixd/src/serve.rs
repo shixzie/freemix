@@ -55,6 +55,7 @@ pub(crate) struct ServeListeners {
     pub(crate) hls_listen: Option<SocketAddr>,
     pub(crate) live_lan_listen: Option<SocketAddr>,
     pub(crate) vmix_listen: Option<SocketAddr>,
+    pub(crate) vmix_http_listen: Option<SocketAddr>,
 }
 
 #[cfg(feature = "display-surface")]
@@ -92,6 +93,7 @@ pub(crate) fn serve_program_worker(
             hls_listen: None,
             live_lan_listen: None,
             vmix_listen: None,
+            vmix_http_listen: None,
         },
         once,
         NativeServeMode::Program(Box::new(ProgramServeSetup {
@@ -200,6 +202,7 @@ pub(crate) fn serve_inner(
         hls_listen,
         live_lan_listen,
         vmix_listen,
+        vmix_http_listen,
     } = listeners;
     if !listen.ip().is_loopback() {
         return Err(AppFailure(format!(
@@ -585,14 +588,26 @@ pub(crate) fn serve_inner(
         }
         None => None,
     };
-    // The vMix-compatible TCP API (RC-009). It binds loopback only until the
-    // protocol has authentication.
-    let mut vmix_bridge = match vmix_listen {
-        Some(address) => Some(crate::vmix::VmixBridge::new(
-            fm_vmix_compat::VmixTcpServer::bind(address)
-                .map_err(|error| AppFailure(format!("--vmix-listen: {error}")))?,
-        )),
-        None => None,
+    // The vMix-compatible TCP and HTTP APIs (RC-009). Both bind loopback
+    // only until the protocol has authentication.
+    let mut vmix_bridge = if vmix_listen.is_some() || vmix_http_listen.is_some() {
+        let tcp = match vmix_listen {
+            Some(address) => Some(
+                fm_vmix_compat::VmixTcpServer::bind(address)
+                    .map_err(|error| AppFailure(format!("--vmix-listen: {error}")))?,
+            ),
+            None => None,
+        };
+        let http = match vmix_http_listen {
+            Some(address) => Some(
+                fm_vmix_compat::VmixHttpServer::bind(address)
+                    .map_err(|error| AppFailure(format!("--vmix-http-listen: {error}")))?,
+            ),
+            None => None,
+        };
+        Some(crate::vmix::VmixBridge::new(tcp, http))
+    } else {
+        None
     };
     server.mark_ready()?;
     process_shutdown.observe_service(server.status());
@@ -631,12 +646,18 @@ pub(crate) fn serve_inner(
         std::io::stdout().flush()?;
     }
     if let Some(bridge) = vmix_bridge.as_ref() {
-        println!(
-            "FREEMIXD_VMIX_READY\tv=1\taddress={}",
-            bridge
-                .address()
-                .map_err(|error| AppFailure(format!("--vmix-listen: {error}")))?
-        );
+        if let Some(address) = bridge
+            .tcp_address()
+            .map_err(|error| AppFailure(format!("--vmix-listen: {error}")))?
+        {
+            println!("FREEMIXD_VMIX_READY\tv=1\taddress={address}");
+        }
+        if let Some(address) = bridge
+            .http_address()
+            .map_err(|error| AppFailure(format!("--vmix-http-listen: {error}")))?
+        {
+            println!("FREEMIXD_VMIX_HTTP_READY\tv=1\taddress={address}");
+        }
         std::io::stdout().flush()?;
     }
     if let Some(duration) = diagnostic_stop_after {

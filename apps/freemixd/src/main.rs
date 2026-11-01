@@ -608,6 +608,7 @@ fn run(command: Command) -> AppResult<()> {
             hls_listen,
             live_lan_listen,
             vmix_listen,
+            vmix_http_listen,
             once,
             native_media,
             fullscreen_program,
@@ -675,6 +676,7 @@ fn run(command: Command) -> AppResult<()> {
                     hls_listen,
                     live_lan_listen,
                     vmix_listen,
+                    vmix_http_listen,
                 },
                 once,
                 if native_media {

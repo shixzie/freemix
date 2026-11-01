@@ -408,6 +408,9 @@ pub enum Command {
         /// The vMix-compatible TCP API (RC-009); loopback only until it has
         /// authentication.
         vmix_listen: Option<SocketAddr>,
+        /// The vMix-compatible HTTP API (RC-009); loopback only until it has
+        /// authentication.
+        vmix_http_listen: Option<SocketAddr>,
         once: bool,
         native_media: bool,
         /// True when display outputs open real borderless windows.
@@ -512,6 +515,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Comm
             let mut hls_listen: Option<SocketAddr> = None;
             let mut live_lan_listen: Option<SocketAddr> = None;
             let mut vmix_listen: Option<SocketAddr> = None;
+            let mut vmix_http_listen: Option<SocketAddr> = None;
             let mut once = false;
             let mut native_media = false;
             let mut fullscreen_program = false;
@@ -780,6 +784,17 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Comm
                     })?);
                     continue;
                 }
+                if let Some(value) = option.strip_prefix("--vmix-http-listen=") {
+                    if vmix_http_listen.is_some() {
+                        return Err(
+                            AppFailure("duplicate option `--vmix-http-listen`".into()).into()
+                        );
+                    }
+                    vmix_http_listen = Some(value.parse().map_err(|error| {
+                        AppFailure(format!("invalid vMix HTTP listen address: {error}"))
+                    })?);
+                    continue;
+                }
                 if let Some(value) = option.strip_prefix("--hls-listen=") {
                     if hls_listen.is_some() {
                         return Err(AppFailure("duplicate option `--hls-listen`".into()).into());
@@ -851,6 +866,19 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Comm
                             .ok_or_else(|| AppFailure("missing value for --vmix-listen".into()))?;
                         vmix_listen = Some(value.parse().map_err(|error| {
                             AppFailure(format!("invalid vMix listen address: {error}"))
+                        })?);
+                    }
+                    "--vmix-http-listen" => {
+                        if vmix_http_listen.is_some() {
+                            return Err(
+                                AppFailure("duplicate option `--vmix-http-listen`".into()).into()
+                            );
+                        }
+                        let value = arguments.next().ok_or_else(|| {
+                            AppFailure("missing value for --vmix-http-listen".into())
+                        })?;
+                        vmix_http_listen = Some(value.parse().map_err(|error| {
+                            AppFailure(format!("invalid vMix HTTP listen address: {error}"))
                         })?);
                     }
                     "--hls-listen" => {
@@ -1360,6 +1388,20 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Comm
                     .into());
                 }
             }
+            if let Some(address) = vmix_http_listen {
+                if !address.ip().is_loopback() {
+                    return Err(AppFailure(
+                        "--vmix-http-listen must use a loopback address".into(),
+                    )
+                    .into());
+                }
+                if fullscreen_program {
+                    return Err(AppFailure(
+                        "--vmix-http-listen cannot be combined with --fullscreen-program".into(),
+                    )
+                    .into());
+                }
+            }
             if capture_inventory.is_some() && !native_media {
                 return Err(AppFailure(
                     "--diagnostic-capture-inventory requires --native-media".into(),
@@ -1375,6 +1417,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Comm
                 hls_listen,
                 live_lan_listen,
                 vmix_listen,
+                vmix_http_listen,
                 once,
                 native_media,
                 fullscreen_program,
@@ -1523,7 +1566,7 @@ fn reject_extra(mut arguments: impl Iterator<Item = String>) -> AppResult<()> {
 pub fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0 [--web-tls | --web-tls-cert PEM --web-tls-key PEM] [--web-state-dir DIR] [--web-host NAME] [--web-mdns-name NAME | --no-web-mdns]] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--live-lan-listen 0.0.0.0:8090] [--vmix-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE] [--diagnostic-capture-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0 [--web-tls | --web-tls-cert PEM --web-tls-key PEM] [--web-state-dir DIR] [--web-host NAME] [--web-mdns-name NAME | --no-web-mdns]] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--live-lan-listen 0.0.0.0:8090] [--vmix-listen 127.0.0.1:0] [--vmix-http-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE] [--diagnostic-capture-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
@@ -1543,6 +1586,7 @@ The daemon, simulated or native, serves up to eight raw `--listen` control sessi
 --web-listen enables the `/v1/control` WebSocket gateway (up to 16 clients at once, each its own session, plus the /tally and /operator pages and /v1/pair device pairing); it works with or without --native-media, and the windowed program daemon (--fullscreen-program, --display-output, --display-presenter, or Studio's --display-presenter-if-available) serves it too. Plain HTTP is loopback-only: a LAN or 0.0.0.0 address needs --web-tls (a per-install local CA generated once in the web state directory issues the gateway's certificate for its LAN addresses, localhost, the --web-host names, and the mDNS name, and reissues it when the addresses change; phones install the CA once from /freemix-ca.crt; FREEMIXD_WEB_TLS prints the certificate's and the CA's SHA-256 fingerprints) or --web-tls-cert PEM --web-tls-key PEM (your own chain and key, for example from mkcert, validated before use and reloaded when the files change; the key must not be readable by other users). --web-state-dir DIR holds the CA, the certificate, and the paired devices (default: $XDG_STATE_HOME/freemix/web or ~/.local/state/freemix/web; ~/Library/Application Support/FreeMix/web on macOS; %LOCALAPPDATA%\\FreeMix\\web on Windows). --web-host NAME (repeatable) adds a DNS name phones may use; the first one names the pairing URL, and requests for any other name than an IP address, localhost, a --web-host, or the advertised mDNS name are refused (DNS-rebinding defence). On a LAN address the gateway advertises itself over mDNS / DNS-SD (_freemix._tcp and _https._tcp) as freemix-<computer name>.local, or --web-mdns-name NAME.local; --no-web-mdns advertises nothing. Devices pair from Studio's Web access window; FREEMIXD_WEB_TOKEN, when set, is a 32..=256-byte operator token with every role.\n\
 --status-listen enables the loopback-only operator status listener serving /healthz, /readyz, and the token-guarded /v1/support-bundle; it requires FREEMIXD_STATUS_TOKEN and is unavailable with --fullscreen-program.\n\
 --vmix-listen enables the loopback-only vMix-compatible TCP API (FUNCTION, XML, TALLY, ACTS): translated commands run under the daemon's Admin development principal, and a function without a native translation is refused by name; it is unavailable with --fullscreen-program and has no authentication yet.\n\
+--vmix-http-listen enables the loopback-only vMix-compatible HTTP API: a GET with a Function query runs it and answers OK or Error, and a GET without one returns the XML state; it runs under the same Admin development principal, is unavailable with --fullscreen-program, and has no authentication yet.\n\
 --hls-listen enables the loopback-only HLS listener for local hls:// stream destinations. It serves GET /v1/hls/<target>/index.m3u8 and GET /v1/hls/<target>/segment-NNNNN.ts, plus the same shapes under rung directories 0..=7 for a multi-bitrate ladder, and requires both --native-media and FREEMIXD_HLS_TOKEN; TLS, LAN binding, Web Controller roles, and per-viewer capacity remain future work.\n\
 Native mode continues across client disconnects; close the Program window or press Escape for bounded shutdown."
     );

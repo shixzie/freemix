@@ -6406,9 +6406,13 @@ in the XML and XPath state, and
 playlist start/stop/next/previous in addition to the switcher, title,
 recording, and streaming verbs. A nonblocking `VmixTcpServer` now binds a listener, accepts bounded
 sessions, reads capped lines, writes responses and subscription events, and
-calls a caller-supplied translation executor. The daemon now serves it with
-`--vmix-listen` (loopback only until authentication exists): each session-loop
-pass builds `CompatState` from the authoritative snapshot and submits every
+calls a caller-supplied translation executor. A nonblocking `VmixHttpServer`
+serves vMix's `GET /?Function=...` API: a function answers `OK` or
+`Error: ...`, and a request without one returns the XML state. The daemon
+serves the TCP API with `--vmix-listen` and the HTTP API with
+`--vmix-http-listen` (both loopback only until authentication exists): each
+session-loop pass builds `CompatState` from the authoritative snapshot and
+submits every
 `Translation::Protocol` through the control service under the daemon's Admin
 development principal, keeping compat-only transition settings between passes;
 fade, overlay, recording, streaming, rename, fade-to-black, title-text,

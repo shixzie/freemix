@@ -777,6 +777,60 @@ fn parses_vmix_listen_only_as_a_loopback_option() {
 }
 
 #[test]
+fn parses_vmix_http_listen_only_as_a_loopback_option() {
+    for arguments in [
+        strings(&["serve", "show.freemix", "--vmix-http-listen", "127.0.0.1:0"]),
+        strings(&["serve", "show.freemix", "--vmix-http-listen=127.0.0.1:0"]),
+    ] {
+        assert!(matches!(
+            parse_args(arguments).unwrap(),
+            Command::Serve {
+                vmix_http_listen: Some(address),
+                ..
+            } if address == "127.0.0.1:0".parse().unwrap()
+        ));
+    }
+    for (arguments, expected) in [
+        (
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--vmix-http-listen",
+                "0.0.0.0:8088",
+            ]),
+            "--vmix-http-listen must use a loopback address",
+        ),
+        (
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--vmix-http-listen=127.0.0.1:1",
+                "--vmix-http-listen",
+                "127.0.0.1:2",
+            ]),
+            "duplicate option `--vmix-http-listen`",
+        ),
+        (
+            strings(&["serve", "show.freemix", "--vmix-http-listen"]),
+            "missing value for --vmix-http-listen",
+        ),
+        (
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--fullscreen-program",
+                "--vmix-http-listen",
+                "127.0.0.1:0",
+            ]),
+            "--vmix-http-listen cannot be combined with --fullscreen-program",
+        ),
+    ] {
+        assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+    }
+}
+
+#[test]
 fn parses_hls_listen_only_as_a_loopback_native_option() {
     for arguments in [
         strings(&[

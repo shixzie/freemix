@@ -1,4 +1,4 @@
-//! The vMix-compatible TCP API served by the daemon (RC-009).
+//! The vMix-compatible TCP and HTTP APIs served by the daemon (RC-009).
 //!
 //! Every pass builds a [`CompatState`] from the control snapshot, dispatches
 //! translated protocol commands through [`ControlService`] under the daemon's
@@ -14,34 +14,52 @@ use fm_protocol::{
     TitleFieldValue, TransitionFavoriteEffect, WireInputId, WireOverlayChannelId, WireRecorderSlot,
 };
 use fm_vmix_compat::{
-    CompatInput, CompatIntent, CompatState, TextFieldSelector, Translation, VmixTcpServer,
+    CompatInput, CompatIntent, CompatState, TextFieldSelector, Translation, VmixHttpServer,
+    VmixTcpServer,
 };
 
 /// A bound vMix listener and the compat-only state between passes.
 pub(crate) struct VmixBridge {
-    server: VmixTcpServer,
+    server: Option<VmixTcpServer>,
+    http: Option<VmixHttpServer>,
     transition_millis: u32,
     transition_effect: TransitionFavoriteEffect,
     next_command: u64,
 }
 
 impl VmixBridge {
-    pub(crate) fn new(server: VmixTcpServer) -> Self {
+    pub(crate) fn new(server: Option<VmixTcpServer>, http: Option<VmixHttpServer>) -> Self {
         Self {
             server,
+            http,
             transition_millis: 500,
             transition_effect: TransitionFavoriteEffect::Mix(AutoTransitionKind::Fade),
             next_command: 0,
         }
     }
 
-    /// The bound address.
+    /// The TCP listener's bound address, if one was requested.
     ///
     /// # Errors
     ///
     /// Returns the listener's address-lookup failure.
-    pub(crate) fn address(&self) -> std::io::Result<std::net::SocketAddr> {
-        self.server.local_addr()
+    pub(crate) fn tcp_address(&self) -> std::io::Result<Option<std::net::SocketAddr>> {
+        self.server
+            .as_ref()
+            .map(VmixTcpServer::local_addr)
+            .transpose()
+    }
+
+    /// The HTTP listener's bound address, if one was requested.
+    ///
+    /// # Errors
+    ///
+    /// Returns the listener's address-lookup failure.
+    pub(crate) fn http_address(&self) -> std::io::Result<Option<std::net::SocketAddr>> {
+        self.http
+            .as_ref()
+            .map(VmixHttpServer::local_addr)
+            .transpose()
     }
 
     /// Accepts, reads, dispatches, writes, and publishes one readiness pass.
@@ -51,18 +69,35 @@ impl VmixBridge {
         principal: &fm_auth::Principal,
         now_millis: u64,
     ) {
+        if self.server.is_some() {
+            self.poll_tcp(control, principal, now_millis);
+        }
+        if self.http.is_some() {
+            self.poll_http(control, principal, now_millis);
+        }
+    }
+
+    fn poll_tcp(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        principal: &fm_auth::Principal,
+        now_millis: u64,
+    ) {
         let snapshot = control.snapshot().snapshot.clone();
-        let Some(mut state) =
-            compat_state(&snapshot, self.transition_millis, self.transition_effect)
-        else {
-            return;
-        };
         let Self {
             server,
+            http: _,
             transition_millis,
             transition_effect,
             next_command,
         } = self;
+        let Some(server) = server.as_mut() else {
+            return;
+        };
+        let Some(mut state) = compat_state(&snapshot, *transition_millis, *transition_effect)
+        else {
+            return;
+        };
         let result = server.poll(&mut state, &mut |state, translation| {
             execute(
                 control,
@@ -78,6 +113,45 @@ impl VmixBridge {
         });
         if let Err(error) = result {
             eprintln!("FREEMIXD_VMIX\tv=1\terror={error}");
+        }
+    }
+
+    fn poll_http(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        principal: &fm_auth::Principal,
+        now_millis: u64,
+    ) {
+        let snapshot = control.snapshot().snapshot.clone();
+        let Self {
+            server: _,
+            http,
+            transition_millis,
+            transition_effect,
+            next_command,
+        } = self;
+        let Some(http) = http.as_mut() else {
+            return;
+        };
+        let Some(mut state) = compat_state(&snapshot, *transition_millis, *transition_effect)
+        else {
+            return;
+        };
+        let result = http.poll(&mut state, &mut |state, translation| {
+            execute(
+                control,
+                principal,
+                now_millis,
+                state,
+                &snapshot,
+                translation,
+                transition_millis,
+                transition_effect,
+                next_command,
+            )
+        });
+        if let Err(error) = result {
+            eprintln!("FREEMIXD_VMIX_HTTP\tv=1\terror={error}");
         }
     }
 }

@@ -108,6 +108,7 @@ fn save_project(path: &Path) {
 struct Daemon {
     child: Child,
     vmix: SocketAddr,
+    vmix_http: SocketAddr,
 }
 
 impl Daemon {
@@ -116,6 +117,8 @@ impl Daemon {
             .arg("serve")
             .arg(project)
             .arg("--vmix-listen")
+            .arg("127.0.0.1:0")
+            .arg("--vmix-http-listen")
             .arg("127.0.0.1:0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -129,7 +132,10 @@ impl Daemon {
                 let vmix = line
                     .strip_prefix("FREEMIXD_VMIX_READY\tv=1\taddress=")
                     .and_then(|address| address.parse::<SocketAddr>().ok());
-                if sender.send((line, vmix)).is_err() {
+                let vmix_http = line
+                    .strip_prefix("FREEMIXD_VMIX_HTTP_READY\tv=1\taddress=")
+                    .and_then(|address| address.parse::<SocketAddr>().ok());
+                if sender.send((line, vmix, vmix_http)).is_err() {
                     break;
                 }
             }
@@ -137,31 +143,39 @@ impl Daemon {
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut control_ready = false;
         let mut vmix = None;
+        let mut vmix_http = None;
         while Instant::now() < deadline {
-            let Ok((line, address)) = receiver.recv_timeout(Duration::from_millis(100)) else {
+            let Ok((line, tcp, http)) = receiver.recv_timeout(Duration::from_millis(100)) else {
                 continue;
             };
             if line.starts_with("FREEMIXD_READY") {
                 control_ready = true;
             }
-            if address.is_some() {
-                vmix = address;
+            if tcp.is_some() {
+                vmix = tcp;
             }
-            if control_ready && vmix.is_some() {
+            if http.is_some() {
+                vmix_http = http;
+            }
+            if control_ready && vmix.is_some() && vmix_http.is_some() {
                 break;
             }
         }
-        let Some(vmix) = vmix else {
+        let (Some(vmix), Some(vmix_http)) = (vmix, vmix_http) else {
             let _ = child.kill();
             let _ = child.wait();
             let mut stderr = String::new();
             if let Some(mut pipe) = child.stderr.take() {
                 let _ = pipe.read_to_string(&mut stderr);
             }
-            panic!("daemon did not report a vMix listener: {stderr}");
+            panic!("daemon did not report vMix listeners: {stderr}");
         };
         assert!(control_ready, "daemon did not report control readiness");
-        Self { child, vmix }
+        Self {
+            child,
+            vmix,
+            vmix_http,
+        }
     }
 }
 
@@ -219,4 +233,35 @@ fn the_daemon_serves_the_vmix_tcp_api() {
     assert!(xml.contains("<inputs><input key="), "{xml}");
     assert!(xml.contains("title=\"Extra\""), "{xml}");
     assert!(xml.contains("<active>"), "{xml}");
+}
+
+#[test]
+fn the_daemon_serves_the_vmix_http_api() {
+    let directory = TestDirectory::new("http-api");
+    save_project(&directory.project());
+    let daemon = Daemon::start(&directory.project());
+
+    let mut stream = TcpStream::connect(daemon.vmix_http).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(b"GET /?Function=Cut HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert!(response.ends_with("\r\n\r\nOK"), "{response}");
+
+    let mut stream = TcpStream::connect(daemon.vmix_http).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.contains("Content-Type: text/xml"), "{response}");
+    assert!(response.contains("<vmix>"), "{response}");
 }
