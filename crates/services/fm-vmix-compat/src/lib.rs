@@ -14,10 +14,15 @@ use std::{error::Error, fmt, fmt::Write as _, num::NonZeroU128};
 
 use fm_protocol::{CommandPayload, WireInputId};
 
+mod http;
 mod server;
 mod tcp;
 mod xpath;
 
+pub use http::{
+    MAX_HTTP_REQUEST_BYTES, MAX_HTTP_SESSIONS, MAX_HTTP_WRITE_BUFFER_BYTES, VmixHttpServer,
+    VmixHttpServerError,
+};
 pub use server::{MAX_TCP_WRITE_BUFFER_BYTES, VmixServerError, VmixTcpServer};
 pub use tcp::{
     MAX_TCP_MESSAGE_BYTES, MAX_TCP_SESSIONS, SubscriptionTopic, TcpEvent, TcpHub, TcpReply,
