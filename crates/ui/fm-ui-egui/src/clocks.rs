@@ -197,6 +197,17 @@ fn draw_clock(
         );
         return;
     }
+    draw_timer_controls(ui, window, state, clock, intents);
+}
+
+fn draw_timer_controls(
+    ui: &mut Ui,
+    window: &mut ClocksWindow,
+    state: &StudioUiState,
+    clock: &ProductionClockStatus,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
     let blocked = clock_block_reason(state);
     ui.horizontal(|ui| {
         for (label, hover, operation) in [
@@ -330,5 +341,6 @@ fn clock_color(clock: &ProductionClockStatus) -> egui::Color32 {
 
 /// A status chip wide enough for `text`.
 fn chip_width(text: &str) -> f32 {
-    crate::theme::legible(9.0).mul_add(text.chars().count() as f32 * 0.62, 14.0)
+    let characters = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
+    crate::theme::legible(9.0).mul_add(0.62 * f32::from(characters), 14.0)
 }
