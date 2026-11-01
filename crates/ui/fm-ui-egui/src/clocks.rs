@@ -102,9 +102,9 @@ fn draw_contents(
     ui.add_space(6.0);
     if state.clocks.is_empty() {
         let empty_show = state
-            .view
+            .project_state
             .as_ref()
-            .is_some_and(|view| view.production_clocks().is_empty());
+            .is_some_and(|project| project.production_clocks().is_empty());
         ui.label(
             RichText::new(l.text(if empty_show {
                 Msg::ClocksEmpty
