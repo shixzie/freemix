@@ -65,7 +65,8 @@ pub use space::{
 pub use track_map::{
     BusInventory, MAX_BUS_CHANNELS, MAX_INVENTORY_BUSES, MAX_RECORDER_CHANNELS,
     MAX_RECORDER_TRACKS, MAX_ROUTE_FRAMES, MAX_TRACK_CHANNELS, MAX_TRACK_NAME_BYTES, RecordBus,
-    RecordTrack, RecorderTrackMap, TrackLayout, TrackMapError, TrackSource, split_track_file_name,
+    RecordTrack, RecorderTrackMap, TrackLayout, TrackMapError, TrackMapLayout, TrackSource,
+    split_track_file_name,
 };
 pub use track_map_document::TrackMapDocumentError;
 pub use track_wav::{TrackFileMode, TrackWavError, TrackWavOptions, TrackWavRecorder};

@@ -360,11 +360,22 @@ impl fmt::Display for TrackMapError {
 
 impl std::error::Error for TrackMapError {}
 
+/// How a map's tracks are laid out on disk.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum TrackMapLayout {
+    /// One file carrying every track's channels in map order.
+    #[default]
+    Interleaved,
+    /// One file per track.
+    SplitPerTrack,
+}
+
 /// Validated, ordered mapping of bus channels into recorder tracks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecorderTrackMap {
     tracks: Vec<RecordTrack>,
     inventory: BusInventory,
+    layout: TrackMapLayout,
 }
 
 impl RecorderTrackMap {
@@ -430,7 +441,24 @@ impl RecorderTrackMap {
         if total > MAX_RECORDER_CHANNELS {
             return Err(TrackMapError::TooManyChannels { count: total });
         }
-        Ok(Self { tracks, inventory })
+        Ok(Self {
+            tracks,
+            inventory,
+            layout: TrackMapLayout::Interleaved,
+        })
+    }
+
+    /// Chooses the file layout this map records into.
+    #[must_use]
+    pub const fn with_layout(mut self, layout: TrackMapLayout) -> Self {
+        self.layout = layout;
+        self
+    }
+
+    /// The file layout this map records into.
+    #[must_use]
+    pub const fn layout(&self) -> TrackMapLayout {
+        self.layout
     }
 
     /// The conventional default: one stereo track from Master channels 0/1.
@@ -443,6 +471,7 @@ impl RecorderTrackMap {
                 TrackSource::master(1),
             )],
             inventory: BusInventory::stereo_master(),
+            layout: TrackMapLayout::Interleaved,
         }
     }
 

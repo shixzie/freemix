@@ -123,18 +123,60 @@ pub(crate) struct OpenedRecorder {
 #[cfg(feature = "native-media")]
 pub(crate) struct TrackWavState {
     map: RecorderTrackMap,
+    mode: TrackFileMode,
     recorder: Option<TrackWavRecorder>,
+    paths: Vec<PathBuf>,
     scratch: Vec<Vec<f32>>,
 }
 
 #[cfg(feature = "native-media")]
 impl TrackWavState {
-    /// The track WAV path beside `segment`: `<stem>.tracks.wav`.
+    /// The interleaved track WAV path beside `segment`:
+    /// `<stem>.tracks.wav`.
     pub(crate) fn path(segment: &Path) -> PathBuf {
         let stem = segment
             .file_stem()
             .map_or_else(|| "segment".into(), |stem| stem.to_string_lossy());
         recording_parent(segment).join(format!("{stem}.tracks.wav"))
+    }
+
+    /// Every file this map writes beside `segment`: one interleaved file or
+    /// one split file per track.
+    pub(crate) fn paths_for(
+        segment: &Path,
+        map: &RecorderTrackMap,
+        mode: TrackFileMode,
+    ) -> Vec<PathBuf> {
+        let stem = segment
+            .file_stem()
+            .map_or_else(|| "segment".into(), |stem| stem.to_string_lossy());
+        match mode {
+            TrackFileMode::Interleaved => vec![Self::path(segment)],
+            TrackFileMode::SplitPerTrack => map
+                .tracks()
+                .iter()
+                .enumerate()
+                .map(|(index, track)| {
+                    recording_parent(segment).join(fm_record::split_track_file_name(
+                        &stem,
+                        index,
+                        track.name(),
+                    ))
+                })
+                .collect(),
+        }
+    }
+
+    /// The files this recorder writes, in sink order.
+    #[must_use]
+    pub(crate) fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
+    /// Whether this recorder writes one interleaved file or one per track.
+    #[must_use]
+    pub(crate) const fn mode(&self) -> TrackFileMode {
+        self.mode
     }
 
     /// Creates the WAV and validates the map against the mixer's channel
@@ -147,9 +189,14 @@ impl TrackWavState {
     ) -> Result<Self, String> {
         map.validate_against_channels(channels)
             .map_err(|error| error.to_string())?;
-        let path = Self::path(segment);
-        let file = File::create(&path)
-            .map_err(|error| format!("track WAV {}: {error}", path.display()))?;
+        let mode = TrackFileMode::from(map.layout());
+        let paths = Self::paths_for(segment, &map, mode);
+        let mut sinks: Vec<Box<dyn fm_record::WavSink>> = Vec::with_capacity(paths.len());
+        for path in &paths {
+            let file = File::create(path)
+                .map_err(|error| format!("track WAV {}: {error}", path.display()))?;
+            sinks.push(Box::new(file));
+        }
         let options = TrackWavOptions {
             sample_rate,
             format: WavSampleFormat::Pcm16,
@@ -157,17 +204,14 @@ impl TrackWavState {
             bext: None,
             buffer_frames: 1024,
         };
-        let recorder = TrackWavRecorder::create(
-            map.clone(),
-            TrackFileMode::Interleaved,
-            &options,
-            vec![Box::new(file)],
-        )
-        .map_err(|error| error.to_string())?;
+        let recorder = TrackWavRecorder::create(map.clone(), mode, &options, sinks)
+            .map_err(|error| error.to_string())?;
         let scratch = vec![Vec::new(); map.inventory().buses().len()];
         Ok(Self {
             map,
+            mode,
             recorder: Some(recorder),
+            paths,
             scratch,
         })
     }

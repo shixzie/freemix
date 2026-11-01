@@ -20,6 +20,15 @@ pub enum TrackFileMode {
     SplitPerTrack,
 }
 
+impl From<crate::track_map::TrackMapLayout> for TrackFileMode {
+    fn from(layout: crate::track_map::TrackMapLayout) -> Self {
+        match layout {
+            crate::track_map::TrackMapLayout::Interleaved => Self::Interleaved,
+            crate::track_map::TrackMapLayout::SplitPerTrack => Self::SplitPerTrack,
+        }
+    }
+}
+
 /// Shared file settings for every file a [`TrackWavRecorder`] writes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrackWavOptions {

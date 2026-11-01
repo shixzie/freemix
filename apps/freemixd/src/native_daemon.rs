@@ -934,13 +934,19 @@ impl NativeDaemon {
         let Some(mut track) = self.record_track_wavs[slot].take() else {
             return;
         };
+        let mode = if track.mode() == TrackFileMode::SplitPerTrack {
+            "split"
+        } else {
+            "interleaved"
+        };
+        let files = track.paths().len();
         match track.finish() {
             Ok(()) => eprintln!(
-                "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus=finalized",
+                "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus=finalized\tmode={mode}\tfiles={files}",
                 slot + 1
             ),
             Err(error) => eprintln!(
-                "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus=failed\terror={}",
+                "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus=failed\tmode={mode}\tfiles={files}\terror={}",
                 slot + 1,
                 diagnostic_field(&error)
             ),

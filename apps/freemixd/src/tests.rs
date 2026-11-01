@@ -12850,3 +12850,77 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
         .collect();
     assert_eq!(samples, [8192, 16_384, 24_576, 16_384, 24_576, 8192]);
 }
+
+/// AU-010: a split-layout map writes one WAV per track with its own channels
+/// and samples.
+#[cfg(feature = "native-media")]
+#[test]
+fn a_split_track_map_writes_one_file_per_track() {
+    use fm_record::{
+        BusInventory, RecordBus, RecordTrack, RecorderTrackMap, TrackMapLayout, TrackSource,
+        read_wav_info,
+    };
+    use fm_types::audio_bus::AuxBusNumber;
+
+    let directory = tempfile::tempdir().unwrap();
+    let segment = directory.path().join("show-0001.mp4");
+    let bus = AuxBusNumber::new(1).unwrap();
+    let map = RecorderTrackMap::new(
+        vec![
+            RecordTrack::stereo("Program", TrackSource::master(0), TrackSource::master(1)),
+            RecordTrack::mono("Bus A", TrackSource::new(RecordBus::Aux(bus), 1)),
+        ],
+        BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(bus), 2)]).unwrap(),
+    )
+    .unwrap()
+    .with_layout(TrackMapLayout::SplitPerTrack);
+    let mut track = TrackWavState::create(map, &segment, 48_000, 2).unwrap();
+    assert_eq!(track.mode(), fm_record::TrackFileMode::SplitPerTrack);
+    assert_eq!(
+        track
+            .paths()
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        ["show-0001_01_Program.wav", "show-0001_02_Bus_A.wav"]
+    );
+    let timing = MediaTiming::new(
+        OriginalTimestamp::new(
+            MediaTimestamp::new(0),
+            fm_frame::TimeBase::new(1, 48_000).unwrap(),
+        ),
+        NormalizedTimestamp::from_nanos(0),
+        NormalizedDuration::from_nanos(41_666_667).unwrap(),
+        native_clock_domain(),
+        SequenceNumber::new(0),
+    )
+    .unwrap();
+    let audio = AudioBlock::new(
+        timing,
+        SampleRate::new(48_000).unwrap(),
+        ChannelLayout::stereo(),
+        vec![vec![0.25, 0.5], vec![0.5, 0.75]],
+    )
+    .unwrap();
+    let aux = vec![vec![0.0, 0.0], vec![0.75, 0.25]];
+    track.write(&audio, &aux, 2).unwrap();
+    track.finish().unwrap();
+
+    let program = track.paths()[0].clone();
+    let bus_a = track.paths()[1].clone();
+    let mut file = File::open(&program).unwrap();
+    let program_info = read_wav_info(&mut file).unwrap();
+    assert_eq!(program_info.spec.channels, 2);
+    assert_eq!(program_info.frames(), 2);
+    let mut file = File::open(&bus_a).unwrap();
+    let bus_info = read_wav_info(&mut file).unwrap();
+    assert_eq!(bus_info.spec.channels, 1);
+    assert_eq!(bus_info.frames(), 2);
+    let data = fs::read(&bus_a).unwrap();
+    let offset = usize::try_from(bus_info.data_offset).unwrap();
+    let samples: Vec<i16> = data[offset..]
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect();
+    assert_eq!(samples, [24_576, 8192]);
+}

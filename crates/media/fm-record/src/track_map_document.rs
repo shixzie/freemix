@@ -11,7 +11,7 @@ use fm_types::audio_bus::AuxBusNumber;
 
 use crate::track_map::{
     BusInventory, MAX_INVENTORY_BUSES, MAX_RECORDER_TRACKS, RecordBus, RecordTrack,
-    RecorderTrackMap, TrackMapError, TrackSource,
+    RecorderTrackMap, TrackMapError, TrackMapLayout, TrackSource,
 };
 
 /// Why a track-map document could not be restored.
@@ -19,6 +19,8 @@ use crate::track_map::{
 pub enum TrackMapDocumentError {
     /// The first line is not the current document header.
     Header,
+    /// The layout line is malformed or appears after other lines.
+    Layout,
     /// An inventory line is missing, malformed, duplicated, or out of order.
     Inventory,
     /// A track line is missing, malformed, or over the track limit.
@@ -33,6 +35,7 @@ impl fmt::Display for TrackMapDocumentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Header => formatter.write_str("record track-map document header is unknown"),
+            Self::Layout => formatter.write_str("record track-map layout line is malformed"),
             Self::Inventory => formatter.write_str("record track-map inventory line is malformed"),
             Self::Track => formatter.write_str("record track-map track line is malformed"),
             Self::Order => formatter.write_str("record track-map inventory is not in bus order"),
@@ -64,6 +67,9 @@ impl RecorderTrackMap {
     pub fn to_document(&self) -> String {
         use fmt::Write as _;
         let mut output = String::from("freemix-record-track-map 1\n");
+        if self.layout() == TrackMapLayout::SplitPerTrack {
+            output.push_str("layout split\n");
+        }
         let mut buses = self.inventory().buses().to_vec();
         buses.sort_unstable();
         for (bus, channels) in buses {
@@ -91,10 +97,22 @@ impl RecorderTrackMap {
         if lines.next() != Some("freemix-record-track-map 1") {
             return Err(TrackMapDocumentError::Header);
         }
+        let mut layout = TrackMapLayout::Interleaved;
         let mut inventory: Vec<(RecordBus, u16)> = Vec::new();
         let mut tracks: Vec<RecordTrack> = Vec::new();
         for line in lines {
-            if let Some(rest) = line.strip_prefix("inventory ") {
+            if let Some(rest) = line.strip_prefix("layout ") {
+                if layout != TrackMapLayout::Interleaved
+                    || !inventory.is_empty()
+                    || !tracks.is_empty()
+                {
+                    return Err(TrackMapDocumentError::Layout);
+                }
+                layout = match rest {
+                    "split" => TrackMapLayout::SplitPerTrack,
+                    _ => return Err(TrackMapDocumentError::Layout),
+                };
+            } else if let Some(rest) = line.strip_prefix("inventory ") {
                 if !tracks.is_empty() {
                     return Err(TrackMapDocumentError::Order);
                 }
@@ -154,7 +172,9 @@ impl RecorderTrackMap {
             return Err(TrackMapDocumentError::Track);
         }
         let inventory = BusInventory::new(inventory).map_err(TrackMapDocumentError::Map)?;
-        Self::new(tracks, inventory).map_err(TrackMapDocumentError::Map)
+        Self::new(tracks, inventory)
+            .map(|map| map.with_layout(layout))
+            .map_err(TrackMapDocumentError::Map)
     }
 }
 
@@ -260,6 +280,16 @@ mod tests {
     }
 
     #[test]
+    fn split_track_map_documents_round_trip() {
+        let map = map().with_layout(TrackMapLayout::SplitPerTrack);
+        let document = map.to_document();
+        assert!(document.starts_with("freemix-record-track-map 1\nlayout split\n"));
+        let restored = RecorderTrackMap::from_document(&document).unwrap();
+        assert_eq!(restored, map);
+        assert_eq!(restored.to_document(), document);
+    }
+
+    #[test]
     fn track_map_documents_are_strict() {
         for document in [
             "",
@@ -277,6 +307,9 @@ mod tests {
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d aux:62 0\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d aux:8 0\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d aux:0 0\n",
+            "freemix-record-track-map 1\nlayout stereo\ninventory master 2\ntrack 4d master 0\n",
+            "freemix-record-track-map 1\nlayout split\nlayout split\ninventory master 2\ntrack 4d master 0\n",
+            "freemix-record-track-map 1\ninventory master 2\nlayout split\ntrack 4d master 0\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d master 0 extra\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d master 0\ninventory master 2\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d master 0\nextra\n",
