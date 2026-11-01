@@ -7090,6 +7090,24 @@ mod tests {
         ));
     }
 
+    /// SW-013: clock readings are a request, a control is not a command,
+    /// and only two reading requests coalesce.
+    #[test]
+    fn clock_intents_are_not_commands_and_only_readings_coalesce() {
+        assert!(intent_payload(StudioIntent::RequestClocks, None).is_err());
+        let control = StudioIntent::ClockControl {
+            name: "Countdown".to_owned(),
+            operation: fm_protocol::ClockControlOperation::Start,
+        };
+        assert!(intent_payload(control.clone(), None).is_err());
+        let mut clocks = StudioIntent::RequestClocks;
+        assert!(coalesce_adjacent_intent(
+            &mut clocks,
+            StudioIntent::RequestClocks
+        ));
+        assert!(!coalesce_adjacent_intent(&mut clocks, control));
+    }
+
     /// OR-011: the Fullscreen outputs dialog's intents become the
     /// Protocol 2.42 slot commands; an inventory request is no command and
     /// one queued request answers every later one.

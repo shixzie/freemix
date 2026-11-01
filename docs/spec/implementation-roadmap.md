@@ -5489,8 +5489,12 @@ kind refuses the operation; the snapshot carries the show's clock names
 (Protocol 2.152), so Studio lists them and authors the step's clock and
 operation in the cue editor. A script's `clock NAME, OPERATION[,
 VALUE]` action performs the same operation under the same permission.
+Studio's View ▸ Production clocks window lists every clock with its kind,
+state, and reading, refreshes the readings about once a second while it is
+open, and operates a timer as an Operator: start, pause, reset, set, adjust,
+and preset, with a refused control showing the daemon's reason.
 Remaining gaps:
-there is no full clock UI; a title element may name a project production
+a title element may name a project production
 clock, which a caller-supplied shared registry resolves at render time (the
 template's own time-of-day, countdown-to, and since-take clocks still work
 too); the simulated daemon's title thumbnails, the native title worker, and
