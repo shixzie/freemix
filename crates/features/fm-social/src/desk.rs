@@ -816,3 +816,268 @@ fn truncate_chars(text: &str, max_chars: Option<usize>) -> String {
         None => text.to_owned(),
     }
 }
+
+/// Why a moderation-desk document could not be restored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeskDocumentError {
+    /// The first line is not the current document header.
+    Header,
+    /// The required config line is missing, has the wrong fields, or has a
+    /// non-canonical value.
+    Config,
+    /// An operator line is missing, malformed, or has an invalid role.
+    Operator,
+    /// Operator IDs are not in strictly ascending order.
+    Order,
+    /// Two operator lines name the same ID.
+    DuplicateOperator,
+    /// More operators than the configured maximum.
+    TooManyOperators,
+    /// No operator is an admin.
+    NoAdmin,
+    /// A configured capacity is zero.
+    ZeroCapacity,
+    /// The rotation dwell is zero.
+    ZeroDwell,
+}
+
+impl fmt::Display for DeskDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Header => "moderation desk document header is missing or unknown",
+            Self::Config => "moderation desk document config line is malformed",
+            Self::Operator => "moderation desk document operator line is malformed",
+            Self::Order => "moderation desk operators are not in ascending ID order",
+            Self::DuplicateOperator => "moderation desk document repeats an operator",
+            Self::TooManyOperators => "moderation desk document has too many operators",
+            Self::NoAdmin => "moderation desk document has no admin",
+            Self::ZeroCapacity => "moderation desk capacities must be non-zero",
+            Self::ZeroDwell => "moderation desk rotation dwell must be non-zero",
+        })
+    }
+}
+
+impl Error for DeskDocumentError {}
+
+impl Role {
+    /// The document token of the role.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Viewer => "viewer",
+            Self::Moderator => "moderator",
+            Self::Producer => "producer",
+            Self::Admin => "admin",
+        }
+    }
+
+    /// The role named by `token`.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Some(match token {
+            "viewer" => Self::Viewer,
+            "moderator" => Self::Moderator,
+            "producer" => Self::Producer,
+            "admin" => Self::Admin,
+            _ => return None,
+        })
+    }
+}
+
+impl ModerationDesk {
+    /// Encodes the desk's config and operator state as canonical text:
+    ///
+    /// ```text
+    /// freemix-social-desk 1
+    /// config <audit> <rotation> <max operators> <dwell ms>
+    /// operator <id hex> <role>
+    /// ```
+    #[must_use]
+    pub fn to_document(&self) -> String {
+        use std::fmt::Write as _;
+        let mut output = String::from("freemix-social-desk 1\n");
+        writeln!(
+            output,
+            "config {} {} {} {}",
+            self.config.audit_capacity,
+            self.config.rotation_capacity,
+            self.config.max_operators,
+            self.config.rotation_dwell.get()
+        )
+        .expect("writing to a string cannot fail");
+        for (operator, role) in &self.operators {
+            writeln!(
+                output,
+                "operator {} {}",
+                hex_text(operator.as_str()),
+                role.token()
+            )
+            .expect("writing to a string cannot fail");
+        }
+        output
+    }
+
+    /// Restores a desk's config and operator state from `document` over
+    /// `social`. The hidden, rotation, on-air, and audit state starts empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeskDocumentError`] for anything but the exact contract.
+    pub fn from_document(
+        document: &str,
+        social: SocialAggregator,
+    ) -> Result<Self, DeskDocumentError> {
+        let mut lines = document.lines();
+        if lines.next() != Some("freemix-social-desk 1") {
+            return Err(DeskDocumentError::Header);
+        }
+        let Some(config_line) = lines.next() else {
+            return Err(DeskDocumentError::Config);
+        };
+        let parts: Vec<&str> = config_line.split(' ').collect();
+        let ["config", audit, rotation, operators, dwell] = parts.as_slice() else {
+            return Err(DeskDocumentError::Config);
+        };
+        let capacity = |value: &str| {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or(DeskDocumentError::ZeroCapacity)
+        };
+        let dwell = dwell
+            .parse::<u64>()
+            .ok()
+            .and_then(NonZeroU64::new)
+            .ok_or(DeskDocumentError::ZeroDwell)?;
+        let config = DeskConfig {
+            audit_capacity: capacity(audit)?,
+            rotation_capacity: capacity(rotation)?,
+            max_operators: capacity(operators)?,
+            rotation_dwell: dwell,
+        };
+        let mut defined = BTreeMap::new();
+        let mut previous: Option<String> = None;
+        for line in lines {
+            let parts: Vec<&str> = line.split(' ').collect();
+            let ["operator", id, role] = parts.as_slice() else {
+                return Err(DeskDocumentError::Operator);
+            };
+            let id = unhex_text(id).ok_or(DeskDocumentError::Operator)?;
+            if let Some(previous) = &previous {
+                if id == *previous {
+                    return Err(DeskDocumentError::DuplicateOperator);
+                }
+                if id < *previous {
+                    return Err(DeskDocumentError::Order);
+                }
+            }
+            previous = Some(id.clone());
+            let role = Role::from_token(role).ok_or(DeskDocumentError::Operator)?;
+            defined.insert(OperatorId::new(id), role);
+        }
+        if defined.is_empty() {
+            return Err(DeskDocumentError::Operator);
+        }
+        if defined.len() > config.max_operators {
+            return Err(DeskDocumentError::TooManyOperators);
+        }
+        if !defined.values().any(|role| *role == Role::Admin) {
+            return Err(DeskDocumentError::NoAdmin);
+        }
+        Ok(Self {
+            social,
+            config,
+            operators: defined,
+            hidden: BTreeSet::new(),
+            rotation: Vec::new(),
+            rotation_cursor: 0,
+            on_air: None,
+            on_air_generation: 0,
+            audit: VecDeque::new(),
+            next_sequence: 1,
+            evicted_audit_entries: 0,
+            last_time: Timestamp(0),
+        })
+    }
+}
+
+fn hex_text(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut output = String::with_capacity(text.len() * 2);
+    for byte in text.bytes() {
+        write!(output, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    output
+}
+
+fn unhex_text(text: &str) -> Option<String> {
+    if text.is_empty() || text.len() % 2 != 0 {
+        return None;
+    }
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    };
+    let bytes = text.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks(2) {
+        output.push((digit(pair[0])? << 4) | digit(pair[1])?);
+    }
+    String::from_utf8(output).ok()
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+    use crate::{ContentPolicy, ProfanityPolicy};
+
+    fn social() -> SocialAggregator {
+        SocialAggregator::new(
+            8,
+            ContentPolicy {
+                profanity: ProfanityPolicy::default(),
+                redactions: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn desk_documents_round_trip_config_and_operators() {
+        let document = "freemix-social-desk 1\n\
+                        config 512 16 4 4000\n\
+                        operator 616c696365 admin\n\
+                        operator 626f62 moderator\n";
+        let desk = ModerationDesk::from_document(document, social()).unwrap();
+        assert_eq!(desk.config().audit_capacity, 512);
+        assert_eq!(desk.config().rotation_capacity, 16);
+        assert_eq!(desk.config().max_operators, 4);
+        assert_eq!(desk.config().rotation_dwell.get(), 4000);
+        assert_eq!(desk.role(&OperatorId::new("alice")), Some(Role::Admin));
+        assert_eq!(desk.role(&OperatorId::new("bob")), Some(Role::Moderator));
+        assert_eq!(desk.to_document(), document);
+    }
+
+    #[test]
+    fn desk_documents_are_strict() {
+        for document in [
+            "",
+            "freemix-social-desk 2\nconfig 1 1 1 1\noperator 61 admin\n",
+            "freemix-social-desk 1\n",
+            "freemix-social-desk 1\nconfig 0 16 4 4000\noperator 61 admin\n",
+            "freemix-social-desk 1\nconfig 512 16 4 0\noperator 61 admin\n",
+            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator 61 viewer\n",
+            "freemix-social-desk 1\nconfig 512 16 1 4000\noperator 61 admin\noperator 62 admin\n",
+            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator 62 admin\noperator 61 admin\n",
+            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator 61 admin\noperator 61 admin\n",
+            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator zz admin\n",
+            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator 61 admin\nextra\n",
+        ] {
+            assert!(
+                ModerationDesk::from_document(document, social()).is_err(),
+                "{document:?}"
+            );
+        }
+    }
+}

@@ -8,8 +8,8 @@ mod desk;
 
 pub use desk::{
     Actor, AuditAction, AuditEntry, AuditResult, DeskCommand, DeskConfig, DeskConfigError,
-    DeskError, ModerationDesk, OnAir, OnAirSource, Role, TitleMappingError, TitleSyncError,
-    TypedTitleBinding, TypedTitleMapping,
+    DeskDocumentError, DeskError, ModerationDesk, OnAir, OnAirSource, Role, TitleMappingError,
+    TitleSyncError, TypedTitleBinding, TypedTitleMapping,
 };
 
 macro_rules! string_id {

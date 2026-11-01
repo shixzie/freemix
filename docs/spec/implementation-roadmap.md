@@ -6407,9 +6407,11 @@ messages can be hidden, pinned on air, or rotated round-robin on a
 caller-supplied clock, and the on-air message is written into typed
 `fm-titles` fields atomically at a scene revision. Remaining gaps: no real
 provider adapters, transport, or authorization flows, no browser approval UI
-or control-protocol wiring, no persistence of desk, audit, or operator state,
-no cross-provider de-duplication, no unbounded-store limits in the
-aggregator, and no authenticated operator identity. `GX-010` remains blocked
+or control-protocol wiring, no persistence of the audit log or the desk's
+hidden, rotation, and on-air message state (the config and operator roles now
+round-trip as a canonical desk document), no cross-provider de-duplication, no
+unbounded-store limits in the aggregator, and no authenticated operator
+identity. `GX-010` remains blocked
 on exact authorized integrations.
 
 Current implementation boundary for virtual sets (`IN-021`): `fm-virtual-set`
