@@ -164,6 +164,8 @@ pub fn property_name(locale: Locale, property: Property) -> &'static str {
         Property::CropRight => Msg::AnimPropCropRight,
         Property::CropBottom => Msg::AnimPropCropBottom,
         Property::Color => Msg::AddInputColour,
+        Property::MatteInvert => Msg::AnimPropMatteInvert,
+        Property::MatteFeather => Msg::AnimPropMatteFeather,
         _ => unreachable!("every matte property has its own name above"),
     })
 }
@@ -189,6 +191,8 @@ pub fn property_hover(locale: Locale, property: Property) -> &'static str {
         Property::CropRight => Msg::AnimPropCropRightHover,
         Property::CropBottom => Msg::AnimPropCropBottomHover,
         Property::Color => Msg::AnimPropColourHover,
+        Property::MatteInvert => Msg::AnimPropMatteInvertHover,
+        Property::MatteFeather => Msg::AnimPropMatteFeatherHover,
         _ => unreachable!("every matte property has its own hover above"),
     })
 }
@@ -204,6 +208,7 @@ pub const fn property_unit(property: Property) -> (&'static str, f64) {
         Property::Rotation => ("°", 1_000.0),
         Property::Opacity => ("%", 2.55),
         Property::Color => ("", 1.0),
+        Property::MatteInvert => ("", 1.0),
         _ => (" px", 1.0),
     }
 }

@@ -4359,6 +4359,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AnimPropCropBottomHover,
         t("Píxeles recortados del borde inferior"),
     ),
+    (Msg::AnimPropMatteInvert, t("Invertir máscara")),
+    (
+        Msg::AnimPropMatteInvertHover,
+        t("Si la máscara conserva el polígono o todo lo que queda fuera"),
+    ),
+    (Msg::AnimPropMatteFeather, t("Suavizado de máscara")),
+    (
+        Msg::AnimPropMatteFeatherHover,
+        t("Píxeles que el borde de la máscara suaviza hacia cada lado"),
+    ),
     (
         Msg::AnimPropColourHover,
         t("Color que sustituye al color diseñado"),

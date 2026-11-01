@@ -1744,6 +1744,12 @@ messages! {
     AnimPropCropTopHover => t("Pixels cropped from the top edge"),
     AnimPropCropRightHover => t("Pixels cropped from the right edge"),
     AnimPropCropBottomHover => t("Pixels cropped from the bottom edge"),
+    AnimPropMatteInvert => t("Matte invert"),
+    AnimPropMatteInvertHover => {
+        t("Whether the garbage matte keeps the polygon or everything outside it")
+    },
+    AnimPropMatteFeather => t("Matte feather"),
+    AnimPropMatteFeatherHover => t("Pixels the garbage matte's edge softens over to each side"),
     AnimPropColourHover => t("Colour that replaces the designed colour"),
     AnimPresetSlideFromLeft => t("Slide from left"),
     AnimPresetSlideFromRight => t("Slide from right"),
