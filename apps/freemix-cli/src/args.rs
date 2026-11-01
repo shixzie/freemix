@@ -4883,13 +4883,19 @@ fn parse_track_map_export(
     Ok(Command::TrackMapExport { path, output })
 }
 
+fn record_track_map_slot(value: &str) -> Result<fm_model::RecorderSlot, ArgsError> {
+    let slot: u8 = number(value, "recorder slot (1 or 2)")?;
+    fm_model::RecorderSlot::new(slot).map_err(|_| ArgsError::InvalidChoice {
+        field: "recorder slot (1 or 2)",
+        value: value.to_owned(),
+    })
+}
+
 fn parse_record_track_map_import(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
-    let slot = recorder_slot(&required(&mut arguments, "recorder slot")?)?;
-    let slot = fm_model::RecorderSlot::new(slot)
-        .map_err(|_| ArgsError::InvalidRecorder(slot.to_string()))?;
+    let slot = record_track_map_slot(&required(&mut arguments, "recorder slot")?)?;
     let document = required_path(&mut arguments, "track-map document")?;
     reject_extra(&mut arguments)?;
     Ok(Command::RecordTrackMapImport {
@@ -4903,9 +4909,7 @@ fn parse_record_track_map_export(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
-    let slot = recorder_slot(&required(&mut arguments, "recorder slot")?)?;
-    let slot = fm_model::RecorderSlot::new(slot)
-        .map_err(|_| ArgsError::InvalidRecorder(slot.to_string()))?;
+    let slot = record_track_map_slot(&required(&mut arguments, "recorder slot")?)?;
     reject_extra(&mut arguments)?;
     Ok(Command::RecordTrackMapExport { path, slot })
 }

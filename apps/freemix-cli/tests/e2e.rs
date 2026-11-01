@@ -12801,6 +12801,61 @@ fn ppm_pixel(path: &Path, width: u32, height: u32, x: u32, y: u32) -> [u8; 3] {
     [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
 }
 
+#[test]
+fn record_track_map_commands_store_and_print_the_bundle_document() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let document = context.root.join("track-map.txt");
+    let text = "freemix-record-track-map 1\n\
+                inventory master 2\n\
+                track 4d6173746572 master 0 master 1\n";
+    fs::write(&document, text).unwrap();
+
+    let imported = invoke(&[
+        "record-track-map-import",
+        context.project_path(),
+        "1",
+        document.to_str().unwrap(),
+    ]);
+    assert_success(&imported);
+    assert!(
+        stdout(&imported).starts_with("record-track-map-import: 1 tracks to slot 1"),
+        "{}",
+        stdout(&imported)
+    );
+    let stored = context.project.join("recorders/1.trackmap");
+    assert_eq!(fs::read_to_string(&stored).unwrap(), text);
+
+    let exported = invoke(&["record-track-map-export", context.project_path(), "1"]);
+    assert_success(&exported);
+    assert_eq!(stdout(&exported), text.trim_end());
+
+    let missing = invoke(&["record-track-map-export", context.project_path(), "2"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("slot 2 has no track map"));
+
+    let bad_slot = invoke(&[
+        "record-track-map-import",
+        context.project_path(),
+        "3",
+        document.to_str().unwrap(),
+    ]);
+    assert!(!bad_slot.status.success());
+    assert!(String::from_utf8_lossy(&bad_slot.stderr).contains("recorder slot (1 or 2)"));
+
+    let invalid = context.root.join("invalid.txt");
+    fs::write(&invalid, "freemix-record-track-map 2\n").unwrap();
+    let refused = invoke(&[
+        "record-track-map-import",
+        context.project_path(),
+        "1",
+        invalid.to_str().unwrap(),
+    ]);
+    assert!(!refused.status.success());
+    assert_eq!(fs::read_to_string(&stored).unwrap(), text);
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 fn invoke(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_freemix-cli"))
         .args(arguments)
