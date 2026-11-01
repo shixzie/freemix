@@ -194,7 +194,7 @@ fn execute_compat(
                     next_command,
                 )?;
             }
-            let duration_frames = millis_to_frames(snapshot, duration_millis);
+            let duration_frames = millis_to_frames(snapshot.frame_rate, duration_millis);
             let payload = match effect {
                 TransitionFavoriteEffect::Cut => CommandPayload::Cut,
                 TransitionFavoriteEffect::Mix(kind) => CommandPayload::Transition {
@@ -298,7 +298,7 @@ fn execute_compat(
                 now_millis,
                 CommandPayload::FadeToBlack {
                     active,
-                    duration_frames: millis_to_frames(snapshot, *transition_millis),
+                    duration_frames: millis_to_frames(snapshot.frame_rate, *transition_millis),
                 },
                 next_command,
             )
@@ -313,9 +313,9 @@ fn wire_channel(channel: u8) -> Result<WireOverlayChannelId, String> {
     WireOverlayChannelId::new(channel).ok_or_else(|| format!("invalid overlay channel: {channel}"))
 }
 
-fn millis_to_frames(snapshot: &SnapshotMessage, millis: u32) -> u32 {
-    let numerator = u64::from(snapshot.frame_rate.numerator());
-    let denominator = u64::from(snapshot.frame_rate.denominator());
+fn millis_to_frames(frame_rate: fm_types::FrameRate, millis: u32) -> u32 {
+    let numerator = u64::from(frame_rate.numerator());
+    let denominator = u64::from(frame_rate.denominator());
     let frames = u64::from(millis) * numerator / (1_000 * denominator);
     u32::try_from(frames.max(1)).unwrap_or(u32::MAX)
 }
@@ -378,5 +378,40 @@ fn submit(
     match submission.output.result {
         CommandResult::Accepted { .. } => Ok(()),
         CommandResult::Rejected { message, .. } => Err(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn millis_to_frames_uses_the_snapshot_rate_and_never_returns_zero() {
+        let thirty = fm_types::FrameRate::new(30, 1).unwrap();
+        assert_eq!(millis_to_frames(thirty, 1_000), 30);
+        assert_eq!(millis_to_frames(thirty, 33), 1);
+        assert_eq!(millis_to_frames(thirty, 0), 1);
+        let ntsc = fm_types::FrameRate::new(30_000, 1_001).unwrap();
+        assert_eq!(millis_to_frames(ntsc, 1_000), 29);
+    }
+
+    #[test]
+    fn recording_payload_targets_the_first_slot() {
+        assert!(matches!(
+            recording_payload(true),
+            CommandPayload::RecordStart { recorder } if recorder == WireRecorderSlot::FIRST
+        ));
+        assert!(matches!(
+            recording_payload(false),
+            CommandPayload::RecordStop { recorder } if recorder == WireRecorderSlot::FIRST
+        ));
+    }
+
+    #[test]
+    fn wire_channels_are_one_through_eight() {
+        assert_eq!(wire_channel(1).unwrap().number(), 1);
+        assert_eq!(wire_channel(8).unwrap().number(), 8);
+        assert!(wire_channel(0).is_err());
+        assert!(wire_channel(9).is_err());
     }
 }
