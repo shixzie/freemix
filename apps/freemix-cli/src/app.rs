@@ -1091,6 +1091,8 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::ScoreboardCheck { path } => scoreboard_check(&path)?,
         Command::SocialDeskCheck { path } => social_desk_check(&path)?,
         Command::SocialDeskExport { path, output } => social_desk_export(&path, &output)?,
+        Command::TrackMapCheck { path } => track_map_check(&path)?,
+        Command::TrackMapExport { path, output } => track_map_export(&path, &output)?,
         Command::ScoreboardImport {
             path,
             input,
@@ -6352,6 +6354,42 @@ fn social_desk_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn track_map_check(path: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("track map: {error}")))?;
+    let map = fm_record::RecorderTrackMap::from_document(&text)
+        .map_err(|error| AppFailure(format!("track map: {error}")))?;
+    println!(
+        "TrackMap(inventory_buses={}, tracks={}, channels={})",
+        map.inventory().buses().len(),
+        map.tracks().len(),
+        map.total_channels(),
+    );
+    for track in map.tracks() {
+        println!(
+            "TrackMapTrack(name={:?}, channels={})",
+            track.name(),
+            track.sources().len()
+        );
+    }
+    Ok(())
+}
+
+fn track_map_export(path: &Path, output: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("track map: {error}")))?;
+    let map = fm_record::RecorderTrackMap::from_document(&text)
+        .map_err(|error| AppFailure(format!("track map: {error}")))?;
+    fs::write(output, map.to_document())
+        .map_err(|error| AppFailure(format!("track map export: {error}")))?;
+    println!(
+        "track-map-export: {} tracks to {}",
+        map.tracks().len(),
+        output.display()
+    );
+    Ok(())
+}
+
 fn scoreboard_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
     let text = fs::read_to_string(document)
         .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
@@ -7557,6 +7595,8 @@ Usage:
   freemix-cli scoreboard-check <scoreboard.txt>
   freemix-cli social-desk-check <desk.txt>
   freemix-cli social-desk-export <desk.txt> <output.txt>
+  freemix-cli track-map-check <track-map.txt>
+  freemix-cli track-map-export <track-map.txt> <output.txt>
     validates or rewrites a moderation desk document's config and operator roles (GX-010)
   freemix-cli scoreboard-import <show.freemix> <title-input> <scoreboard.txt>
   freemix-cli scoreboard-export <show.freemix> <title-input>

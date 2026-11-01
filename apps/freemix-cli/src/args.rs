@@ -1035,6 +1035,15 @@ pub enum Command {
         path: PathBuf,
         output: PathBuf,
     },
+    /// Validates a recorder track-map document file (AU-010).
+    TrackMapCheck {
+        path: PathBuf,
+    },
+    /// Writes a canonical recorder track-map document (AU-010).
+    TrackMapExport {
+        path: PathBuf,
+        output: PathBuf,
+    },
     /// Stores a canonical scoreboard document on a title input (GX-003).
     ScoreboardImport {
         path: PathBuf,
@@ -2603,6 +2612,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "scoreboard-check" => parse_scoreboard_check(arguments),
         "social-desk-check" => parse_social_desk_check(arguments),
         "social-desk-export" => parse_social_desk_export(arguments),
+        "track-map-check" => parse_track_map_check(arguments),
+        "track-map-export" => parse_track_map_export(arguments),
         "scoreboard-import" => parse_scoreboard_import(arguments),
         "scoreboard-export" => parse_scoreboard_export(arguments),
         "crawl-check" => parse_crawl_check(arguments),
@@ -4820,6 +4831,23 @@ fn parse_social_desk_export(
     let output = required_path(&mut arguments, "output")?;
     reject_extra(&mut arguments)?;
     Ok(Command::SocialDeskExport { path, output })
+}
+
+fn parse_track_map_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "track-map document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::TrackMapCheck { path })
+}
+
+fn parse_track_map_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "track-map document")?;
+    let output = required_path(&mut arguments, "output")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::TrackMapExport { path, output })
 }
 
 fn parse_scoreboard_import(

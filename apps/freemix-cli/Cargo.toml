@@ -23,6 +23,7 @@ fm-preset-file = { path = "../../crates/foundation/fm-preset-file" }
 fm-ptz = { path = "../../crates/features/fm-ptz" }
 fm-presentations = { path = "../../crates/features/fm-presentations" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
+fm-record = { path = "../../crates/media/fm-record" }
 fm-sim = { path = "../../crates/media/fm-sim" }
 fm-social = { path = "../../crates/features/fm-social" }
 fm-switcher = { path = "../../crates/features/fm-switcher" }

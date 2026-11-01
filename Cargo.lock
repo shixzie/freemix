@@ -2337,6 +2337,7 @@ dependencies = [
  "fm-preset-file",
  "fm-protocol",
  "fm-ptz",
+ "fm-record",
  "fm-script",
  "fm-sim",
  "fm-social",
