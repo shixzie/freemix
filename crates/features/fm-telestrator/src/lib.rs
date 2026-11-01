@@ -71,6 +71,8 @@ impl Point {
 pub const MAX_STAMP_DIMENSION: u32 = 4_096;
 /// Most pixels one image stamp may carry.
 pub const MAX_STAMP_PIXELS: u32 = 4_194_304;
+/// Longest text primitive, in UTF-8 bytes.
+pub const MAX_TEXT_BYTES: usize = 512;
 
 /// A non-premultiplied RGBA8 image a stroke stamps into its bounding box.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,6 +138,92 @@ impl ImageStamp {
             + usize::try_from(x).ok()?)
             * 4;
         self.pixels[offset..offset + 4].try_into().ok()
+    }
+}
+
+/// A text primitive a stroke stamps into its bounding box: the text itself
+/// plus a caller-rasterized 8-bit coverage mask in row-major order.
+///
+/// The model never parses fonts. A caller (the Studio telestrator or a test)
+/// rasterizes the text with its chosen face and hands the coverage here; the
+/// stroke tints that mask with its color and opacity when rendered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextStamp {
+    text: String,
+    width: u32,
+    height: u32,
+    coverage: Vec<u8>,
+}
+
+impl TextStamp {
+    /// Creates a text stamp from `text` and its coverage mask (one byte per
+    /// pixel, row-major, `255` fully covered).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidText`] for empty text, more than
+    /// [`MAX_TEXT_BYTES`], or control characters; [`ModelError::InvalidImage`]
+    /// for a zero or oversized dimension; [`ModelError::ImageTooLarge`] past
+    /// [`MAX_STAMP_PIXELS`]; or [`ModelError::ImageBytes`] when `coverage` is
+    /// not exactly `width * height` bytes.
+    pub fn new(
+        text: impl Into<String>,
+        width: u32,
+        height: u32,
+        coverage: Vec<u8>,
+    ) -> Result<Self, ModelError> {
+        let text = text.into();
+        if text.is_empty() || text.len() > MAX_TEXT_BYTES || text.chars().any(char::is_control) {
+            return Err(ModelError::InvalidText);
+        }
+        if width == 0 || height == 0 || width > MAX_STAMP_DIMENSION || height > MAX_STAMP_DIMENSION
+        {
+            return Err(ModelError::InvalidImage);
+        }
+        let count = width.checked_mul(height).ok_or(ModelError::ImageTooLarge)?;
+        if count > MAX_STAMP_PIXELS {
+            return Err(ModelError::ImageTooLarge);
+        }
+        if coverage.len() != usize::try_from(count).map_err(|_| ModelError::ImageTooLarge)? {
+            return Err(ModelError::ImageBytes);
+        }
+        Ok(Self {
+            text,
+            width,
+            height,
+            coverage,
+        })
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[must_use]
+    pub fn coverage(&self) -> &[u8] {
+        &self.coverage
+    }
+
+    /// The coverage of pixel `(x, y)`, or `None` outside the mask.
+    #[must_use]
+    pub fn alpha(&self, x: u32, y: u32) -> Option<u8> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let offset = usize::try_from(y).ok()? * usize::try_from(self.width).ok()?
+            + usize::try_from(x).ok()?;
+        self.coverage.get(offset).copied()
     }
 }
 
@@ -208,6 +296,9 @@ pub enum StrokeKind {
     /// An image stamped into the rectangle between its first and last
     /// points.
     Image,
+    /// A caller-rasterized text primitive stamped into the rectangle between
+    /// its first and last points.
+    Text,
     /// A freehand path that removes coverage from everything drawn before it
     /// (destination-out). Its color channels are ignored; color alpha and
     /// opacity scale the erase strength.
@@ -233,6 +324,9 @@ pub struct Stroke {
     /// The picture an [`StrokeKind::Image`] stroke stamps; `None` for every
     /// other kind.
     image: Option<ImageStamp>,
+    /// The text primitive a [`StrokeKind::Text`] stroke stamps; `None` for
+    /// every other kind.
+    text: Option<TextStamp>,
     finalized: bool,
 }
 
@@ -253,6 +347,9 @@ impl Stroke {
         if kind == StrokeKind::Image {
             return Err(ModelError::ImageRequired);
         }
+        if kind == StrokeKind::Text {
+            return Err(ModelError::TextRequired);
+        }
         style.validate()?;
         validate_points(&points)?;
         Ok(Self {
@@ -262,6 +359,7 @@ impl Stroke {
             style,
             points,
             image: None,
+            text: None,
             finalized: false,
         })
     }
@@ -287,6 +385,33 @@ impl Stroke {
             style,
             points,
             image: Some(image),
+            text: None,
+            finalized: false,
+        })
+    }
+
+    /// Creates a non-finalized text-stamp stroke from `text`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the style or points are invalid.
+    pub fn new_text(
+        id: StrokeId,
+        author: AuthorId,
+        style: StrokeStyle,
+        points: Vec<Point>,
+        text: TextStamp,
+    ) -> Result<Self, ModelError> {
+        style.validate()?;
+        validate_points(&points)?;
+        Ok(Self {
+            id,
+            author,
+            kind: StrokeKind::Text,
+            style,
+            points,
+            image: None,
+            text: Some(text),
             finalized: false,
         })
     }
@@ -295,6 +420,12 @@ impl Stroke {
     #[must_use]
     pub const fn image(&self) -> Option<&ImageStamp> {
         self.image.as_ref()
+    }
+
+    /// The text primitive a text-stamp stroke carries.
+    #[must_use]
+    pub const fn text(&self) -> Option<&TextStamp> {
+        self.text.as_ref()
     }
 
     #[must_use]
@@ -330,10 +461,17 @@ impl Stroke {
     fn validate(&self, max_points: usize) -> Result<(), ModelError> {
         self.style.validate()?;
         validate_points(&self.points)?;
-        match (self.kind, self.image.as_ref()) {
-            (StrokeKind::Image, None) => return Err(ModelError::ImageRequired),
-            (StrokeKind::Image, Some(_)) | (_, None) => {}
-            (_, Some(_)) => return Err(ModelError::ImageNotAllowed),
+        if self.kind == StrokeKind::Image && self.image.is_none() {
+            return Err(ModelError::ImageRequired);
+        }
+        if self.kind != StrokeKind::Image && self.image.is_some() {
+            return Err(ModelError::ImageNotAllowed);
+        }
+        if self.kind == StrokeKind::Text && self.text.is_none() {
+            return Err(ModelError::TextRequired);
+        }
+        if self.kind != StrokeKind::Text && self.text.is_some() {
+            return Err(ModelError::TextNotAllowed);
         }
         if self.points.len() > max_points {
             return Err(ModelError::PointLimitExceeded);
@@ -1381,6 +1519,9 @@ pub enum ModelError {
     ImageBytes,
     ImageRequired,
     ImageNotAllowed,
+    InvalidText,
+    TextRequired,
+    TextNotAllowed,
 }
 
 impl fmt::Display for ModelError {
@@ -1585,6 +1726,16 @@ fn render_stroke(layer: &mut RenderLayer, stroke: &Stroke) {
                 stroke.style,
             );
         }
+        StrokeKind::Text => {
+            let text = stroke.text.as_ref().expect("validated text stroke");
+            paint_text(
+                layer,
+                text,
+                points[0],
+                *points.last().expect("stroke has points"),
+                stroke.style,
+            );
+        }
     }
 }
 
@@ -1614,6 +1765,43 @@ fn paint_image(
             };
             let source = StrokeStyle {
                 color: Color::rgba(red, green, blue, alpha),
+                width: 1.0,
+                opacity: style.opacity,
+            };
+            blend_pixel(layer, x, y, source, 1.0, Blend::Over);
+        }
+    }
+}
+
+/// Stamps a text primitive's coverage into the axis-aligned rectangle between
+/// `from` and `to`, tinting it with the stroke color and opacity.
+fn paint_text(
+    layer: &mut RenderLayer,
+    text: &TextStamp,
+    from: ScreenPoint,
+    to: ScreenPoint,
+    style: StrokeStyle,
+) {
+    let min_x = clipped_floor(from.x.min(to.x), layer.width - 1);
+    let max_x = clipped_ceil(from.x.max(to.x), layer.width - 1);
+    let min_y = clipped_floor(from.y.min(to.y), layer.height - 1);
+    let max_y = clipped_ceil(from.y.max(to.y), layer.height - 1);
+    let span_x = f64::from(max_x - min_x + 1);
+    let span_y = f64::from(max_y - min_y + 1);
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let source_x = (((f64::from(x - min_x) + 0.5) / span_x) * f64::from(text.width))
+                .min(f64::from(text.width - 1)) as u32;
+            let source_y = (((f64::from(y - min_y) + 0.5) / span_y) * f64::from(text.height))
+                .min(f64::from(text.height - 1)) as u32;
+            let Some(alpha) = text.alpha(source_x, source_y) else {
+                continue;
+            };
+            if alpha == 0 {
+                continue;
+            }
+            let source = StrokeStyle {
+                color: Color::rgba(style.color.red, style.color.green, style.color.blue, alpha),
                 width: 1.0,
                 opacity: style.opacity,
             };
@@ -2103,6 +2291,63 @@ mod tests {
         assert_eq!(layer.pixel(3, 0), Some([0, 255, 0, 255]));
         assert_eq!(layer.pixel(0, 3), Some([0, 0, 255, 255]));
         assert_eq!(layer.pixel(3, 3), Some([255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn text_stamps_render_their_callers_coverage_and_are_bounded() {
+        let text = TextStamp::new("Hi", 2, 1, vec![255, 0]).unwrap();
+        assert_eq!(text.text(), "Hi");
+        assert_eq!(text.alpha(0, 0), Some(255));
+        assert_eq!(text.alpha(1, 0), Some(0));
+        assert_eq!(text.alpha(2, 0), None);
+        assert_eq!(
+            TextStamp::new("", 1, 1, vec![0]),
+            Err(ModelError::InvalidText)
+        );
+        assert_eq!(
+            TextStamp::new("a\nb", 1, 1, vec![0]),
+            Err(ModelError::InvalidText)
+        );
+        assert_eq!(
+            TextStamp::new("a", 0, 1, vec![0]),
+            Err(ModelError::InvalidImage)
+        );
+        assert_eq!(
+            TextStamp::new("a", 1, 1, vec![0, 0]),
+            Err(ModelError::ImageBytes)
+        );
+        assert_eq!(
+            Stroke::new(
+                StrokeId(2),
+                ALICE,
+                StrokeKind::Text,
+                style(Color::rgba(255, 255, 255, 255)),
+                vec![point(1, 0.0, 0.0), point(2, 1.0, 1.0)],
+            ),
+            Err(ModelError::TextRequired)
+        );
+        let mut board = Board::new(BOARD);
+        board
+            .apply(operation(
+                1,
+                ALICE,
+                OperationKind::Add(
+                    Stroke::new_text(
+                        StrokeId(1),
+                        ALICE,
+                        style(Color::rgba(255, 0, 0, 255)),
+                        vec![point(1, 0.0, 0.0), point(2, 1.0, 1.0)],
+                        text,
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+        let layer = board.render(4, 1).unwrap();
+        assert_eq!(layer.pixel(0, 0), Some([255, 0, 0, 255]));
+        assert_eq!(layer.pixel(1, 0), Some([255, 0, 0, 255]));
+        assert_eq!(layer.pixel(2, 0), Some([0, 0, 0, 0]));
+        assert_eq!(layer.pixel(3, 0), Some([0, 0, 0, 0]));
     }
 
     #[test]

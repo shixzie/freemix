@@ -5605,7 +5605,11 @@ limit bounds participants, and ten fixed shortcut slots carry validated tool
 presets. Deterministic CPU rendering exports straight or premultiplied RGBA.
 An image stamp places up to a 4096-pixel-side RGBA picture into the
 rectangle between its first and last points, nearest-neighbor sampled and
-alpha-blended like every other stroke. Remaining gaps: no text primitives,
+alpha-blended like every other stroke. A text stamp carries up to 512 bytes of
+control-free UTF-8 plus a caller-rasterized 8-bit coverage mask (at most
+4096 pixels a side), tinted by the stroke color and opacity and sampled into
+the same rectangle; the model never parses fonts. Remaining gaps: no font
+rasterizer inside the model,
 no GPU renderer or
 persistence, no protocol, browser, or device input integration, no
 low-latency program/input preview, no web monitor, and no routing of the layer
