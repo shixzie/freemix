@@ -491,7 +491,7 @@ impl StudioRuntime {
         {
             self.clocks_request = None;
         }
-        self.clocks = response.production_clocks.clone();
+        self.clocks.clone_from(&response.production_clocks);
         self.clocks_error = None;
     }
 

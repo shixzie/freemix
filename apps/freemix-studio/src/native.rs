@@ -1760,7 +1760,7 @@ fn handle_preview_request(
     }
     if let StudioIntent::ClockControl { name, operation } = &request {
         if !recovery.active() {
-            runtime.request_clock_control(name, operation.clone());
+            runtime.request_clock_control(name, *operation);
         }
         return publish_recovery_runtime(runtime, publisher, recovery);
     }
