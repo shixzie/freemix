@@ -2035,23 +2035,24 @@ fn parses_and_validates_the_record_fallback_directory() {
             ]),
             "duplicate option `--record-fallback-dir`",
         ),
-        (
-            strings(&[
-                "serve",
-                "show.freemix",
-                "--native-media",
-                "--fullscreen-program",
-                "--record-program",
-                "capture.mp4",
-                "--record-fallback-dir",
-                "spare",
-            ]),
-            "--record-fallback-dir currently supports headless native mode only",
-        ),
     ] {
         let error = parse_args(arguments).unwrap_err().to_string();
         assert!(error.contains(expected), "{error}");
     }
+    assert!(
+        parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--native-media",
+            "--fullscreen-program",
+            "--record-program",
+            "capture.mp4",
+            "--record-fallback-dir",
+            "spare",
+        ]))
+        .is_ok(),
+        "a fullscreen program now accepts a fallback directory"
+    );
 }
 
 #[cfg(feature = "native-media")]

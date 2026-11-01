@@ -744,6 +744,7 @@ pub(super) struct ProgramWorkerOptions {
     pub(super) record_bitrate_kbps_2: Option<u32>,
     pub(super) record_audio_bitrate_kbps: Option<u32>,
     pub(super) record_audio_bitrate_kbps_2: Option<u32>,
+    pub(super) record_fallback_dir: Option<PathBuf>,
 }
 
 struct ProgramApp {
@@ -1019,6 +1020,7 @@ impl ProgramApp {
                         options.record_bitrate_kbps_2,
                         options.record_audio_bitrate_kbps,
                         options.record_audio_bitrate_kbps_2,
+                        options.record_fallback_dir,
                     )
                     .map_err(|error| error.to_string());
                     let _ = proxy.send_event(UserEvent::Finished(result));

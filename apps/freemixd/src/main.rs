@@ -652,6 +652,7 @@ fn run(command: Command) -> AppResult<()> {
                     record_bitrate_kbps_2,
                     record_audio_bitrate_kbps,
                     record_audio_bitrate_kbps_2,
+                    record_fallback_dir.clone(),
                 );
                 match result {
                     Err(error) if presenter_fallback && error.is::<PresenterUnavailable>() => {
@@ -728,6 +729,7 @@ fn run_fullscreen_program(
     record_bitrate_kbps_2: Option<u32>,
     record_audio_bitrate_kbps: Option<u32>,
     record_audio_bitrate_kbps_2: Option<u32>,
+    record_fallback_dir: Option<PathBuf>,
 ) -> AppResult<()> {
     program_surface::run(program_surface::ProgramWorkerOptions {
         project,
@@ -747,6 +749,7 @@ fn run_fullscreen_program(
         record_bitrate_kbps_2,
         record_audio_bitrate_kbps,
         record_audio_bitrate_kbps_2,
+        record_fallback_dir,
     })
 }
 
@@ -770,6 +773,7 @@ fn run_fullscreen_program(
     _record_bitrate_kbps_2: Option<u32>,
     _record_audio_bitrate_kbps: Option<u32>,
     _record_audio_bitrate_kbps_2: Option<u32>,
+    _record_fallback_dir: Option<PathBuf>,
 ) -> AppResult<()> {
     Err(AppFailure(
         "--fullscreen-program, --display-output, and --display-presenter require a build with \

@@ -79,6 +79,7 @@ pub(crate) fn serve_program_worker(
     record_bitrate_kbps_2: Option<u32>,
     record_audio_bitrate_kbps: Option<u32>,
     record_audio_bitrate_kbps_2: Option<u32>,
+    record_fallback_dir: Option<PathBuf>,
 ) -> AppResult<()> {
     serve_inner(
         path,
@@ -108,8 +109,8 @@ pub(crate) fn serve_program_worker(
         record_bitrate_kbps_2,
         record_audio_bitrate_kbps,
         record_audio_bitrate_kbps_2,
-        // `--record-fallback-dir` is refused with `--fullscreen-program`.
-        None,
+        record_fallback_dir,
+        // `--diagnostic-stop-after` is refused with `--fullscreen-program`.
         None,
         // `--recover-to-checkpoint` is refused with `--fullscreen-program`.
         false,

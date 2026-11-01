@@ -3963,8 +3963,7 @@ thresholds are configurable with
 1 to 1440 whole minutes).
 `recorder_status` now carries each slot's free bytes and estimated seconds
 of recording left at its configured bitrate (Protocol 2.141), shown in
-Studio's recording row. Remaining gaps: the fallback is refused with
-fullscreen output; no
+Studio's recording row. Remaining gaps: no
 daemon test runs two `freemixd` processes against one directory (the lock is
 proven across processes in `fm-record`); repaired files are not
 re-finalized; corrupt mid-file fragments end recovery; and only fragmented MP4
