@@ -3731,6 +3731,49 @@ fn scenes(language: Language) -> Vec<Scene> {
             alerted(operator),
         ));
     }
+    // SW-013: the Production clocks window with a running timer, a paused
+    // timer, and a live session clock, for an operator and for a viewer
+    // whose keys are off.
+    let clocked = |operator: bool| {
+        let mut state = ready(operator, Variant::default());
+        state.clocks = vec![
+            fm_protocol::ProductionClockStatus {
+                name: "Countdown".to_owned(),
+                kind: fm_protocol::ProductionClockKind::Timer,
+                state: fm_protocol::ProductionClockState::Running,
+                text: "00:05".to_owned(),
+                value_ms: Some(5_000),
+                expired: false,
+                zone: None,
+            },
+            fm_protocol::ProductionClockStatus {
+                name: "House".to_owned(),
+                kind: fm_protocol::ProductionClockKind::TimeOfDay,
+                state: fm_protocol::ProductionClockState::Running,
+                text: "20:15:02".to_owned(),
+                value_ms: None,
+                expired: false,
+                zone: Some("CET".to_owned()),
+            },
+            fm_protocol::ProductionClockStatus {
+                name: "Stream".to_owned(),
+                kind: fm_protocol::ProductionClockKind::Stream,
+                state: fm_protocol::ProductionClockState::Live,
+                text: "01:02:03".to_owned(),
+                value_ms: Some(3_723_000),
+                expired: false,
+                zone: None,
+            },
+        ];
+        state
+    };
+    for (name, operator) in [("dialog/clocks", true), ("dialog/clocks-viewer", false)] {
+        scenes.push(Scene::console(
+            name,
+            shell(&|shell| shell.clocks.open = true),
+            clocked(operator),
+        ));
+    }
     // RC-004 key profiles: a built-in profile, read only, and one of the
     // operator's own with a changed key and a refused key change.
     // The keyboard reference and the console's key hints under the vMix

@@ -226,6 +226,7 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
         | (StudioIntent::RequestCaptureDevices, StudioIntent::RequestCaptureDevices)
         | (StudioIntent::RequestSystemAudioDevices, StudioIntent::RequestSystemAudioDevices)
         | (StudioIntent::RequestAudioOutputDevices, StudioIntent::RequestAudioOutputDevices)
+        | (StudioIntent::RequestClocks, StudioIntent::RequestClocks)
         | (
             StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status),
             StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status),
@@ -1485,6 +1486,8 @@ fn run_worker(
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::RequestAudioOutputDevices
+                | StudioIntent::RequestClocks
+                | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
                 | StudioIntent::RequestSlideshowSlides { .. }
@@ -1541,6 +1544,14 @@ fn run_worker(
                     | SessionEvent::ScenePreview { complete, .. }
                     | SessionEvent::ReplayPreview { complete, .. },
                 )) => complete,
+                Ok(Some(SessionEvent::DiagnosticsResponse { response })) => {
+                    runtime.apply_clocks_response(&response);
+                    true
+                }
+                Ok(Some(SessionEvent::ClockControlResponse { response })) => {
+                    runtime.apply_clock_control_response(&response);
+                    true
+                }
                 Ok(Some(SessionEvent::ServerError(error)))
                     if animation::preview_error_id(&error).is_some() =>
                 {
@@ -1594,6 +1605,8 @@ fn run_worker(
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::RequestAudioOutputDevices
+                | StudioIntent::RequestClocks
+                | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
                 | StudioIntent::RequestSlideshowSlides { .. }
@@ -1735,6 +1748,22 @@ fn handle_preview_request(
         }
         return true;
     }
+    // Production clock readings and timer controls (SW-013, Protocol
+    // 2.149/2.150) are on-demand and never replayed: a reading lost to a
+    // reconnect is asked for by the next window refresh, and a control the
+    // operator sent is not repeated.
+    if matches!(request, StudioIntent::RequestClocks) {
+        if !recovery.active() {
+            runtime.request_clocks();
+        }
+        return publish_recovery_runtime(runtime, publisher, recovery);
+    }
+    if let StudioIntent::ClockControl { name, operation } = &request {
+        if !recovery.active() {
+            runtime.request_clock_control(name, operation.clone());
+        }
+        return publish_recovery_runtime(runtime, publisher, recovery);
+    }
     // One audio target's plugin chain (2.129, AU-006) is read on demand.
     if let StudioIntent::AudioPluginStatus(request) = request {
         if !recovery.active() {
@@ -1799,6 +1828,8 @@ fn handle_worker_intent(
         | StudioIntent::RequestCaptureDevices
         | StudioIntent::RequestSystemAudioDevices
         | StudioIntent::RequestAudioOutputDevices
+        | StudioIntent::RequestClocks
+        | StudioIntent::ClockControl { .. }
         | StudioIntent::WebAccess(_)
         | StudioIntent::HealthAlert { .. }
         | StudioIntent::RequestSlideshowSlides { .. }
@@ -3204,6 +3235,12 @@ fn intent_payload(
         StudioIntent::RequestAudioOutputDevices => {
             return Err("An audio output devices request is not a command".to_owned());
         }
+        StudioIntent::RequestClocks => {
+            return Err("A clock readings request is not a command".to_owned());
+        }
+        StudioIntent::ClockControl { .. } => {
+            return Err("A clock control is not a command".to_owned());
+        }
         StudioIntent::WebAccess(_) => {
             return Err("A web access request is not a command".to_owned());
         }
@@ -3582,6 +3619,8 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                 .latest_health_status()
                 .cloned()
                 .map(Box::new);
+            state.clocks = runtime.clocks().to_vec();
+            state.clocks_error = runtime.clocks_error().map(str::to_owned);
             state.recording_desired = recording_desired_slots(view);
         }
         state.view = view;

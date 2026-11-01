@@ -412,6 +412,12 @@ pub enum SessionEvent {
     DiagnosticsResponse {
         response: DiagnosticsResponse,
     },
+    /// The daemon answered one production-clock control request (SW-013,
+    /// Protocol 2.150). An accepted answer carries the clock's reading
+    /// afterwards; a refusal carries the typed error.
+    ClockControlResponse {
+        response: fm_protocol::ClockControlResponse,
+    },
     /// The daemon answered a display inventory request (Protocol 2.42).
     /// The inventory is also in the replicated model.
     DisplayInventory {
@@ -565,6 +571,8 @@ pub struct TcpSession {
     connection: Option<Transport>,
     sent_commands: VecDeque<String>,
     pending_diagnostics: Option<String>,
+    /// The production-clock control request IDs awaiting an answer.
+    pending_clock_requests: VecDeque<String>,
     last_audio_meter_sequence: Option<u64>,
     latest_audio_meters: Option<AudioMetersMessage>,
     last_stream_status_sequence: Option<u64>,
@@ -723,6 +731,7 @@ impl TcpSession {
             connection: None,
             sent_commands: VecDeque::new(),
             pending_diagnostics: None,
+            pending_clock_requests: VecDeque::new(),
             last_audio_meter_sequence: None,
             latest_audio_meters: None,
             last_stream_status_sequence: None,
@@ -1623,6 +1632,99 @@ impl TcpSession {
         self.handle_received(message)
     }
 
+    /// Sends one diagnostics request without waiting; the validated answer
+    /// arrives as [`SessionEvent::DiagnosticsResponse`] from
+    /// [`Self::receive`]. It carries every production clock's reading
+    /// (SW-013, Protocol 2.149) along with the engine diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected, another diagnostics request is
+    /// already pending, the request ID is invalid, or encoding or writing
+    /// the request fails.
+    pub fn send_diagnostics_request(
+        &mut self,
+        request_id: impl Into<String>,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        if self.pending_diagnostics.is_some() {
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        let request_id = request_id.into();
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(TcpSessionError::Client(ClientError::InvalidConfig(
+                "diagnostics request ID must be 1-128 ASCII graphic bytes",
+            )));
+        }
+        self.pending_diagnostics = Some(request_id.clone());
+        let result = self
+            .send_wire_wait(
+                &WireMessage::DiagnosticsRequest(DiagnosticsRequest {
+                    protocol: CURRENT_PROTOCOL_VERSION,
+                    request_id,
+                }),
+                None,
+            )
+            .and_then(|()| self.flush_wire_wait(None));
+        if result.is_err() {
+            self.pending_diagnostics = None;
+        }
+        result
+    }
+
+    /// Sends one production-clock control request (SW-013, Protocol 2.150)
+    /// and returns at once; the daemon's answer arrives as
+    /// [`SessionEvent::ClockControlResponse`] from [`Self::receive`], or as
+    /// a [`SessionEvent::ServerError`] naming the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected, the request ID is already
+    /// pending or invalid, or encoding or writing the request fails.
+    pub fn send_clock_control_request(
+        &mut self,
+        request: fm_protocol::ClockControlRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        let request_id = request.request_id.clone();
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(TcpSessionError::Client(ClientError::InvalidConfig(
+                "clock control request ID must be 1-128 ASCII graphic bytes",
+            )));
+        }
+        if self
+            .pending_clock_requests
+            .iter()
+            .any(|pending| pending == &request_id)
+        {
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        if request.protocol != CURRENT_PROTOCOL_VERSION {
+            return Err(TcpSessionError::Client(ClientError::InvalidConfig(
+                "clock control protocol must be the current version",
+            )));
+        }
+        self.pending_clock_requests.push_back(request_id.clone());
+        let result = self
+            .send_wire_wait(&WireMessage::ClockControlRequest(request), None)
+            .and_then(|()| self.flush_wire_wait(None));
+        if result.is_err() {
+            self.pending_clock_requests
+                .retain(|pending| pending != &request_id);
+        }
+        result
+    }
+
     /// Sends one diagnostics request and waits for its matching response.
     /// Valid durable and runtime events, command results, and heartbeat
     /// acknowledgements may arrive while waiting; they are reconciled into the
@@ -1720,6 +1822,19 @@ impl TcpSession {
                     }
                     WireMessage::AudioMeters(meters) => {
                         self.validate_audio_meters(&meters)?;
+                    }
+                    WireMessage::ClockControlResponse(response) => {
+                        if response.protocol != CURRENT_PROTOCOL_VERSION
+                            || !self
+                                .pending_clock_requests
+                                .iter()
+                                .any(|pending| pending == &response.request_id)
+                        {
+                            self.transition_disconnect();
+                            return Err(TcpSessionError::UnexpectedMessage);
+                        }
+                        self.pending_clock_requests
+                            .retain(|pending| pending != &response.request_id);
                     }
                     WireMessage::StreamStatus(status) => {
                         self.validate_stream_status(&status)?;
@@ -1866,6 +1981,35 @@ impl TcpSession {
                 self.validate_health_status(&status)?;
                 Ok(SessionEvent::HealthStatus { status })
             }
+            WireMessage::DiagnosticsResponse(response) => {
+                let expected = self.pending_diagnostics.take();
+                if response.protocol != CURRENT_PROTOCOL_VERSION
+                    || expected.as_deref() != Some(response.request_id.as_str())
+                    || self.client.session().is_none_or(|session| {
+                        response.engine.engine_id != session.server.engine_id
+                            || response.engine.state_epoch != session.server.state_epoch
+                            || response.engine.log_id != session.server.log_id
+                    })
+                {
+                    self.transition_disconnect();
+                    return Err(TcpSessionError::UnexpectedMessage);
+                }
+                Ok(SessionEvent::DiagnosticsResponse { response })
+            }
+            WireMessage::ClockControlResponse(response) => {
+                if response.protocol != CURRENT_PROTOCOL_VERSION
+                    || !self
+                        .pending_clock_requests
+                        .iter()
+                        .any(|pending| pending == &response.request_id)
+                {
+                    self.transition_disconnect();
+                    return Err(TcpSessionError::UnexpectedMessage);
+                }
+                self.pending_clock_requests
+                    .retain(|pending| pending != &response.request_id);
+                Ok(SessionEvent::ClockControlResponse { response })
+            }
             WireMessage::MonitorFrame(frame) => {
                 let complete = self.validate_monitor_frame(&frame)?;
                 Ok(SessionEvent::MonitorFrame {
@@ -1963,9 +2107,7 @@ impl TcpSession {
             | WireMessage::Heartbeat(_)
             | WireMessage::CapabilityReport(_)
             | WireMessage::DiagnosticsRequest(_)
-            | WireMessage::DiagnosticsResponse(_)
             | WireMessage::ClockControlRequest(_)
-            | WireMessage::ClockControlResponse(_)
             | WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)
@@ -2194,6 +2336,7 @@ impl TcpSession {
 
     fn transition_disconnect(&mut self) -> ReconnectBackoff {
         self.pending_diagnostics = None;
+        self.pending_clock_requests.clear();
         self.last_audio_meter_sequence = None;
         self.latest_audio_meters = None;
         self.last_stream_status_sequence = None;

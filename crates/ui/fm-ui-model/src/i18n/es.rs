@@ -8936,6 +8936,88 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::HealthAlertsReasonNotSilenced,
         t("la regla no está silenciada"),
     ),
+    // Production clocks: readings and timer control (SW-013, Protocol 2.149).
+    (Msg::MenuClocks, t("Relojes de producción…")),
+    (
+        Msg::MenuClocksHover,
+        t(
+            "Ver los temporizadores, la hora del día y los relojes de sesión del programa, y manejar un temporizador",
+        ),
+    ),
+    (Msg::ClocksTitle, t("Relojes de producción")),
+    (
+        Msg::ClocksIntro,
+        t(
+            "Todos los relojes que define el programa. Las teclas del temporizador actúan en el daemon; las lecturas se actualizan aproximadamente una vez por segundo mientras esta ventana está abierta.",
+        ),
+    ),
+    (
+        Msg::ClocksEmpty,
+        t("Este programa no define ningún reloj de producción."),
+    ),
+    (
+        Msg::ClocksReasonNoReading,
+        t("el daemon no ha informado de los relojes"),
+    ),
+    (Msg::ClocksRefresh, t("Actualizar lecturas")),
+    (
+        Msg::ClocksRefreshHover,
+        t("Pedir ahora al daemon la lectura actual de todos los relojes"),
+    ),
+    (
+        Msg::ClocksSecondsHover,
+        t("El valor que usan Fijar, Ajustar y Preajuste, en segundos; los negativos restan"),
+    ),
+    (Msg::ClocksStart, t("Iniciar")),
+    (
+        Msg::ClocksStartHover,
+        t("Iniciar o reanudar este temporizador"),
+    ),
+    (Msg::ClocksPause, t("Pausar")),
+    (
+        Msg::ClocksPauseHover,
+        t("Pausar este temporizador donde está"),
+    ),
+    (Msg::ClocksReset, t("Reiniciar")),
+    (
+        Msg::ClocksResetHover,
+        t("Volver a dejar este temporizador en su preajuste y detenerlo"),
+    ),
+    (Msg::ClocksSet, t("Fijar")),
+    (
+        Msg::ClocksSetHover,
+        t("Fijar la lectura de este temporizador en el valor, y mantenerlo en marcha o en pausa"),
+    ),
+    (Msg::ClocksAdjust, t("Ajustar")),
+    (
+        Msg::ClocksAdjustHover,
+        t("Sumar el valor a la lectura de este temporizador; un valor negativo resta"),
+    ),
+    (Msg::ClocksPreset, t("Preajuste")),
+    (
+        Msg::ClocksPresetHover,
+        t("Guardar el valor como preajuste de este temporizador sin cambiar su lectura"),
+    ),
+    (Msg::ClocksExpired, t("Vencido")),
+    (Msg::ClocksKindTimer, t("Temporizador")),
+    (Msg::ClocksKindTimeOfDay, t("Hora del día")),
+    (Msg::ClocksKindMediaRemaining, t("Resto del medio")),
+    (Msg::ClocksKindStream, t("Emisión")),
+    (Msg::ClocksKindRecording, t("Grabación")),
+    (Msg::ClocksKindReplay, t("Repetición")),
+    (Msg::ClocksKindMultiCorder, t("Multigrabación")),
+    (Msg::ClocksKindExternal, t("Externo")),
+    (Msg::ClocksStateIdle, t("Inactivo")),
+    (Msg::ClocksStateRunning, t("En marcha")),
+    (Msg::ClocksStatePaused, t("En pausa")),
+    (Msg::ClocksStateExpired, t("Vencido")),
+    (Msg::ClocksStateStopped, t("Detenido")),
+    (Msg::ClocksStateLive, t("En vivo")),
+    (Msg::ClocksStateUnavailable, t("No disponible")),
+    (
+        Msg::ClocksReasonNotTimer,
+        t("Este reloj sigue a su fuente y no acepta las teclas del temporizador."),
+    ),
     (Msg::MenuWebAccess, t("Acceso web (teléfonos y tabletas)…")),
     (
         Msg::MenuWebAccessHover,

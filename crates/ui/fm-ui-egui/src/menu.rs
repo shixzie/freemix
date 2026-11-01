@@ -752,6 +752,15 @@ impl StudioShell {
             self.open_designer(None);
         }
         ui.separator();
+        if ui
+            .button(l.text(Msg::MenuClocks))
+            .on_hover_text(l.text(Msg::MenuClocksHover))
+            .clicked()
+        {
+            self.clocks.open = true;
+            ui.close();
+        }
+        ui.separator();
         ui.menu_button(l.text(Msg::ViewPanels), |ui| self.panels_menu(ui))
             .response
             .on_hover_text(l.text(Msg::ViewLayoutRemembered));

@@ -320,9 +320,9 @@ mod tests {
     #[test]
     fn requests_are_bounded_and_only_get_is_accepted() {
         let mut state = state();
-        let mut executed = 0;
+        let executed = std::cell::Cell::new(0_u32);
         let mut execute = |_: &mut CompatState, _: Translation| {
-            executed += 1;
+            executed.set(executed.get() + 1);
             Ok(())
         };
         let ok = handle_request(
@@ -333,7 +333,7 @@ mod tests {
         let text = String::from_utf8(ok).unwrap();
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(text.ends_with("\r\n\r\nOK"));
-        assert_eq!(executed, 1);
+        assert_eq!(executed.get(), 1);
 
         let post = handle_request(b"POST / HTTP/1.1\r\n\r\n", &mut state, &mut execute);
         assert!(
@@ -341,6 +341,7 @@ mod tests {
                 .unwrap()
                 .starts_with("HTTP/1.1 405 ")
         );
+        assert_eq!(executed.get(), 1);
     }
 
     #[test]

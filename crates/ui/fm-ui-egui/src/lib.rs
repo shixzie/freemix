@@ -37,6 +37,7 @@ use fm_ui_model::{ClientView, ManualTransitionStatus, ProjectState, StreamStatus
 pub mod animation_timeline;
 mod capture_input_ui;
 mod chrome;
+mod clocks;
 pub mod color_panel;
 mod connection_overlay;
 mod console_keymap;
@@ -272,6 +273,15 @@ pub enum StudioIntent {
     /// Asks the server for its headphone output devices (AU-001, Protocol
     /// 2.102); the reply updates the view's output device list.
     RequestAudioOutputDevices,
+    /// Asks the daemon for every production clock's reading (SW-013,
+    /// Protocol 2.149); the reply updates [`StudioUiState::clocks`].
+    RequestClocks,
+    /// Operates one project production clock (SW-013, Protocol 2.150); the
+    /// answer carries the reading afterwards or the daemon's refusal.
+    ClockControl {
+        name: String,
+        operation: fm_protocol::ClockControlOperation,
+    },
     /// Manages the web gateway's pairing and paired devices (RC-007,
     /// Protocol 2.71); the answer updates
     /// [`fm_ui_model::ClientView::web_access`].
@@ -676,6 +686,12 @@ pub struct StudioUiState {
     /// The daemon's latest utilization and alerts (`health_status`,
     /// RC-015). `None` when the daemon reports none.
     pub health: Option<Box<fm_protocol::HealthStatusMessage>>,
+    /// Every project production clock's latest reading (SW-013), in name
+    /// order. Empty until the daemon answers.
+    pub clocks: Vec<fm_protocol::ProductionClockStatus>,
+    /// The latest clock refusal or request failure the clocks window
+    /// shows, if any.
+    pub clocks_error: Option<String>,
     /// The latest title animation phases (`title_phases`, Protocol 2.90):
     /// what the TITLES timeline strip's playhead follows. `None` until the
     /// daemon sends one.
@@ -790,6 +806,8 @@ impl StudioUiState {
             recorder_realized: [None, None],
             source_sync: None,
             health: None,
+            clocks: Vec::new(),
+            clocks_error: None,
             title_phases: None,
             replay: None,
             reels: Vec::new(),
@@ -2101,6 +2119,8 @@ pub struct StudioShell {
     live_lan: live_lan::LiveLanWindow,
     web_access: web_access::WebAccessWindow,
     health_alerts: health_alerts::HealthAlertsWindow,
+    /// The Production clocks window and its value drafts (SW-013).
+    clocks: clocks::ClocksWindow,
     scripts: scripts::ScriptsWindow,
     user_shortcuts: user_shortcuts::ShortcutsWindow,
     /// This console's own keys for project shortcuts, a console
@@ -2743,6 +2763,7 @@ impl StudioShell {
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_web_access_window(ui.ctx(), state, &mut intents);
         self.draw_health_alerts_window(ui.ctx(), state, &mut intents);
+        self.draw_clocks_window(ui.ctx(), state, &mut intents);
         self.draw_scripts_window(ui.ctx(), state, &mut intents);
         self.draw_user_shortcuts_window(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
@@ -2911,6 +2932,7 @@ impl Default for StudioShell {
             live_lan: live_lan::LiveLanWindow::default(),
             web_access: web_access::WebAccessWindow::default(),
             health_alerts: health_alerts::HealthAlertsWindow::default(),
+            clocks: clocks::ClocksWindow::default(),
             scripts: scripts::ScriptsWindow::default(),
             user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
             shortcut_keys: ShortcutKeyOverrides::default(),

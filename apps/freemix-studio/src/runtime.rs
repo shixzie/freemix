@@ -137,6 +137,13 @@ pub struct StudioRuntime {
     /// The latest answer per display-output slot to this session's set or
     /// clear, carried the same way.
     display_output_answers: [Option<DisplayOutputAnswer>; fm_protocol::MAX_DISPLAY_OUTPUTS],
+    /// The latest production-clock readings (SW-013, Protocol 2.149).
+    clocks: Vec<fm_protocol::ProductionClockStatus>,
+    /// The diagnostics request ID a clock refresh awaits, and when it was
+    /// sent, if one is in flight.
+    clocks_request: Option<(String, std::time::Instant)>,
+    /// The latest clock refusal or request failure the window shows.
+    clocks_error: Option<String>,
 }
 
 impl StudioRuntime {
@@ -193,6 +200,9 @@ impl StudioRuntime {
             wanted: WantedLists::default(),
             input_thumbnails_wanted: false,
             display_output_answers: [const { None }; fm_protocol::MAX_DISPLAY_OUTPUTS],
+            clocks: Vec::new(),
+            clocks_request: None,
+            clocks_error: None,
         })
     }
 
@@ -422,6 +432,132 @@ impl StudioRuntime {
                     action,
                 })
                 .is_ok()
+    }
+
+    /// The latest production-clock readings (SW-013), in name order.
+    #[must_use]
+    pub(crate) fn clocks(&self) -> &[fm_protocol::ProductionClockStatus] {
+        &self.clocks
+    }
+
+    /// The latest clock refusal or request failure the clocks window
+    /// shows, if any.
+    #[must_use]
+    pub(crate) fn clocks_error(&self) -> Option<&str> {
+        self.clocks_error.as_deref()
+    }
+
+    /// Asks the daemon for every production clock's reading (SW-013,
+    /// Protocol 2.149) without blocking; the answer arrives as
+    /// [`SessionEvent::DiagnosticsResponse`] and is applied with
+    /// [`Self::apply_clocks_response`].
+    pub(crate) fn request_clocks(&mut self) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        if !self.session.is_connected() {
+            self.clocks_request = None;
+            self.clocks_error = Some("the control connection is not ready".to_owned());
+            return false;
+        }
+        if let Some((_, sent_at)) = &self.clocks_request {
+            if sent_at.elapsed() < std::time::Duration::from_secs(5) {
+                // One reading request is already in flight; the next window
+                // refresh asks again.
+                return false;
+            }
+            // A lost or unanswered request must not wedge every later one.
+            self.clocks_request = None;
+        }
+        let request_id = format!(
+            "studio-clocks-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let sent = self.transport == ControlTransport::Tcp
+            && self.session.send_diagnostics_request(&request_id).is_ok();
+        if sent {
+            self.clocks_request = Some((request_id, std::time::Instant::now()));
+            self.clocks_error = None;
+        } else {
+            self.clocks_error = Some("the clock readings could not be requested".to_owned());
+        }
+        sent
+    }
+
+    /// Applies one diagnostics answer: every production clock's reading.
+    pub(crate) fn apply_clocks_response(&mut self, response: &fm_protocol::DiagnosticsResponse) {
+        if self
+            .clocks_request
+            .as_ref()
+            .is_some_and(|(request_id, _)| request_id == &response.request_id)
+        {
+            self.clocks_request = None;
+        }
+        self.clocks = response.production_clocks.clone();
+        self.clocks_error = None;
+    }
+
+    /// Operates one production clock (SW-013, Protocol 2.150) without
+    /// blocking; the answer arrives as
+    /// [`SessionEvent::ClockControlResponse`].
+    pub(crate) fn request_clock_control(
+        &mut self,
+        name: &str,
+        operation: fm_protocol::ClockControlOperation,
+    ) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        if !fm_protocol::clock_name_is_valid(name) {
+            self.clocks_error = Some("the clock name is not valid".to_owned());
+            return false;
+        }
+        if !self.session.is_connected() {
+            self.clocks_error = Some("the control connection is not ready".to_owned());
+            return false;
+        }
+        let request_id = format!(
+            "studio-clock-control-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let sent = self.transport == ControlTransport::Tcp
+            && self
+                .session
+                .send_clock_control_request(fm_protocol::ClockControlRequest {
+                    protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                    request_id,
+                    name: name.to_owned(),
+                    operation,
+                })
+                .is_ok();
+        if sent {
+            self.clocks_error = None;
+        } else {
+            self.clocks_error = Some("the clock control could not be sent".to_owned());
+        }
+        sent
+    }
+
+    /// Applies the daemon's answer to one clock control: an accepted
+    /// operation carries the clock's reading; a refusal carries its reason.
+    pub(crate) fn apply_clock_control_response(
+        &mut self,
+        response: &fm_protocol::ClockControlResponse,
+    ) {
+        if !response.accepted {
+            self.clocks_error = response
+                .error
+                .clone()
+                .or_else(|| Some("the daemon refused the clock control".to_owned()));
+            return;
+        }
+        self.clocks_error = None;
+        let Some(reading) = &response.reading else {
+            return;
+        };
+        match self
+            .clocks
+            .binary_search_by(|clock| clock.name.cmp(&reading.name))
+        {
+            Ok(index) => self.clocks[index] = reading.clone(),
+            Err(index) => self.clocks.insert(index, reading.clone()),
+        }
     }
 
     /// Asks the server for one window of slideshow `input`'s slide list
