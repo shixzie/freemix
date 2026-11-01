@@ -418,6 +418,9 @@ pub enum CompatIntent {
     ToggleFadeToBlack,
     /// Rename one input (vMix's short name).
     RenameInput { input: WireInputId, name: String },
+    /// Add a network-stream input from `url` with an optional short `name`;
+    /// the dispatcher allocates the input ID.
+    AddNetworkStream { url: String, name: Option<String> },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -780,6 +783,7 @@ fn translate(
             }))
         }
         "SetText" => translate_set_text(parameters, state),
+        "AddInput" => translate_add_input(parameters),
         "StartRecording" | "StopRecording" => {
             allowed(parameters, &["Function"])?;
             Ok(Translation::Compat(CompatIntent::SetRecording {
@@ -910,6 +914,30 @@ fn translate_set_text(
         input,
         field,
         value: required(parameters, "Value")?.to_owned(),
+    }))
+}
+
+fn translate_add_input(parameters: &[(String, String)]) -> Result<Translation, ParseError> {
+    allowed(parameters, &["Function", "Input", "Value"])?;
+    let value = required(parameters, "Value")?.trim();
+    let lower = value.to_ascii_lowercase();
+    if ![
+        "rtmp://", "rtmps://", "srt://", "http://", "https://", "omt://",
+    ]
+    .iter()
+    .any(|scheme| lower.starts_with(scheme))
+    {
+        return Ok(unsupported(
+            "AddInput",
+            "only network stream URLs are represented",
+        ));
+    }
+    let name = optional(parameters, "Input")
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned);
+    Ok(Translation::Compat(CompatIntent::AddNetworkStream {
+        url: value.to_owned(),
+        name,
     }))
 }
 
@@ -1094,8 +1122,7 @@ fn overlay_channel(function: &str) -> Option<u8> {
 fn known_unsupported(function: &str) -> bool {
     matches!(
         function,
-        "AddInput"
-            | "SetOutput"
+        "SetOutput"
             | "SetOutput2"
             | "SetOutput3"
             | "SetOutput4"

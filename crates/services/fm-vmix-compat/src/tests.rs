@@ -190,10 +190,10 @@ fn malformed_unknown_and_unsupported_are_distinct() {
         Err(ParseError::UnknownFunction("NoSuchFunction".to_owned()))
     );
     assert_eq!(
-        parse_http_query("Function=AddInput", &state),
+        parse_http_query("Function=AddInput&Value=file.mp4", &state),
         Ok(Translation::Unsupported(UnsupportedReport {
             function: "AddInput".to_owned(),
-            reason: "the function has no semantics in the current compatibility core",
+            reason: "only network stream URLs are represented",
         }))
     );
     assert_eq!(
@@ -714,6 +714,34 @@ fn overlay_last_restores_the_previous_input() {
         state.restore_overlay(9),
         Err(StateError::InvalidOverlayChannel)
     );
+}
+
+#[test]
+fn add_input_translates_network_streams() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=AddInput&Value=rtmp://host/live", &state),
+        Ok(Translation::Compat(CompatIntent::AddNetworkStream {
+            url: "rtmp://host/live".to_owned(),
+            name: None,
+        }))
+    );
+    assert_eq!(
+        parse_http_query(
+            "Function=AddInput&Input=Guest&Value=srt://host:9000",
+            &state
+        ),
+        Ok(Translation::Compat(CompatIntent::AddNetworkStream {
+            url: "srt://host:9000".to_owned(),
+            name: Some("Guest".to_owned()),
+        }))
+    );
+    assert!(matches!(
+        parse_http_query("Function=AddInput&Value=file.mp4", &state),
+        Ok(Translation::Unsupported(_))
+    ));
+    assert!(parse_http_query("Function=AddInput", &state).is_err());
+    assert!(parse_http_query("Function=AddInput&Value=rtmp://x&Extra=1", &state).is_err());
 }
 
 #[test]
