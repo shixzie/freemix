@@ -41,12 +41,13 @@ impl AsRunLog {
     /// Appends every entry the engine recorded since the last call, with one
     /// wall-clock stamp for the pass.
     pub(crate) fn sync(&mut self, entries: &[EngineAsRunEntry]) {
+        // Entries are realized in frame order. Append only those after the
+        // last written one: a buffer that dropped its oldest entries keeps
+        // everything newer, while a truncated or replayed buffer that ends
+        // before the last entry appends nothing rather than repeating it.
         let start = match self.last {
             None => 0,
-            Some(last) => entries
-                .iter()
-                .position(|entry| (entry.frame, entry.input) == last)
-                .map_or(0, |index| index + 1),
+            Some(last) => entries.partition_point(|entry| (entry.frame, entry.input) <= last),
         };
         if start >= entries.len() {
             return;
