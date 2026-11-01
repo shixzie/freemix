@@ -10,7 +10,7 @@ use fm_auth::Policy;
 use fm_control::ControlService;
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, CommandResult,
-    SnapshotMessage, TransitionFavoriteEffect,
+    SnapshotMessage, TransitionFavoriteEffect, WireOverlayChannelId, WireRecorderSlot,
 };
 use fm_vmix_compat::{CompatInput, CompatIntent, CompatState, Translation, VmixTcpServer};
 
@@ -48,12 +48,10 @@ impl VmixBridge {
         principal: &fm_auth::Principal,
         now_millis: u64,
     ) {
-        let snapshot = control.snapshot();
-        let Some(mut state) = compat_state(
-            &snapshot.snapshot,
-            self.transition_millis,
-            self.transition_effect,
-        ) else {
+        let snapshot = control.snapshot().snapshot.clone();
+        let Some(mut state) =
+            compat_state(&snapshot, self.transition_millis, self.transition_effect)
+        else {
             return;
         };
         let Self {
@@ -68,6 +66,7 @@ impl VmixBridge {
                 principal,
                 now_millis,
                 state,
+                &snapshot,
                 translation,
                 transition_millis,
                 transition_effect,
@@ -113,12 +112,13 @@ fn compat_state(
     Some(state)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn execute(
     control: &mut ControlService<Policy>,
     principal: &fm_auth::Principal,
     now_millis: u64,
     state: &mut CompatState,
+    snapshot: &SnapshotMessage,
     translation: Translation,
     transition_millis: &mut u32,
     transition_effect: &mut TransitionFavoriteEffect,
@@ -128,21 +128,230 @@ fn execute(
         Translation::Protocol(payload) => {
             submit(control, principal, now_millis, payload, next_command)
         }
-        Translation::Compat(CompatIntent::SetTransitionDuration { millis }) => {
+        Translation::Compat(intent) => execute_compat(
+            control,
+            principal,
+            now_millis,
+            state,
+            snapshot,
+            intent,
+            transition_millis,
+            transition_effect,
+            next_command,
+        ),
+        Translation::Unsupported(report) => Err(report.reason.to_owned()),
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn execute_compat(
+    control: &mut ControlService<Policy>,
+    principal: &fm_auth::Principal,
+    now_millis: u64,
+    state: &mut CompatState,
+    snapshot: &SnapshotMessage,
+    intent: CompatIntent,
+    transition_millis: &mut u32,
+    transition_effect: &mut TransitionFavoriteEffect,
+    next_command: &mut u64,
+) -> Result<(), String> {
+    match intent {
+        CompatIntent::SetTransitionDuration { millis } => {
             *transition_millis = millis;
             Ok(())
         }
-        Translation::Compat(CompatIntent::SetTransitionEffect { effect }) => {
+        CompatIntent::SetTransitionEffect { effect } => {
             *transition_effect = effect;
             Ok(())
         }
-        Translation::Compat(other) => {
-            let _ = state;
-            Err(format!(
-                "vMix function is not supported by this daemon yet: {other:?}"
-            ))
+        CompatIntent::CutTo { input } => {
+            submit(
+                control,
+                principal,
+                now_millis,
+                CommandPayload::SelectPreview { input },
+                next_command,
+            )?;
+            submit(
+                control,
+                principal,
+                now_millis,
+                CommandPayload::Cut,
+                next_command,
+            )
         }
-        Translation::Unsupported(report) => Err(report.reason.to_owned()),
+        CompatIntent::Fade {
+            input,
+            effect,
+            duration_millis,
+        } => {
+            if let Some(input) = input {
+                submit(
+                    control,
+                    principal,
+                    now_millis,
+                    CommandPayload::SelectPreview { input },
+                    next_command,
+                )?;
+            }
+            let duration_frames = millis_to_frames(snapshot, duration_millis);
+            let payload = match effect {
+                TransitionFavoriteEffect::Cut => CommandPayload::Cut,
+                TransitionFavoriteEffect::Mix(kind) => CommandPayload::Transition {
+                    kind,
+                    duration_frames,
+                },
+                TransitionFavoriteEffect::Stinger(slot) => CommandPayload::Stinger {
+                    slot,
+                    duration_frames,
+                },
+            };
+            submit(control, principal, now_millis, payload, next_command)
+        }
+        CompatIntent::ToggleOverlay { channel, input } => {
+            let on =
+                state.overlays.get(usize::from(channel).saturating_sub(1)) != Some(&Some(input));
+            let channel = wire_channel(channel)?;
+            let payload = if on {
+                CommandPayload::TakeOverlay {
+                    channel,
+                    source: input,
+                }
+            } else {
+                CommandPayload::OverlayOff { channel }
+            };
+            submit(control, principal, now_millis, payload, next_command)?;
+            let _ = state.set_overlay(channel.number(), if on { Some(input) } else { None });
+            Ok(())
+        }
+        CompatIntent::RestoreOverlay { channel } => {
+            let restored = state
+                .restore_overlay(channel)
+                .map_err(|error| error.to_string())?;
+            let channel = wire_channel(channel)?;
+            let payload = match restored {
+                Some(source) => CommandPayload::TakeOverlay { channel, source },
+                None => CommandPayload::OverlayOff { channel },
+            };
+            submit(control, principal, now_millis, payload, next_command)
+        }
+        CompatIntent::AllOverlaysOff => {
+            for channel in 1..=8_u8 {
+                let index = usize::from(channel) - 1;
+                if state.overlays.get(index).is_some_and(Option::is_some) {
+                    submit(
+                        control,
+                        principal,
+                        now_millis,
+                        CommandPayload::OverlayOff {
+                            channel: wire_channel(channel)?,
+                        },
+                        next_command,
+                    )?;
+                    if let Some(slot) = state.overlays.get_mut(index) {
+                        *slot = None;
+                    }
+                }
+            }
+            Ok(())
+        }
+        CompatIntent::SetRecording { enabled } => submit(
+            control,
+            principal,
+            now_millis,
+            recording_payload(enabled),
+            next_command,
+        ),
+        CompatIntent::ToggleRecording => submit(
+            control,
+            principal,
+            now_millis,
+            recording_payload(!state.recording),
+            next_command,
+        ),
+        CompatIntent::SetStreaming { enabled, stream } => submit(
+            control,
+            principal,
+            now_millis,
+            streaming_payload(snapshot, enabled, stream)?,
+            next_command,
+        ),
+        CompatIntent::ToggleStreaming { stream } => submit(
+            control,
+            principal,
+            now_millis,
+            streaming_payload(snapshot, !state.streaming, stream)?,
+            next_command,
+        ),
+        CompatIntent::RenameInput { input, name } => submit(
+            control,
+            principal,
+            now_millis,
+            CommandPayload::RenameInput { input, name },
+            next_command,
+        ),
+        CompatIntent::ToggleFadeToBlack => {
+            let active = !snapshot.desired_fade_to_black.target_active;
+            submit(
+                control,
+                principal,
+                now_millis,
+                CommandPayload::FadeToBlack {
+                    active,
+                    duration_frames: millis_to_frames(snapshot, *transition_millis),
+                },
+                next_command,
+            )
+        }
+        other => Err(format!(
+            "vMix function is not supported by this daemon yet: {other:?}"
+        )),
+    }
+}
+
+fn wire_channel(channel: u8) -> Result<WireOverlayChannelId, String> {
+    WireOverlayChannelId::new(channel).ok_or_else(|| format!("invalid overlay channel: {channel}"))
+}
+
+fn millis_to_frames(snapshot: &SnapshotMessage, millis: u32) -> u32 {
+    let numerator = u64::from(snapshot.frame_rate.numerator());
+    let denominator = u64::from(snapshot.frame_rate.denominator());
+    let frames = u64::from(millis) * numerator / (1_000 * denominator);
+    u32::try_from(frames.max(1)).unwrap_or(u32::MAX)
+}
+
+fn recording_payload(enabled: bool) -> CommandPayload {
+    let recorder = WireRecorderSlot::FIRST;
+    if enabled {
+        CommandPayload::RecordStart { recorder }
+    } else {
+        CommandPayload::RecordStop { recorder }
+    }
+}
+
+fn streaming_payload(
+    snapshot: &SnapshotMessage,
+    enabled: bool,
+    stream: Option<u16>,
+) -> Result<CommandPayload, String> {
+    match stream {
+        Some(index) => {
+            let target = snapshot
+                .streams
+                .get(usize::from(index))
+                .ok_or_else(|| format!("stream index {index} is not configured"))?
+                .target;
+            Ok(if enabled {
+                CommandPayload::StreamStart { target }
+            } else {
+                CommandPayload::StreamStop { target }
+            })
+        }
+        None => Ok(if enabled {
+            CommandPayload::StreamStartAll
+        } else {
+            CommandPayload::StreamStopAll
+        }),
     }
 }
 
