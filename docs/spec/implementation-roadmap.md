@@ -6411,10 +6411,12 @@ messages can be hidden, pinned on air, or rotated round-robin on a
 caller-supplied clock, and the on-air message is written into typed
 `fm-titles` fields atomically at a scene revision. Remaining gaps: no real
 provider adapters, transport, or authorization flows, no browser approval UI
-or control-protocol wiring, no persistence of the audit log or the desk's
-hidden, rotation, and on-air message state (the config and operator roles now
-round-trip as a canonical desk document, which `freemix-cli social-desk-check`
-validates and `social-desk-export` rewrites), no cross-provider de-duplication, no
+or control-protocol wiring, no persistence of the audit log itself or the
+aggregated messages (the config, operator roles, hidden keys, rotation, cursor,
+on-air state, observed clock, and audit counters now round-trip as a canonical
+version-2 desk document, which `freemix-cli social-desk-check` validates and
+`social-desk-export` rewrites; restored keys resolve only against messages the
+caller supplies), no cross-provider de-duplication, no
 unbounded-store limits in the aggregator, and no authenticated operator
 identity. `GX-010` remains blocked
 on exact authorized integrations.

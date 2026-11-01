@@ -6313,6 +6313,21 @@ fn social_desk_check(path: &Path) -> AppResult<()> {
             role.token()
         );
     }
+    println!(
+        "SocialDeskState(hidden={}, rotation={}, on_air={}, evicted_audit={})",
+        desk.hidden().len(),
+        desk.rotation().len(),
+        desk.on_air().map_or_else(
+            || "none".to_owned(),
+            |on_air| format!(
+                "{}:{}:{}",
+                on_air.key.provider_id.as_str(),
+                on_air.key.message_id.as_str(),
+                on_air.source.token()
+            )
+        ),
+        desk.evicted_audit_entries(),
+    );
     Ok(())
 }
 

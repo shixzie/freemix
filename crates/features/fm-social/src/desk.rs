@@ -323,6 +323,12 @@ impl ModerationDesk {
         self.hidden.contains(key)
     }
 
+    /// Every hidden message key, ascending.
+    #[must_use]
+    pub const fn hidden(&self) -> &BTreeSet<MessageKey> {
+        &self.hidden
+    }
+
     #[must_use]
     pub fn rotation(&self) -> &[MessageKey] {
         &self.rotation
@@ -839,6 +845,22 @@ pub enum DeskDocumentError {
     ZeroCapacity,
     /// The rotation dwell is zero.
     ZeroDwell,
+    /// A state line is missing, out of order, duplicated, or malformed.
+    State,
+    /// The next audit sequence is zero.
+    Sequence,
+    /// The rotation cursor does not name an entry of the rotation.
+    RotationCursor,
+    /// Two hidden or rotation lines name the same message.
+    DuplicateKey,
+    /// Hidden message lines are not in strictly ascending key order.
+    HiddenOrder,
+    /// More hidden messages than the document limit.
+    TooManyHidden,
+    /// More rotation entries than the configured capacity.
+    TooManyRotation,
+    /// The on-air line names an invalid state.
+    OnAir,
 }
 
 impl fmt::Display for DeskDocumentError {
@@ -853,6 +875,14 @@ impl fmt::Display for DeskDocumentError {
             Self::NoAdmin => "moderation desk document has no admin",
             Self::ZeroCapacity => "moderation desk capacities must be non-zero",
             Self::ZeroDwell => "moderation desk rotation dwell must be non-zero",
+            Self::State => "moderation desk document state line is malformed or out of order",
+            Self::Sequence => "moderation desk document audit sequence must be non-zero",
+            Self::RotationCursor => "moderation desk document rotation cursor is out of range",
+            Self::DuplicateKey => "moderation desk document repeats a message key",
+            Self::HiddenOrder => "moderation desk document hidden keys are not in ascending order",
+            Self::TooManyHidden => "moderation desk document has too many hidden keys",
+            Self::TooManyRotation => "moderation desk document rotation exceeds its capacity",
+            Self::OnAir => "moderation desk document on-air state is invalid",
         })
     }
 }
@@ -885,17 +915,30 @@ impl Role {
 }
 
 impl ModerationDesk {
-    /// Encodes the desk's config and operator state as canonical text:
+    /// Encodes the desk's config, operators, hidden, rotation, on-air, and
+    /// audit-counter state as canonical text:
     ///
     /// ```text
-    /// freemix-social-desk 1
+    /// freemix-social-desk 2
     /// config <audit> <rotation> <max operators> <dwell ms>
     /// operator <id hex> <role>
+    /// sequence <next audit sequence>
+    /// rotation-cursor <index>
+    /// evicted <audit entries evicted>
+    /// last <observed ms>
+    /// hidden <provider hex> <account hex> <message hex>
+    /// rotation <provider hex> <account hex> <message hex>
+    /// on-air <provider hex> <account hex> <message hex> <since ms> <manual|rotation> <generation>
     /// ```
+    ///
+    /// Hidden keys ascend, rotation keys keep their rotation order, and the
+    /// on-air line is present only while a message is on air. The audit log
+    /// itself is not part of the document; its next sequence survives so
+    /// restored entries never reuse one.
     #[must_use]
     pub fn to_document(&self) -> String {
         use std::fmt::Write as _;
-        let mut output = String::from("freemix-social-desk 1\n");
+        let mut output = String::from("freemix-social-desk 2\n");
         writeln!(
             output,
             "config {} {} {} {}",
@@ -914,11 +957,38 @@ impl ModerationDesk {
             )
             .expect("writing to a string cannot fail");
         }
+        writeln!(output, "sequence {}", self.next_sequence)
+            .expect("writing to a string cannot fail");
+        writeln!(output, "rotation-cursor {}", self.rotation_cursor)
+            .expect("writing to a string cannot fail");
+        writeln!(output, "evicted {}", self.evicted_audit_entries)
+            .expect("writing to a string cannot fail");
+        writeln!(output, "last {}", self.last_time.0).expect("writing to a string cannot fail");
+        for key in &self.hidden {
+            writeln!(output, "hidden {}", key_document(key))
+                .expect("writing to a string cannot fail");
+        }
+        for key in &self.rotation {
+            writeln!(output, "rotation {}", key_document(key))
+                .expect("writing to a string cannot fail");
+        }
+        if let Some(on_air) = &self.on_air {
+            writeln!(
+                output,
+                "on-air {} {} {} {}",
+                key_document(&on_air.key),
+                on_air.since.0,
+                on_air.source.token(),
+                self.on_air_generation
+            )
+            .expect("writing to a string cannot fail");
+        }
         output
     }
 
-    /// Restores a desk's config and operator state from `document` over
-    /// `social`. The hidden, rotation, on-air, and audit state starts empty.
+    /// Restores a desk from `document` over `social`. Hidden, rotation,
+    /// rotation cursor, on-air, the observed clock, and the audit counters
+    /// survive; the audit log itself starts empty.
     ///
     /// # Errors
     ///
@@ -928,7 +998,7 @@ impl ModerationDesk {
         social: SocialAggregator,
     ) -> Result<Self, DeskDocumentError> {
         let mut lines = document.lines();
-        if lines.next() != Some("freemix-social-desk 1") {
+        if lines.next() != Some("freemix-social-desk 2") {
             return Err(DeskDocumentError::Header);
         }
         let Some(config_line) = lines.next() else {
@@ -958,23 +1028,31 @@ impl ModerationDesk {
         };
         let mut defined = BTreeMap::new();
         let mut previous: Option<String> = None;
+        let mut state_lines = Vec::new();
         for line in lines {
-            let parts: Vec<&str> = line.split(' ').collect();
-            let ["operator", id, role] = parts.as_slice() else {
-                return Err(DeskDocumentError::Operator);
-            };
-            let id = unhex_text(id).ok_or(DeskDocumentError::Operator)?;
-            if let Some(previous) = &previous {
-                if id == *previous {
-                    return Err(DeskDocumentError::DuplicateOperator);
+            if let Some(rest) = line.strip_prefix("operator ") {
+                if !state_lines.is_empty() {
+                    return Err(DeskDocumentError::Operator);
                 }
-                if id < *previous {
-                    return Err(DeskDocumentError::Order);
+                let parts: Vec<&str> = rest.split(' ').collect();
+                let [id, role] = parts.as_slice() else {
+                    return Err(DeskDocumentError::Operator);
+                };
+                let id = unhex_text(id).ok_or(DeskDocumentError::Operator)?;
+                if let Some(previous) = &previous {
+                    if id == *previous {
+                        return Err(DeskDocumentError::DuplicateOperator);
+                    }
+                    if id < *previous {
+                        return Err(DeskDocumentError::Order);
+                    }
                 }
+                previous = Some(id.clone());
+                let role = Role::from_token(role).ok_or(DeskDocumentError::Operator)?;
+                defined.insert(OperatorId::new(id), role);
+            } else {
+                state_lines.push(line);
             }
-            previous = Some(id.clone());
-            let role = Role::from_token(role).ok_or(DeskDocumentError::Operator)?;
-            defined.insert(OperatorId::new(id), role);
         }
         if defined.is_empty() {
             return Err(DeskDocumentError::Operator);
@@ -985,19 +1063,214 @@ impl ModerationDesk {
         if !defined.values().any(|role| *role == Role::Admin) {
             return Err(DeskDocumentError::NoAdmin);
         }
+
+        let mut state = state_lines.into_iter().peekable();
+        let next_sequence = state_u64(&mut state, "sequence")?;
+        if next_sequence == 0 {
+            return Err(DeskDocumentError::Sequence);
+        }
+        let rotation_cursor = state_usize(&mut state, "rotation-cursor")?;
+        let evicted_audit_entries = state_u64(&mut state, "evicted")?;
+        let last_time = Timestamp(state_u64(&mut state, "last")?);
+
+        let mut hidden = BTreeSet::new();
+        let mut previous: Option<MessageKey> = None;
+        while state.peek().is_some_and(|line| line.starts_with("hidden ")) {
+            let line = state.next().unwrap_or_default();
+            let key = key_from_line(line, "hidden")?;
+            if let Some(previous) = &previous {
+                if key == *previous {
+                    return Err(DeskDocumentError::DuplicateKey);
+                }
+                if key < *previous {
+                    return Err(DeskDocumentError::HiddenOrder);
+                }
+            }
+            previous = Some(key.clone());
+            hidden.insert(key);
+            if hidden.len() > DESK_DOCUMENT_MAX_HIDDEN {
+                return Err(DeskDocumentError::TooManyHidden);
+            }
+        }
+
+        let mut rotation = Vec::new();
+        let mut rotation_keys = BTreeSet::new();
+        while state
+            .peek()
+            .is_some_and(|line| line.starts_with("rotation "))
+        {
+            let line = state.next().unwrap_or_default();
+            let key = key_from_line(line, "rotation")?;
+            if hidden.contains(&key) {
+                return Err(DeskDocumentError::OnAir);
+            }
+            if !rotation_keys.insert(key.clone()) {
+                return Err(DeskDocumentError::DuplicateKey);
+            }
+            rotation.push(key);
+            if rotation.len() > config.rotation_capacity {
+                return Err(DeskDocumentError::TooManyRotation);
+            }
+        }
+        if rotation.is_empty() {
+            if rotation_cursor != 0 {
+                return Err(DeskDocumentError::RotationCursor);
+            }
+        } else if rotation_cursor >= rotation.len() {
+            return Err(DeskDocumentError::RotationCursor);
+        }
+
+        let mut on_air = None;
+        let mut on_air_generation = 0;
+        if let Some(line) = state.next() {
+            let Some(rest) = line.strip_prefix("on-air ") else {
+                return Err(DeskDocumentError::State);
+            };
+            let parts: Vec<&str> = rest.split(' ').collect();
+            let [provider, account, message, since, source, generation] = parts.as_slice() else {
+                return Err(DeskDocumentError::OnAir);
+            };
+            let key = key_from_parts(provider, account, message)?;
+            let since = since
+                .parse::<u64>()
+                .map(Timestamp)
+                .map_err(|_| DeskDocumentError::OnAir)?;
+            if since > last_time {
+                return Err(DeskDocumentError::OnAir);
+            }
+            let source = OnAirSource::from_token(source).ok_or(DeskDocumentError::OnAir)?;
+            let generation = generation
+                .parse::<u64>()
+                .ok()
+                .filter(|generation| *generation > 0)
+                .ok_or(DeskDocumentError::OnAir)?;
+            if hidden.contains(&key) {
+                return Err(DeskDocumentError::OnAir);
+            }
+            if source == OnAirSource::Rotation && !rotation_keys.contains(&key) {
+                return Err(DeskDocumentError::OnAir);
+            }
+            on_air = Some(OnAir { key, since, source });
+            on_air_generation = generation;
+        }
+        if state.next().is_some() {
+            return Err(DeskDocumentError::State);
+        }
+
         Ok(Self {
             social,
             config,
             operators: defined,
-            hidden: BTreeSet::new(),
-            rotation: Vec::new(),
-            rotation_cursor: 0,
-            on_air: None,
-            on_air_generation: 0,
+            hidden,
+            rotation,
+            rotation_cursor,
+            on_air,
+            on_air_generation,
             audit: VecDeque::new(),
-            next_sequence: 1,
-            evicted_audit_entries: 0,
-            last_time: Timestamp(0),
+            next_sequence,
+            evicted_audit_entries,
+            last_time,
+        })
+    }
+}
+
+/// Most hidden message keys one desk document may hold.
+const DESK_DOCUMENT_MAX_HIDDEN: usize = 65_536;
+
+fn state_line<'a>(
+    state: &mut std::iter::Peekable<std::vec::IntoIter<&'a str>>,
+    name: &str,
+) -> Result<&'a str, DeskDocumentError> {
+    let line = state.next().ok_or(DeskDocumentError::State)?;
+    line.strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .ok_or(DeskDocumentError::State)
+}
+
+fn state_u64(
+    state: &mut std::iter::Peekable<std::vec::IntoIter<&str>>,
+    name: &str,
+) -> Result<u64, DeskDocumentError> {
+    state_line(state, name)?
+        .parse()
+        .map_err(|_| DeskDocumentError::State)
+}
+
+fn state_usize(
+    state: &mut std::iter::Peekable<std::vec::IntoIter<&str>>,
+    name: &str,
+) -> Result<usize, DeskDocumentError> {
+    state_line(state, name)?
+        .parse()
+        .map_err(|_| DeskDocumentError::State)
+}
+
+fn key_from_line(line: &str, name: &str) -> Result<MessageKey, DeskDocumentError> {
+    let rest = line
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .ok_or(DeskDocumentError::State)?;
+    let parts: Vec<&str> = rest.split(' ').collect();
+    let [provider, account, message] = parts.as_slice() else {
+        return Err(DeskDocumentError::State);
+    };
+    key_from_parts(provider, account, message)
+}
+
+fn key_from_parts(
+    provider: &str,
+    account: &str,
+    message: &str,
+) -> Result<MessageKey, DeskDocumentError> {
+    Ok(MessageKey::new(
+        identity_text(provider).ok_or(DeskDocumentError::State)?,
+        identity_text(account).ok_or(DeskDocumentError::State)?,
+        identity_text(message).ok_or(DeskDocumentError::State)?,
+    ))
+}
+
+fn key_document(key: &MessageKey) -> String {
+    format!(
+        "{} {} {}",
+        identity_document(key.provider_id.as_str()),
+        identity_document(key.account_id.as_str()),
+        identity_document(key.message_id.as_str())
+    )
+}
+
+fn identity_document(text: &str) -> String {
+    if text.is_empty() {
+        "-".to_owned()
+    } else {
+        hex_text(text)
+    }
+}
+
+fn identity_text(text: &str) -> Option<String> {
+    if text == "-" {
+        Some(String::new())
+    } else {
+        unhex_text(text)
+    }
+}
+
+impl OnAirSource {
+    /// The document token of the source.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Rotation => "rotation",
+        }
+    }
+
+    /// The source named by `token`.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Some(match token {
+            "manual" => Self::Manual,
+            "rotation" => Self::Rotation,
+            _ => return None,
         })
     }
 }
@@ -1044,11 +1317,19 @@ mod document_tests {
     }
 
     #[test]
-    fn desk_documents_round_trip_config_and_operators() {
-        let document = "freemix-social-desk 1\n\
+    fn desk_documents_round_trip_config_operators_and_state() {
+        let document = "freemix-social-desk 2\n\
                         config 512 16 4 4000\n\
                         operator 616c696365 admin\n\
-                        operator 626f62 moderator\n";
+                        operator 626f62 moderator\n\
+                        sequence 9\n\
+                        rotation-cursor 1\n\
+                        evicted 3\n\
+                        last 9000\n\
+                        hidden 70726f76 61636374 6d31\n\
+                        rotation 70726f76 61636374 6d32\n\
+                        rotation 70726f76 61636374 6d33\n\
+                        on-air 70726f76 61636374 6d32 8000 rotation 5\n";
         let desk = ModerationDesk::from_document(document, social()).unwrap();
         assert_eq!(desk.config().audit_capacity, 512);
         assert_eq!(desk.config().rotation_capacity, 16);
@@ -1056,26 +1337,99 @@ mod document_tests {
         assert_eq!(desk.config().rotation_dwell.get(), 4000);
         assert_eq!(desk.role(&OperatorId::new("alice")), Some(Role::Admin));
         assert_eq!(desk.role(&OperatorId::new("bob")), Some(Role::Moderator));
+        assert!(desk.is_hidden(&MessageKey::new("prov", "acct", "m1")));
+        assert_eq!(
+            desk.rotation(),
+            [
+                MessageKey::new("prov", "acct", "m2"),
+                MessageKey::new("prov", "acct", "m3"),
+            ]
+        );
+        let on_air = desk.on_air().unwrap();
+        assert_eq!(on_air.key, MessageKey::new("prov", "acct", "m2"));
+        assert_eq!(on_air.since, Timestamp(8000));
+        assert_eq!(on_air.source, OnAirSource::Rotation);
+        assert_eq!(desk.on_air_generation(), 5);
+        assert_eq!(desk.evicted_audit_entries(), 3);
+        assert_eq!(desk.audit().len(), 0);
+        assert_eq!(desk.to_document(), document);
+    }
+
+    #[test]
+    fn desk_documents_round_trip_an_empty_state() {
+        let document = "freemix-social-desk 2\n\
+                        config 512 16 4 4000\n\
+                        operator 616c696365 admin\n\
+                        sequence 1\n\
+                        rotation-cursor 0\n\
+                        evicted 0\n\
+                        last 0\n";
+        let desk = ModerationDesk::from_document(document, social()).unwrap();
+        assert!(!desk.is_hidden(&MessageKey::new("prov", "acct", "m1")));
+        assert!(desk.rotation().is_empty());
+        assert!(desk.on_air().is_none());
+        assert_eq!(desk.on_air_generation(), 0);
         assert_eq!(desk.to_document(), document);
     }
 
     #[test]
     fn desk_documents_are_strict() {
+        let base = "freemix-social-desk 2\n\
+                    config 512 16 4 4000\n\
+                    operator 616c696365 admin\n\
+                    sequence 1\n\
+                    rotation-cursor 0\n\
+                    evicted 0\n\
+                    last 9000\n";
+        let rotation = "freemix-social-desk 2\n\
+                        config 512 1 4 4000\n\
+                        operator 616c696365 admin\n\
+                        sequence 1\n\
+                        rotation-cursor 0\n\
+                        evicted 0\n\
+                        last 9000\n\
+                        rotation 70726f76 61636374 6d32\n";
         for document in [
-            "",
-            "freemix-social-desk 2\nconfig 1 1 1 1\noperator 61 admin\n",
-            "freemix-social-desk 1\n",
-            "freemix-social-desk 1\nconfig 0 16 4 4000\noperator 61 admin\n",
-            "freemix-social-desk 1\nconfig 512 16 4 0\noperator 61 admin\n",
-            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator 61 viewer\n",
-            "freemix-social-desk 1\nconfig 512 16 1 4000\noperator 61 admin\noperator 62 admin\n",
-            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator 62 admin\noperator 61 admin\n",
-            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator 61 admin\noperator 61 admin\n",
-            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator zz admin\n",
-            "freemix-social-desk 1\nconfig 512 16 4 4000\noperator 61 admin\nextra\n",
+            String::new(),
+            "freemix-social-desk 3\nconfig 1 1 1 1\n".to_owned(),
+            "freemix-social-desk 2\n".to_owned(),
+            base.replacen("config 512 16 4 4000", "config 0 16 4 4000", 1),
+            base.replacen("config 512 16 4 4000", "config 512 16 4 0", 1),
+            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator 61 viewer\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 2\nconfig 512 16 1 4000\noperator 61 admin\noperator 62 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator 62 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator 61 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator zz admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            base.replacen("sequence 1", "sequence 0", 1),
+            base.replacen("rotation-cursor 0", "rotation-cursor 1", 1),
+            base.replacen("last 9000", "last nine", 1),
+            base.replacen("evicted 0", "evicted", 1),
+            base.replacen("sequence 1\n", "", 1),
+            base.replacen("rotation-cursor 0\n", "", 1),
+            base.replacen("evicted 0\n", "", 1),
+            base.replacen("last 9000\n", "", 1),
+            format!("{base}operator 616c696365 admin\n"),
+            format!("{base}hidden 70726f76 61636374 6d32\nhidden 70726f76 61636374 6d32\n"),
+            format!(
+                "{base}hidden 70726f76 61636374 6d33\nhidden 70726f76 61636374 6d32\n"
+            ),
+            format!("{base}hidden 70726f76 61636374 zz\n"),
+            format!("{base}hidden 70726f76 61636374 6d32\nrotation 70726f76 61636374 6d32\n"),
+            format!("{rotation}rotation 70726f76 61636374 6d32\n"),
+            format!("{rotation}rotation 70726f76 61636374 6d33\n"),
+            format!("{rotation}rotation-cursor 1\n"),
+            format!("{base}on-air 70726f76 61636374 6d32 8000 rotation 0\n"),
+            format!("{base}on-air 70726f76 61636374 6d32 9001 manual 1\n"),
+            format!("{base}on-air 70726f76 61636374 6d32 8000 manual 1\non-air 70726f76 61636374 6d32 8000 manual 1\n"),
+            format!("{base}on-air 70726f76 61636374 6d32 8000 remote 1\n"),
+            format!(
+                "{base}hidden 70726f76 61636374 6d32\non-air 70726f76 61636374 6d32 8000 manual 1\n"
+            ),
+            format!("{rotation}on-air 70726f76 61636374 6d33 8000 rotation 1\n"),
+            "freemix-social-desk 2\nconfig 512 16 4 4000\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\nextra\n".to_owned(),
         ] {
             assert!(
-                ModerationDesk::from_document(document, social()).is_err(),
+                ModerationDesk::from_document(&document, social()).is_err(),
                 "{document:?}"
             );
         }
