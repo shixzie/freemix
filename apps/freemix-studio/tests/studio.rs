@@ -1392,6 +1392,7 @@ fn supervised(directory: &TestDirectory, executable: &Path) -> SupervisedConfig 
         listen: "127.0.0.1:0".parse().unwrap(),
         web_listen: None,
         web: freemix_studio::SupervisedWeb::default(),
+        live_lan_listen: None,
     }
 }
 
