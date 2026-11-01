@@ -1044,6 +1044,17 @@ pub enum Command {
         path: PathBuf,
         output: PathBuf,
     },
+    /// Stores a recorder track-map document in the project bundle (AU-010).
+    RecordTrackMapImport {
+        path: PathBuf,
+        slot: fm_model::RecorderSlot,
+        document: PathBuf,
+    },
+    /// Prints a recorder track map stored in the project bundle (AU-010).
+    RecordTrackMapExport {
+        path: PathBuf,
+        slot: fm_model::RecorderSlot,
+    },
     /// Stores a canonical scoreboard document on a title input (GX-003).
     ScoreboardImport {
         path: PathBuf,
@@ -2614,6 +2625,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "social-desk-export" => parse_social_desk_export(arguments),
         "track-map-check" => parse_track_map_check(arguments),
         "track-map-export" => parse_track_map_export(arguments),
+        "record-track-map-import" => parse_record_track_map_import(arguments),
+        "record-track-map-export" => parse_record_track_map_export(arguments),
         "scoreboard-import" => parse_scoreboard_import(arguments),
         "scoreboard-export" => parse_scoreboard_export(arguments),
         "crawl-check" => parse_crawl_check(arguments),
@@ -4868,6 +4881,33 @@ fn parse_track_map_export(
     let output = required_path(&mut arguments, "output")?;
     reject_extra(&mut arguments)?;
     Ok(Command::TrackMapExport { path, output })
+}
+
+fn parse_record_track_map_import(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let slot = recorder_slot(&required(&mut arguments, "recorder slot")?)?;
+    let slot = fm_model::RecorderSlot::new(slot)
+        .map_err(|_| ArgsError::InvalidRecorder(slot.to_string()))?;
+    let document = required_path(&mut arguments, "track-map document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::RecordTrackMapImport {
+        path,
+        slot,
+        document,
+    })
+}
+
+fn parse_record_track_map_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let slot = recorder_slot(&required(&mut arguments, "recorder slot")?)?;
+    let slot = fm_model::RecorderSlot::new(slot)
+        .map_err(|_| ArgsError::InvalidRecorder(slot.to_string()))?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::RecordTrackMapExport { path, slot })
 }
 
 fn parse_scoreboard_import(

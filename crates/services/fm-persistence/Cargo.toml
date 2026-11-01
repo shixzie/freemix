@@ -13,10 +13,14 @@ fm-grade = { path = "../../foundation/fm-grade" }
 fm-preset-file = { path = "../../foundation/fm-preset-file" }
 fm-model = { path = "../../foundation/fm-model" }
 fm-ptz = { path = "../../features/fm-ptz" }
+fm-record = { path = "../../media/fm-record" }
 fm-script = { path = "../../foundation/fm-script" }
 fm-titles = { path = "../../features/fm-titles" }
 fm-types = { path = "../../foundation/fm-types" }
 turso = { version = "0.7.2", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.20"
 
 [lints]
 workspace = true

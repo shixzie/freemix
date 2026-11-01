@@ -1093,6 +1093,12 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::SocialDeskExport { path, output } => social_desk_export(&path, &output)?,
         Command::TrackMapCheck { path } => track_map_check(&path)?,
         Command::TrackMapExport { path, output } => track_map_export(&path, &output)?,
+        Command::RecordTrackMapImport {
+            path,
+            slot,
+            document,
+        } => record_track_map_import(&path, slot, &document)?,
+        Command::RecordTrackMapExport { path, slot } => record_track_map_export(&path, slot)?,
         Command::ScoreboardImport {
             path,
             input,
@@ -6390,6 +6396,46 @@ fn track_map_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn record_track_map_import(
+    path: &Path,
+    slot: fm_model::RecorderSlot,
+    document: &Path,
+) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    let map = fm_record::RecorderTrackMap::from_document(&text)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    let store = fm_persistence::ProjectStore::new(path)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    store
+        .save_recorder_track_map(slot, &map)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    println!(
+        "record-track-map-import: {} tracks to slot {} ({})",
+        map.tracks().len(),
+        slot.get(),
+        store.recorder_track_map_path(slot).display()
+    );
+    Ok(())
+}
+
+fn record_track_map_export(path: &Path, slot: fm_model::RecorderSlot) -> AppResult<()> {
+    let store = fm_persistence::ProjectStore::new(path)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+    let Some(map) = store
+        .load_recorder_track_map(slot)
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?
+    else {
+        return Err(AppFailure(format!(
+            "record-track-map-export: slot {} has no track map",
+            slot.get()
+        ))
+        .into());
+    };
+    println!("{}", map.to_document());
+    Ok(())
+}
+
 fn scoreboard_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
     let text = fs::read_to_string(document)
         .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
@@ -7597,6 +7643,8 @@ Usage:
   freemix-cli social-desk-export <desk.txt> <output.txt>
   freemix-cli track-map-check <track-map.txt>
   freemix-cli track-map-export <track-map.txt> <output.txt>
+  freemix-cli record-track-map-import <show.freemix> <slot 1|2> <track-map.txt>
+  freemix-cli record-track-map-export <show.freemix> <slot 1|2>
     validates or rewrites a moderation desk document's config and operator roles (GX-010)
   freemix-cli scoreboard-import <show.freemix> <title-input> <scoreboard.txt>
   freemix-cli scoreboard-export <show.freemix> <title-input>

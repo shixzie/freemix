@@ -12,6 +12,7 @@ mod lut;
 mod media;
 mod model;
 mod recent;
+mod recorder_track_map;
 mod settings_export;
 mod settings_import;
 mod store;
@@ -71,6 +72,9 @@ pub use recent::{
     DEFAULT_RECENT_PROJECTS, MAX_RECENT_PROJECTS, MAX_RECENT_PROJECTS_BYTES,
     RECENT_PROJECTS_CONTRACT, RecentProject, RecentProjectStatus, RecentProjects,
     RecentProjectsError,
+};
+pub use recorder_track_map::{
+    RECORDER_TRACK_MAP_DIRECTORY, RECORDER_TRACK_MAP_EXTENSION, TrackMapStoreError,
 };
 pub use settings_export::{
     EntityKey, MAX_SECRET_BYTES, MAX_SETTING_KEY_BYTES, MAX_SETTING_KEY_SEGMENT_BYTES,

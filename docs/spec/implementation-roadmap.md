@@ -3832,9 +3832,10 @@ from its data length. A track recorder writes interleaved or split per-track
 files after validating every file up front. A map now round-trips as a
 canonical `freemix-record-track-map 1` document
 (`RecorderTrackMap::to_document`/`from_document`), strictly decoded against
-the same validation. Remaining gaps: nothing connects
-this to `fm-audio` buses, the daemon recorder slots, project persistence, or
-UI; WAV
+the same validation, and is stored per recorder slot in the project bundle as
+`recorders/<slot>.trackmap`; `freemix-cli record-track-map-import` and
+`record-track-map-export` manage it. Remaining gaps: nothing connects
+this to `fm-audio` buses, the daemon recorder slots, or UI; WAV
 output is separate from the crash-safe packet spool and has no time or size
 rollover; and metadata stops at version-1 `bext` without iXML, loudness, or
 UMID. `AU-010` remains planned.
