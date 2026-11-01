@@ -833,3 +833,61 @@ fn a_template_may_show_a_shared_show_clock() {
         Ok("01:00".into())
     );
 }
+
+#[test]
+fn a_template_clock_may_reference_a_shared_show_clock() {
+    let mut element = clock_element(ProductionClockSpec::new(name("MediaRef")));
+    element.id = ElementId::new(NonZeroU128::new(1).unwrap());
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(1).unwrap()),
+        name: "reference".into(),
+        width: WIDTH,
+        height: HEIGHT,
+        background: Color::TRANSPARENT,
+        fields: Vec::new(),
+        elements: vec![element],
+        animation: fm_titles::TitleAnimation::default(),
+    };
+    let clocks = [TitleClock {
+        name: name("MediaRef"),
+        kind: TitleClockKind::Reference {
+            clock: name("Media"),
+        },
+    }];
+    assert_eq!(validate_title_clocks(&template, &clocks), Ok(()));
+    let mut shared = ProductionClocks::new();
+    shared
+        .insert(
+            name("Media"),
+            ProductionClock::timer(
+                TimerConfig::countdown(
+                    ClockValue::from_secs(60).unwrap(),
+                    OverrunPolicy::StopAtTarget,
+                ),
+                DurationFormat::MinutesSeconds,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let time = TitleClockTime {
+        at: TimeReading::new(mono_ms(0), UtcInstant::new(0, 0).unwrap()),
+        taken_at: None,
+    };
+    let registry = title_clock_registry_with(&template, &clocks, time, Some(&shared)).unwrap();
+    assert_eq!(
+        evaluate_production_clock(
+            &ProductionClockSpec::new(name("MediaRef")),
+            ClockSource::new(&registry, time.at),
+        ),
+        Ok("01:00".into())
+    );
+    // Without the shared registry a reference has no reading.
+    let local = title_clock_registry(&clocks, time).unwrap();
+    assert_eq!(
+        evaluate_production_clock(
+            &ProductionClockSpec::new(name("MediaRef")),
+            ClockSource::new(&local, time.at),
+        ),
+        Err(ClockUnresolved::UnknownClock)
+    );
+}

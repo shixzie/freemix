@@ -1138,6 +1138,36 @@ fn production_clocks_of_every_kind_and_preset_round_trip_exactly() {
 }
 
 #[test]
+fn a_reference_clock_round_trips_without_a_format() {
+    let mut stored = clock_template();
+    stored.clocks.push(TitleClock {
+        name: clock_name("MediaRef"),
+        kind: TitleClockKind::Reference {
+            clock: clock_name("ShowMedia"),
+        },
+    });
+    let id = u128::try_from(stored.template.elements.len()).unwrap() + 1;
+    stored.template.elements.push(element(
+        id,
+        ElementKind::ProductionClock(ProductionClockSpec::new(clock_name("MediaRef"))),
+        Some("Mono"),
+    ));
+    stored
+        .clocks
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    let encoded = encode_title_template(&stored).unwrap();
+    assert!(
+        encoded.contains(
+            "{\"name\": \"MediaRef\", \"kind\": \"reference\", \"clock\": \"ShowMedia\"}"
+        ),
+        "{encoded}"
+    );
+    let decoded = decode_title_template(&encoded).unwrap();
+    assert_eq!(decoded, stored);
+    assert_eq!(encode_title_template(&decoded).unwrap(), encoded);
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn clock_tables_and_clock_content_are_strict() {
     let stored = clock_template();

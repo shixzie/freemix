@@ -145,6 +145,11 @@ pub enum TitleClockKind {
     /// Time since the title was taken on air, rounded down like every
     /// count-up; zero while the title is off air.
     SinceTake { format: DurationFormat },
+    /// Another clock from the show registry, resolved by name at render
+    /// time (for example a media-remaining, session, or playlist clock the
+    /// template does not define itself). An element that shows this clock
+    /// may give it its own display preset.
+    Reference { clock: ClockName },
 }
 
 impl TitleClockKind {
@@ -156,12 +161,18 @@ impl TitleClockKind {
             Self::CountdownTo { format, .. } | Self::SinceTake { format } => {
                 DisplayFormat::Duration(*format)
             }
+            // The reference has no format of its own; the element's preset
+            // (or the shared clock's own format) decides.
+            Self::Reference { .. } => DisplayFormat::Duration(DurationFormat::MinutesSeconds),
         }
     }
 
     /// Whether an element preset is of this clock's kind.
     #[must_use]
     pub const fn accepts_format(&self, format: DisplayFormat) -> bool {
+        if matches!(self, Self::Reference { .. }) {
+            return true;
+        }
         matches!(
             (self, format),
             (Self::TimeOfDay { .. }, DisplayFormat::TimeOfDay(_))
@@ -345,6 +356,8 @@ pub fn title_clock_registry(
                     format: *format,
                 }
             }
+            // A reference resolves only from the show's shared registry.
+            TitleClockKind::Reference { .. } => continue,
         };
         registry.insert(clock.name.clone(), production)?;
     }
@@ -373,6 +386,16 @@ pub fn title_clock_registry_with(
     let Some(shared) = shared else {
         return Ok(registry);
     };
+    for clock in clocks {
+        let TitleClockKind::Reference { clock: referenced } = &clock.kind else {
+            continue;
+        };
+        if registry.get(&clock.name).is_none()
+            && let Some(shared_clock) = shared.get(referenced)
+        {
+            registry.insert(clock.name.clone(), shared_clock.clone())?;
+        }
+    }
     for element in &template.elements {
         let ElementKind::ProductionClock(spec) = &element.kind else {
             continue;

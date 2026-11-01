@@ -47,7 +47,8 @@
 //! show, sorted by name. Each clock is a [`TitleClock`]: `time_of_day` in a
 //! canonical POSIX `TZ` zone (DST rules included), `countdown_to` a whole
 //! second UTC `target_utc` (`YYYY-MM-DDTHH:MM:SSZ`) with an `overrun` policy,
-//! or `since_take`. Display presets are `{"type": "duration" | "time_of_day",
+//! `since_take`, or `reference` to another show clock by name. Display
+//! presets are `{"type": "duration" | "time_of_day",
 //! "preset": name}`; the frames preset adds a `frame_rate`. A host reads the
 //! clocks through [`fm_titles::title_clock_registry`].
 //!
@@ -1027,6 +1028,7 @@ fn check_clock_table(
                 }
             }
             TitleClockKind::SinceTake { .. } => {}
+            TitleClockKind::Reference { .. } => {}
         }
     }
     Ok(())
@@ -1511,6 +1513,12 @@ fn write_clock(output: &mut String, clock: &TitleClock) {
             .expect("writing to a string cannot fail");
         }
         TitleClockKind::SinceTake { .. } => output.push_str(", \"kind\": \"since_take\""),
+        TitleClockKind::Reference { clock } => {
+            output.push_str(", \"kind\": \"reference\", \"clock\": ");
+            write_string(output, clock.as_str());
+            output.push('}');
+            return;
+        }
     }
     output.push_str(", \"format\": ");
     write_display_format(output, clock.kind.display_format());
@@ -1727,6 +1735,9 @@ fn parse_clock(value: Value) -> Result<TitleClock, DecodeError> {
         }
         "since_take" => TitleClockKind::SinceTake {
             format: parse_duration_format(object.take("format")?)?,
+        },
+        "reference" => TitleClockKind::Reference {
+            clock: parse_clock_name(&object.string("clock")?)?,
         },
         value => return Err(unknown_enum("clock kind", value)),
     };

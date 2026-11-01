@@ -5496,8 +5496,9 @@ and follows its playback
 through the engine, and stream, recording, replay, and MultiCorder session
 clocks start and stop with their source's activity (an external session clock
 stays stopped); no project-level
-time zone (each time-of-day clock names its zone); templates cannot show
-media remaining, session, or playlist clocks; designer compositions and
+time zone (each time-of-day clock names its zone); a template clock may be a
+`reference` to a show clock by name, so media remaining, session, and playlist
+clocks can appear without redefining them; designer compositions and
 crawls take no clock source; an IANA `TZif` parser exists
 (`fm_clock::production::TzifZone`) but title clocks still name POSIX rules;
 drop-frame timecode is available at 29.97 and 59.94 fps (project clocks and
