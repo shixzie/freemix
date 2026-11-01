@@ -4785,6 +4785,7 @@ mod tests {
                         listen: "127.0.0.1:0".parse().unwrap(),
                         web_listen: None,
                         web: crate::SupervisedWeb::default(),
+                        live_lan_listen: None,
                     }),
                     client_id: "idle-exit-worker-test".to_owned(),
                     desired_role: Role::Operator,
