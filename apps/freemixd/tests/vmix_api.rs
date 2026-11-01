@@ -233,6 +233,26 @@ fn the_daemon_serves_the_vmix_tcp_api() {
     assert!(xml.contains("<inputs><input key="), "{xml}");
     assert!(xml.contains("title=\"Extra\""), "{xml}");
     assert!(xml.contains("<active>"), "{xml}");
+
+    // The added input can be removed again by name once nothing references
+    // it.
+    writer
+        .write_all(b"FUNCTION RemoveInput Input=Extra\r\n")
+        .unwrap();
+    assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
+
+    writer.write_all(b"XML\r\n").unwrap();
+    let header = read_line(&mut reader);
+    let length: usize = header
+        .strip_prefix("XML ")
+        .unwrap()
+        .trim_end()
+        .parse()
+        .unwrap();
+    let mut xml = vec![0; length];
+    reader.read_exact(&mut xml).unwrap();
+    let xml = String::from_utf8(xml).unwrap();
+    assert!(!xml.contains("title=\"Extra\""), "{xml}");
 }
 
 #[test]

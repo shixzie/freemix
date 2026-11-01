@@ -909,6 +909,12 @@ fn translate(
                 name: name.to_owned(),
             }))
         }
+        "RemoveInput" => {
+            allowed(parameters, &["Function", "Input"])?;
+            Ok(Translation::Protocol(CommandPayload::RemoveInput {
+                input: state.resolve_input(required(parameters, "Input")?)?,
+            }))
+        }
         "SetText" => translate_set_text(parameters, state),
         "SetOutputFullscreen" | "SetOutputFullscreen2" => {
             allowed(parameters, &["Function", "Input", "Value"])?;

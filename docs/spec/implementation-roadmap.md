@@ -6404,7 +6404,8 @@ outputs 1-4 and the configured transition in the XML/XPath state, the
 `SetOutput` and fullscreen-output functions, Fade to Black, a configured
 transition duration and effect that a `Fade`
 without them uses (a configured `Cut` turns it into a cut), and
-recording/streaming toggles, input renaming, adding network-stream inputs,
+recording/streaming toggles, input renaming, adding network-stream inputs and
+removing inputs (with the native refusal when something references one),
 setting still images, input playback state/position/duration and mute/volume
 in the XML and XPath state, and
 playlist start/stop/next/previous in addition to the switcher, title,

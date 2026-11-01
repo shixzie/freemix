@@ -971,6 +971,28 @@ fn set_input_name_becomes_a_rename_intent() {
 }
 
 #[test]
+fn remove_input_resolves_the_input_and_is_strict() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=RemoveInput&Input=2", &state),
+        Ok(Translation::Protocol(CommandPayload::RemoveInput {
+            input: id(2)
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=RemoveInput&Input=Spare", &state),
+        Ok(Translation::Protocol(CommandPayload::RemoveInput {
+            input: id(3)
+        }))
+    );
+    // An unknown input, a missing one, and an extra parameter are all
+    // refused before anything is removed.
+    assert!(parse_http_query("Function=RemoveInput&Input=99", &state).is_err());
+    assert!(parse_http_query("Function=RemoveInput", &state).is_err());
+    assert!(parse_http_query("Function=RemoveInput&Input=2&Extra=1", &state).is_err());
+}
+
+#[test]
 fn playlist_verbs_translate_to_playlist_control() {
     let state = state();
     for (function, operation) in [
