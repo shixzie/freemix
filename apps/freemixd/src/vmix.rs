@@ -10,9 +10,12 @@ use fm_auth::Policy;
 use fm_control::ControlService;
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, CommandResult,
-    SnapshotMessage, TransitionFavoriteEffect, WireOverlayChannelId, WireRecorderSlot,
+    SnapshotMessage, TitleAirRequirement, TitleFieldUpdate, TitleFieldValue,
+    TransitionFavoriteEffect, WireOverlayChannelId, WireRecorderSlot,
 };
-use fm_vmix_compat::{CompatInput, CompatIntent, CompatState, Translation, VmixTcpServer};
+use fm_vmix_compat::{
+    CompatInput, CompatIntent, CompatState, TextFieldSelector, Translation, VmixTcpServer,
+};
 
 /// A bound vMix listener and the compat-only state between passes.
 pub(crate) struct VmixBridge {
@@ -315,6 +318,44 @@ fn execute_compat(
                 principal,
                 now_millis,
                 audio_strip_payload(strip, None, Some(muted)),
+                next_command,
+            )
+        }
+        CompatIntent::SetText {
+            input,
+            field,
+            value,
+        } => {
+            let title = control
+                .title_states()
+                .into_iter()
+                .find(|title| title.input == input)
+                .ok_or_else(|| format!("input {} is not a title", input.get()))?;
+            let field = match field {
+                TextFieldSelector::Name(name) => {
+                    title.fields.iter().find(|field| field.name == name)
+                }
+                TextFieldSelector::Index(index) => title.fields.get(index),
+            }
+            .ok_or_else(|| format!("title field not found on input {}", input.get()))?;
+            let require = if title.timeline.is_some() {
+                TitleAirRequirement::OnAir
+            } else {
+                TitleAirRequirement::OffAir
+            };
+            submit(
+                control,
+                principal,
+                now_millis,
+                CommandPayload::SetTitleFields {
+                    input,
+                    base_revision: title.field_revision,
+                    require,
+                    fields: vec![TitleFieldUpdate {
+                        field: field.field,
+                        value: TitleFieldValue::Text(value),
+                    }],
+                },
                 next_command,
             )
         }
