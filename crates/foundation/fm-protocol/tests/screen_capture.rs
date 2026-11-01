@@ -503,6 +503,7 @@ fn snapshot(screen_capture_inputs: Vec<ScreenCaptureEntry>) -> WireMessage {
         OverlayStatus, RecordingStatus, SnapshotMessage, WireRecorderSlot,
     };
     WireMessage::Snapshot(SnapshotMessage {
+        production_clocks: Vec::new(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,

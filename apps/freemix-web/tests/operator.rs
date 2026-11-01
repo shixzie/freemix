@@ -85,6 +85,7 @@ impl Default for Show {
 #[allow(clippy::too_many_lines)] // one flat snapshot fixture
 fn snapshot(show: &Show) -> WireMessage {
     on_wire(WireMessage::Snapshot(SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),

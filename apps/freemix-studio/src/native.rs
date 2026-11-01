@@ -4020,6 +4020,7 @@ mod tests {
     fn heartbeat_snapshot() -> SnapshotMessage {
         let input = WireInputId::new(NonZeroU128::new(2).unwrap());
         SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -5917,6 +5918,7 @@ mod tests {
             },
         )));
         peer.send(&WireMessage::Snapshot(SnapshotMessage {
+            production_clocks: Vec::new(),
             media_states: 1,
             paged_states: 0,
             cue_list_states: 0,
@@ -8476,6 +8478,7 @@ mod tests {
             });
             peer.send(&WireMessage::HandshakeResponse(handshake));
             peer.send(&WireMessage::Snapshot(SnapshotMessage {
+                production_clocks: Vec::new(),
                 animation_preset_states: 1,
                 media_states: 0,
                 paged_states: 0,

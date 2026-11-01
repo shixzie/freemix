@@ -133,6 +133,67 @@ impl ProductionClockStatus {
     }
 }
 
+/// Encodes project production clock names for the snapshot (SW-013,
+/// Protocol 2.152), in project order, as `;`-joined lowercase hex.
+///
+/// # Errors
+///
+/// Returns [`CodecError::TooManyItems`] past
+/// [`fm_types::MAX_PROJECT_CLOCKS`] and [`CodecError::InvalidField`] for an
+/// invalid or duplicate name.
+pub fn encode_names(names: &[String]) -> Result<String, CodecError> {
+    if names.len() > fm_types::MAX_PROJECT_CLOCKS {
+        return Err(CodecError::TooManyItems("production_clocks"));
+    }
+    let mut seen: Vec<&str> = Vec::with_capacity(names.len());
+    let entries = names
+        .iter()
+        .map(|name| {
+            if !clock_name_is_valid(name) || seen.contains(&name.as_str()) {
+                return Err(CodecError::InvalidField {
+                    field: "production_clocks",
+                    value: name.clone(),
+                });
+            }
+            seen.push(name);
+            Ok(hex(name))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(entries.join(";"))
+}
+
+/// Decodes project production clock names from the snapshot.
+///
+/// # Errors
+///
+/// Returns [`CodecError::TooManyItems`] past
+/// [`fm_types::MAX_PROJECT_CLOCKS`] and [`CodecError::InvalidField`] for
+/// anything but the exact contract.
+pub fn decode_names(value: &str) -> Result<Vec<String>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<&str> = value.split(';').collect();
+    if entries.len() > fm_types::MAX_PROJECT_CLOCKS {
+        return Err(CodecError::TooManyItems("production_clocks"));
+    }
+    let mut names: Vec<String> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let name = unhex(entry).ok_or_else(|| CodecError::InvalidField {
+            field: "production_clocks",
+            value: entry.to_owned(),
+        })?;
+        if !clock_name_is_valid(&name) || names.contains(&name) {
+            return Err(CodecError::InvalidField {
+                field: "production_clocks",
+                value: name,
+            });
+        }
+        names.push(name);
+    }
+    Ok(names)
+}
+
 /// Encodes a status list into a diagnostics field.
 ///
 /// # Errors
@@ -307,6 +368,26 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn clock_names_round_trip_and_are_strict() {
+        let names = vec!["Countdown".to_owned(), "Local_Time".to_owned()];
+        let encoded = encode_names(&names).unwrap();
+        assert_eq!(decode_names(&encoded).unwrap(), names);
+        assert!(decode_names("").unwrap().is_empty());
+        for malformed in [
+            // A duplicate name, an empty entry, invalid hex, and a name with
+            // a space.
+            "436f756e74646f776e;436f756e74646f776e",
+            "436f756e74646f776e;;",
+            "zz",
+            "436f756e7420646f776e",
+        ] {
+            assert!(decode_names(malformed).is_err(), "{malformed}");
+        }
+        assert!(encode_names(&["bad name".to_owned()]).is_err());
+        assert!(encode_names(&["A".to_owned(), "A".to_owned()]).is_err());
     }
 }
 

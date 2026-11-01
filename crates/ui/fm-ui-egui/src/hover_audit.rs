@@ -263,6 +263,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
         // group, strip 1 is labelled, and the Clean Feed stays live under
         // Fade to Black, so group strips, labels, and the FTB output menu
         // are audited (AU-001, SW-004).
+        production_clocks: Vec::new(),
         audio_mixer: {
             let mut mixer = fm_protocol::AudioMixerStatus::default();
             mixer.groups[0].name = "Mics".into();

@@ -949,6 +949,7 @@ fn serve_streams_snapshot_peer(
     write_message(
         &mut writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -1857,6 +1858,7 @@ fn write_handshake_snapshot(
     write_message(
         writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
@@ -1983,6 +1985,7 @@ fn write_handshake_version_with_fade_to_black(
     write_message(
         writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),

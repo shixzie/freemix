@@ -72,6 +72,7 @@ fn input_statuses() -> Vec<fm_protocol::InputStatus> {
 fn control() -> FakeControl {
     let engine = engine();
     let snapshot = SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),

@@ -440,6 +440,9 @@ impl EditLocks {
 pub struct ProjectSnapshot {
     pub cursor: ProjectCursor,
     pub show_name: String,
+    /// Every project production clock's name, in project order (SW-013,
+    /// Protocol 2.152).
+    pub production_clocks: Vec<String>,
     pub inputs: Vec<InputId>,
     pub input_names: Vec<String>,
     pub outputs: Vec<OutputStatus>,
@@ -569,6 +572,7 @@ impl ProjectSnapshot {
                 revision: Revision::new(message.revision),
             },
             show_name: message.show_name,
+            production_clocks: message.production_clocks,
             inputs,
             input_names,
             outputs,
@@ -1241,6 +1245,7 @@ pub struct RuntimeRealization {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectState {
     show_name: String,
+    production_clocks: Vec<String>,
     inputs: Vec<InputId>,
     input_names: Vec<String>,
     outputs: Vec<OutputStatus>,
@@ -1859,6 +1864,12 @@ impl ProjectState {
     #[must_use]
     pub fn show_name(&self) -> &str {
         &self.show_name
+    }
+
+    /// Every project production clock's name, in project order (SW-013).
+    #[must_use]
+    pub fn production_clocks(&self) -> &[String] {
+        &self.production_clocks
     }
 
     #[must_use]
@@ -3400,6 +3411,7 @@ impl ClientModel {
             .collect();
         self.state = Some(ProjectState {
             show_name: snapshot.show_name,
+            production_clocks: snapshot.production_clocks,
             inputs: snapshot.inputs,
             input_names: snapshot.input_names,
             outputs: snapshot.outputs,

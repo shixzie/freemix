@@ -1893,6 +1893,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     encode_identity(record, &message.engine)?;
     record.field("revision", message.revision)?;
     record.field_str("show_name", &message.show_name)?;
+    record.field_string(
+        "production_clocks",
+        crate::production_clock::encode_names(&message.production_clocks)?,
+    )?;
     record.field_string("inputs", input_statuses(&message.inputs)?)?;
     record.field_string("outputs", output_statuses(&message.outputs)?)?;
     encode_input_audio_strips(record, &message.input_audio_strips)?;

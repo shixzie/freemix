@@ -5167,6 +5167,12 @@ fn snapshot_record(
         engine: identity.clone(),
         revision: engine.revision().get(),
         show_name: engine.show().name().to_owned(),
+        production_clocks: engine
+            .show()
+            .production_clocks()
+            .iter()
+            .map(|clock| clock.name.clone())
+            .collect(),
         inputs: engine
             .show()
             .inputs()

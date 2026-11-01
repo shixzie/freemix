@@ -841,10 +841,10 @@ impl ActionKind {
             Self::RunScript => WireCueAction::RunScript {
                 script: project.scripts().first()?.id,
             },
-            // The show's clocks are project data the replicated state does
-            // not carry, so Studio has no name to offer for a new step; the
-            // CLI and a hand-edited project author one.
-            Self::Clock => return None,
+            Self::Clock => WireCueAction::Clock {
+                name: project.production_clocks().first()?.clone(),
+                operation: fm_protocol::WireCueClockOperation::Start,
+            },
         })
     }
 }
@@ -2987,11 +2987,90 @@ fn draw_params(
             )
         }
         WireCueAction::Clock { name, operation } => {
-            // The clock's name comes from project data the replicated state
-            // does not carry, so the editor shows the authored step rather
-            // than offering a picker.
-            ui.label(RichText::new(format!("{name} · {}", operation.token())).size(legible(11.0)));
-            None
+            let clocks = names.project.production_clocks();
+            let mut change = None;
+            let width = fit_width(ui, 120.0);
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("clock-name")
+                    .width(width)
+                    .truncate()
+                    .selected_text(RichText::new(name.as_str()).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for clock in clocks {
+                            if ui.selectable_label(clock == name, clock).clicked() && clock != name
+                            {
+                                *name = clock.clone();
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    });
+            });
+            let mut selected = operation.token().to_owned();
+            let value = operation.value_ns();
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("clock-operation")
+                    .width(width)
+                    .selected_text(RichText::new(selected.as_str()).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for (token, op) in [
+                            ("start", fm_protocol::WireCueClockOperation::Start),
+                            ("pause", fm_protocol::WireCueClockOperation::Pause),
+                            ("reset", fm_protocol::WireCueClockOperation::Reset),
+                        ] {
+                            if ui.selectable_label(selected == token, token).clicked() {
+                                *operation = op;
+                                selected = token.to_owned();
+                                change = Some(Change::Commit);
+                            }
+                        }
+                        for (token, with_value) in [
+                            (
+                                "set",
+                                fm_protocol::WireCueClockOperation::SetValue
+                                    as fn(i64) -> fm_protocol::WireCueClockOperation,
+                            ),
+                            (
+                                "adjust",
+                                fm_protocol::WireCueClockOperation::Adjust
+                                    as fn(i64) -> fm_protocol::WireCueClockOperation,
+                            ),
+                            (
+                                "preset",
+                                fm_protocol::WireCueClockOperation::SetPreset
+                                    as fn(i64) -> fm_protocol::WireCueClockOperation,
+                            ),
+                        ] {
+                            if ui.selectable_label(selected == token, token).clicked() {
+                                *operation = with_value(value.unwrap_or(0));
+                                selected = token.to_owned();
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    });
+            });
+            if let Some(mut nanos) = operation.value_ns() {
+                let response = ui.add(
+                    DragValue::new(&mut nanos)
+                        .speed(1_000_000.0)
+                        .range(i64::MIN..=i64::MAX),
+                );
+                if response.changed() {
+                    *operation = match *operation {
+                        fm_protocol::WireCueClockOperation::SetValue(_) => {
+                            fm_protocol::WireCueClockOperation::SetValue(nanos)
+                        }
+                        fm_protocol::WireCueClockOperation::Adjust(_) => {
+                            fm_protocol::WireCueClockOperation::Adjust(nanos)
+                        }
+                        fm_protocol::WireCueClockOperation::SetPreset(_) => {
+                            fm_protocol::WireCueClockOperation::SetPreset(nanos)
+                        }
+                        other => other,
+                    };
+                    change = Some(Change::Commit);
+                }
+            }
+            change
         }
         WireCueAction::RunScript { script } => {
             let scripts = names.project.scripts();

@@ -397,6 +397,7 @@ fn the_snapshot_announces_at_most_the_shortcut_bound() {
 fn snapshot(shortcut_states: u16) -> fm_protocol::SnapshotMessage {
     use fm_protocol::{EditLockStatus, InputStatus, SnapshotMessage};
     SnapshotMessage {
+        production_clocks: Vec::new(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,

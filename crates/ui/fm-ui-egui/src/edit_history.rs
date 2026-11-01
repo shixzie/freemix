@@ -578,6 +578,7 @@ mod tests {
     fn view(locks: &EditLocks, history: EditHistoryStatus) -> fm_ui_model::ClientView {
         let project = fm_types::ProjectId::new(NonZeroU128::new(1).unwrap());
         let mut snapshot = fm_protocol::SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),

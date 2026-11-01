@@ -1851,6 +1851,7 @@ mod tests {
     /// `Solid Colour 1`, and `Guest`.
     fn snapshot() -> fm_protocol::SnapshotMessage {
         fm_protocol::SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),

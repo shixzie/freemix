@@ -81,6 +81,7 @@ fn recordings() -> Vec<RecordingStatus> {
 
 fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
     ProjectSnapshot {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
@@ -1954,6 +1955,7 @@ mod titles {
 
         // The protocol snapshot DTO announces the same incomplete summaries.
         let protocol = fm_protocol::SnapshotMessage {
+            production_clocks: Vec::new(),
             titles: vec![fm_protocol::TitleSummary {
                 input: WireInputId::from_domain(input(TITLE)),
                 field_revision: 2,
@@ -1969,6 +1971,7 @@ mod titles {
     fn edit_history_protocol_snapshot() -> fm_protocol::SnapshotMessage {
         let wire = |value| WireInputId::from_domain(input(value));
         fm_protocol::SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),

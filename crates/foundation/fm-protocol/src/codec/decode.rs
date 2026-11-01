@@ -2020,6 +2020,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         engine: decode_identity(fields)?,
         revision,
         show_name: fields.required("show_name")?,
+        production_clocks: crate::production_clock::decode_names(
+            &fields.required("production_clocks")?,
+        )?,
         inputs,
         outputs: parse_output_statuses(&fields.required("outputs")?)?,
         input_audio_strips: decode_input_audio_strips(fields)?,

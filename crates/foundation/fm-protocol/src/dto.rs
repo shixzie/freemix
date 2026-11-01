@@ -2563,6 +2563,10 @@ pub struct SnapshotMessage {
     pub engine: EngineIdentity,
     pub revision: u64,
     pub show_name: String,
+    /// Every project production clock's name, in project order (SW-013,
+    /// Protocol 2.152), at most [`fm_types::MAX_PROJECT_CLOCKS`]. Studio
+    /// offers these names when authoring a clock cue step.
+    pub production_clocks: Vec<String>,
     pub inputs: Vec<InputStatus>,
     pub outputs: Vec<OutputStatus>,
     pub input_audio_strips: Vec<InputAudioStripStatus>,

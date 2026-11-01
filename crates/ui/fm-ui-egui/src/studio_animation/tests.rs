@@ -89,6 +89,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         sends: fm_types::audio_bus::AudioSends::MASTER,
     };
     let snapshot = SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
@@ -710,6 +711,7 @@ mod scenes {
         }
         inputs.push((SCENE, "Two up"));
         let snapshot = SnapshotMessage {
+            production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),

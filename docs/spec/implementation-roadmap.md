@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.151 / schema 106 (2026-10-31,
+(2026-10-19); items refreshed through protocol 2.152 / schema 106 (2026-10-31,
 at `7e139b72`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -5478,9 +5478,9 @@ operates a clock too (Protocol 2.151, schema 106): `clock.<name>.<operation>`
 (with a canonical nanosecond value for `set`, `adjust`, and `preset`) runs
 as one step of a cue or shortcut, is validated and persisted with the list,
 and faults the cue when the show does not define the clock or the clock's
-kind refuses the operation; Studio previews it and shows the authored step
-in the cue editor (it cannot author a new one yet, because the replicated
-state does not carry the clock names). A script's `clock NAME, OPERATION[,
+kind refuses the operation; the snapshot carries the show's clock names
+(Protocol 2.152), so Studio lists them and authors the step's clock and
+operation in the cue editor. A script's `clock NAME, OPERATION[,
 VALUE]` action performs the same operation under the same permission.
 Remaining gaps:
 there is no snapshot record or full clock UI; titles still read their own

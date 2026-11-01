@@ -160,6 +160,7 @@ fn handshake_version(
 
 fn snapshot(revision: u64) -> SnapshotMessage {
     SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
@@ -1735,6 +1736,7 @@ mod titles {
 
     fn titled_snapshot(revision: u64) -> SnapshotMessage {
         SnapshotMessage {
+            production_clocks: Vec::new(),
             titles: vec![TitleSummary {
                 input: input(2),
                 field_revision: 3,
@@ -2063,6 +2065,7 @@ mod playlists {
 
     fn announced_snapshot(revision: u64, titles: bool) -> SnapshotMessage {
         SnapshotMessage {
+            production_clocks: Vec::new(),
             titles: if titles {
                 vec![TitleSummary {
                     input: input(2),
@@ -2538,6 +2541,7 @@ mod scene_animation {
 
     fn scene_snapshot(revision: u64) -> SnapshotMessage {
         SnapshotMessage {
+            production_clocks: Vec::new(),
             scenes: vec![input(1), input(2)],
             layout_scenes: vec![scene(SHOWN), scene(SPARE)],
             ..snapshot(revision)

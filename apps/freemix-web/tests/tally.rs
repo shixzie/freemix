@@ -149,6 +149,7 @@ fn snapshot_locked(
     edit_locks: fm_protocol::EditLockStatus,
 ) -> WireMessage {
     on_wire(WireMessage::Snapshot(SnapshotMessage {
+        production_clocks: Vec::new(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
