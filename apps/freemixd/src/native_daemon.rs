@@ -1830,6 +1830,7 @@ impl NativeDaemon {
     /// readback owner. Takes the recorder
     /// pieces separately so the caller can hold immutable borrows of other
     /// daemon fields.
+    #[allow(clippy::too_many_arguments)] // the recorder's own pieces stay separate for borrows
     pub(crate) fn capture_recorders(
         recorders: &mut [ProgramRecording; RECORDER_SLOTS],
         track_wavs: &mut [Option<TrackWavState>; RECORDER_SLOTS],

@@ -184,7 +184,7 @@ fn hex_text(text: &str) -> String {
 }
 
 fn unhex_text(text: &str) -> Option<String> {
-    if text.is_empty() || text.len() % 2 != 0 {
+    if text.is_empty() || !text.len().is_multiple_of(2) {
         return None;
     }
     let digit = |byte: u8| match byte {

@@ -87,7 +87,7 @@ pub(crate) fn load_record_track_maps(
     let channels = u16::try_from(stored.project().settings().audio.channels.channels().len())
         .map_err(|_| AppFailure("project audio channel count exceeds u16".into()))?;
     let mut maps: [Option<Arc<RecorderTrackMap>>; RECORDER_SLOTS] = [None, None];
-    for slot in 0..RECORDER_SLOTS {
+    for (slot, map_slot) in maps.iter_mut().enumerate() {
         let number = u8::try_from(slot + 1)
             .ok()
             .and_then(|number| ModelRecorderSlot::new(number).ok())
@@ -100,7 +100,7 @@ pub(crate) fn load_record_track_maps(
         };
         map.validate_against_channels(channels)
             .map_err(|error| AppFailure(format!("recorder track map: {error}")))?;
-        maps[slot] = Some(Arc::new(map));
+        *map_slot = Some(Arc::new(map));
     }
     Ok(maps)
 }

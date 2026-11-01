@@ -489,6 +489,7 @@ fn free_input_id_from(used: impl IntoIterator<Item = u128>) -> Option<WireInputI
 
 /// vMix's 0 through 100 volume as a fader curve: 100 is unity and 0 is the
 /// engine's minimum, with 50 percent at about −6 dB.
+#[allow(clippy::cast_possible_truncation)] // the result is bounded to about -96..=0 dB
 fn percent_to_millidb(percent: u8) -> i32 {
     if percent == 0 {
         return -96_000;

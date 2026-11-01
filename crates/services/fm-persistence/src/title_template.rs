@@ -1027,8 +1027,7 @@ fn check_clock_table(
                     return Err(unencodable("countdown targets are whole UTC seconds"));
                 }
             }
-            TitleClockKind::SinceTake { .. } => {}
-            TitleClockKind::Reference { .. } => {}
+            TitleClockKind::SinceTake { .. } | TitleClockKind::Reference { .. } => {}
         }
     }
     Ok(())
