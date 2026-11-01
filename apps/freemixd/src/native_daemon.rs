@@ -2524,6 +2524,8 @@ impl NativeDaemon {
                     .map_err(|error| AppFailure(error).into())
             })?;
         }
+        self.titles
+            .set_clocks(control.production_clock_registry().clone());
         self.titles.set_frame(self.pacer.next_frame().get());
         for (input, frame) in self.titles.take_completed() {
             // A title removed live keeps rendering until the worker learns

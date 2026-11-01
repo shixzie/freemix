@@ -146,13 +146,15 @@ impl TitleFrameFormat {
         input: InputId,
         title: &TitleInput,
         (frame, taken_frame, pose): (u64, Option<u64>, AnimSample),
+        clocks: &fm_clock::production::ProductionClocks,
         sequence: u64,
     ) -> Option<CpuVideoFrame> {
-        let image = title_render::render_title_at(
+        let image = title_render::render_title_at_with_clocks(
             assets,
             input,
             title,
             title_render::TitleTime::now(frame, self.frame_rate, taken_frame, pose),
+            Some(clocks),
             self.width,
             self.height,
         )?;
@@ -199,6 +201,8 @@ struct Shared {
     wake: Condvar,
     /// The engine frame cursor the loop last published.
     frame: AtomicU64,
+    /// The live show production clocks title elements may name.
+    clocks: Mutex<fm_clock::production::ProductionClocks>,
 }
 
 #[derive(Default)]
@@ -278,7 +282,14 @@ impl NativeTitleSources {
                 animated.insert(input.id);
             }
             let frame = format
-                .render(&assets, input.id, title, (0, None, AnimSample::Hold), 0)
+                .render(
+                    &assets,
+                    input.id,
+                    title,
+                    (0, None, AnimSample::Hold),
+                    &fm_clock::production::ProductionClocks::default(),
+                    0,
+                )
                 .ok_or_else(|| format!("native title input {} did not render", input.id))?;
             seeds.push((input.id, frame));
             submitted.insert(input.id, title.clone());
@@ -290,6 +301,7 @@ impl NativeTitleSources {
             }),
             wake: Condvar::new(),
             frame: AtomicU64::new(0),
+            clocks: Mutex::new(fm_clock::production::ProductionClocks::default()),
         });
         let worker = if submitted.is_empty() {
             None
@@ -375,6 +387,17 @@ impl NativeTitleSources {
     /// Publishes the engine frame cursor time-dependent titles render at.
     pub(crate) fn set_frame(&self, frame: u64) {
         self.shared.frame.store(frame, Ordering::Relaxed);
+    }
+
+    /// Hands the worker the show's live production clocks, which title
+    /// elements name (SW-013).
+    pub(crate) fn set_clocks(&self, clocks: fm_clock::production::ProductionClocks) {
+        *self
+            .shared
+            .clocks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = clocks;
+        self.shared.wake.notify_one();
     }
 
     /// Takes the engine's timeline start of every title input this
@@ -589,12 +612,17 @@ fn run_worker(
                 })
                 .collect::<Vec<_>>()
         };
+        let clocks = shared
+            .clocks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         for (input, title, at) in work {
             let Some(sequence) = sequences.get_mut(&input) else {
                 continue;
             };
             *sequence = sequence.saturating_add(1);
-            let rendered = format.render(assets, input, &title, at, *sequence);
+            let rendered = format.render(assets, input, &title, at, &clocks, *sequence);
             let mut state = shared.lock();
             state.renders = state.renders.saturating_add(1);
             if let Some(rendered) = rendered {

@@ -5486,9 +5486,9 @@ Remaining gaps:
 there is no full clock UI; a title element may name a project production
 clock, which a caller-supplied shared registry resolves at render time (the
 template's own time-of-day, countdown-to, and since-take clocks still work
-too); the simulated daemon's title thumbnails pass the live registry, while
-the native title worker and monitor tap still render without it; a media
-clock can name an input and follows its playback
+too); the simulated daemon's title thumbnails and the native title worker
+pass the live registry, while the monitor tap still renders without it; a
+media clock can name an input and follows its playback
 through the engine, and stream, recording, replay, and MultiCorder session
 clocks start and stop with their source's activity (an external session clock
 stays stopped); no project-level
