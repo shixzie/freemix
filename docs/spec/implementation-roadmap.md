@@ -3626,7 +3626,7 @@ up to an hour (with `Retry-After`). On Linux, a new daemon removes temporary
 directories left by daemons that are gone. There is no TLS, no per-viewer
 bandwidth breakdown, no measured latency class, and the supervised Studio
 daemon starts a listener only when given `--live-lan-listen` (Studio's own
-flag forwards it). `OR-017` therefore remains planned.
+flag forwards it with `--native-media`). `OR-017` therefore remains planned.
 
 Current implementation boundary for item 4: native `freemixd` runs two
 independently configured program recorder destinations with per-slot project

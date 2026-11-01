@@ -184,6 +184,9 @@ fn daemon_command(config: &SupervisedConfig) -> Command {
         // with `no-presenter`.
         .arg("--display-presenter-if-available");
     if let Some(address) = config.live_lan_listen {
+        // LiveLAN streams the native daemon's rendered output, so the
+        // supervised daemon must run with native media.
+        command.arg("--native-media");
         command.arg("--live-lan-listen").arg(address.to_string());
     }
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
