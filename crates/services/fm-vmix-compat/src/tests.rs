@@ -783,6 +783,24 @@ fn output_sources_reach_the_xml_and_xpath_documents() {
 }
 
 #[test]
+fn set_image_translates_still_sources() {
+    let state = state();
+    assert_eq!(
+        parse_http_query(
+            "Function=SetImage&Input=2&Value=https://example.com/a.png",
+            &state
+        ),
+        Ok(Translation::Compat(CompatIntent::SetImage {
+            input: id(2),
+            url: "https://example.com/a.png".to_owned(),
+        }))
+    );
+    assert!(parse_http_query("Function=SetImage&Input=2", &state).is_err());
+    assert!(parse_http_query("Function=SetImage&Input=2&Value=", &state).is_err());
+    assert!(parse_http_query("Function=SetImage&Input=2&Value=a.png&Extra=1", &state).is_err());
+}
+
+#[test]
 fn add_input_translates_network_streams() {
     let state = state();
     assert_eq!(

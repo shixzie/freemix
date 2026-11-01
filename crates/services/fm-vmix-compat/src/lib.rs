@@ -533,6 +533,9 @@ pub enum CompatIntent {
     /// Add a network-stream input from `url` with an optional short `name`;
     /// the dispatcher allocates the input ID.
     AddNetworkStream { url: String, name: Option<String> },
+    /// Replace one still input's picture from `url`; the dispatcher imports
+    /// it into the project.
+    SetImage { input: WireInputId, url: String },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -895,6 +898,21 @@ fn translate(
             }))
         }
         "SetText" => translate_set_text(parameters, state),
+        "SetImage" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let url = required(parameters, "Value")?;
+            if url.is_empty() {
+                return Err(ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "an image URL is not empty",
+                });
+            }
+            Ok(Translation::Compat(CompatIntent::SetImage {
+                input,
+                url: url.to_owned(),
+            }))
+        }
         "AddInput" => translate_add_input(parameters),
         "SetOutput" | "SetOutput2" | "SetOutput3" | "SetOutput4" => {
             allowed(parameters, &["Function", "Input"])?;
