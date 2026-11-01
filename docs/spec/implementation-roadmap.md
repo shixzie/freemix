@@ -6377,7 +6377,7 @@ exact UTF-8 byte length, XMLTEXT through a bounded `vmix`-rooted XPath subset,
 SUBSCRIBE/UNSUBSCRIBE for TALLY and ACTS, VERSION, and QUIT. A hub of at most
 64 sessions fans out per-session change events in deterministic order. The
 function surface now includes list and picture navigation, media transport
-(play, pause, stop, restart, seek, volume, and mute), overlay in/off/out/all-off,
+(play, pause, stop, restart, seek, volume, and mute), overlay in/off/out/last/all-off,
 Fade to Black, a configured transition duration and effect that a `Fade`
 without them uses (a configured `Cut` turns it into a cut), and
 recording/streaming toggles, input renaming, and playlist

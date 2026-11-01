@@ -136,6 +136,9 @@ pub struct CompatState {
     pub preview: WireInputId,
     /// One entry per one-based overlay channel.
     pub overlays: [Option<WireInputId>; OVERLAY_CHANNELS],
+    /// The input each overlay channel showed before its current one, for
+    /// vMix's `OverlayInput<N>Last`.
+    pub previous_overlays: [Option<WireInputId>; OVERLAY_CHANNELS],
     /// Recording activity exposed by XML.
     pub recording: bool,
     /// Streaming activity exposed by XML.
@@ -180,6 +183,7 @@ impl CompatState {
             active,
             preview,
             overlays: [None; OVERLAY_CHANNELS],
+            previous_overlays: [None; OVERLAY_CHANNELS],
             recording: false,
             streaming: false,
             transition_millis: DEFAULT_TRANSITION_MILLIS,
@@ -206,8 +210,28 @@ impl CompatState {
         if input.is_some_and(|id| !self.inputs.iter().any(|candidate| candidate.id == id)) {
             return Err(StateError::InputNotFound);
         }
+        if self.overlays[index] != input {
+            self.previous_overlays[index] = self.overlays[index];
+        }
         self.overlays[index] = input;
         Ok(())
+    }
+
+    /// Restores the input one-based overlay `channel` showed before its
+    /// current one, swapping the two, and returns the restored input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid channel.
+    pub fn restore_overlay(&mut self, channel: u8) -> Result<Option<WireInputId>, StateError> {
+        let index = usize::from(channel)
+            .checked_sub(1)
+            .filter(|index| *index < OVERLAY_CHANNELS)
+            .ok_or(StateError::InvalidOverlayChannel)?;
+        let previous = self.previous_overlays[index];
+        self.previous_overlays[index] = self.overlays[index];
+        self.overlays[index] = previous;
+        Ok(previous)
     }
 
     /// Renders deterministic vMix-shaped XML without an XML declaration.
@@ -359,6 +383,9 @@ pub enum CompatIntent {
     },
     /// Toggle a one-based overlay channel for an input on the main mix.
     ToggleOverlay { channel: u8, input: WireInputId },
+    /// Restore the input a one-based overlay channel showed before its
+    /// current one; the dispatcher swaps them on the compatibility state.
+    RestoreOverlay { channel: u8 },
     /// Set one title field.
     SetText {
         input: WireInputId,
@@ -807,6 +834,18 @@ fn translate(
                     },
                 )?;
                 return Ok(Translation::Protocol(CommandPayload::OverlayOff {
+                    channel,
+                }));
+            }
+            if let Some(channel) = overlay_channel_with_suffix(function, "Last") {
+                allowed(parameters, &["Function", "Mix"])?;
+                if !is_main_mix(parameters) {
+                    return Ok(unsupported(
+                        function,
+                        "only the main mix (0) is represented",
+                    ));
+                }
+                return Ok(Translation::Compat(CompatIntent::RestoreOverlay {
                     channel,
                 }));
             }

@@ -454,6 +454,12 @@ fn overlay_in_and_off_translate_exactly() {
             channel
         }))
     );
+    assert_eq!(
+        parse_http_query("Function=OverlayInput3Last", &state),
+        Ok(Translation::Compat(CompatIntent::RestoreOverlay {
+            channel: 3
+        }))
+    );
     assert!(matches!(
         parse_http_query("Function=OverlayInput3In&Input=2&Mix=1", &state),
         Ok(Translation::Unsupported(_))
@@ -693,6 +699,21 @@ fn xpath_axes_select_parents_ancestors_and_siblings() {
         state.xml_text("//input/following::input"),
         Err(XPathError::Syntax(_))
     ));
+}
+
+#[test]
+fn overlay_last_restores_the_previous_input() {
+    let mut state = state();
+    state.set_overlay(1, Some(id(1))).unwrap();
+    state.set_overlay(1, Some(id(2))).unwrap();
+    assert_eq!(state.restore_overlay(1), Ok(Some(id(1))));
+    assert_eq!(state.overlays[0], Some(id(1)));
+    assert_eq!(state.previous_overlays[0], Some(id(2)));
+    assert_eq!(state.restore_overlay(1), Ok(Some(id(2))));
+    assert_eq!(
+        state.restore_overlay(9),
+        Err(StateError::InvalidOverlayChannel)
+    );
 }
 
 #[test]
