@@ -325,6 +325,12 @@ impl CompatState {
                     if let Some(duration) = input.duration_ms {
                         children.push(Node::leaf("duration", duration.to_string()));
                     }
+                    if let Some(muted) = input.muted {
+                        children.push(Node::leaf("muted", if muted { "True" } else { "False" }));
+                    }
+                    if let Some(volume) = input.volume_percent {
+                        children.push(Node::leaf("volume", volume.to_string()));
+                    }
                     children
                 },
             })

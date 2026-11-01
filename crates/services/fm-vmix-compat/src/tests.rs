@@ -767,6 +767,14 @@ fn media_state_reaches_the_xml_and_xpath_documents() {
     assert_eq!(state.xml_text("//input[2]/state"), Ok("Running".into()));
     assert_eq!(state.xml_text("//input[2]/position"), Ok("1500".into()));
     assert_eq!(state.xml_text("//input[2]/duration"), Ok("5000".into()));
+    state.inputs[1] = state.inputs[1].clone().with_audio(true, 75);
+    let xml = state.xml();
+    assert!(
+        xml.contains("<muted>True</muted><volume>75</volume>"),
+        "{xml}"
+    );
+    assert_eq!(state.xml_text("//input[2]/muted"), Ok("True".into()));
+    assert_eq!(state.xml_text("//input[2]/volume"), Ok("75".into()));
     assert!(matches!(
         state.xml_text("//input[1]/state"),
         Err(XPathError::NotFound)

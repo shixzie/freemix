@@ -82,6 +82,10 @@ pub struct CompatInput {
     pub position_ms: Option<u64>,
     /// Source duration in milliseconds, when known.
     pub duration_ms: Option<u64>,
+    /// Whether the input's audio is muted, when known.
+    pub muted: Option<bool>,
+    /// The input's vMix audio volume, 0 through 100, when known.
+    pub volume_percent: Option<u8>,
 }
 
 impl CompatInput {
@@ -96,6 +100,8 @@ impl CompatInput {
             state: None,
             position_ms: None,
             duration_ms: None,
+            muted: None,
+            volume_percent: None,
         }
     }
 
@@ -117,6 +123,14 @@ impl CompatInput {
         self.state = Some(state.into());
         self.position_ms = Some(position_ms);
         self.duration_ms = duration_ms;
+        self
+    }
+
+    /// Adds the input's audio mute and volume (0 through 100).
+    #[must_use]
+    pub fn with_audio(mut self, muted: bool, volume_percent: u8) -> Self {
+        self.muted = Some(muted);
+        self.volume_percent = Some(volume_percent.min(100));
         self
     }
 }
@@ -299,6 +313,18 @@ impl CompatState {
             }
             if let Some(duration) = input.duration_ms {
                 write!(output, "<duration>{duration}</duration>")
+                    .expect("writing to a String cannot fail");
+            }
+            if let Some(muted) = input.muted {
+                write!(
+                    output,
+                    "<muted>{}</muted>",
+                    if muted { "True" } else { "False" }
+                )
+                .expect("writing to a String cannot fail");
+            }
+            if let Some(volume) = input.volume_percent {
+                write!(output, "<volume>{volume}</volume>")
                     .expect("writing to a String cannot fail");
             }
             output.push_str("</input>");
