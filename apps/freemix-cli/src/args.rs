@@ -1026,6 +1026,15 @@ pub enum Command {
     ScoreboardCheck {
         path: PathBuf,
     },
+    /// Validates a moderation desk document file (GX-010).
+    SocialDeskCheck {
+        path: PathBuf,
+    },
+    /// Writes a canonical moderation desk document (GX-010).
+    SocialDeskExport {
+        path: PathBuf,
+        output: PathBuf,
+    },
     /// Stores a canonical scoreboard document on a title input (GX-003).
     ScoreboardImport {
         path: PathBuf,
@@ -2592,6 +2601,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "clock-remove" => parse_clock_remove(arguments),
         "clock-list" => parse_clock_list(arguments),
         "scoreboard-check" => parse_scoreboard_check(arguments),
+        "social-desk-check" => parse_social_desk_check(arguments),
+        "social-desk-export" => parse_social_desk_export(arguments),
         "scoreboard-import" => parse_scoreboard_import(arguments),
         "scoreboard-export" => parse_scoreboard_export(arguments),
         "crawl-check" => parse_crawl_check(arguments),
@@ -4792,6 +4803,23 @@ fn parse_scoreboard_check(
     let path = required_path(&mut arguments, "scoreboard document")?;
     reject_extra(&mut arguments)?;
     Ok(Command::ScoreboardCheck { path })
+}
+
+fn parse_social_desk_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "desk document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::SocialDeskCheck { path })
+}
+
+fn parse_social_desk_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "desk document")?;
+    let output = required_path(&mut arguments, "output")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::SocialDeskExport { path, output })
 }
 
 fn parse_scoreboard_import(

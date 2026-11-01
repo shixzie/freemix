@@ -2339,6 +2339,7 @@ dependencies = [
  "fm-ptz",
  "fm-script",
  "fm-sim",
+ "fm-social",
  "fm-switcher",
  "fm-title-render",
  "fm-titles",

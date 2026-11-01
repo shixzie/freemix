@@ -1089,6 +1089,8 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::ClockRemove { path, name } => clock_remove(&path, &name)?,
         Command::ClockList { path } => clock_list(&path)?,
         Command::ScoreboardCheck { path } => scoreboard_check(&path)?,
+        Command::SocialDeskCheck { path } => social_desk_check(&path)?,
+        Command::SocialDeskExport { path, output } => social_desk_export(&path, &output)?,
         Command::ScoreboardImport {
             path,
             input,
@@ -6289,6 +6291,47 @@ fn scoreboard_check(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn social_desk_check(path: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("social desk: {error}")))?;
+    let desk =
+        fm_social::ModerationDesk::from_document(&text, fm_social::SocialAggregator::empty())
+            .map_err(|error| AppFailure(format!("social desk: {error}")))?;
+    let config = desk.config();
+    println!(
+        "SocialDesk(audit_capacity={}, rotation_capacity={}, max_operators={}, \
+         rotation_dwell_ms={})",
+        config.audit_capacity,
+        config.rotation_capacity,
+        config.max_operators,
+        config.rotation_dwell.get(),
+    );
+    for (operator, role) in desk.operators() {
+        println!(
+            "SocialDeskOperator(id={:?}, role={})",
+            operator.as_str(),
+            role.token()
+        );
+    }
+    Ok(())
+}
+
+fn social_desk_export(path: &Path, output: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("social desk: {error}")))?;
+    let desk =
+        fm_social::ModerationDesk::from_document(&text, fm_social::SocialAggregator::empty())
+            .map_err(|error| AppFailure(format!("social desk: {error}")))?;
+    fs::write(output, desk.to_document())
+        .map_err(|error| AppFailure(format!("social desk export: {error}")))?;
+    println!(
+        "social-desk-export: {} operators to {}",
+        desk.operators().len(),
+        output.display()
+    );
+    Ok(())
+}
+
 fn scoreboard_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
     let text = fs::read_to_string(document)
         .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
@@ -7492,6 +7535,9 @@ Usage:
   freemix-cli clock-remove <show.freemix> <name>
   freemix-cli clock-list <show.freemix>
   freemix-cli scoreboard-check <scoreboard.txt>
+  freemix-cli social-desk-check <desk.txt>
+  freemix-cli social-desk-export <desk.txt> <output.txt>
+    validates or rewrites a moderation desk document's config and operator roles (GX-010)
   freemix-cli scoreboard-import <show.freemix> <title-input> <scoreboard.txt>
   freemix-cli scoreboard-export <show.freemix> <title-input>
   freemix-cli crawl-check <crawl.txt>

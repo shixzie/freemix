@@ -598,6 +598,19 @@ impl SocialAggregator {
         }
     }
 
+    /// An empty aggregator with no provider state, for a desk restored from a
+    /// document that carries only its config and operators (GX-010).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::new(
+            16,
+            ContentPolicy {
+                profanity: ProfanityPolicy::default(),
+                redactions: Vec::new(),
+            },
+        )
+    }
+
     #[must_use]
     pub const fn queue_capacity(&self) -> usize {
         self.queue_capacity

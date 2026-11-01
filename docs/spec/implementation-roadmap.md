@@ -6410,7 +6410,8 @@ caller-supplied clock, and the on-air message is written into typed
 provider adapters, transport, or authorization flows, no browser approval UI
 or control-protocol wiring, no persistence of the audit log or the desk's
 hidden, rotation, and on-air message state (the config and operator roles now
-round-trip as a canonical desk document), no cross-provider de-duplication, no
+round-trip as a canonical desk document, which `freemix-cli social-desk-check`
+validates and `social-desk-export` rewrites), no cross-provider de-duplication, no
 unbounded-store limits in the aggregator, and no authenticated operator
 identity. `GX-010` remains blocked
 on exact authorized integrations.
