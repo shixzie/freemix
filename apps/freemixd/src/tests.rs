@@ -574,6 +574,7 @@ fn parses_serve_options() {
             hls_listen: None,
             live_lan_listen: None,
             vmix_listen: None,
+            vmix_http_listen: None,
             once: true,
             native_media: false,
             fullscreen_program: false,
