@@ -4953,7 +4953,8 @@ persistent TCP/tally model to FreeMix commands/events. It:
 - resolves input ordinals/names to stable IDs at command time;
 - exposes the complete documented vMix 29 XML state and HTTP function surface;
 - maps tally/activator subscriptions;
-- never weakens authentication by default; and
+- never weakens authentication by default: its TCP and HTTP listeners bind
+  loopback only until authentication exists; and
 - passes exact-current contract coverage for the persistent TCP command/response
   and subscription semantics.
 
