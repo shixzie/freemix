@@ -290,6 +290,34 @@ fn execute_compat(
             CommandPayload::RenameInput { input, name },
             next_command,
         ),
+        CompatIntent::SetInputVolume { input, percent } => {
+            let strip = snapshot
+                .input_audio_strips
+                .iter()
+                .find(|strip| strip.input == input)
+                .ok_or_else(|| format!("input {} has no audio strip", input.get()))?;
+            submit(
+                control,
+                principal,
+                now_millis,
+                audio_strip_payload(strip, Some(percent_to_millidb(percent)), None),
+                next_command,
+            )
+        }
+        CompatIntent::SetInputMuted { input, muted } => {
+            let strip = snapshot
+                .input_audio_strips
+                .iter()
+                .find(|strip| strip.input == input)
+                .ok_or_else(|| format!("input {} has no audio strip", input.get()))?;
+            submit(
+                control,
+                principal,
+                now_millis,
+                audio_strip_payload(strip, None, Some(muted)),
+                next_command,
+            )
+        }
         CompatIntent::ToggleFadeToBlack => {
             let active = !snapshot.desired_fade_to_black.target_active;
             submit(
@@ -311,6 +339,34 @@ fn execute_compat(
 
 fn wire_channel(channel: u8) -> Result<WireOverlayChannelId, String> {
     WireOverlayChannelId::new(channel).ok_or_else(|| format!("invalid overlay channel: {channel}"))
+}
+
+/// vMix's 0 through 100 volume as a fader curve: 100 is unity and 0 is the
+/// engine's minimum, with 50 percent at about −6 dB.
+fn percent_to_millidb(percent: u8) -> i32 {
+    if percent == 0 {
+        return -96_000;
+    }
+    let gain = 20.0 * f64::from(percent).log10() - 40.0;
+    (gain * 1_000.0).round() as i32
+}
+
+fn audio_strip_payload(
+    strip: &fm_protocol::InputAudioStripStatus,
+    gain_millidb: Option<i32>,
+    muted: Option<bool>,
+) -> CommandPayload {
+    CommandPayload::SetInputAudioStrip {
+        input: strip.input,
+        gain_millidb: gain_millidb.unwrap_or(strip.gain_millidb),
+        balance_basis_points: strip.balance_basis_points,
+        pan_basis_points: strip.pan_basis_points,
+        muted: muted.unwrap_or(strip.muted),
+        soloed: strip.soloed,
+        follow_video: strip.follow_video,
+        delay_samples: strip.delay_samples,
+        sends: strip.sends,
+    }
 }
 
 fn millis_to_frames(frame_rate: fm_types::FrameRate, millis: u32) -> u32 {
@@ -413,5 +469,51 @@ mod tests {
         assert_eq!(wire_channel(8).unwrap().number(), 8);
         assert!(wire_channel(0).is_err());
         assert!(wire_channel(9).is_err());
+    }
+
+    #[test]
+    fn percent_to_millidb_follows_a_fader_curve() {
+        assert_eq!(percent_to_millidb(100), 0);
+        assert_eq!(percent_to_millidb(0), -96_000);
+        assert_eq!(percent_to_millidb(50), -6_021);
+        assert_eq!(percent_to_millidb(10), -20_000);
+    }
+
+    #[test]
+    fn audio_strip_payload_preserves_the_other_strip_fields() {
+        let strip = fm_protocol::InputAudioStripStatus {
+            input: fm_protocol::WireInputId::new(std::num::NonZeroU128::new(3).unwrap()),
+            gain_millidb: -1_000,
+            balance_basis_points: 100,
+            pan_basis_points: -200,
+            group: Some(2),
+            muted: false,
+            soloed: true,
+            follow_video: true,
+            delay_samples: 48,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
+        };
+        let CommandPayload::SetInputAudioStrip {
+            input,
+            gain_millidb,
+            balance_basis_points,
+            pan_basis_points,
+            muted,
+            soloed,
+            follow_video,
+            delay_samples,
+            ..
+        } = audio_strip_payload(&strip, Some(-6_021), Some(true))
+        else {
+            panic!("an audio strip payload");
+        };
+        assert_eq!(input, strip.input);
+        assert_eq!(gain_millidb, -6_021);
+        assert_eq!(balance_basis_points, 100);
+        assert_eq!(pan_basis_points, -200);
+        assert!(muted);
+        assert!(soloed);
+        assert!(follow_video);
+        assert_eq!(delay_samples, 48);
     }
 }
