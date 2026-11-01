@@ -4103,8 +4103,9 @@ fn a_studio_subscribing_mid_fade_holds_until_the_fade_completes() {
     let mut realized = Vec::new();
     while !realized.contains(&3) {
         let message = studio.receive();
-        // Monitor frames, title phases, replay status, and the once-a-second
-        // health status are the TCP session's, not the protocol client's.
+        // Monitor frames, title phases, replay and reel status, the
+        // once-a-second health, recorder, stream, source-sync, and audio
+        // records are the TCP session's, not the protocol client's.
         if matches!(
             message,
             WireMessage::MonitorFrame(_)
@@ -4112,6 +4113,10 @@ fn a_studio_subscribing_mid_fade_holds_until_the_fade_completes() {
                 | WireMessage::ReplayStatus(_)
                 | WireMessage::ReelStatus(_)
                 | WireMessage::HealthStatus(_)
+                | WireMessage::RecorderStatus(_)
+                | WireMessage::StreamStatus(_)
+                | WireMessage::SourceSyncStatus(_)
+                | WireMessage::AudioMeters(_)
         ) {
             continue;
         }
@@ -5170,12 +5175,33 @@ fn websocket_control_is_authenticated_ordered_and_raw_compatible() {
     let (mut websocket, _) =
         tungstenite::client::client(websocket_request, websocket_stream).unwrap();
     let receive = |websocket: &mut tungstenite::WebSocket<TcpStream>| -> WireMessage {
-        match websocket.read().unwrap() {
-            tungstenite::Message::Text(text) => {
-                assert!(text.as_str().ends_with('\n'));
-                decode_line(text.as_str()).unwrap()
+        loop {
+            let message = match websocket.read().unwrap() {
+                tungstenite::Message::Text(text) => {
+                    assert!(text.as_str().ends_with('\n'));
+                    decode_line(text.as_str()).unwrap()
+                }
+                message => panic!("expected WebSocket text frame, got {message:?}"),
+            };
+            // Lossy status records arrive on their own cadence; they are not
+            // the ordered handshake, command, and event stream this test
+            // asserts.
+            if matches!(
+                message,
+                WireMessage::AudioMeters(_)
+                    | WireMessage::StreamStatus(_)
+                    | WireMessage::RecorderStatus(_)
+                    | WireMessage::SourceSyncStatus(_)
+                    | WireMessage::HealthStatus(_)
+                    | WireMessage::TitlePhases(_)
+                    | WireMessage::ReplayStatus(_)
+                    | WireMessage::ReelStatus(_)
+                    | WireMessage::MonitorFrame(_)
+                    | WireMessage::InputThumbnail(_)
+            ) {
+                continue;
             }
-            message => panic!("expected WebSocket text frame, got {message:?}"),
+            return message;
         }
     };
     let send = |websocket: &mut tungstenite::WebSocket<TcpStream>, message: &WireMessage| {
@@ -7917,11 +7943,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.118.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 132));
+    // A previous protocol version is refused; the current one is accepted.
+    let previous = ProtocolVersion::new(2, CURRENT_PROTOCOL_VERSION.minor.saturating_sub(1));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 117),
+        protocol: previous,
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -7937,7 +7963,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 132)
+        CURRENT_PROTOCOL_VERSION
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
