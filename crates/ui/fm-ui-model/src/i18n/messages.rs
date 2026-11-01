@@ -2886,7 +2886,7 @@ messages! {
     CueActMediaRestart => t("Media restart"),
     CueActDelay => t("Delay"),
     CueActRunScript => t("Script"),
-    CueActClock => t("Clock"),
+    CueActClock => t("Clock step"),
     CuePvClock => t("{name} clock {operation}"),
     CueParamScriptHover => t("The project script this step runs on its frame: all of its actions or none, and a failed run fails the cue. Firing needs the permission of every action the script holds, in any branch"),
     CueParamMediaHover => t("The media input whose transport this action controls"),
