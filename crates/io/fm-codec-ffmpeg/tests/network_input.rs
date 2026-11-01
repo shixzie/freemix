@@ -260,7 +260,16 @@ fn udp_mpegts_goes_live_reconnects_when_the_sender_dies_and_recovers() {
         "a live stream stalls before it reconnects: {:?}",
         observed.states
     );
-    assert_eq!(observed.blacks, 1, "the black slate shows once per stall");
+    let stalls = observed
+        .states
+        .iter()
+        .filter(|state| **state == NetworkStreamState::Stalled)
+        .count();
+    assert!(stalls >= 1);
+    assert_eq!(
+        observed.blacks, stalls,
+        "the black slate shows once per stall"
+    );
 
     let _sender = Sender::mpegts(&format!("udp://127.0.0.1:{port}?pkt_size=1316"));
     expect_playing(&receiver, &mut observed, "udp recovery");
