@@ -172,6 +172,9 @@ pub(crate) struct ThumbnailWork {
     pub(crate) media: Vec<(InputId, u64, u64)>,
     /// What every slideshow input shows (a simulated daemon draws it).
     pub(crate) slideshows: Vec<(InputId, SlidesShown)>,
+    /// The show's live production clocks, for title elements that name a
+    /// shared clock (SW-013).
+    pub(crate) clocks: fm_clock::production::ProductionClocks,
     /// A native daemon's newest source frames; `None` on a simulated one.
     pub(crate) live: Option<LiveSourceFrames>,
 }
@@ -648,7 +651,7 @@ impl LeafContext<'_> {
             InputKind::Title(title) => {
                 // As the monitor tap draws a title: its pose on air (or
                 // Hold), keyed.
-                let keyed = title_render::render_title_at(
+                let keyed = title_render::render_title_at_with_clocks(
                     self.titles,
                     id,
                     title,
@@ -658,6 +661,7 @@ impl LeafContext<'_> {
                         taken_frame_of(&work.titles, id),
                         title_pose_of(&work.titles, id),
                     ),
+                    Some(&work.clocks),
                     width,
                     height,
                 )?;
@@ -1348,6 +1352,7 @@ mod tests {
             titles: Vec::new(),
             media: Vec::new(),
             slideshows: Vec::new(),
+            clocks: fm_clock::production::ProductionClocks::new(),
             live: None,
         }
     }
@@ -1610,6 +1615,7 @@ mod tests {
                 titles: Vec::new(),
                 media: Vec::new(),
                 slideshows: Vec::new(),
+                clocks: fm_clock::production::ProductionClocks::new(),
                 live: None,
             });
             thread::sleep(Duration::from_millis(5));

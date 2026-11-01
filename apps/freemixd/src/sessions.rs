@@ -1832,6 +1832,7 @@ fn thumbnail_work(
             .map(|media| (media.input, media.position, media.playable_end))
             .collect(),
         slideshows: crate::stills::SlidesShown::all(control),
+        clocks: control.production_clock_registry().clone(),
         live,
     }
 }

@@ -2623,6 +2623,12 @@ impl<A: AuthorizationHook> ControlService<A> {
         }
     }
 
+    /// The live production clock registry (SW-013).
+    #[must_use]
+    pub const fn production_clock_registry(&self) -> &fm_clock::production::ProductionClocks {
+        self.engine.production_clock_registry()
+    }
+
     /// Every project production clock's reading at `wall` (SW-013).
     #[must_use]
     pub fn production_clock_statuses(

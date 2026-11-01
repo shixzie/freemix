@@ -13,5 +13,5 @@ pub use fm_title_render::LoadedTitleTemplate;
 pub use fm_title_render::unpremultiply;
 pub use fm_title_render::{
     TitleAssets, TitleKey, TitleTime, field_value, flatten_over_black, model_field_value,
-    render_title_at, render_title_preview, title_key, title_of_input,
+    render_title_at, render_title_at_with_clocks, render_title_preview, title_key, title_of_input,
 };
