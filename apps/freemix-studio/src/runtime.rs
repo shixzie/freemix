@@ -1,4 +1,4 @@
-use std::{env, error::Error, fmt, net::SocketAddr, time::Duration};
+use std::{env, error::Error, fmt, net::SocketAddr, path::PathBuf, time::Duration};
 
 use fm_client::{
     Client, ConnectionState, ReconnectBackoff, SessionEvent, TcpSession, TcpSessionError,
@@ -7,7 +7,11 @@ use fm_protocol::{
     AudioPluginStatusRequest, CommandMessage, CommandPayload, HeartbeatMessage,
     ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
 };
-use fm_ui_egui::{DisplayOutputAnswer, TitleAnimationRefusal, TitleUpdate};
+use fm_record::{RecordBus, RecorderTrackMap};
+use fm_ui_egui::{
+    DisplayOutputAnswer, RecorderTrackLayout, RecorderTrackMapView, RecorderTrackView,
+    TitleAnimationRefusal, TitleUpdate,
+};
 
 use crate::titles::TitleRelay;
 
@@ -144,6 +148,12 @@ pub struct StudioRuntime {
     clocks_request: Option<(String, std::time::Instant)>,
     /// The latest clock refusal or request failure the window shows.
     clocks_error: Option<String>,
+    /// The supervised project bundle, when Studio owns the daemon.
+    project_bundle: Option<PathBuf>,
+    /// Each recorder slot's authored track map, read from the bundle.
+    record_track_maps: [Option<RecorderTrackMapView>; 2],
+    /// Why the bundle's track maps could not be read, if they could not.
+    record_track_error: Option<String>,
 }
 
 impl StudioRuntime {
@@ -167,6 +177,12 @@ impl StudioRuntime {
         cancelled: impl FnMut() -> bool,
     ) -> Result<Self, StudioError> {
         let transport = config.transport;
+        let project_bundle = match &config.connection {
+            ConnectionConfig::Supervised(supervised) => Some(supervised.project_bundle.clone()),
+            ConnectionConfig::Existing(_) => None,
+        };
+        let (record_track_maps, record_track_error) =
+            load_record_track_views(project_bundle.as_deref());
         let (supervisor, address, project_id) = match config.connection {
             ConnectionConfig::Supervised(supervised) => {
                 let supervisor = DaemonSupervisor::launch_cancellable(
@@ -203,6 +219,9 @@ impl StudioRuntime {
             clocks: Vec::new(),
             clocks_request: None,
             clocks_error: None,
+            project_bundle,
+            record_track_maps,
+            record_track_error,
         })
     }
 
@@ -432,6 +451,32 @@ impl StudioRuntime {
                     action,
                 })
                 .is_ok()
+    }
+
+    /// Each recorder slot's authored track map (AU-010).
+    #[must_use]
+    pub(crate) fn record_track_maps(&self) -> &[Option<RecorderTrackMapView>; 2] {
+        &self.record_track_maps
+    }
+
+    /// Why the supervised bundle's track maps could not be read, if they
+    /// could not.
+    #[must_use]
+    pub(crate) fn record_track_error(&self) -> Option<&str> {
+        self.record_track_error.as_deref()
+    }
+
+    /// Whether this Studio has the supervised project bundle locally.
+    #[must_use]
+    pub(crate) const fn record_tracks_local(&self) -> bool {
+        self.project_bundle.is_some()
+    }
+
+    /// Re-reads the supervised bundle's recorder track maps (AU-010).
+    pub(crate) fn reload_record_track_views(&mut self) {
+        let (maps, error) = load_record_track_views(self.project_bundle.as_deref());
+        self.record_track_maps = maps;
+        self.record_track_error = error;
     }
 
     /// The latest production-clock readings (SW-013), in name order.
@@ -1094,5 +1139,118 @@ impl StudioRuntime {
         Ok(self
             .session
             .send_diagnostics_cancellable(request_id, poll_interval, cancelled)?)
+    }
+}
+
+/// Reads both recorder slots' track maps from a supervised project bundle
+/// (AU-010). The bundle stores them as `recorders/<slot>.trackmap`.
+fn load_record_track_views(
+    bundle: Option<&std::path::Path>,
+) -> ([Option<RecorderTrackMapView>; 2], Option<String>) {
+    let Some(bundle) = bundle else {
+        return ([None, None], None);
+    };
+    let mut views: [Option<RecorderTrackMapView>; 2] = [None, None];
+    let mut error = None;
+    for (index, slot) in views.iter_mut().enumerate() {
+        let path = bundle
+            .join("recorders")
+            .join(format!("{}.trackmap", index + 1));
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(read) if read.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(read) => {
+                error.get_or_insert_with(|| format!("recorder {} track map: {read}", index + 1));
+                continue;
+            }
+        };
+        match RecorderTrackMap::from_document(&text) {
+            Ok(map) => {
+                *slot = Some(track_map_view(index + 1, &map));
+            }
+            Err(read) => {
+                error.get_or_insert_with(|| format!("recorder {} track map: {read}", index + 1));
+            }
+        }
+    }
+    (views, error)
+}
+
+fn track_map_view(slot: usize, map: &RecorderTrackMap) -> RecorderTrackMapView {
+    RecorderTrackMapView {
+        slot: u8::try_from(slot).unwrap_or(u8::MAX),
+        layout: match map.layout() {
+            fm_record::TrackMapLayout::Interleaved => RecorderTrackLayout::Interleaved,
+            fm_record::TrackMapLayout::SplitPerTrack => RecorderTrackLayout::SplitPerTrack,
+        },
+        tracks: map
+            .tracks()
+            .iter()
+            .map(|track| RecorderTrackView {
+                name: track.name().to_owned(),
+                channels: track.layout().channel_count(),
+                sources: track
+                    .sources()
+                    .iter()
+                    .map(|source| match source.bus {
+                        RecordBus::Master => format!("master {}", source.channel),
+                        RecordBus::Aux(bus) => {
+                            format!("aux {} {}", bus.letter(), source.channel)
+                        }
+                    })
+                    .collect(),
+            })
+            .collect(),
+        channels: map.total_channels(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundle_track_maps_become_console_views() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("show.freemix");
+        std::fs::create_dir_all(bundle.join("recorders")).unwrap();
+        let map = RecorderTrackMap::new(
+            vec![
+                fm_record::RecordTrack::stereo(
+                    "Program",
+                    fm_record::TrackSource::master(0),
+                    fm_record::TrackSource::master(1),
+                ),
+                fm_record::RecordTrack::mono(
+                    "Bus A",
+                    fm_record::TrackSource::new(
+                        RecordBus::Aux(fm_types::audio_bus::AuxBusNumber::new(1).unwrap()),
+                        2,
+                    ),
+                ),
+            ],
+            fm_record::BusInventory::new(vec![
+                (RecordBus::Master, 2),
+                (
+                    RecordBus::Aux(fm_types::audio_bus::AuxBusNumber::new(1).unwrap()),
+                    4,
+                ),
+            ])
+            .unwrap(),
+        )
+        .unwrap()
+        .with_layout(fm_record::TrackMapLayout::SplitPerTrack);
+        std::fs::write(bundle.join("recorders/1.trackmap"), map.to_document()).unwrap();
+        let (views, error) = load_record_track_views(Some(&bundle));
+        assert!(error.is_none(), "{error:?}");
+        let view = views[0].as_ref().unwrap();
+        assert_eq!(view.slot, 1);
+        assert_eq!(view.layout, RecorderTrackLayout::SplitPerTrack);
+        assert_eq!(view.channels, 3);
+        assert_eq!(view.tracks[0].name, "Program");
+        assert_eq!(view.tracks[0].sources, ["master 0", "master 1"]);
+        assert_eq!(view.tracks[1].sources, ["aux A 2"]);
+        assert!(views[1].is_none());
+        assert!(load_record_track_views(None).1.is_none());
     }
 }

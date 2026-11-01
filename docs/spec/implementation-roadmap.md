@@ -3855,8 +3855,12 @@ with its mode, file count, segments, bytes, failovers, and first failure.
 limits (1 second to 24 hours; 1 byte to 1 TiB); a track session then closes
 the whole file and continues in `<name>-NNNN.wav` under the same failover and
 recovery rules. Without either override a track file follows its MP4 segment
-and RF64 limits. Remaining gaps: there is no UI for authoring or monitoring
-the tracks. WAV output is separate from the
+and RF64 limits. Studio's View ▸ Recorder tracks window reads the supervised
+bundle's maps and lists each slot's layout, tracks, channels, sources, and WAV
+file names, with a Refresh action; a Studio connected to a daemon elsewhere
+says it has no local bundle. Remaining gaps: the map is authored offline and
+imported, not edited in Studio, and the window does not live-list files as
+they are written. WAV output is separate from the
 crash-safe packet spool, and metadata stops at version-1 `bext` without iXML,
 loudness, or UMID. `AU-010` remains planned.
 

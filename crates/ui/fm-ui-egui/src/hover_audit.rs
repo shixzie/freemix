@@ -3774,6 +3774,42 @@ fn scenes(language: Language) -> Vec<Scene> {
             clocked(operator),
         ));
     }
+    // AU-010: the Recorder tracks window with a split map and with no local
+    // project bundle.
+    let tracked = |local: bool| {
+        let mut state = ready(true, Variant::default());
+        state.recorder_tracks_local = local;
+        if local {
+            state.recorder_track_maps[0] = Some(crate::RecorderTrackMapView {
+                slot: 1,
+                layout: crate::RecorderTrackLayout::SplitPerTrack,
+                channels: 3,
+                tracks: vec![
+                    crate::RecorderTrackView {
+                        name: "Program".to_owned(),
+                        channels: 2,
+                        sources: vec!["master 0".to_owned(), "master 1".to_owned()],
+                    },
+                    crate::RecorderTrackView {
+                        name: "Bus A".to_owned(),
+                        channels: 1,
+                        sources: vec!["aux A 0".to_owned()],
+                    },
+                ],
+            });
+        }
+        state
+    };
+    for (name, local) in [
+        ("dialog/recorder-tracks", true),
+        ("dialog/recorder-tracks-remote", false),
+    ] {
+        scenes.push(Scene::console(
+            name,
+            shell(&|shell| shell.recorder_tracks.open = true),
+            tracked(local),
+        ));
+    }
     // RC-004 key profiles: a built-in profile, read only, and one of the
     // operator's own with a changed key and a refused key change.
     // The keyboard reference and the console's key hints under the vMix

@@ -718,6 +718,7 @@ impl StudioShell {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one row per view action, kept together for scanning
     fn view_menu(&mut self, ui: &mut Ui) {
         let l = self.locale;
         ui.set_min_width(VIEW_MENU_WIDTH);
@@ -758,6 +759,14 @@ impl StudioShell {
             .clicked()
         {
             self.clocks.open = true;
+            ui.close();
+        }
+        if ui
+            .button(l.text(Msg::MenuRecorderTracks))
+            .on_hover_text(l.text(Msg::MenuRecorderTracksHover))
+            .clicked()
+        {
+            self.recorder_tracks.open = true;
             ui.close();
         }
         ui.separator();

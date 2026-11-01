@@ -80,6 +80,7 @@ mod panels;
 mod playlist;
 mod preferences;
 mod preset_files;
+mod recorder_tracks;
 mod replay_ui;
 mod scene_designer;
 mod screen_capture_ui;
@@ -276,6 +277,9 @@ pub enum StudioIntent {
     /// Asks the daemon for every production clock's reading (SW-013,
     /// Protocol 2.149); the reply updates [`StudioUiState::clocks`].
     RequestClocks,
+    /// Re-reads the supervised project bundle's recorder track maps
+    /// (AU-010); the result updates [`StudioUiState::recorder_track_maps`].
+    RefreshRecorderTracks,
     /// Operates one project production clock (SW-013, Protocol 2.150); the
     /// answer carries the reading afterwards or the daemon's refusal.
     ClockControl {
@@ -649,6 +653,36 @@ pub struct ReconnectStatus {
     pub delay_ms: u64,
 }
 
+/// One recorder track map's file layout (AU-010).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecorderTrackLayout {
+    /// One WAV carrying every track's channels in map order.
+    Interleaved,
+    /// One WAV per track.
+    SplitPerTrack,
+}
+
+/// One recorded track in a recorder track map.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecorderTrackView {
+    pub name: String,
+    /// Channels in this track.
+    pub channels: u16,
+    /// Source labels in channel order, such as `master 0` or `aux A 1`.
+    pub sources: Vec<String>,
+}
+
+/// A recorder slot's authored track map, as the console displays it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecorderTrackMapView {
+    /// One-based recorder slot.
+    pub slot: u8,
+    pub layout: RecorderTrackLayout,
+    pub tracks: Vec<RecorderTrackView>,
+    /// Total channels across every track.
+    pub channels: u16,
+}
+
 /// Owned render input for one studio frame.
 #[allow(clippy::struct_excessive_bools)] // each bool is a distinct operator permission gate
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -679,6 +713,15 @@ pub struct StudioUiState {
     /// (`recorder_status`, Protocol 2.66): whether it is configured, records,
     /// or failed and why. `None` when the daemon does not report it.
     pub recorder_realized: [Option<RecorderStatusSample>; RECORDER_SLOT_COUNT],
+    /// Each recorder slot's authored track map (AU-010), read from the
+    /// supervised project bundle.
+    pub recorder_track_maps: [Option<RecorderTrackMapView>; RECORDER_SLOT_COUNT],
+    /// Whether this Studio has the supervised project bundle locally, so its
+    /// recorder track maps can be read.
+    pub recorder_tracks_local: bool,
+    /// Why the local bundle's track maps could not be read, if they could
+    /// not.
+    pub recorder_track_error: Option<String>,
     /// The latest live source drift telemetry (`source_sync_status`,
     /// Protocol 2.76): one sample per running live source. `None` when the
     /// daemon reports none.
@@ -804,6 +847,9 @@ impl StudioUiState {
             recording_desired: [false; RECORDER_SLOT_COUNT],
             recording_pending: [false; RECORDER_SLOT_COUNT],
             recorder_realized: [None, None],
+            recorder_track_maps: [None, None],
+            recorder_tracks_local: false,
+            recorder_track_error: None,
             source_sync: None,
             health: None,
             clocks: Vec::new(),
@@ -2121,6 +2167,8 @@ pub struct StudioShell {
     health_alerts: health_alerts::HealthAlertsWindow,
     /// The Production clocks window and its value drafts (SW-013).
     clocks: clocks::ClocksWindow,
+    /// The Recorder tracks window (AU-010).
+    recorder_tracks: recorder_tracks::RecorderTracksWindow,
     scripts: scripts::ScriptsWindow,
     user_shortcuts: user_shortcuts::ShortcutsWindow,
     /// This console's own keys for project shortcuts, a console
@@ -2764,6 +2812,7 @@ impl StudioShell {
         self.draw_web_access_window(ui.ctx(), state, &mut intents);
         self.draw_health_alerts_window(ui.ctx(), state, &mut intents);
         self.draw_clocks_window(ui.ctx(), state, &mut intents);
+        self.draw_recorder_tracks_window(ui.ctx(), state, &mut intents);
         self.draw_scripts_window(ui.ctx(), state, &mut intents);
         self.draw_user_shortcuts_window(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
@@ -2933,6 +2982,7 @@ impl Default for StudioShell {
             web_access: web_access::WebAccessWindow::default(),
             health_alerts: health_alerts::HealthAlertsWindow::default(),
             clocks: clocks::ClocksWindow::default(),
+            recorder_tracks: recorder_tracks::RecorderTracksWindow::default(),
             scripts: scripts::ScriptsWindow::default(),
             user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
             shortcut_keys: ShortcutKeyOverrides::default(),

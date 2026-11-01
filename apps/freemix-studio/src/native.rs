@@ -1487,6 +1487,7 @@ fn run_worker(
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::RequestClocks
+                | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
@@ -1606,6 +1607,7 @@ fn run_worker(
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::RequestClocks
+                | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
@@ -1758,6 +1760,12 @@ fn handle_preview_request(
         }
         return publish_recovery_runtime(runtime, publisher, recovery);
     }
+    if matches!(request, StudioIntent::RefreshRecorderTracks) {
+        if !recovery.active() {
+            runtime.reload_record_track_views();
+        }
+        return publish_recovery_runtime(runtime, publisher, recovery);
+    }
     if let StudioIntent::ClockControl { name, operation } = &request {
         if !recovery.active() {
             runtime.request_clock_control(name, *operation);
@@ -1829,6 +1837,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestSystemAudioDevices
         | StudioIntent::RequestAudioOutputDevices
         | StudioIntent::RequestClocks
+        | StudioIntent::RefreshRecorderTracks
         | StudioIntent::ClockControl { .. }
         | StudioIntent::WebAccess(_)
         | StudioIntent::HealthAlert { .. }
@@ -3238,6 +3247,9 @@ fn intent_payload(
         StudioIntent::RequestClocks => {
             return Err("A clock readings request is not a command".to_owned());
         }
+        StudioIntent::RefreshRecorderTracks => {
+            return Err("A recorder track map refresh is not a command".to_owned());
+        }
         StudioIntent::ClockControl { .. } => {
             return Err("A clock control is not a command".to_owned());
         }
@@ -3605,6 +3617,11 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                     }
                 }
             }
+            state
+                .recorder_track_maps
+                .clone_from(runtime.record_track_maps());
+            state.recorder_tracks_local = runtime.record_tracks_local();
+            state.recorder_track_error = runtime.record_track_error().map(str::to_owned);
             state.source_sync = runtime.session().latest_source_sync_status().cloned();
             state.replay = runtime
                 .session()
@@ -3643,6 +3660,11 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
             .item_thumbnails
             .clone_from(runtime.session().latest_item_thumbnails());
     }
+    state
+        .recorder_track_maps
+        .clone_from(runtime.record_track_maps());
+    state.recorder_tracks_local = runtime.record_tracks_local();
+    state.recorder_track_error = runtime.record_track_error().map(str::to_owned);
     state.pending_commands = client.model().pending_commands().len();
     state.recording_pending = recording_command_pending(client);
     state.stream_pending = stream_command_pending_targets(client);
@@ -7095,6 +7117,7 @@ mod tests {
     #[test]
     fn clock_intents_are_not_commands_and_only_readings_coalesce() {
         assert!(intent_payload(StudioIntent::RequestClocks, None).is_err());
+        assert!(intent_payload(StudioIntent::RefreshRecorderTracks, None).is_err());
         let control = StudioIntent::ClockControl {
             name: "Countdown".to_owned(),
             operation: fm_protocol::ClockControlOperation::Start,

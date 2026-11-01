@@ -9018,6 +9018,48 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ClocksReasonNotTimer,
         t("Este reloj sigue a su fuente y no acepta las teclas del temporizador."),
     ),
+    // Recorder tracks (AU-010).
+    (Msg::MenuRecorderTracks, t("Pistas de grabador…")),
+    (
+        Msg::MenuRecorderTracksHover,
+        t(
+            "Ver los mapas de pistas de grabador del programa, sus diseños y los nombres de sus archivos WAV",
+        ),
+    ),
+    (Msg::RecorderTracksTitle, t("Pistas de grabador")),
+    (
+        Msg::RecorderTracksIntro,
+        t(
+            "El mapa de pistas de audio de cada ranura de grabador: su diseño, pistas, canales y los archivos WAV que escribe cada segmento de grabación.",
+        ),
+    ),
+    (
+        Msg::RecorderTracksNoBundle,
+        t(
+            "Los mapas de pistas se leen del paquete de proyecto supervisado; un Studio conectado a un daemon en otra máquina no tiene un paquete local.",
+        ),
+    ),
+    (Msg::RecorderTracksRefresh, t("Actualizar mapas")),
+    (
+        Msg::RecorderTracksRefreshHover,
+        t("Volver a leer ahora los mapas de pistas del paquete de proyecto"),
+    ),
+    (Msg::RecorderTracksSlot, t("Grabador {slot}")),
+    (Msg::RecorderTracksChannels, t("{count} canales")),
+    (
+        Msg::RecorderTracksNoMap,
+        t("Esta ranura de grabador no tiene un mapa de pistas."),
+    ),
+    (Msg::RecorderTracksLayoutInterleaved, t("Entrelazado")),
+    (Msg::RecorderTracksLayoutSplit, t("Una pista por archivo")),
+    (
+        Msg::RecorderTracksFilesInterleaved,
+        t("Archivos: <raíz del segmento>.tracks.wav"),
+    ),
+    (
+        Msg::RecorderTracksFilesSplit,
+        t("Archivos: <raíz del segmento>_NN_<pista>.wav"),
+    ),
     (Msg::MenuWebAccess, t("Acceso web (teléfonos y tabletas)…")),
     (
         Msg::MenuWebAccessHover,

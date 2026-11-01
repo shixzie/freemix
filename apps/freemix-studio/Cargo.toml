@@ -19,6 +19,7 @@ fm-client = { path = "../../crates/services/fm-client", features = ["std-websock
 fm-grade = { path = "../../crates/foundation/fm-grade" }
 fm-io-omt = { path = "../../crates/io/fm-io-omt" }
 fm-preset-file = { path = "../../crates/foundation/fm-preset-file" }
+fm-record = { path = "../../crates/media/fm-record" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
 fm-types = { path = "../../crates/foundation/fm-types" }
 fm-ui-egui = { path = "../../crates/ui/fm-ui-egui" }
@@ -33,6 +34,7 @@ nix = { version = "0.27.1", default-features = false, features = ["signal"] }
 midir = { version = "0.10.3", default-features = false }
 
 [dev-dependencies]
+tempfile = "3.20"
 fm-auth = { path = "../../crates/services/fm-auth" }
 fm-clock = { path = "../../crates/media/fm-clock" }
 fm-control = { path = "../../crates/services/fm-control" }
