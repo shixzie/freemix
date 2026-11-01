@@ -117,6 +117,12 @@ enum NumExpr {
     Position,
     /// The size of the current node-set.
     Last,
+    /// The number of child elements named `name` (`None` is `*`), or of
+    /// descendants when `descendant` is set.
+    Count {
+        name: Option<String>,
+        descendant: bool,
+    },
     Add(Box<Self>, Box<Self>),
     Subtract(Box<Self>, Box<Self>),
     Multiply(Box<Self>, Box<Self>),
@@ -131,6 +137,21 @@ impl NumExpr {
             Self::Attribute(name) => node.attribute(name)?.parse().ok(),
             Self::Position => Some(position),
             Self::Last => Some(last),
+            Self::Count { name, descendant } => {
+                let count = if *descendant {
+                    let mut all = Vec::new();
+                    collect_descendants(node, &mut all);
+                    all.iter()
+                        .filter(|child| name.as_deref().is_none_or(|name| child.name == name))
+                        .count()
+                } else {
+                    node.children
+                        .iter()
+                        .filter(|child| name.as_deref().is_none_or(|name| child.name == name))
+                        .count()
+                };
+                Some(i64::try_from(count).unwrap_or(i64::MAX))
+            }
             Self::Add(left, right) => left
                 .evaluate(node, position, last)?
                 .checked_add(right.evaluate(node, position, last)?),
@@ -941,6 +962,27 @@ impl<'a> Parser<'a> {
                 return Err(XPathError::Syntax("expected ')' after last("));
             }
             return Ok(NumExpr::Last);
+        }
+        if self.peek_name() == Some("count") {
+            self.position += "count".len();
+            if !self.eat(b'(') {
+                return Err(XPathError::Syntax("expected '(' after count"));
+            }
+            self.skip_whitespace();
+            let descendant = self.eat(b'/');
+            if descendant {
+                self.eat(b'/');
+            }
+            let name = if self.eat(b'*') {
+                None
+            } else {
+                Some(self.name()?.to_owned())
+            };
+            self.skip_whitespace();
+            if !self.eat(b')') {
+                return Err(XPathError::Syntax("expected ')' after count("));
+            }
+            return Ok(NumExpr::Count { name, descendant });
         }
         Ok(NumExpr::Integer(self.integer()?))
     }
