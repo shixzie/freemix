@@ -6409,8 +6409,9 @@ calls a caller-supplied translation executor. The daemon now serves it with
 pass builds `CompatState` from the authoritative snapshot and submits every
 `Translation::Protocol` through the control service under the daemon's Admin
 development principal, keeping compat-only transition settings between passes;
-fade, overlay, recording, streaming, rename, and fade-to-black intents are
-dispatched the same way, and only an intent with no native translation is
+fade, overlay, recording, streaming, rename, fade-to-black, title-text,
+input-volume/mute, and network-stream input intents are dispatched the same
+way, and only an intent with no native translation is
 refused by name. Remaining
 gaps: no authentication, a partial function and state-document surface, XPath
 supports a bounded subset (unions of up to four paths, integer arithmetic
