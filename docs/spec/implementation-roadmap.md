@@ -6424,7 +6424,8 @@ cursor, on-air state, observed clock, audit counters, and the bounded audit log
 now round-trip as a canonical version-4 desk document, which
 `freemix-cli social-desk-check` validates and `social-desk-export` rewrites;
 restored hidden, rotation, and on-air keys resolve against the document's own
-messages), no cross-provider de-duplication, no
+messages), cross-provider de-duplication is opt-in and scans a bounded in-memory
+window keyed by normalized author and body rather than a persistent index, no
 unbounded-store limits in the aggregator, and no authenticated operator
 identity. `GX-010` remains blocked
 on exact authorized integrations.
