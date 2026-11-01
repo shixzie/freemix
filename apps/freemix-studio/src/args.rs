@@ -143,7 +143,7 @@ pub struct SupervisedConfig {
     pub web_listen: Option<SocketAddr>,
     /// The gateway's own certificate and mDNS name, with `web_listen`.
     pub web: SupervisedWeb,
-    /// `--live-lan-listen`: the supervised daemon's LiveLAN viewer stream
+    /// `--live-lan-listen`: the supervised daemon's `LiveLAN` viewer stream
     /// listener (OR-017).
     pub live_lan_listen: Option<SocketAddr>,
 }
