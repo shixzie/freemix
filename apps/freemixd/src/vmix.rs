@@ -325,7 +325,8 @@ fn execute_compat(
             input,
             field,
             value,
-        } => {            let title = control
+        } => {
+            let title = control
                 .title_states()
                 .into_iter()
                 .find(|title| title.input == input)
@@ -372,8 +373,8 @@ fn execute_compat(
             )
         }
         CompatIntent::AddNetworkStream { url, name } => {
-            let input = free_input_id(snapshot)
-                .ok_or_else(|| "no free input identifier".to_owned())?;
+            let input =
+                free_input_id(snapshot).ok_or_else(|| "no free input identifier".to_owned())?;
             submit(
                 control,
                 principal,
@@ -381,9 +382,7 @@ fn execute_compat(
                 CommandPayload::AddInput {
                     input,
                     name: name.unwrap_or_else(|| "Network stream".to_owned()),
-                    source: LiveInputSource::NetworkStream(Box::new(
-                        NetworkStreamConfig::new(url),
-                    )),
+                    source: LiveInputSource::NetworkStream(Box::new(NetworkStreamConfig::new(url))),
                 },
                 next_command,
             )
@@ -404,9 +403,7 @@ fn free_input_id(snapshot: &SnapshotMessage) -> Option<WireInputId> {
 }
 
 fn free_input_id_from(used: impl IntoIterator<Item = u128>) -> Option<WireInputId> {
-    let used = used
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
+    let used = used.into_iter().collect::<std::collections::BTreeSet<_>>();
     let mut candidate = 1_u128;
     loop {
         if !used.contains(&candidate) {
@@ -555,10 +552,7 @@ mod tests {
                 .get(),
             1
         );
-        assert_eq!(
-            free_input_id_from([1_u128, 2, 4]).unwrap().get().get(),
-            3
-        );
+        assert_eq!(free_input_id_from([1_u128, 2, 4]).unwrap().get().get(), 3);
     }
 
     #[test]

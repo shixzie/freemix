@@ -149,9 +149,12 @@ impl VmixHttpServer {
                     Ok(bytes) => {
                         connection.read.extend_from_slice(&buffer[..bytes]);
                         if connection.read.len() > MAX_HTTP_REQUEST_BYTES {
-                            connection
-                                .write
-                                .extend_from_slice(&response(413, "Payload Too Large", "text/plain", "Error: request too large"));
+                            connection.write.extend_from_slice(&response(
+                                413,
+                                "Payload Too Large",
+                                "text/plain",
+                                "Error: request too large",
+                            ));
                             connection.close_after_write = true;
                             break;
                         }
@@ -171,7 +174,9 @@ impl VmixHttpServer {
             };
             let request = connection.read.drain(..end).collect::<Vec<_>>();
             connection.read.clear();
-            connection.write.extend_from_slice(&handle_request(&request, state, execute));
+            connection
+                .write
+                .extend_from_slice(&handle_request(&request, state, execute));
             connection.close_after_write = true;
         }
 
@@ -253,12 +258,9 @@ fn handle_request(
                 &format!("Error: {}", single_line(&error)),
             ),
         },
-        Err(ParseError::MissingFunction) => response(
-            200,
-            "OK",
-            "text/xml; charset=utf-8",
-            &state.xml(),
-        ),
+        Err(ParseError::MissingFunction) => {
+            response(200, "OK", "text/xml; charset=utf-8", &state.xml())
+        }
         Err(error) => response(
             200,
             "OK",
@@ -282,7 +284,13 @@ fn response(status: u16, reason: &str, content_type: &str, body: &str) -> Vec<u8
 fn single_line(value: &str) -> String {
     value
         .chars()
-        .map(|character| if matches!(character, '\r' | '\n') { ' ' } else { character })
+        .map(|character| {
+            if matches!(character, '\r' | '\n') {
+                ' '
+            } else {
+                character
+            }
+        })
         .collect()
 }
 
@@ -328,7 +336,11 @@ mod tests {
         assert_eq!(executed, 1);
 
         let post = handle_request(b"POST / HTTP/1.1\r\n\r\n", &mut state, &mut execute);
-        assert!(String::from_utf8(post).unwrap().starts_with("HTTP/1.1 405 "));
+        assert!(
+            String::from_utf8(post)
+                .unwrap()
+                .starts_with("HTTP/1.1 405 ")
+        );
     }
 
     #[test]
