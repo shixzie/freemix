@@ -222,6 +222,22 @@ pub(crate) fn serve_inner(
     }
 
     let store = ProjectStore::new(path)?;
+    // An authored recorder track map is part of the bundle contract: load and
+    // validate it before any command is accepted, so an unsupported map is a
+    // startup failure instead of a surprise when a recorder opens.
+    for slot in fm_model::RecorderSlot::ALL {
+        if let Some(map) = store
+            .load_recorder_track_map(slot)
+            .map_err(|error| AppFailure(format!("recorder track map: {error}")))?
+        {
+            eprintln!(
+                "FREEMIXD_RECORD_TRACK_MAP\tv=1\tslot={}\ttracks={}\tchannels={}",
+                slot.get(),
+                map.tracks().len(),
+                map.total_channels()
+            );
+        }
+    }
     let project = load_and_recover(&store, recover_to_checkpoint)?;
     let bundle_assets = load_bundle_assets(&store, project.project())?;
     // Opened once and held for the run: this process is the journal's only

@@ -3834,7 +3834,9 @@ canonical `freemix-record-track-map 1` document
 (`RecorderTrackMap::to_document`/`from_document`), strictly decoded against
 the same validation, and is stored per recorder slot in the project bundle as
 `recorders/<slot>.trackmap`; `freemix-cli record-track-map-import` and
-`record-track-map-export` manage it. Remaining gaps: nothing connects
+`record-track-map-export` manage it, and both daemons load and validate a
+slot's map at startup, reporting it as `FREEMIXD_RECORD_TRACK_MAP`. Remaining
+gaps: nothing applies a map to a recorder's audio path, and nothing connects
 this to `fm-audio` buses, the daemon recorder slots, or UI; WAV
 output is separate from the crash-safe packet spool and has no time or size
 rollover; and metadata stops at version-1 `bext` without iXML, loudness, or
