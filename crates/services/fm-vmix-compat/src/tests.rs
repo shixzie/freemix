@@ -646,6 +646,14 @@ fn xpath_numeric_comparisons_select_nodes() {
         state.xml_text("//input[count(*)=1]/@title"),
         Ok("News <GT>".into())
     );
+    assert_eq!(
+        state.xml_text("//input[string-length(@title)>10]/@number"),
+        Ok("1".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[string-length(@title)=5]/@title"),
+        Ok("Spare".into())
+    );
     for path in [
         "//input[@number>x]",
         "//input[@number>02]",
@@ -656,6 +664,7 @@ fn xpath_numeric_comparisons_select_nodes() {
         "//input[(1+1]/@title",
         "//input[count()=1]/@title",
         "//input[count(@title)=1]/@title",
+        "//input[string-length(title)=1]/@title",
     ] {
         assert!(
             matches!(state.xml_text(path), Err(XPathError::Syntax(_))),

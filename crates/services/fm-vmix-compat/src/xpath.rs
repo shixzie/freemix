@@ -113,6 +113,8 @@ enum NumExpr {
     Integer(i64),
     /// An attribute parsed as an integer.
     Attribute(String),
+    /// The character length of an attribute's value.
+    AttributeLength(String),
     /// The context node's one-based position in the current node-set.
     Position,
     /// The size of the current node-set.
@@ -135,6 +137,9 @@ impl NumExpr {
         match self {
             Self::Integer(value) => Some(*value),
             Self::Attribute(name) => node.attribute(name)?.parse().ok(),
+            Self::AttributeLength(name) => node
+                .attribute(name)
+                .map(|value| i64::try_from(value.chars().count()).unwrap_or(i64::MAX)),
             Self::Position => Some(position),
             Self::Last => Some(last),
             Self::Count { name, descendant } => {
@@ -974,6 +979,20 @@ impl<'a> Parser<'a> {
                 return Err(XPathError::Syntax("expected ')' after last("));
             }
             return Ok(NumExpr::Last);
+        }
+        if self.peek_name() == Some("string-length") {
+            self.position += "string-length".len();
+            if !self.eat(b'(') {
+                return Err(XPathError::Syntax("expected '(' after string-length"));
+            }
+            if !self.eat(b'@') {
+                return Err(XPathError::Syntax("expected an attribute in string-length"));
+            }
+            let name = self.name()?.to_owned();
+            if !self.eat(b')') {
+                return Err(XPathError::Syntax("expected ')' after string-length("));
+            }
+            return Ok(NumExpr::AttributeLength(name));
         }
         if self.peek_name() == Some("count") {
             self.position += "count".len();
