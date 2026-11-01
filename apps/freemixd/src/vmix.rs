@@ -400,10 +400,12 @@ fn wire_channel(channel: u8) -> Result<WireOverlayChannelId, String> {
 
 /// The lowest positive input identifier the snapshot does not use.
 fn free_input_id(snapshot: &SnapshotMessage) -> Option<WireInputId> {
-    let used = snapshot
-        .inputs
-        .iter()
-        .map(|input| input.input.get().get())
+    free_input_id_from(snapshot.inputs.iter().map(|input| input.input.get().get()))
+}
+
+fn free_input_id_from(used: impl IntoIterator<Item = u128>) -> Option<WireInputId> {
+    let used = used
+        .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
     let mut candidate = 1_u128;
     loop {
@@ -542,6 +544,12 @@ mod tests {
         assert_eq!(wire_channel(8).unwrap().number(), 8);
         assert!(wire_channel(0).is_err());
         assert!(wire_channel(9).is_err());
+    }
+
+    #[test]
+    fn free_input_ids_skip_used_identifiers() {
+        assert_eq!(free_input_id_from([]).unwrap().get().get(), 1);
+        assert_eq!(free_input_id_from([1, 2, 4]).unwrap().get().get(), 3);
     }
 
     #[test]
