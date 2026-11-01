@@ -3829,8 +3829,12 @@ buffering, optional BWF `bext` metadata with exact timecode-to-sample
 references, size patching on checkpoint and finalize, and automatic RF64 past
 4 GiB through a reserved chunk; recovery rebuilds an unfinalized file's sizes
 from its data length. A track recorder writes interleaved or split per-track
-files after validating every file up front. Remaining gaps: nothing connects
-this to `fm-audio` buses, the daemon recorder slots, persistence, or UI; WAV
+files after validating every file up front. A map now round-trips as a
+canonical `freemix-record-track-map 1` document
+(`RecorderTrackMap::to_document`/`from_document`), strictly decoded against
+the same validation. Remaining gaps: nothing connects
+this to `fm-audio` buses, the daemon recorder slots, project persistence, or
+UI; WAV
 output is separate from the crash-safe packet spool and has no time or size
 rollover; and metadata stops at version-1 `bext` without iXML, loudness, or
 UMID. `AU-010` remains planned.

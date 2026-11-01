@@ -22,6 +22,7 @@ mod resilient_wav;
 mod session;
 mod space;
 mod track_map;
+mod track_map_document;
 mod track_wav;
 mod types;
 mod wav;
@@ -66,6 +67,7 @@ pub use track_map::{
     MAX_RECORDER_TRACKS, MAX_ROUTE_FRAMES, MAX_TRACK_CHANNELS, MAX_TRACK_NAME_BYTES, RecordBus,
     RecordTrack, RecorderTrackMap, TrackLayout, TrackMapError, TrackSource, split_track_file_name,
 };
+pub use track_map_document::TrackMapDocumentError;
 pub use track_wav::{TrackFileMode, TrackWavError, TrackWavOptions, TrackWavRecorder};
 pub use types::{
     ActionOutcome, ActionReceiptId, AppendError, AudioPacketMetadata, Discontinuity, EnqueueError,
