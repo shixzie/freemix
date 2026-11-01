@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     fs,
     io::{self, Cursor, Read, Seek, SeekFrom, Write},
-    num::NonZeroU128,
     path::PathBuf,
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
@@ -15,7 +14,8 @@ use fm_record::{
     TrackWavRecorder, WavError, WavSampleFormat, WavSink, WavSpec, WavWriter, encode_sample,
     encode_wav_header, read_wav_info, recover_wav, recover_wav_file, split_track_file_name,
 };
-use fm_types::{BusId, FrameRate, Timecode};
+use fm_types::audio_bus::AuxBusNumber;
+use fm_types::{FrameRate, Timecode};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -164,8 +164,8 @@ fn write_all(spec: WavSpec, samples: &[f32]) -> Vec<u8> {
     bytes
 }
 
-fn aux(value: u128) -> RecordBus {
-    RecordBus::Aux(BusId::new(NonZeroU128::new(value).unwrap()))
+fn aux(value: u8) -> RecordBus {
+    RecordBus::Aux(AuxBusNumber::new(value).unwrap())
 }
 
 fn inventory() -> BusInventory {
@@ -708,16 +708,31 @@ fn file_recovery_truncates_torn_tail_on_disk() {
 // Track maps
 
 #[test]
+fn a_map_never_asks_for_more_channels_than_the_mixer_exposes() {
+    let map = show_map();
+    map.validate_against_channels(2).unwrap_err();
+    assert_eq!(
+        map.validate_against_channels(3),
+        Err(TrackMapError::BusChannelUnavailable {
+            bus: aux(7),
+            mapped: 4,
+            available: 3,
+        })
+    );
+    map.validate_against_channels(4).unwrap();
+}
+
+#[test]
 fn track_map_validates_buses_channels_and_limits() {
     let master = TrackSource::master;
     let check = |tracks: Vec<RecordTrack>| RecorderTrackMap::new(tracks, inventory()).unwrap_err();
 
     assert_eq!(check(Vec::new()), TrackMapError::NoTracks);
     assert_eq!(
-        check(vec![RecordTrack::mono("A", TrackSource::new(aux(9), 0))]),
+        check(vec![RecordTrack::mono("A", TrackSource::new(aux(1), 0))]),
         TrackMapError::UnknownBus {
             track: 0,
-            bus: aux(9)
+            bus: aux(1)
         }
     );
     assert_eq!(
@@ -861,8 +876,8 @@ fn routing_selects_channels_into_ordered_tracks() {
         })
     );
     assert_eq!(
-        map.route(2, &[(aux(8), &AUX)]),
-        Err(TrackMapError::UnexpectedBusInput { bus: aux(8) })
+        map.route(2, &[(aux(1), &AUX)]),
+        Err(TrackMapError::UnexpectedBusInput { bus: aux(1) })
     );
     assert_eq!(
         map.route(

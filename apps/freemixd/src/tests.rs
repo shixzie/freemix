@@ -12791,3 +12791,62 @@ fn templates_whose_animation_has_no_wire_encoding_refuse_to_start() {
         .expect_err("an animation without a wire encoding refuses to start");
     assert!(error.to_string().contains("animation"), "{error}");
 }
+
+/// AU-010: an authored track map routes Master and aux bus samples into one
+/// interleaved WAV beside the segment.
+#[cfg(feature = "native-media")]
+#[test]
+fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
+    use fm_record::{
+        BusInventory, RecordBus, RecordTrack, RecorderTrackMap, TrackSource, read_wav_info,
+    };
+    use fm_types::audio_bus::AuxBusNumber;
+
+    let directory = tempfile::tempdir().unwrap();
+    let segment = directory.path().join("show-0001.mp4");
+    let bus = AuxBusNumber::new(1).unwrap();
+    let map = RecorderTrackMap::new(
+        vec![
+            RecordTrack::stereo("Program", TrackSource::master(0), TrackSource::master(1)),
+            RecordTrack::mono("Bus A", TrackSource::new(RecordBus::Aux(bus), 1)),
+        ],
+        BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(bus), 2)]).unwrap(),
+    )
+    .unwrap();
+    let mut track = TrackWavState::create(map, &segment, 48_000, 2).unwrap();
+    let timing = MediaTiming::new(
+        OriginalTimestamp::new(
+            MediaTimestamp::new(0),
+            fm_frame::TimeBase::new(1, 48_000).unwrap(),
+        ),
+        NormalizedTimestamp::from_nanos(0),
+        NormalizedDuration::from_nanos(41_666_667).unwrap(),
+        native_clock_domain(),
+        SequenceNumber::new(0),
+    )
+    .unwrap();
+    let audio = AudioBlock::new(
+        timing,
+        SampleRate::new(48_000).unwrap(),
+        ChannelLayout::stereo(),
+        vec![vec![0.25, 0.5], vec![0.5, 0.75]],
+    )
+    .unwrap();
+    let aux = vec![vec![0.0, 0.0], vec![0.75, 0.25]];
+    track.write(&audio, &aux, 2).unwrap();
+    track.finish().unwrap();
+
+    let path = TrackWavState::path(&segment);
+    let mut file = File::open(&path).unwrap();
+    let info = read_wav_info(&mut file).unwrap();
+    assert_eq!(info.spec.channels, 3);
+    assert_eq!(info.spec.sample_rate, 48_000);
+    assert_eq!(info.frames(), 2, "two frames in a three-channel file");
+    let data = fs::read(&path).unwrap();
+    let offset = usize::try_from(info.data_offset).unwrap();
+    let samples: Vec<i16> = data[offset..]
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect();
+    assert_eq!(samples, [8192, 16_384, 24_576, 16_384, 24_576, 8192]);
+}

@@ -75,6 +75,13 @@ pub(crate) struct NativeDaemon {
     /// Whether each segment also writes a `--record-wav` linear-PCM sidecar
     /// next to the MP4. Applies to every configured recorder slot.
     pub(crate) record_wav: bool,
+    /// Authored audio track maps per recorder slot (AU-010). A map records
+    /// an interleaved track WAV beside every segment for that slot.
+    #[cfg(feature = "native-media")]
+    pub(crate) record_track_maps: [Option<Arc<RecorderTrackMap>>; RECORDER_SLOTS],
+    /// The open track WAV beside each slot's current segment (AU-010).
+    #[cfg(feature = "native-media")]
+    pub(crate) record_track_wavs: [Option<TrackWavState>; RECORDER_SLOTS],
     /// Optional per-slot frame-boundary segment rotation target in seconds
     /// (`--record-segment-seconds` is slot 0 and `--record-segment-seconds-2`
     /// is slot 1). A slot whose entry is `None` never rotates automatically,
@@ -438,6 +445,7 @@ impl NativeDaemon {
             FrameNumber::new(stored.position().frames_rendered),
         )?;
         let pacer_start_offset = host_deadline_offset(&pacer)?;
+        let record_track_maps = load_record_track_maps(store, stored)?;
         let origin = Instant::now();
         let telemetry = NativeRuntimeTelemetry::new(origin, runtime.context().adapter_info());
         Ok(Self {
@@ -468,6 +476,8 @@ impl NativeDaemon {
             record_program_2: None,
             record_outputs: [None, None],
             record_wav: false,
+            record_track_maps,
+            record_track_wavs: [None, None],
             record_segment_seconds: [None; RECORDER_SLOTS],
             record_bitrates: [None, None],
             record_audio_bitrates: [None, None],
@@ -887,6 +897,56 @@ impl NativeDaemon {
             .is_some_and(display_outputs::InventoryDisplayHost::presenting)
     }
 
+    /// Starts the slot's authored track WAV beside `segment`, when the show
+    /// has a map for that slot (AU-010). A map that does not fit the mixer's
+    /// channels refuses the segment before any audio is written.
+    fn start_track_wav(
+        &mut self,
+        slot: usize,
+        segment: &Path,
+        stored: &StoredProject,
+    ) -> AppResult<()> {
+        let audio = &stored.project().settings().audio;
+        let channels = u16::try_from(audio.channels.channels().len())
+            .map_err(|_| AppFailure("project audio channel count exceeds u16".into()))?;
+        self.start_track_wav_with(slot, segment, audio.sample_rate.hertz(), channels)
+    }
+
+    fn start_track_wav_with(
+        &mut self,
+        slot: usize,
+        segment: &Path,
+        sample_rate: u32,
+        channels: u16,
+    ) -> AppResult<()> {
+        self.finish_track_wav(slot);
+        let Some(map) = &self.record_track_maps[slot] else {
+            return Ok(());
+        };
+        let track = TrackWavState::create(map.as_ref().clone(), segment, sample_rate, channels)
+            .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+        self.record_track_wavs[slot] = Some(track);
+        Ok(())
+    }
+
+    /// Finalizes the slot's track WAV, if one is open.
+    fn finish_track_wav(&mut self, slot: usize) {
+        let Some(mut track) = self.record_track_wavs[slot].take() else {
+            return;
+        };
+        match track.finish() {
+            Ok(()) => eprintln!(
+                "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus=finalized",
+                slot + 1
+            ),
+            Err(error) => eprintln!(
+                "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus=failed\terror={}",
+                slot + 1,
+                diagnostic_field(&error)
+            ),
+        }
+    }
+
     /// Begins opening one slot's next segment for a configured output: the
     /// session and `FFmpeg` start on a worker, exactly as for a runtime
     /// `RecordStart`, and [`Self::prime_recorder`] awaits the segment.
@@ -902,7 +962,7 @@ impl NativeDaemon {
     ) -> AppResult<()> {
         let names = self.segment_names.clone();
         let segment = next_record_segment_path(path, |candidate| names.taken(candidate))?;
-        self.recorders[slot] = ProgramRecording::Running(Box::new(NativeProgramRecorder::open(
+        let recorder = NativeProgramRecorder::open(
             &self.runtime,
             stored,
             stored.position().frames_rendered,
@@ -912,7 +972,9 @@ impl NativeDaemon {
             self.record_bitrates[slot],
             self.record_audio_bitrates[slot],
             slot + 1,
-        )?));
+        )?;
+        self.start_track_wav(slot, &segment, stored)?;
+        self.recorders[slot] = ProgramRecording::Running(Box::new(recorder));
         Ok(())
     }
 
@@ -1770,12 +1832,14 @@ impl NativeDaemon {
     /// daemon fields.
     pub(crate) fn capture_recorders(
         recorders: &mut [ProgramRecording; RECORDER_SLOTS],
+        track_wavs: &mut [Option<TrackWavState>; RECORDER_SLOTS],
         record_outputs: &[Option<fm_types::OutputId>; RECORDER_SLOTS],
         runtime: &NativeMediaRuntime,
         project_outputs: &[NativeOutputFrame],
         unbound_output: Option<&NativeTexture>,
         readbacks: &mut FrameReadbacks<'_>,
         audio: &CaptureAudio<'_>,
+        meters: Option<&native_audio_realizer::OwnedAudioMeters>,
     ) {
         let mut resolved: [Option<&NativeTexture>; RECORDER_SLOTS] = [None, None];
         for (slot_index, slot) in recorders.iter_mut().enumerate() {
@@ -1805,6 +1869,15 @@ impl NativeDaemon {
             let block = audio
                 .for_output(record_outputs[slot_index], project_outputs)
                 .clone();
+            let (aux_planes, mixer_channels) = meters.map_or((&[][..], 0), |meters| {
+                (meters.aux_planes.as_slice(), meters.channels)
+            });
+            if let Some(track) = &mut track_wavs[slot_index]
+                && let Err(error) = track.write(&block, aux_planes, mixer_channels)
+            {
+                recorder.fail(format!("track:{error}"), true);
+                continue;
+            }
             recorder.capture(runtime, program, readbacks, block);
         }
     }
@@ -2125,9 +2198,20 @@ impl NativeDaemon {
                     self.record_audio_bitrates[slot],
                     slot + 1,
                 )
+                .map(|recorder| (recorder, segment))
             });
         match opened {
-            Ok(recorder) => self.recorders[slot] = ProgramRecording::Running(Box::new(recorder)),
+            Ok((recorder, segment)) => {
+                if let Err(error) = self.start_track_wav(slot, &segment, stored) {
+                    let failure = format!("start:{error}");
+                    self.recorders[slot] = ProgramRecording::Off;
+                    self.recorder_status
+                        .failed(slot, output_failure::recorder_failure(&failure, ""));
+                    eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
+                    return;
+                }
+                self.recorders[slot] = ProgramRecording::Running(Box::new(recorder));
+            }
             Err(error) => {
                 self.recorders[slot] = ProgramRecording::Off;
                 let failure = format!("start:{error}");
@@ -2143,6 +2227,7 @@ impl NativeDaemon {
     /// drains the sink cleanly unless it was cancelled, so the finalized file
     /// keeps its full `FREEMIXD_RECORDER` report; `notice` follows that report.
     pub(crate) fn retire_running_recording(&mut self, slot: usize, notice: Option<String>) {
+        self.finish_track_wav(slot);
         let ProgramRecording::Running(recorder) =
             std::mem::replace(&mut self.recorders[slot], ProgramRecording::Off)
         else {
@@ -2240,6 +2325,13 @@ impl NativeDaemon {
         };
         self.reap_finished_recording_finalizers();
         self.retire_running_recording(slot, None);
+        let track_format = next_format.as_ref().ok().map(|format| {
+            (
+                format.sample_rate().hertz(),
+                u16::try_from(format.channel_layout().channels().len()).unwrap_or(u16::MAX),
+            )
+        });
+        let mut rotated_segment: Option<PathBuf> = None;
         let rotated = next_format.map_err(Into::into).and_then(|format| {
             let timecode = recording_start_timecode(sequence.get(), format.frame_rate());
             let names = &self.segment_names;
@@ -2250,6 +2342,7 @@ impl NativeDaemon {
                 |candidate| names.taken(candidate),
             )?
             .ok_or_else(|| AppFailure("rotating recorder slot has no configured output".into()))?;
+            rotated_segment = Some(segment.clone());
             // The next segment opens off the render path; the frame captured
             // right after this rotation waits in its backlog until FFmpeg is
             // connected, so no frame is dropped between segments.
@@ -2271,6 +2364,20 @@ impl NativeDaemon {
         });
         match rotated {
             Ok(recorder) => {
+                let track = rotated_segment.zip(track_format).map_or(
+                    Ok(()),
+                    |(segment, (rate, channels))| {
+                        self.start_track_wav_with(slot, &segment, rate, channels)
+                    },
+                );
+                if let Err(error) = track {
+                    let failure = format!("rotate:{error}");
+                    self.recorder_status
+                        .failed(slot, output_failure::recorder_failure(&failure, ""));
+                    eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
+                    self.recorders[slot] = ProgramRecording::Off;
+                    return;
+                }
                 self.recorders[slot] = ProgramRecording::Running(Box::new(recorder));
             }
             Err(error) => {
@@ -2888,7 +2995,7 @@ impl NativeDaemon {
         let audio_meters = mixed.meters;
         let rendered_audio = mixed.rendered;
 
-        if let Some(meters) = audio_meters {
+        if let Some(ref meters) = audio_meters {
             let sequence = self
                 .audio_meter_sequence
                 .checked_add(1)
@@ -2924,7 +3031,7 @@ impl NativeDaemon {
             self.pending_audio_meters = Some(audio_meters_message(
                 server,
                 sequence,
-                &AudioMeterView::from(&meters),
+                &AudioMeterView::from(meters),
                 output,
             ));
             self.audio_meter_sequence = sequence;
@@ -2980,6 +3087,7 @@ impl NativeDaemon {
         if let Some(audio) = audio {
             Self::capture_recorders(
                 &mut self.recorders,
+                &mut self.record_track_wavs,
                 &self.record_outputs,
                 &self.runtime,
                 &self.latest_project_outputs,
@@ -2991,6 +3099,7 @@ impl NativeDaemon {
                     excluded: &fade_to_black_excluded,
                     overrides: &override_audio,
                 },
+                audio_meters.as_ref(),
             );
         }
         if let Some((output, audio, live)) = live_lan_capture
@@ -3154,9 +3263,10 @@ impl NativeDaemon {
             }
         }
         let mut stopped = Vec::new();
-        for slot in &mut self.recorders {
+        for slot in 0..RECORDER_SLOTS {
+            self.finish_track_wav(slot);
             if let ProgramRecording::Running(mut recorder) =
-                std::mem::replace(slot, ProgramRecording::Off)
+                std::mem::replace(&mut self.recorders[slot], ProgramRecording::Off)
             {
                 if let Err(error) = recorder.stop_and_report() {
                     first_error.get_or_insert(Err(error));

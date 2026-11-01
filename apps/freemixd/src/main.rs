@@ -318,6 +318,11 @@ use fm_model::{InputKind, SimulatedAudio, SimulatedVideo, StartupPolicy};
 #[cfg(feature = "native-media")]
 use fm_observability::{AlertState, Metric, MetricStore};
 #[cfg(feature = "native-media")]
+use fm_record::{
+    LargeFilePolicy, RecordBus, RecorderTrackMap, TrackFileMode, TrackWavOptions, TrackWavRecorder,
+    WavSampleFormat,
+};
+#[cfg(feature = "native-media")]
 use fm_scheduler::{FrameNumber, FramePacer};
 #[cfg(feature = "native-media")]
 use fm_sim::{Rgba8, SimulatedVideoSource, SourcePattern};

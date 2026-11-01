@@ -9,7 +9,7 @@
 
 use core::fmt;
 
-use fm_types::BusId;
+use fm_types::audio_bus::AuxBusNumber;
 
 /// Maximum number of tracks a single recorder may map.
 pub const MAX_RECORDER_TRACKS: usize = 32;
@@ -31,15 +31,15 @@ pub const MAX_ROUTE_FRAMES: usize = 1 << 16;
 pub enum RecordBus {
     /// The program Master bus.
     Master,
-    /// An aux (submix/monitor) bus.
-    Aux(BusId),
+    /// Aux bus A through G.
+    Aux(AuxBusNumber),
 }
 
 impl fmt::Display for RecordBus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Master => formatter.write_str("master"),
-            Self::Aux(id) => write!(formatter, "aux:{id}"),
+            Self::Aux(bus) => write!(formatter, "aux:{}", bus.get()),
         }
     }
 }
@@ -219,6 +219,12 @@ pub enum TrackMapError {
         bus: RecordBus,
         channels: u16,
     },
+    /// A map asks for more channels than the mixer exposes on `bus`.
+    BusChannelUnavailable {
+        bus: RecordBus,
+        mapped: u16,
+        available: u16,
+    },
     DuplicateBus {
         bus: RecordBus,
     },
@@ -287,6 +293,14 @@ impl fmt::Display for TrackMapError {
             Self::InvalidBusChannelCount { bus, channels } => write!(
                 formatter,
                 "bus {bus} reports {channels} channels; expected 1..={MAX_BUS_CHANNELS}"
+            ),
+            Self::BusChannelUnavailable {
+                bus,
+                mapped,
+                available,
+            } => write!(
+                formatter,
+                "bus {bus} maps {mapped} channels but the mixer exposes {available}"
             ),
             Self::DuplicateBus { bus } => write!(formatter, "bus {bus} is listed twice"),
             Self::EmptyTrack { track } => write!(formatter, "track {track} has no channels"),
@@ -440,6 +454,30 @@ impl RecorderTrackMap {
     #[must_use]
     pub fn inventory(&self) -> &BusInventory {
         &self.inventory
+    }
+
+    /// Checks every inventory bus against the channel count a mixer exposes
+    /// on that bus.
+    ///
+    /// A map may record fewer channels than a bus carries, but never more.
+    /// The daemon calls this before a recorder opens so an authored map that
+    /// does not fit the show is refused before any audio is written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrackMapError::BusChannelUnavailable`] for the first bus
+    /// asking for too many channels.
+    pub fn validate_against_channels(&self, channels: u16) -> Result<(), TrackMapError> {
+        for &(bus, mapped) in self.inventory.buses() {
+            if mapped > channels {
+                return Err(TrackMapError::BusChannelUnavailable {
+                    bus,
+                    mapped,
+                    available: channels,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Total channels across all tracks (the width of an interleaved file).

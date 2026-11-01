@@ -101,15 +101,13 @@ impl ProjectStore {
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU128;
-
     use fm_record::{BusInventory, RecordBus, RecordTrack, TrackSource};
-    use fm_types::BusId;
+    use fm_types::audio_bus::AuxBusNumber;
 
     use super::*;
 
     fn map() -> RecorderTrackMap {
-        let sub = BusId::new(NonZeroU128::new(7).unwrap());
+        let sub = AuxBusNumber::new(7).unwrap();
         RecorderTrackMap::new(
             vec![
                 RecordTrack::new(

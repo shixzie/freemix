@@ -3821,8 +3821,8 @@ therefore remains future work, and item 11 remains incomplete.
 
 Current implementation boundary for recording audio flexibility (`AU-010`):
 `fm-record` provides a validated per-recorder track map that selects Master
-and aux bus channels into ordered mono, stereo, or multichannel tracks under
-explicit track and channel limits, and routes interleaved bus audio into
+and aux bus A-G channels into ordered mono, stereo, or multichannel tracks
+under explicit track and channel limits, and routes interleaved bus audio into
 per-track or combined buffers. A WAV writer emits exact RIFF headers for
 16/24/32-bit PCM and 32-bit float with extensible layouts, bounded whole-frame
 buffering, optional BWF `bext` metadata with exact timecode-to-sample
@@ -3835,12 +3835,18 @@ canonical `freemix-record-track-map 1` document
 the same validation, and is stored per recorder slot in the project bundle as
 `recorders/<slot>.trackmap`; `freemix-cli record-track-map-import` and
 `record-track-map-export` manage it, and both daemons load and validate a
-slot's map at startup, reporting it as `FREEMIXD_RECORD_TRACK_MAP`. Remaining
-gaps: nothing applies a map to a recorder's audio path, and nothing connects
-this to `fm-audio` buses, the daemon recorder slots, or UI; WAV
-output is separate from the crash-safe packet spool and has no time or size
-rollover; and metadata stops at version-1 `bext` without iXML, loudness, or
-UMID. `AU-010` remains planned.
+slot's map at startup, reporting it as `FREEMIXD_RECORD_TRACK_MAP`. The native
+daemon now applies a slot's map to that recorder's audio path: at every
+segment start, configured, runtime, or rotated, it checks the map's bus
+channels against the mixer and writes `<segment stem>.tracks.wav` beside the
+MP4 from the same Master and aux bus samples the mixer rendered, independent
+of the video encoder's backlog; stopping a segment finalizes the WAV and
+prints `FREEMIXD_RECORD_TRACK`. Remaining gaps: only the interleaved file
+layout is wired, not split-per-track; the track WAV is not inside the
+crash-safe session's failover, manifest, or recovery; it has no time or size
+rollover; and there is no UI for authoring or monitoring the tracks. WAV
+output is separate from the crash-safe packet spool, and metadata stops at
+version-1 `bext` without iXML, loudness, or UMID. `AU-010` remains planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):
 `fm-observability` provides a deterministic, clock-free statistics layer: a

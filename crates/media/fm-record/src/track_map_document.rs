@@ -6,9 +6,8 @@
 //! daemon or mixer state beyond what the map itself validates.
 
 use core::fmt;
-use core::num::NonZeroU128;
 
-use fm_types::BusId;
+use fm_types::audio_bus::AuxBusNumber;
 
 use crate::track_map::{
     BusInventory, MAX_INVENTORY_BUSES, MAX_RECORDER_TRACKS, RecordBus, RecordTrack,
@@ -162,7 +161,7 @@ impl RecorderTrackMap {
 fn bus_document(bus: RecordBus) -> String {
     match bus {
         RecordBus::Master => "master".to_owned(),
-        RecordBus::Aux(id) => format!("aux:{id}"),
+        RecordBus::Aux(bus) => format!("aux:{}", bus.get()),
     }
 }
 
@@ -171,8 +170,8 @@ fn bus_from_token(token: &str) -> Option<RecordBus> {
         return Some(RecordBus::Master);
     }
     let id = token.strip_prefix("aux:")?;
-    let value = id.parse::<u128>().ok()?;
-    Some(RecordBus::Aux(BusId::new(NonZeroU128::new(value)?)))
+    let value = id.parse::<u8>().ok()?;
+    Some(RecordBus::Aux(AuxBusNumber::new(value)?))
 }
 
 fn hex_text(text: &str) -> String {
@@ -206,7 +205,7 @@ mod tests {
     use super::*;
 
     fn map() -> RecorderTrackMap {
-        let sub = BusId::new(NonZeroU128::new(7).unwrap());
+        let sub = AuxBusNumber::new(7).unwrap();
         let inventory =
             BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(sub), 4)]).unwrap();
         RecorderTrackMap::new(
@@ -276,6 +275,8 @@ mod tests {
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d master\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack zz master 0\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d aux:62 0\n",
+            "freemix-record-track-map 1\ninventory master 2\ntrack 4d aux:8 0\n",
+            "freemix-record-track-map 1\ninventory master 2\ntrack 4d aux:0 0\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d master 0 extra\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d master 0\ninventory master 2\n",
             "freemix-record-track-map 1\ninventory master 2\ntrack 4d master 0\nextra\n",

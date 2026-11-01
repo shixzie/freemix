@@ -25,7 +25,11 @@ use fm_model::{
     SimulatedInput, SimulatedVideo, SolidColor,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
-use fm_record::{Fmp4Integrity, SessionManifest, SessionState, read_wav_info, scan_fmp4_file};
+use fm_record::{
+    BusInventory, Fmp4Integrity, RecordBus, RecordTrack, RecorderTrackMap, SessionManifest,
+    SessionState, TrackSource, read_wav_info, scan_fmp4_file,
+};
+use fm_types::audio_bus::AuxBusNumber;
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
     SampleFormat, SampleRate, ScanMode, VideoDimensions, VideoFormat,
@@ -830,5 +834,53 @@ fn startup_recovery_repairs_a_wav_sidecar_left_open_by_a_daemon_crash() {
     assert!(
         report[0].contains(&format!("\twav_bytes={}\t", file_len(&next))),
         "wav_bytes counts the stream the sidecar session accepted: {stderr}"
+    );
+}
+
+/// AU-010: a recorder slot with an authored track map writes one interleaved
+/// WAV beside each segment, with the map's channels, without `--record-wav`.
+#[test]
+fn an_authored_track_map_writes_master_and_aux_channels_beside_the_segment() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("tracks.freemix");
+    save_recording_project(&project);
+    let aux_a = AuxBusNumber::new(1).unwrap();
+    let map = RecorderTrackMap::new(
+        vec![
+            RecordTrack::stereo("Program", TrackSource::master(0), TrackSource::master(1)),
+            RecordTrack::mono("Bus A", TrackSource::new(RecordBus::Aux(aux_a), 0)),
+        ],
+        BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(aux_a), 2)]).unwrap(),
+    )
+    .unwrap();
+    ProjectStore::new(&project)
+        .unwrap()
+        .save_recorder_track_map(RecorderSlot::new(1).unwrap(), &map)
+        .unwrap();
+
+    let output = directory.path().join("program.mp4");
+    let mut arguments = os(&["--record-program"]);
+    arguments.push(output.into());
+    let Some(daemon) = DaemonProcess::start(&project, &arguments) else {
+        return;
+    };
+    let track_wav = directory.path().join("program.tracks.wav");
+    wait_until("a track WAV with audio", || {
+        track_wav.is_file() && file_len(&track_wav) > 4_096
+    });
+    let stderr = daemon.stop();
+    let mut file = fs::File::open(&track_wav).unwrap();
+    let info = read_wav_info(&mut file).unwrap();
+    assert_eq!(info.spec.channels, 3, "Master stereo plus one aux channel");
+    assert_eq!(info.spec.sample_rate, 48_000);
+    assert!(info.frames() > 0);
+    assert!(
+        lines(&stderr, "FREEMIXD_RECORD_TRACK")
+            .iter()
+            .any(|line| line.contains("\tslot=1\tstatus=finalized")),
+        "{stderr}"
     );
 }

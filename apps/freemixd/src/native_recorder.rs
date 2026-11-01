@@ -74,11 +74,204 @@ pub(crate) struct RecorderSession {
     pub(crate) remaining: recording_session::RemainingTimeWatch,
 }
 
+/// Loads and validates every authored recorder track map (AU-010).
+///
+/// The map's inventory may ask for fewer channels than the mixer exposes,
+/// but never more; a map that does not fit the show is refused before the
+/// daemon starts any recorder.
+#[cfg(feature = "native-media")]
+pub(crate) fn load_record_track_maps(
+    store: &ProjectStore,
+    stored: &StoredProject,
+) -> AppResult<[Option<Arc<RecorderTrackMap>>; RECORDER_SLOTS]> {
+    let channels = u16::try_from(stored.project().settings().audio.channels.channels().len())
+        .map_err(|_| AppFailure("project audio channel count exceeds u16".into()))?;
+    let mut maps: [Option<Arc<RecorderTrackMap>>; RECORDER_SLOTS] = [None, None];
+    for slot in 0..RECORDER_SLOTS {
+        let number = u8::try_from(slot + 1)
+            .ok()
+            .and_then(|number| ModelRecorderSlot::new(number).ok())
+            .ok_or_else(|| AppFailure("recorder slot is out of range".into()))?;
+        let Some(map) = store
+            .load_recorder_track_map(number)
+            .map_err(|error| AppFailure(format!("recorder track map: {error}")))?
+        else {
+            continue;
+        };
+        map.validate_against_channels(channels)
+            .map_err(|error| AppFailure(format!("recorder track map: {error}")))?;
+        maps[slot] = Some(Arc::new(map));
+    }
+    Ok(maps)
+}
+
 /// A started recorder and the session it writes into.
 #[cfg(feature = "native-media")]
 pub(crate) struct OpenedRecorder {
     pub(crate) recorder: Recorder,
     pub(crate) session: RecorderSession,
+}
+
+/// One segment's authored track-map recording (AU-010).
+///
+/// The map selects Master and aux bus channels into one interleaved WAV of
+/// mono, stereo, or multichannel tracks. The recorder writes beside the
+/// segment's MP4, using the same sample rate and a 16-bit linear-PCM body so
+/// it matches the `--record-wav` sidecar's format. The tracks are written
+/// from the same bus audio the mixer rendered for the frame, independent of
+/// the video encoder's backlog.
+#[cfg(feature = "native-media")]
+pub(crate) struct TrackWavState {
+    map: RecorderTrackMap,
+    recorder: Option<TrackWavRecorder>,
+    scratch: Vec<Vec<f32>>,
+}
+
+#[cfg(feature = "native-media")]
+impl TrackWavState {
+    /// The track WAV path beside `segment`: `<stem>.tracks.wav`.
+    pub(crate) fn path(segment: &Path) -> PathBuf {
+        let stem = segment
+            .file_stem()
+            .map_or_else(|| "segment".into(), |stem| stem.to_string_lossy());
+        recording_parent(segment).join(format!("{stem}.tracks.wav"))
+    }
+
+    /// Creates the WAV and validates the map against the mixer's channel
+    /// count before any audio is written.
+    pub(crate) fn create(
+        map: RecorderTrackMap,
+        segment: &Path,
+        sample_rate: u32,
+        channels: u16,
+    ) -> Result<Self, String> {
+        map.validate_against_channels(channels)
+            .map_err(|error| error.to_string())?;
+        let path = Self::path(segment);
+        let file = File::create(&path)
+            .map_err(|error| format!("track WAV {}: {error}", path.display()))?;
+        let options = TrackWavOptions {
+            sample_rate,
+            format: WavSampleFormat::Pcm16,
+            large_file: LargeFilePolicy::Rf64WhenNeeded,
+            bext: None,
+            buffer_frames: 1024,
+        };
+        let recorder = TrackWavRecorder::create(
+            map.clone(),
+            TrackFileMode::Interleaved,
+            &options,
+            vec![Box::new(file)],
+        )
+        .map_err(|error| error.to_string())?;
+        let scratch = vec![Vec::new(); map.inventory().buses().len()];
+        Ok(Self {
+            map,
+            recorder: Some(recorder),
+            scratch,
+        })
+    }
+
+    /// Routes one frame's Master and aux bus audio into the track WAV.
+    ///
+    /// `aux` is bus-major, each bus `mixer_channels` wide. The map's
+    /// inventory may record fewer channels than the mixer exposes.
+    pub(crate) fn write(
+        &mut self,
+        audio: &AudioBlock,
+        aux: &[Vec<f32>],
+        mixer_channels: usize,
+    ) -> Result<(), String> {
+        let frames = audio.sample_count();
+        if frames == 0 {
+            return Ok(());
+        }
+        for (index, (bus, mapped)) in self.map.inventory().buses().iter().enumerate() {
+            let mapped = usize::from(*mapped);
+            let buffer = &mut self.scratch[index];
+            buffer.clear();
+            buffer.resize(
+                frames
+                    .checked_mul(mapped)
+                    .ok_or_else(|| "track WAV frame count overflow".to_owned())?,
+                0.0,
+            );
+            match bus {
+                RecordBus::Master => {
+                    for channel in 0..mapped {
+                        let plane = audio.plane(channel).ok_or_else(|| {
+                            format!("master has no channel {channel} for its track map")
+                        })?;
+                        if plane.len() < frames {
+                            return Err(format!(
+                                "master channel {channel} has {} samples; expected {frames}",
+                                plane.len()
+                            ));
+                        }
+                        for frame in 0..frames {
+                            buffer[frame * mapped + channel] = plane[frame];
+                        }
+                    }
+                }
+                RecordBus::Aux(bus) => {
+                    for channel in 0..mapped {
+                        let source = bus
+                            .index()
+                            .checked_mul(mixer_channels)
+                            .and_then(|base| base.checked_add(channel))
+                            .and_then(|index| aux.get(index))
+                            .ok_or_else(|| {
+                                format!(
+                                    "aux bus {} has no channel {channel} for its track map",
+                                    bus.letter()
+                                )
+                            })?;
+                        if source.len() < frames {
+                            return Err(format!(
+                                "aux bus {} channel {channel} has {} samples; expected {frames}",
+                                bus.letter(),
+                                source.len()
+                            ));
+                        }
+                        for frame in 0..frames {
+                            buffer[frame * mapped + channel] = source[frame];
+                        }
+                    }
+                }
+            }
+        }
+        let buses: Vec<(RecordBus, &[f32])> = self
+            .map
+            .inventory()
+            .buses()
+            .iter()
+            .zip(&self.scratch)
+            .map(|((bus, _), buffer)| (*bus, buffer.as_slice()))
+            .collect();
+        self.recorder
+            .as_mut()
+            .ok_or_else(|| "track WAV is already finalized".to_owned())?
+            .write(frames, &buses)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Finalizes the WAV; idempotent so stop and drop can both call it.
+    pub(crate) fn finish(&mut self) -> Result<(), String> {
+        let Some(recorder) = self.recorder.take() else {
+            return Ok(());
+        };
+        recorder
+            .finalize()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(feature = "native-media")]
+impl Drop for TrackWavState {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
 }
 
 /// Starts a planned session and a recorder writing into it.
