@@ -152,6 +152,8 @@ pub struct StudioRuntime {
     project_bundle: Option<PathBuf>,
     /// Each recorder slot's authored track map, read from the bundle.
     record_track_maps: [Option<RecorderTrackMapView>; 2],
+    /// Each slot's canonical track-map document, exactly as stored.
+    record_track_documents: [Option<String>; 2],
     /// Why the bundle's track maps could not be read, if they could not.
     record_track_error: Option<String>,
 }
@@ -181,7 +183,7 @@ impl StudioRuntime {
             ConnectionConfig::Supervised(supervised) => Some(supervised.project_bundle.clone()),
             ConnectionConfig::Existing(_) => None,
         };
-        let (record_track_maps, record_track_error) =
+        let (record_track_maps, record_track_documents, record_track_error) =
             load_record_track_views(project_bundle.as_deref());
         let (supervisor, address, project_id) = match config.connection {
             ConnectionConfig::Supervised(supervised) => {
@@ -221,6 +223,7 @@ impl StudioRuntime {
             clocks_error: None,
             project_bundle,
             record_track_maps,
+            record_track_documents,
             record_track_error,
         })
     }
@@ -459,6 +462,40 @@ impl StudioRuntime {
         &self.record_track_maps
     }
 
+    /// Each slot's canonical track-map document, as stored.
+    #[must_use]
+    pub(crate) fn record_track_documents(&self) -> &[Option<String>; 2] {
+        &self.record_track_documents
+    }
+
+    /// Validates and saves one slot's track-map document into the supervised
+    /// bundle, replacing the stored map. Returns whether it was written and
+    /// reloads the console views.
+    pub(crate) fn save_recorder_track_map(&mut self, slot: u8, document: &str) -> bool {
+        let Some(bundle) = &self.project_bundle else {
+            self.record_track_error =
+                Some("a track map can be saved only into a supervised project bundle".to_owned());
+            return false;
+        };
+        let index = usize::from(slot).saturating_sub(1);
+        if index >= 2 {
+            self.record_track_error = Some(format!("recorder slot {slot} is out of range"));
+            return false;
+        }
+        match write_recorder_track_map(bundle, index, document) {
+            Ok(map) => {
+                self.record_track_maps[index] = Some(track_map_view(usize::from(slot), &map));
+                self.record_track_documents[index] = Some(document.to_owned());
+                self.record_track_error = None;
+                true
+            }
+            Err(error) => {
+                self.record_track_error = Some(error);
+                false
+            }
+        }
+    }
+
     /// Why the supervised bundle's track maps could not be read, if they
     /// could not.
     #[must_use]
@@ -474,8 +511,9 @@ impl StudioRuntime {
 
     /// Re-reads the supervised bundle's recorder track maps (AU-010).
     pub(crate) fn reload_record_track_views(&mut self) {
-        let (maps, error) = load_record_track_views(self.project_bundle.as_deref());
+        let (maps, documents, error) = load_record_track_views(self.project_bundle.as_deref());
         self.record_track_maps = maps;
+        self.record_track_documents = documents;
         self.record_track_error = error;
     }
 
@@ -1146,11 +1184,16 @@ impl StudioRuntime {
 /// (AU-010). The bundle stores them as `recorders/<slot>.trackmap`.
 fn load_record_track_views(
     bundle: Option<&std::path::Path>,
-) -> ([Option<RecorderTrackMapView>; 2], Option<String>) {
+) -> (
+    [Option<RecorderTrackMapView>; 2],
+    [Option<String>; 2],
+    Option<String>,
+) {
     let Some(bundle) = bundle else {
-        return ([None, None], None);
+        return ([None, None], [None, None], None);
     };
     let mut views: [Option<RecorderTrackMapView>; 2] = [None, None];
+    let mut documents: [Option<String>; 2] = [None, None];
     let mut error = None;
     for (index, slot) in views.iter_mut().enumerate() {
         let path = bundle
@@ -1167,13 +1210,14 @@ fn load_record_track_views(
         match RecorderTrackMap::from_document(&text) {
             Ok(map) => {
                 *slot = Some(track_map_view(index + 1, &map));
+                documents[index] = Some(text);
             }
             Err(read) => {
                 error.get_or_insert_with(|| format!("recorder {} track map: {read}", index + 1));
             }
         }
     }
-    (views, error)
+    (views, documents, error)
 }
 
 fn track_map_view(slot: usize, map: &RecorderTrackMap) -> RecorderTrackMapView {
@@ -1205,9 +1249,44 @@ fn track_map_view(slot: usize, map: &RecorderTrackMap) -> RecorderTrackMapView {
     }
 }
 
+/// Validates `document` and writes it atomically as slot `index`'s track map.
+fn write_recorder_track_map(
+    bundle: &std::path::Path,
+    index: usize,
+    document: &str,
+) -> Result<RecorderTrackMap, String> {
+    let map = RecorderTrackMap::from_document(document)
+        .map_err(|error| format!("recorder {} track map: {error}", index + 1))?;
+    let directory = bundle.join("recorders");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("recorder {} track map: {error}", index + 1))?;
+    let path = directory.join(format!("{}.trackmap", index + 1));
+    let temporary = directory.join(format!(".{}.trackmap.tmp", index + 1));
+    std::fs::write(&temporary, document)
+        .map_err(|error| format!("recorder {} track map: {error}", index + 1))?;
+    std::fs::rename(&temporary, &path)
+        .map_err(|error| format!("recorder {} track map: {error}", index + 1))?;
+    Ok(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_a_bundle_track_map_validates_before_replacing() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("show.freemix");
+        let original = RecorderTrackMap::master_stereo().to_document();
+        write_recorder_track_map(&bundle, 0, &original).unwrap();
+        let path = bundle.join("recorders/1.trackmap");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        let error = write_recorder_track_map(&bundle, 0, "not a map").unwrap_err();
+        assert!(error.contains("track map"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert!(!bundle.join("recorders/.1.trackmap.tmp").exists());
+    }
 
     #[test]
     fn bundle_track_maps_become_console_views() {
@@ -1241,7 +1320,7 @@ mod tests {
         .unwrap()
         .with_layout(fm_record::TrackMapLayout::SplitPerTrack);
         std::fs::write(bundle.join("recorders/1.trackmap"), map.to_document()).unwrap();
-        let (views, error) = load_record_track_views(Some(&bundle));
+        let (views, documents, error) = load_record_track_views(Some(&bundle));
         assert!(error.is_none(), "{error:?}");
         let view = views[0].as_ref().unwrap();
         assert_eq!(view.slot, 1);
@@ -1251,6 +1330,8 @@ mod tests {
         assert_eq!(view.tracks[0].sources, ["master 0", "master 1"]);
         assert_eq!(view.tracks[1].sources, ["aux A 2"]);
         assert!(views[1].is_none());
-        assert!(load_record_track_views(None).1.is_none());
+        assert_eq!(documents[0].as_deref(), Some(map.to_document().as_str()));
+        assert!(documents[1].is_none());
+        assert!(load_record_track_views(None).2.is_none());
     }
 }

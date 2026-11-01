@@ -1488,6 +1488,7 @@ fn run_worker(
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::RequestClocks
                 | StudioIntent::RefreshRecorderTracks
+                | StudioIntent::SaveRecorderTrackMap { .. }
                 | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
@@ -1608,6 +1609,7 @@ fn run_worker(
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::RequestClocks
                 | StudioIntent::RefreshRecorderTracks
+                | StudioIntent::SaveRecorderTrackMap { .. }
                 | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
@@ -1766,6 +1768,12 @@ fn handle_preview_request(
         }
         return publish_recovery_runtime(runtime, publisher, recovery);
     }
+    if let StudioIntent::SaveRecorderTrackMap { slot, document } = &request {
+        if !recovery.active() {
+            runtime.save_recorder_track_map(*slot, document);
+        }
+        return publish_recovery_runtime(runtime, publisher, recovery);
+    }
     if let StudioIntent::ClockControl { name, operation } = &request {
         if !recovery.active() {
             runtime.request_clock_control(name, *operation);
@@ -1838,6 +1846,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestAudioOutputDevices
         | StudioIntent::RequestClocks
         | StudioIntent::RefreshRecorderTracks
+        | StudioIntent::SaveRecorderTrackMap { .. }
         | StudioIntent::ClockControl { .. }
         | StudioIntent::WebAccess(_)
         | StudioIntent::HealthAlert { .. }
@@ -3250,6 +3259,9 @@ fn intent_payload(
         StudioIntent::RefreshRecorderTracks => {
             return Err("A recorder track map refresh is not a command".to_owned());
         }
+        StudioIntent::SaveRecorderTrackMap { .. } => {
+            return Err("A recorder track map save is not a command".to_owned());
+        }
         StudioIntent::ClockControl { .. } => {
             return Err("A clock control is not a command".to_owned());
         }
@@ -3620,6 +3632,9 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
             state
                 .recorder_track_maps
                 .clone_from(runtime.record_track_maps());
+            state
+                .recorder_track_documents
+                .clone_from(runtime.record_track_documents());
             state.recorder_tracks_local = runtime.record_tracks_local();
             state.recorder_track_error = runtime.record_track_error().map(str::to_owned);
             state.source_sync = runtime.session().latest_source_sync_status().cloned();

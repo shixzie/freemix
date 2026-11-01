@@ -9060,6 +9060,22 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::RecorderTracksFilesSplit,
         t("Archivos: <raíz del segmento>_NN_<pista>.wav"),
     ),
+    (
+        Msg::RecorderTracksEditorHover,
+        t(
+            "Edite el documento canónico freemix-record-track-map; Guardar lo valida antes de reemplazar el mapa guardado",
+        ),
+    ),
+    (Msg::RecorderTracksSave, t("Guardar mapa")),
+    (
+        Msg::RecorderTracksSaveHover,
+        t("Validar este documento y escribirlo como mapa de pistas de la ranura de grabador"),
+    ),
+    (Msg::RecorderTracksReload, t("Recargar texto")),
+    (
+        Msg::RecorderTracksReloadHover,
+        t("Descartar los cambios y volver a mostrar el documento guardado"),
+    ),
     (Msg::MenuWebAccess, t("Acceso web (teléfonos y tabletas)…")),
     (
         Msg::MenuWebAccessHover,

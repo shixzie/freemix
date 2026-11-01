@@ -8,7 +8,7 @@
 //! This is a read-only monitor. The map itself is authored offline with
 //! `freemix-cli record-track-map-import`.
 
-use egui::{RichText, Ui};
+use egui::{Button, RichText, TextEdit, Ui};
 
 use crate::l10n::{Arg, Msg};
 use crate::theme::{Tone, card, muted_color, status_chip};
@@ -20,6 +20,9 @@ const DIALOG_WIDTH: f32 = 640.0;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RecorderTracksWindow {
     pub(crate) open: bool,
+    /// One canonical document draft per slot, loaded when the window opens.
+    drafts: [String; 2],
+    loaded: bool,
 }
 
 impl StudioShell {
@@ -33,21 +36,35 @@ impl StudioShell {
         if !self.recorder_tracks.open {
             return;
         }
+        if !self.recorder_tracks.loaded {
+            for (slot, draft) in self.recorder_tracks.drafts.iter_mut().enumerate() {
+                *draft = state.recorder_track_documents[slot]
+                    .clone()
+                    .unwrap_or_else(default_document);
+            }
+            self.recorder_tracks.loaded = true;
+        }
         let l = self.locale;
         let close = crate::menu::help_modal(
             context,
             "studio-recorder-tracks",
             l.text(Msg::RecorderTracksTitle),
             DIALOG_WIDTH,
-            |ui| draw_contents(ui, state, intents),
+            |ui| draw_contents(ui, state, &mut self.recorder_tracks, intents),
         );
         if close {
             self.recorder_tracks.open = false;
+            self.recorder_tracks.loaded = false;
         }
     }
 }
 
-fn draw_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+fn draw_contents(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    window: &mut RecorderTracksWindow,
+    intents: &mut Vec<StudioIntent>,
+) {
     let l = crate::l10n::locale(ui.ctx());
     ui.spacing_mut().interact_size.y = 24.0;
     ui.label(
@@ -72,7 +89,7 @@ fn draw_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioInt
                 for slot in 0..state.recorder_track_maps.len() {
                     card().show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        draw_slot(ui, state, slot);
+                        draw_slot(ui, state, slot, window, intents);
                     });
                     ui.add_space(4.0);
                 }
@@ -94,7 +111,13 @@ fn draw_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioInt
     }
 }
 
-fn draw_slot(ui: &mut Ui, state: &StudioUiState, slot: usize) {
+fn draw_slot(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    slot: usize,
+    window: &mut RecorderTracksWindow,
+    intents: &mut Vec<StudioIntent>,
+) {
     let l = crate::l10n::locale(ui.ctx());
     ui.horizontal(|ui| {
         ui.label(
@@ -165,6 +188,41 @@ fn draw_slot(ui: &mut Ui, state: &StudioUiState, slot: usize) {
             .size(crate::theme::legible(10.0))
             .color(muted_color()),
     );
+    ui.add_space(4.0);
+    ui.add(
+        TextEdit::multiline(&mut window.drafts[slot])
+            .code_editor()
+            .desired_rows(6)
+            .desired_width(f32::INFINITY),
+    )
+    .on_hover_text(l.text(Msg::RecorderTracksEditorHover));
+    ui.horizontal(|ui| {
+        if ui
+            .button(l.text(Msg::RecorderTracksSave))
+            .on_hover_text(l.text(Msg::RecorderTracksSaveHover))
+            .clicked()
+        {
+            intents.push(StudioIntent::SaveRecorderTrackMap {
+                slot: u8::try_from(slot + 1).unwrap_or(u8::MAX),
+                document: window.drafts[slot].clone(),
+            });
+        }
+        if ui
+            .button(l.text(Msg::RecorderTracksReload))
+            .on_hover_text(l.text(Msg::RecorderTracksReloadHover))
+            .clicked()
+        {
+            window.drafts[slot] = state.recorder_track_documents[slot]
+                .clone()
+                .unwrap_or_else(default_document);
+        }
+    });
+}
+
+/// A valid starter map for a slot that has none yet: one stereo Master track.
+fn default_document() -> String {
+    "freemix-record-track-map 1\ninventory master 2\ntrack 50726f6772616d master 0 master 1\n"
+        .to_owned()
 }
 
 const fn layout_label(layout: RecorderTrackLayout) -> Msg {

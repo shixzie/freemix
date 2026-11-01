@@ -280,6 +280,9 @@ pub enum StudioIntent {
     /// Re-reads the supervised project bundle's recorder track maps
     /// (AU-010); the result updates [`StudioUiState::recorder_track_maps`].
     RefreshRecorderTracks,
+    /// Validates and saves one recorder slot's canonical track-map document
+    /// into the supervised project bundle (AU-010).
+    SaveRecorderTrackMap { slot: u8, document: String },
     /// Operates one project production clock (SW-013, Protocol 2.150); the
     /// answer carries the reading afterwards or the daemon's refusal.
     ClockControl {
@@ -716,6 +719,8 @@ pub struct StudioUiState {
     /// Each recorder slot's authored track map (AU-010), read from the
     /// supervised project bundle.
     pub recorder_track_maps: [Option<RecorderTrackMapView>; RECORDER_SLOT_COUNT],
+    /// Each slot's canonical track-map document, exactly as stored.
+    pub recorder_track_documents: [Option<String>; RECORDER_SLOT_COUNT],
     /// Whether this Studio has the supervised project bundle locally, so its
     /// recorder track maps can be read.
     pub recorder_tracks_local: bool,
@@ -848,6 +853,7 @@ impl StudioUiState {
             recording_pending: [false; RECORDER_SLOT_COUNT],
             recorder_realized: [None, None],
             recorder_track_maps: [None, None],
+            recorder_track_documents: [None, None],
             recorder_tracks_local: false,
             recorder_track_error: None,
             source_sync: None,

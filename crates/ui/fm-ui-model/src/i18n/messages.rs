@@ -3282,6 +3282,11 @@ messages! {
     RecorderTracksLayoutSplit => t("Split per track"),
     RecorderTracksFilesInterleaved => t("Files: <segment stem>.tracks.wav"),
     RecorderTracksFilesSplit => t("Files: <segment stem>_NN_<track>.wav"),
+    RecorderTracksEditorHover => t("Edit the canonical freemix-record-track-map document; Save validates it before replacing the stored map"),
+    RecorderTracksSave => t("Save map"),
+    RecorderTracksSaveHover => t("Validate this document and write it as the recorder slot's track map"),
+    RecorderTracksReload => t("Reload text"),
+    RecorderTracksReloadHover => t("Discard edits and show the stored document again"),
     // Web access: paired phones and tablets (RC-007, Protocol 2.71).
     MenuWebAccess => t("Web access (phones and tablets)…"),
     MenuWebAccessHover => t("Pair phones and tablets on the local network with the web tally and operator pages, and revoke them"),

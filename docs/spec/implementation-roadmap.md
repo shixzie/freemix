@@ -3858,8 +3858,11 @@ recovery rules. Without either override a track file follows its MP4 segment
 and RF64 limits. Studio's View ▸ Recorder tracks window reads the supervised
 bundle's maps and lists each slot's layout, tracks, channels, sources, and WAV
 file names, with a Refresh action; a Studio connected to a daemon elsewhere
-says it has no local bundle. Remaining gaps: the map is authored offline and
-imported, not edited in Studio, and the window does not live-list files as
+says it has no local bundle. The same window edits a slot's canonical
+`freemix-record-track-map 1` document and saves it atomically after validation
+(a new slot starts from a stereo-Master template), so maps no longer require
+an offline import. Remaining gaps: authoring is the canonical document rather
+than a structured track editor, and the window does not live-list files as
 they are written. WAV output is separate from the
 crash-safe packet spool, and metadata stops at version-1 `bext` without iXML,
 loudness, or UMID. `AU-010` remains planned.
