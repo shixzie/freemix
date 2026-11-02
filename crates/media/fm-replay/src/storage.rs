@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -49,6 +50,27 @@ pub struct RetentionReport {
     pub reclaimed_bytes: u64,
     pub blocked_bytes: u64,
     pub protected_segments: Vec<SegmentId>,
+}
+
+/// One segment file that could not be deleted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileReclamationFailure {
+    pub segment: SegmentId,
+    pub path: PathBuf,
+    pub kind: io::ErrorKind,
+}
+
+/// Outcome of [`RollingSegmentCatalog::reclaim_and_delete`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FileReclamation {
+    /// The in-memory retention report; `deleted` includes files already gone.
+    pub report: RetentionReport,
+    /// Segments whose files were removed.
+    pub removed: Vec<SegmentId>,
+    /// Segments whose files were already missing, so their bytes are free.
+    pub missing: Vec<SegmentId>,
+    /// Segments kept in the catalog because their file could not be removed.
+    pub failed: Vec<FileReclamationFailure>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -334,22 +356,9 @@ impl RollingSegmentCatalog {
         }
     }
 
-    /// Reclaims at least `requested_bytes` where possible, oldest first.
-    /// Open or referenced segments are never selected.
-    ///
-    /// This only updates the in-memory catalog; the caller owns durable deletion.
-    ///
-    /// # Errors
-    ///
-    /// The root must be registered.
-    pub fn reclaim(
-        &mut self,
-        root_id: StorageRootId,
-        requested_bytes: u64,
-    ) -> Result<RetentionReport, ReplayError> {
-        if !self.roots.contains_key(&root_id) {
-            return Err(ReplayError::UnknownStorageRoot(root_id));
-        }
+    /// Segment IDs of one root in eviction order: oldest timeline first,
+    /// then recorder order and ID.
+    fn reclaim_candidates(&self, root_id: StorageRootId) -> Vec<SegmentId> {
         let mut candidates: Vec<_> = self
             .segments
             .values()
@@ -363,9 +372,28 @@ impl RollingSegmentCatalog {
             })
             .collect();
         candidates.sort_unstable();
+        candidates.into_iter().map(|(_, _, id)| id).collect()
+    }
 
+    /// Reclaims at least `requested_bytes` where possible, oldest first.
+    /// Open or referenced segments are never selected.
+    ///
+    /// This only updates the in-memory catalog; the caller owns durable
+    /// deletion with [`Self::reclaim_and_delete`].
+    ///
+    /// # Errors
+    ///
+    /// The root must be registered.
+    pub fn reclaim(
+        &mut self,
+        root_id: StorageRootId,
+        requested_bytes: u64,
+    ) -> Result<RetentionReport, ReplayError> {
+        if !self.roots.contains_key(&root_id) {
+            return Err(ReplayError::UnknownStorageRoot(root_id));
+        }
         let mut report = RetentionReport::default();
-        for (_, _, id) in candidates {
+        for id in self.reclaim_candidates(root_id) {
             if report.reclaimed_bytes >= requested_bytes {
                 break;
             }
@@ -382,6 +410,75 @@ impl RollingSegmentCatalog {
         }
         report.blocked_bytes = requested_bytes.saturating_sub(report.reclaimed_bytes);
         Ok(report)
+    }
+
+    /// Reclaims at least `requested_bytes` and deletes each selected file
+    /// from disk, oldest first. Open, referenced, and out-of-root segments are
+    /// never deleted.
+    ///
+    /// A missing file counts as reclaimed (its bytes are already free); a
+    /// file that cannot be removed stays in the catalog and in `failed`, so a
+    /// later call retries it. Segment paths must lie under the root path as
+    /// registered; a path outside it is refused with
+    /// [`io::ErrorKind::InvalidInput`].
+    ///
+    /// # Errors
+    ///
+    /// The root must be registered.
+    pub fn reclaim_and_delete(
+        &mut self,
+        root_id: StorageRootId,
+        requested_bytes: u64,
+    ) -> Result<FileReclamation, ReplayError> {
+        let root = self
+            .roots
+            .get(&root_id)
+            .cloned()
+            .ok_or(ReplayError::UnknownStorageRoot(root_id))?;
+        let mut result = FileReclamation::default();
+        for id in self.reclaim_candidates(root_id) {
+            if result.report.reclaimed_bytes >= requested_bytes {
+                break;
+            }
+            let Some(segment) = self.segments.get(&id).cloned() else {
+                continue;
+            };
+            if segment.state == SegmentState::Open || !segment.protections.is_empty() {
+                result.report.protected_segments.push(id);
+                continue;
+            }
+            if !segment.path.starts_with(&root.path) {
+                result.failed.push(FileReclamationFailure {
+                    segment: id,
+                    path: segment.path,
+                    kind: io::ErrorKind::InvalidInput,
+                });
+                continue;
+            }
+            match fs::remove_file(&segment.path) {
+                Ok(()) => {
+                    self.segments.remove(&id);
+                    result.removed.push(id);
+                    result.report.deleted.push(id);
+                    result.report.reclaimed_bytes =
+                        result.report.reclaimed_bytes.saturating_add(segment.bytes);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.segments.remove(&id);
+                    result.missing.push(id);
+                    result.report.deleted.push(id);
+                    result.report.reclaimed_bytes =
+                        result.report.reclaimed_bytes.saturating_add(segment.bytes);
+                }
+                Err(error) => result.failed.push(FileReclamationFailure {
+                    segment: id,
+                    path: segment.path,
+                    kind: error.kind(),
+                }),
+            }
+        }
+        result.report.blocked_bytes = requested_bytes.saturating_sub(result.report.reclaimed_bytes);
+        Ok(result)
     }
 
     /// Applies a maximum retained-byte policy using the same protected eviction.

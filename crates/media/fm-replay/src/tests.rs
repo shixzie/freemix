@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    fs,
+    fs, io,
     num::NonZeroU128,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -152,6 +152,96 @@ fn retention_never_removes_protected_or_open_segments() {
     catalog.release_reference(ProtectionReference::Event(EventId::new(nonzero(1))));
     let report = catalog.reclaim(root(1), 100).unwrap();
     assert_eq!(report.deleted, vec![SegmentId::new(nonzero(1))]);
+}
+
+#[test]
+fn file_reclamation_deletes_oldest_unprotected_files() {
+    let directory = temporary_directory();
+    let paths: Vec<PathBuf> = ["one.seg", "two.seg", "three.seg"]
+        .iter()
+        .map(|name| {
+            let path = directory.join(name);
+            fs::write(&path, [0_u8; 10]).unwrap();
+            path
+        })
+        .collect();
+    let mut catalog = catalog(directory.clone());
+    catalog
+        .insert_segment(segment(1, 0, 10, 100, paths[0].clone()))
+        .unwrap();
+    catalog
+        .insert_segment(segment(2, 10, 20, 100, paths[1].clone()))
+        .unwrap();
+    let mut third = segment(3, 20, 30, 100, paths[2].clone());
+    third.state = SegmentState::Open;
+    catalog.insert_segment(third).unwrap();
+    let protected = catalog.protect_range(
+        camera(1),
+        range(0, 10),
+        ProtectionReference::Event(EventId::new(nonzero(1))),
+    );
+    assert_eq!(protected, vec![SegmentId::new(nonzero(1))]);
+
+    let reclamation = catalog.reclaim_and_delete(root(1), 250).unwrap();
+    assert_eq!(reclamation.report.deleted, vec![SegmentId::new(nonzero(2))]);
+    assert_eq!(reclamation.report.reclaimed_bytes, 100);
+    assert_eq!(reclamation.report.blocked_bytes, 150);
+    assert_eq!(reclamation.removed, vec![SegmentId::new(nonzero(2))]);
+    assert!(reclamation.missing.is_empty());
+    assert!(reclamation.failed.is_empty());
+    assert!(paths[0].exists(), "a protected file stays");
+    assert!(!paths[1].exists(), "the reclaimed file is gone");
+    assert!(paths[2].exists(), "an open file stays");
+    assert!(catalog.segment(SegmentId::new(nonzero(1))).is_some());
+    assert!(catalog.segment(SegmentId::new(nonzero(2))).is_none());
+    assert!(catalog.segment(SegmentId::new(nonzero(3))).is_some());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn file_reclamation_counts_missing_files_and_keeps_failed_ones() {
+    let directory = temporary_directory();
+    let outside = temporary_directory();
+    let outside_path = outside.join("outside.seg");
+    fs::write(&outside_path, b"x").unwrap();
+    let directory_path = directory.join("a-directory");
+    fs::create_dir(&directory_path).unwrap();
+
+    let mut catalog = catalog(directory.clone());
+    catalog
+        .insert_segment(segment(1, 0, 10, 100, directory.join("missing.seg")))
+        .unwrap();
+    catalog
+        .insert_segment(segment(2, 10, 20, 100, outside_path.clone()))
+        .unwrap();
+    catalog
+        .insert_segment(segment(3, 20, 30, 100, directory_path.clone()))
+        .unwrap();
+
+    let reclamation = catalog.reclaim_and_delete(root(1), 300).unwrap();
+    assert_eq!(reclamation.missing, vec![SegmentId::new(nonzero(1))]);
+    assert!(reclamation.removed.is_empty());
+    assert_eq!(reclamation.report.deleted, vec![SegmentId::new(nonzero(1))]);
+    assert_eq!(reclamation.report.reclaimed_bytes, 100);
+    assert_eq!(reclamation.report.blocked_bytes, 200);
+    assert_eq!(reclamation.failed.len(), 2);
+    assert_eq!(
+        reclamation.failed[0].segment,
+        SegmentId::new(nonzero(2)),
+        "a path outside the root is refused"
+    );
+    assert_eq!(reclamation.failed[0].kind, io::ErrorKind::InvalidInput);
+    assert_eq!(
+        reclamation.failed[1].segment,
+        SegmentId::new(nonzero(3)),
+        "a directory is not deleted as a segment"
+    );
+    assert!(catalog.segment(SegmentId::new(nonzero(2))).is_some());
+    assert!(catalog.segment(SegmentId::new(nonzero(3))).is_some());
+    assert!(outside_path.exists());
+    assert!(directory_path.is_dir());
+    fs::remove_dir_all(directory).unwrap();
+    fs::remove_dir_all(outside).unwrap();
 }
 
 #[test]

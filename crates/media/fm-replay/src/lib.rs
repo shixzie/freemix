@@ -73,8 +73,8 @@ pub use source::{
     SourceCatalog, SourceObservation, SourceTimeline, TimelineDiscontinuity,
 };
 pub use storage::{
-    ProtectionReference, RetentionReport, RollingSegmentCatalog, SegmentMetadata, SegmentState,
-    StorageRoot,
+    FileReclamation, FileReclamationFailure, ProtectionReference, RetentionReport,
+    RollingSegmentCatalog, SegmentMetadata, SegmentState, StorageRoot,
 };
 pub use types::{
     CameraId, EventId, ExportJobId, FolderId, HighlightId, ListId, MAX_EVENTS, MAX_EVENTS_PER_LIST,

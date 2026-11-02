@@ -6228,10 +6228,12 @@ the protection and detaches the event from every list. Last-N presets (5, 10,
 and 20 seconds) anchor at the live edge, and events, lists, folders, tags,
 names, and notes have explicit limits with typed errors. Replay channels switch
 event angles at the same timeline instant and resolve the exact source frame
-and segment, or the live edge. Remaining gaps in the library itself: space
-reclamation and file deletion are caller-driven, A/B playback has no real
-clock, per-event list overrides and controller mapping are absent, and no
-eight-camera storage profile is certified; the end-to-end slice below wires
+and segment, or the live edge. `reclaim_and_delete` also deletes a root's oldest
+closed, unprotected files: a missing file counts as reclaimed, and an
+out-of-root path, directory, or failed removal stays in the catalog and is
+reported for a later retry. Remaining gaps in the library itself: A/B playback
+has no real clock, per-event list overrides and controller mapping are
+absent, and no eight-camera storage profile is certified; the end-to-end slice below wires
 part of this to a server. `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a
