@@ -38,6 +38,8 @@ pub struct TrackWavOptions {
     /// Copied into every file; in split mode the description is suffixed with
     /// ` track=<name>` when it fits in 256 bytes.
     pub bext: Option<BextMetadata>,
+    /// Copied into every file as its own iXML chunk.
+    pub ixml: Option<String>,
     pub buffer_frames: u32,
 }
 
@@ -111,6 +113,7 @@ impl TrackWavRecorder {
             channel_mask: 0,
             large_file: options.large_file,
             bext,
+            ixml: options.ixml.clone(),
         };
         match mode {
             TrackFileMode::Interleaved => vec![spec(map.total_channels(), options.bext.clone())],

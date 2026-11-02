@@ -3882,9 +3882,11 @@ stem as description/reference, the first sample's offset from midnight as the
 time reference (split files append ` track=<name>`), and a basic SMPTE 330M
 UMID whose material number is the project identity and whose instance number
 is the one-based recorder slot; the daemon derives it from the segment's first
-frame and exact frame rate. Remaining gaps: WAV output is separate from the
-crash-safe packet spool, and metadata stops at version-1 `bext` without iXML
-or loudness authoring. `AU-010` remains planned.
+frame and exact frame rate. Each track WAV also carries an iXML chunk with
+the project, scene (segment stem), take, recorder note, and speed/timecode
+flag. Remaining gaps: WAV output is separate from the crash-safe packet
+spool, and metadata stops at `bext`/iXML without loudness authoring. `AU-010`
+remains planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):
 `fm-observability` provides a deterministic, clock-free statistics layer: a

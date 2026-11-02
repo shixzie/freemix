@@ -31,6 +31,8 @@ pub const BEXT_FIXED_BYTES: usize = 602;
 pub const MAX_CODING_HISTORY_BYTES: usize = 1024;
 /// Size of the `bext` UMID field, in bytes.
 pub const UMID_BYTES: usize = 64;
+/// Maximum iXML document accepted in a WAV file.
+pub const MAX_IXML_BYTES: usize = 64 * 1024;
 /// SMPTE 330M basic UMID universal label.
 pub const UMID_UNIVERSAL_LABEL: [u8; 12] = [
     0x06, 0x0A, 0x2B, 0x34, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x0F, 0x00,
@@ -282,6 +284,8 @@ pub struct WavSpec {
     pub channel_mask: u32,
     pub large_file: LargeFilePolicy,
     pub bext: Option<BextMetadata>,
+    /// Complete iXML document written as its own chunk.
+    pub ixml: Option<String>,
 }
 
 impl WavSpec {
@@ -295,6 +299,7 @@ impl WavSpec {
             channel_mask: 0,
             large_file: LargeFilePolicy::Rf64WhenNeeded,
             bext: None,
+            ixml: None,
         }
     }
 
@@ -329,6 +334,9 @@ impl WavSpec {
         if let Some(bext) = &self.bext {
             bext.validate()?;
         }
+        if let Some(ixml) = &self.ixml {
+            validate_ixml(ixml)?;
+        }
         Ok(())
     }
 
@@ -355,6 +363,10 @@ impl WavSpec {
         }
         if let Some(bext) = &self.bext {
             let payload = bext.payload_len() as u64;
+            len += 8 + payload + (payload & 1);
+        }
+        if let Some(ixml) = &self.ixml {
+            let payload = ixml.len() as u64;
             len += 8 + payload + (payload & 1);
         }
         len + 8
@@ -468,6 +480,17 @@ pub fn encode_wav_header(spec: &WavSpec, data_bytes: u64) -> Result<Vec<u8>, Wav
         }
     }
 
+    if let Some(ixml) = &spec.ixml {
+        let payload = ixml.len();
+        out.extend_from_slice(b"iXML");
+        // Validation bounds the document far below u32::MAX.
+        out.extend_from_slice(&(payload as u32).to_le_bytes());
+        out.extend_from_slice(ixml.as_bytes());
+        if payload & 1 == 1 {
+            out.push(0);
+        }
+    }
+
     out.extend_from_slice(b"data");
     out.extend_from_slice(&size32(data_bytes, rf64).to_le_bytes());
     debug_assert_eq!(out.len() as u64, header_len);
@@ -532,6 +555,9 @@ pub enum WavError {
     InvalidBext {
         field: BextField,
     },
+    /// The iXML document is empty, oversized, truncated, not markup, or
+    /// carries a NUL or non-whitespace control character.
+    InvalidIxml,
     InvalidTimecode,
     InvalidBufferFrames {
         frames: u32,
@@ -572,6 +598,7 @@ impl fmt::Display for WavError {
                 "channel mask {mask:#x} assigns more speakers than channels"
             ),
             Self::InvalidBext { field } => write!(formatter, "invalid bext field {field:?}"),
+            Self::InvalidIxml => formatter.write_str("invalid iXML document"),
             Self::InvalidTimecode => formatter.write_str("timecode is invalid for the frame rate"),
             Self::InvalidBufferFrames { frames } => {
                 write!(formatter, "WAV buffer of {frames} frames is out of range")
@@ -954,6 +981,7 @@ fn parse_header(source: &mut dyn WavSource) -> Result<(WavInfo, ParsedLayout), W
     let mut fmt: Option<(WavSampleFormat, u16, u32, u32)> = None;
     let mut fact_payload_offset = None;
     let mut bext = None;
+    let mut ixml = None;
     let mut offset = 12_u64;
     for _ in 0..MAX_HEADER_CHUNKS {
         let mut chunk = [0_u8; 8];
@@ -988,6 +1016,7 @@ fn parse_header(source: &mut dyn WavSource) -> Result<(WavInfo, ParsedLayout), W
                         LargeFilePolicy::RiffOnly
                     },
                     bext,
+                    ixml,
                 };
                 return Ok((
                     WavInfo {
@@ -1024,6 +1053,17 @@ fn parse_header(source: &mut dyn WavSource) -> Result<(WavInfo, ParsedLayout), W
                     return Err(WavError::Malformed("fact chunk is shorter than 4 bytes"));
                 }
                 fact_payload_offset = Some(payload_offset);
+            }
+            b"iXML" => {
+                let limit = u32::try_from(MAX_IXML_BYTES).expect("iXML bound fits u32");
+                if size > limit {
+                    return Err(WavError::Malformed("iXML chunk is too large"));
+                }
+                let payload = read_payload(source, payload_offset, size)?;
+                let document = String::from_utf8(payload)
+                    .map_err(|_| WavError::Malformed("iXML chunk is not UTF-8"))?;
+                validate_ixml(&document)?;
+                ixml = Some(document);
             }
             b"bext" => {
                 let limit = u32::try_from(BEXT_FIXED_BYTES + MAX_CODING_HISTORY_BYTES)
@@ -1282,6 +1322,22 @@ fn le_u64(bytes: &[u8]) -> u64 {
 
 fn is_printable_ascii(byte: u8) -> bool {
     (0x20..=0x7E).contains(&byte)
+}
+
+fn validate_ixml(document: &str) -> Result<(), WavError> {
+    if document.is_empty()
+        || document.len() > MAX_IXML_BYTES
+        || !document.starts_with('<')
+        || !document.contains("<BWFXML>")
+        || !document.ends_with("</BWFXML>")
+        || document.chars().any(|character| {
+            character == '\0'
+                || (character.is_control() && !matches!(character, '\t' | '\n' | '\r'))
+        })
+    {
+        return Err(WavError::InvalidIxml);
+    }
+    Ok(())
 }
 
 fn valid_bext_stamp(value: &str, groups: &[usize]) -> bool {

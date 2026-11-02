@@ -187,6 +187,72 @@ pub(crate) struct TrackWavOpen<'a> {
     pub(crate) status_path: Option<PathBuf>,
     /// BWF metadata for every file; split files add their track name.
     pub(crate) bext: Option<fm_record::BextMetadata>,
+    /// iXML document for every file.
+    pub(crate) ixml: Option<String>,
+}
+
+/// Metadata shared by every track file of one recording segment.
+#[cfg(feature = "native-media")]
+pub(crate) struct TrackWavMetadata {
+    pub(crate) bext: fm_record::BextMetadata,
+    pub(crate) ixml: String,
+}
+
+/// Builds the BWF `bext` and iXML document for one segment.
+#[cfg(feature = "native-media")]
+pub(crate) fn track_wav_metadata(
+    project: fm_types::ProjectId,
+    slot: usize,
+    segment: &Path,
+    timecode: Option<fm_types::Timecode>,
+    frame_rate: fm_types::FrameRate,
+    sample_rate: u32,
+) -> TrackWavMetadata {
+    TrackWavMetadata {
+        bext: track_wav_bext(project, slot, segment, timecode, frame_rate, sample_rate),
+        ixml: track_wav_ixml(slot, segment, frame_rate),
+    }
+}
+
+/// The iXML document every track file of this segment carries.
+#[cfg(feature = "native-media")]
+pub(crate) fn track_wav_ixml(
+    slot: usize,
+    segment: &Path,
+    frame_rate: fm_types::FrameRate,
+) -> String {
+    let stem = segment
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <BWFXML><IXML_VERSION>1.5</IXML_VERSION><PROJECT>FreeMix</PROJECT>\
+         <SCENE>{}</SCENE><TAKE>1</TAKE>\
+         <NOTE>Recorder {} track map</NOTE>\
+         <SPEED><TIMECODE_RATE>{}/{}</TIMECODE_RATE>\
+         <TIMECODE_FLAG>NDF</TIMECODE_FLAG></SPEED></BWFXML>",
+        ixml_escape(&stem),
+        slot + 1,
+        frame_rate.numerator(),
+        frame_rate.denominator(),
+    )
+}
+
+/// Escapes the five XML markup characters in caller-provided text.
+#[cfg(feature = "native-media")]
+fn ixml_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 /// The BWF metadata every track file of this segment carries: the slot, the
@@ -366,6 +432,7 @@ impl TrackWavState {
             policy,
             status_path,
             bext,
+            ixml,
         } = open;
         map.validate_against_channels(channels)
             .map_err(|error| error.to_string())?;
@@ -375,6 +442,7 @@ impl TrackWavState {
             format: WavSampleFormat::Pcm16,
             large_file: LargeFilePolicy::Rf64WhenNeeded,
             bext,
+            ixml,
             buffer_frames: 1024,
         };
         let specs = TrackWavRecorder::file_specs(&map, mode, &options);

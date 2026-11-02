@@ -924,7 +924,7 @@ impl NativeDaemon {
         let frame_rate = stored.project().settings().frame_rate;
         let timecode = recording_start_timecode(stored.position().frames_rendered, frame_rate);
         let fallback = self.segment_names.fallback().map(Path::to_path_buf);
-        let bext = track_wav_bext(
+        let metadata = track_wav_metadata(
             self.project_id,
             slot,
             segment,
@@ -938,7 +938,7 @@ impl NativeDaemon {
             sample_rate,
             channels,
             fallback.as_deref(),
-            bext,
+            metadata,
         )
     }
 
@@ -949,7 +949,7 @@ impl NativeDaemon {
         sample_rate: u32,
         channels: u16,
         fallback: Option<&Path>,
-        bext: fm_record::BextMetadata,
+        metadata: TrackWavMetadata,
     ) -> AppResult<()> {
         self.finish_track_wav(slot);
         let Some(map) = &self.record_track_maps[slot] else {
@@ -968,7 +968,8 @@ impl NativeDaemon {
                 fallback,
                 policy: self.record_track_policy,
                 status_path: Some(status_path),
-                bext: Some(bext),
+                bext: Some(metadata.bext),
+                ixml: Some(metadata.ixml),
             },
         )
         .map_err(|error| AppFailure(format!("record track map: {error}")))?;
@@ -2431,7 +2432,7 @@ impl NativeDaemon {
                 let track = rotated_segment.zip(track_format).map_or(
                     Ok(()),
                     |(segment, (rate, channels, frame_rate, timecode))| {
-                        let bext = track_wav_bext(
+                        let metadata = track_wav_metadata(
                             self.project_id,
                             slot,
                             &segment,
@@ -2445,7 +2446,7 @@ impl NativeDaemon {
                             rate,
                             channels,
                             track_fallback.as_deref(),
-                            bext,
+                            metadata,
                         )
                     },
                 );

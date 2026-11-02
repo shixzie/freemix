@@ -404,6 +404,46 @@ fn bext_umid_round_trips_and_requires_the_smpte_label() {
 }
 
 #[test]
+fn ixml_round_trips_as_its_own_chunk() {
+    let document = "<?xml version=\"1.0\"?><BWFXML><SCENE>show</SCENE><TAKE>2</TAKE></BWFXML>";
+    let spec = WavSpec {
+        ixml: Some(document.to_owned()),
+        ..riff_spec(1, WavSampleFormat::Pcm16)
+    };
+    let payload = u64::try_from(document.len()).unwrap();
+    assert_eq!(
+        spec.header_len(),
+        riff_spec(1, WavSampleFormat::Pcm16).header_len() + 8 + payload + (payload & 1)
+    );
+    let bytes = write_all(spec.clone(), &[0.25, -0.25]);
+    assert!(
+        bytes.windows(4).any(|window| window == b"iXML"),
+        "the document has its own chunk"
+    );
+    let mut cursor = io::Cursor::new(bytes);
+    let info = read_wav_info(&mut cursor).unwrap();
+    assert_eq!(info.spec.ixml.as_deref(), Some(document));
+
+    for invalid in [
+        String::new(),
+        "not markup".to_owned(),
+        "<BWFXML>".to_owned(),
+        format!("<{}", "x".repeat(fm_record::MAX_IXML_BYTES)),
+        "<BWFXML>\0</BWFXML>".to_owned(),
+    ] {
+        let spec = WavSpec {
+            ixml: Some(invalid.clone()),
+            ..riff_spec(1, WavSampleFormat::Pcm16)
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(WavError::InvalidIxml),
+            "accepted {invalid:?}"
+        );
+    }
+}
+
+#[test]
 fn bext_time_reference_handles_fractional_rates_and_validates() {
     let ntsc = FrameRate::new(30_000, 1_001).unwrap();
     let one_second = Timecode::new(0, 0, 1, 0, 30).unwrap();
@@ -949,6 +989,7 @@ fn options() -> TrackWavOptions {
             time_reference: 480,
             ..BextMetadata::default()
         }),
+        ixml: None,
         buffer_frames: 16,
     }
 }

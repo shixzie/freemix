@@ -887,6 +887,9 @@ fn an_authored_track_map_writes_master_and_aux_channels_beside_the_segment() {
         &fm_record::UMID_UNIVERSAL_LABEL[..],
         "the track WAV carries a basic SMPTE UMID"
     );
+    let ixml = info.spec.ixml.as_deref().expect("iXML document");
+    assert!(ixml.contains("<SCENE>program</SCENE>"), "{ixml}");
+    assert!(ixml.contains("<NOTE>Recorder 1 track map</NOTE>"), "{ixml}");
     assert!(
         lines(&stderr, "FREEMIXD_RECORD_TRACK")
             .iter()

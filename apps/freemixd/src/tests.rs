@@ -12800,6 +12800,7 @@ fn open_track_wav(
     policy: TrackWavPolicy,
     status_path: Option<std::path::PathBuf>,
     bext: Option<fm_record::BextMetadata>,
+    ixml: Option<String>,
 ) -> TrackWavState {
     TrackWavState::create_with_policy(
         map,
@@ -12811,6 +12812,7 @@ fn open_track_wav(
             policy,
             status_path,
             bext,
+            ixml,
         },
     )
     .unwrap()
@@ -12840,15 +12842,16 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
     let project = fm_types::ProjectId::new(std::num::NonZeroU128::new(99).unwrap());
     let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
     let timecode = fm_types::Timecode::new(0, 0, 1, 0, 25).unwrap();
-    let bext = track_wav_bext(project, 0, &segment, Some(timecode), frame_rate, 48_000);
-    assert_eq!(bext.time_reference, 48_000);
-    assert_eq!(bext.umid, track_wav_umid(project, 0));
+    let metadata = track_wav_metadata(project, 0, &segment, Some(timecode), frame_rate, 48_000);
+    assert_eq!(metadata.bext.time_reference, 48_000);
+    assert_eq!(metadata.bext.umid, track_wav_umid(project, 0));
     let mut track = open_track_wav(
         map,
         &segment,
         TrackWavPolicy::default(),
         None,
-        Some(bext.clone()),
+        Some(metadata.bext.clone()),
+        Some(metadata.ixml.clone()),
     );
     let timing = MediaTiming::new(
         OriginalTimestamp::new(
@@ -12881,8 +12884,13 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
     assert_eq!(info.frames(), 2, "two frames in a three-channel file");
     assert_eq!(
         info.spec.bext.as_ref(),
-        Some(&bext),
+        Some(&metadata.bext),
         "the BWF metadata is written into the track WAV"
+    );
+    assert_eq!(
+        info.spec.ixml.as_deref(),
+        Some(metadata.ixml.as_str()),
+        "the iXML document is written into the track WAV"
     );
     let data = fs::read(&path).unwrap();
     let offset = usize::try_from(info.data_offset).unwrap();
@@ -12919,8 +12927,15 @@ fn a_split_track_map_writes_one_file_per_track() {
     let project = fm_types::ProjectId::new(std::num::NonZeroU128::new(99).unwrap());
     let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
     let timecode = fm_types::Timecode::new(0, 0, 1, 0, 25).unwrap();
-    let bext = track_wav_bext(project, 0, &segment, Some(timecode), frame_rate, 48_000);
-    let mut track = open_track_wav(map, &segment, TrackWavPolicy::default(), None, Some(bext));
+    let metadata = track_wav_metadata(project, 0, &segment, Some(timecode), frame_rate, 48_000);
+    let mut track = open_track_wav(
+        map,
+        &segment,
+        TrackWavPolicy::default(),
+        None,
+        Some(metadata.bext.clone()),
+        Some(metadata.ixml.clone()),
+    );
     assert_eq!(track.mode(), fm_record::TrackFileMode::SplitPerTrack);
     assert_eq!(
         track
@@ -12979,6 +12994,11 @@ fn a_split_track_map_writes_one_file_per_track() {
             .map(|bext| bext.description.as_str()),
         Some("FreeMix recorder 1 track map track=Bus A")
     );
+    assert_eq!(
+        program_info.spec.ixml.as_deref(),
+        Some(metadata.ixml.as_str())
+    );
+    assert_eq!(bus_info.spec.ixml.as_deref(), Some(metadata.ixml.as_str()));
     let data = fs::read(&bus_a).unwrap();
     let offset = usize::try_from(bus_info.data_offset).unwrap();
     let samples: Vec<i16> = data[offset..]
@@ -13006,6 +13026,7 @@ fn startup_recovery_finds_an_interrupted_track_wav_session() {
         channel_mask: 0,
         large_file: LargeFilePolicy::Rf64WhenNeeded,
         bext: None,
+        ixml: None,
     };
     let mut writer = recording_session::start_track_wav_session(
         "program.tracks",
@@ -13056,6 +13077,7 @@ fn a_track_wav_session_fails_over_to_the_fallback_root() {
         channel_mask: 0,
         large_file: LargeFilePolicy::Rf64WhenNeeded,
         bext: None,
+        ixml: None,
     };
     let mut writer = recording_session::start_track_wav_session(
         "program.tracks",
@@ -13150,7 +13172,7 @@ fn track_wav_sessions_roll_over_on_time_and_bytes() {
     ] {
         let directory = tempfile::tempdir().unwrap();
         let segment = directory.path().join("show.mp4");
-        let mut track = open_track_wav(map.clone(), &segment, policy, None, None);
+        let mut track = open_track_wav(map.clone(), &segment, policy, None, None, None);
         for _ in 0..3 {
             let timing = MediaTiming::new(
                 OriginalTimestamp::new(
@@ -13208,6 +13230,7 @@ fn track_wav_status_reports_live_files() {
         &segment,
         TrackWavPolicy::default(),
         Some(status.clone()),
+        None,
         None,
     );
     let audio = AudioBlock::new(
@@ -13284,7 +13307,7 @@ fn track_wav_metadata_carries_a_umid() {
     assert_eq!(&umid[32..], &[0; 32]);
 
     let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
-    let bext = track_wav_bext(
+    let metadata = track_wav_metadata(
         project,
         0,
         std::path::Path::new("/tmp/show-0001.mp4"),
@@ -13292,7 +13315,20 @@ fn track_wav_metadata_carries_a_umid() {
         frame_rate,
         48_000,
     );
-    assert_eq!(bext.originator, "FreeMix");
-    assert_eq!(bext.originator_reference, "show-0001");
-    assert_eq!(bext.umid, track_wav_umid(project, 0));
+    assert_eq!(metadata.bext.originator, "FreeMix");
+    assert_eq!(metadata.bext.originator_reference, "show-0001");
+    assert_eq!(metadata.bext.umid, track_wav_umid(project, 0));
+    assert!(
+        metadata
+            .ixml
+            .contains("<SCENE>show-0001</SCENE><TAKE>1</TAKE>"),
+        "{}",
+        metadata.ixml
+    );
+    assert!(metadata.ixml.contains("<NOTE>Recorder 1 track map</NOTE>"));
+    assert!(
+        metadata
+            .ixml
+            .contains("<TIMECODE_RATE>25/1</TIMECODE_RATE>")
+    );
 }
