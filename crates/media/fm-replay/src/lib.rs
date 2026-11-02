@@ -38,7 +38,9 @@ pub use disk_health::{
     CameraBitrate, DiskHealthError, DiskHealthLevel, DiskHealthMonitor, DiskHealthReport,
     DiskSample, DiskThresholds, MAX_CAMERA_BITS_PER_SECOND, MAX_OVERHEAD_PERMILLE, RecordingLoad,
 };
-pub use event::{EventDatabase, EventFolder, EventList, ReplayEvent, ReplayMarks};
+pub use event::{
+    EventDatabase, EventFolder, EventList, EventListOverride, ReplayEvent, ReplayMarks,
+};
 pub use highlight::{
     CaptureState, ExportJob, ExportJobState, HighlightItem, HighlightTimeline, MusicBed,
     ReplaySession, Transition,

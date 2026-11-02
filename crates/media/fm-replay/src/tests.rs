@@ -286,6 +286,81 @@ fn marks_last_n_events_tags_notes_folders_and_lists_are_deterministic() {
 }
 
 #[test]
+fn list_entries_carry_angle_marks_and_speed_overrides() {
+    let mut database = EventDatabase::default();
+    let event_id = EventId::new(nonzero(1));
+    let list_id = ListId::new(nonzero(1));
+    database.insert_event(event(1, 0, 100, camera(1))).unwrap();
+    database
+        .add_list(EventList {
+            id: list_id,
+            name: "Overrides".into(),
+            events: vec![event_id],
+        })
+        .unwrap();
+
+    let overrides = EventListOverride {
+        angle: Some(camera(2)),
+        marks: Some(range(10, 20)),
+        speed: Some(PlaybackRate::from_milli(500).unwrap()),
+    };
+    database
+        .set_list_override(list_id, event_id, overrides)
+        .unwrap();
+    assert_eq!(database.list_override(list_id, event_id), Some(overrides));
+
+    assert_eq!(
+        database.set_list_override(
+            list_id,
+            event_id,
+            EventListOverride {
+                angle: Some(camera(9)),
+                ..overrides
+            },
+        ),
+        Err(ReplayError::AngleNotInEvent {
+            event: event_id,
+            camera: camera(9),
+        })
+    );
+    assert_eq!(
+        database.set_list_override(
+            list_id,
+            event_id,
+            EventListOverride {
+                marks: Some(range(-1, 10)),
+                ..overrides
+            },
+        ),
+        Err(ReplayError::InvalidRange)
+    );
+
+    let other = EventId::new(nonzero(2));
+    database.insert_event(event(2, 0, 100, camera(1))).unwrap();
+    assert_eq!(
+        database.set_list_override(list_id, other, overrides),
+        Err(ReplayError::EventNotInList {
+            event: other,
+            list: list_id,
+        })
+    );
+
+    database
+        .set_list_override(list_id, event_id, EventListOverride::default())
+        .unwrap();
+    assert_eq!(database.list_override(list_id, event_id), None);
+
+    database
+        .set_list_override(list_id, event_id, overrides)
+        .unwrap();
+    database
+        .remove_event(event_id, &mut catalog(temporary_directory()))
+        .unwrap();
+    assert_eq!(database.list_override(list_id, event_id), None);
+    assert!(database.list(list_id).unwrap().events.is_empty());
+}
+
+#[test]
 fn replay_a_and_b_are_independent_until_transport_is_linked() {
     let mut decks = ReplayDecks::new(camera(1), camera(2), timestamp(100));
     let first = event(1, 0, 100, camera(1));

@@ -160,6 +160,10 @@ pub enum ReplayError {
         event: EventId,
         list: ListId,
     },
+    EventNotInList {
+        event: EventId,
+        list: ListId,
+    },
     InvalidPlaybackRate(i32),
     FrameDurationZero,
     ExportStateTransition,
@@ -235,6 +239,9 @@ impl fmt::Display for ReplayError {
             }
             Self::EventAlreadyInList { event, list } => {
                 write!(formatter, "event {event} is already in list {list}")
+            }
+            Self::EventNotInList { event, list } => {
+                write!(formatter, "event {event} is not in list {list}")
             }
             Self::InvalidPlaybackRate(rate) => write!(
                 formatter,

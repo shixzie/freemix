@@ -6280,10 +6280,13 @@ out-of-root path, directory, or failed removal stays in the catalog and is
 reported for a later retry. `ReplayPlaybackClock` turns a caller-supplied
 monotonic nanosecond clock into per-tick deck advances: linked decks advance
 once, unlinked decks advance together, a paused deck holds, and a backwards
-tick or reset re-anchors without moving a cursor. Remaining gaps in the
-library itself: playback is not yet driven by a daemon or engine clock,
-per-event list overrides are absent, and no eight-camera storage profile is
-certified; the end-to-end slice below wires part of this to a server.
+tick or reset re-anchors without moving a cursor. `EventDatabase` also stores
+per-list-entry angle, marks, and speed overrides, validates them against the
+event and its angles, and clears them when the event leaves the list.
+Remaining gaps in the library itself: those overrides and the clock are not
+yet consumed by a daemon or engine player, and no eight-camera storage
+profile is certified; the end-to-end slice below wires part of this to a
+server.
 `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a

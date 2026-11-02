@@ -4,7 +4,7 @@ use fm_frame::NormalizedTimestamp;
 
 use crate::{
     AngleSpan, CameraId, CapturedEvent, EventId, FolderId, ListId, MAX_EVENTS, MAX_EVENTS_PER_LIST,
-    MAX_FOLDERS, MAX_LISTS, MAX_NOTE_BYTES, MAX_REPLAY_SOURCES, MAX_TAGS_PER_EVENT,
+    MAX_FOLDERS, MAX_LISTS, MAX_NOTE_BYTES, MAX_REPLAY_SOURCES, MAX_TAGS_PER_EVENT, PlaybackRate,
     ProtectionReference, ReplayError, ReplayLimit, RollingSegmentCatalog, SourceTimeline,
     TimelineRange,
     types::{check_bytes, check_count, check_name},
@@ -80,6 +80,24 @@ pub struct EventList {
     pub events: Vec<EventId>,
 }
 
+/// A list entry's per-event overrides. Any `None` keeps the event's own value.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EventListOverride {
+    /// The angle this list entry plays instead of the event's preferred one.
+    pub angle: Option<CameraId>,
+    /// The marks this list entry plays instead of the event's timeline.
+    pub marks: Option<TimelineRange>,
+    /// The rate this list entry plays instead of real time.
+    pub speed: Option<PlaybackRate>,
+}
+
+impl EventListOverride {
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.angle.is_none() && self.marks.is_none() && self.speed.is_none()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventFolder {
     pub id: FolderId,
@@ -91,6 +109,7 @@ pub struct EventDatabase {
     events: BTreeMap<EventId, ReplayEvent>,
     lists: BTreeMap<ListId, EventList>,
     folders: BTreeMap<FolderId, EventFolder>,
+    overrides: BTreeMap<(ListId, EventId), EventListOverride>,
 }
 
 impl EventDatabase {
@@ -204,6 +223,7 @@ impl EventDatabase {
         for list in self.lists.values_mut() {
             list.events.retain(|entry| *entry != id);
         }
+        self.overrides.retain(|(_, event), _| *event != id);
         catalog.release_reference(ProtectionReference::Event(id));
         Ok(event)
     }
@@ -381,6 +401,66 @@ impl EventDatabase {
         )?;
         list.events.push(event_id);
         Ok(())
+    }
+
+    /// Sets the angle, marks, and speed one list entry plays instead of the
+    /// event's own values. An all-`None` override clears it.
+    ///
+    /// # Errors
+    ///
+    /// The list and event must exist and the event must be in the list; an
+    /// angle must be one of the event's angles, and marks must lie inside the
+    /// event's timeline.
+    pub fn set_list_override(
+        &mut self,
+        list_id: ListId,
+        event_id: EventId,
+        overrides: EventListOverride,
+    ) -> Result<(), ReplayError> {
+        let list = self
+            .lists
+            .get(&list_id)
+            .ok_or(ReplayError::UnknownList(list_id))?;
+        let event = self
+            .events
+            .get(&event_id)
+            .ok_or(ReplayError::UnknownEvent(event_id))?;
+        if !list.events.contains(&event_id) {
+            return Err(ReplayError::EventNotInList {
+                event: event_id,
+                list: list_id,
+            });
+        }
+        if let Some(angle) = overrides.angle
+            && !event.angles.contains(&angle)
+        {
+            return Err(ReplayError::AngleNotInEvent {
+                event: event_id,
+                camera: angle,
+            });
+        }
+        if let Some(marks) = overrides.marks
+            && (marks.start < event.timeline.start || marks.end > event.timeline.end)
+        {
+            return Err(ReplayError::InvalidRange);
+        }
+        if overrides.is_empty() {
+            self.overrides.remove(&(list_id, event_id));
+        } else {
+            self.overrides.insert((list_id, event_id), overrides);
+        }
+        Ok(())
+    }
+
+    /// The list entry's overrides, if any.
+    #[must_use]
+    pub fn list_override(&self, list_id: ListId, event_id: EventId) -> Option<EventListOverride> {
+        self.overrides.get(&(list_id, event_id)).copied()
+    }
+
+    /// Clears one list entry's overrides.
+    pub fn clear_list_override(&mut self, list_id: ListId, event_id: EventId) {
+        self.overrides.remove(&(list_id, event_id));
     }
 
     #[must_use]
