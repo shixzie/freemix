@@ -234,6 +234,26 @@ fn the_daemon_serves_the_vmix_tcp_api() {
     assert!(xml.contains("title=\"Extra\""), "{xml}");
     assert!(xml.contains("<active>"), "{xml}");
 
+    // MoveInput puts the added input at the front of the vMix order.
+    writer
+        .write_all(b"FUNCTION MoveInput Input=Extra&Value=1\r\n")
+        .unwrap();
+    assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
+    writer.write_all(b"XML\r\n").unwrap();
+    let header = read_line(&mut reader);
+    let length: usize = header
+        .strip_prefix("XML ")
+        .unwrap()
+        .trim_end()
+        .parse()
+        .unwrap();
+    let mut xml = vec![0; length];
+    reader.read_exact(&mut xml).unwrap();
+    let xml = String::from_utf8(xml).unwrap();
+    let extra = xml.find("title=\"Extra\"").unwrap();
+    let solid = xml.find("title=\"Solid\"").unwrap();
+    assert!(extra < solid, "{xml}");
+
     // The added input can be removed again by name once nothing references
     // it.
     writer

@@ -993,6 +993,31 @@ fn remove_input_resolves_the_input_and_is_strict() {
 }
 
 #[test]
+fn move_input_reorders_the_list_and_is_strict() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=MoveInput&Input=3&Value=1", &state),
+        Ok(Translation::Protocol(CommandPayload::ReorderInputs {
+            inputs: vec![id(3), id(1), id(2)],
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=MoveInput&Input=Camera+%26+One&Value=3", &state),
+        Ok(Translation::Protocol(CommandPayload::ReorderInputs {
+            inputs: vec![id(2), id(3), id(1)],
+        }))
+    );
+    // Missing, unknown, non-numeric, and out-of-list positions are refused
+    // before anything is reordered.
+    assert!(parse_http_query("Function=MoveInput&Input=1", &state).is_err());
+    assert!(parse_http_query("Function=MoveInput&Input=99&Value=1", &state).is_err());
+    assert!(parse_http_query("Function=MoveInput&Input=1&Value=first", &state).is_err());
+    assert!(parse_http_query("Function=MoveInput&Input=1&Value=0", &state).is_err());
+    assert!(parse_http_query("Function=MoveInput&Input=1&Value=4", &state).is_err());
+    assert!(parse_http_query("Function=MoveInput&Input=1&Value=1&Extra=1", &state).is_err());
+}
+
+#[test]
 fn playlist_verbs_translate_to_playlist_control() {
     let state = state();
     for (function, operation) in [

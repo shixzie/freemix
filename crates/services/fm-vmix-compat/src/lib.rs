@@ -915,6 +915,28 @@ fn translate(
                 input: state.resolve_input(required(parameters, "Input")?)?,
             }))
         }
+        "MoveInput" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let position = required(parameters, "Value")?
+                .parse::<usize>()
+                .map_err(|_| ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "a position is a whole number",
+                })?;
+            let mut inputs: Vec<WireInputId> = state.inputs.iter().map(|entry| entry.id).collect();
+            if !(1..=inputs.len()).contains(&position) {
+                return Err(ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "a position is inside the input list",
+                });
+            }
+            inputs.retain(|candidate| *candidate != input);
+            inputs.insert(position - 1, input);
+            Ok(Translation::Protocol(CommandPayload::ReorderInputs {
+                inputs,
+            }))
+        }
         "SetText" => translate_set_text(parameters, state),
         "SetOutputFullscreen" | "SetOutputFullscreen2" => {
             allowed(parameters, &["Function", "Input", "Value"])?;
