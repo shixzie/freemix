@@ -7,6 +7,7 @@ mod contract;
 mod css;
 pub mod fake;
 mod network;
+mod profile_store;
 
 pub use contract::{
     BrowserError, BrowserId, BrowserLimits, BrowserRenderer, BrowserState, ChildLifecycle,
@@ -21,6 +22,11 @@ pub use css::{CssError, CustomCss};
 pub use network::{
     HostPattern, HostRules, NetworkPolicy, NetworkPolicyError, NormalizedUrl, RedirectChain,
     UrlHost,
+};
+
+pub use profile_store::{
+    MAX_PROFILE_COOKIE_BYTES, PROFILE_COOKIE_DOCUMENT, PROFILE_COOKIE_FILE, ProfileDocumentError,
+    ProfileStore, ProfileStoreError,
 };
 
 pub use fm_frame::{AudioBlock, ClockDomainId, CpuVideoFrame, MediaTiming, VideoDimensions};

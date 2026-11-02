@@ -948,6 +948,15 @@ impl CookieJar {
             .map(String::as_str)
     }
 
+    /// Every cookie of `profile_id`, ordered by host and then name, as
+    /// `(host, name, value)`.
+    pub fn profile(&self, profile_id: ProfileId) -> impl Iterator<Item = (&str, &str, &str)> + '_ {
+        self.values
+            .iter()
+            .filter(move |((profile, _, _), _)| *profile == profile_id)
+            .map(|((_, host, name), value)| (host.as_str(), name.as_str(), value.as_str()))
+    }
+
     pub fn clear_profile(&mut self, profile_id: ProfileId) {
         self.values
             .retain(|(profile, _, _), _| *profile != profile_id);

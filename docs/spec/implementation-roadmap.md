@@ -4898,11 +4898,13 @@ which are returned for policy checks. The fake renderer's fixtures may declare
 in-page fetches (`data-fetch`), and navigation refuses a page whose fetches
 the policy would block; the renderer now navigates through the full network
 policy (navigation grants, host rules, URL bounds, and redirects), and maps
-a zoomed surface's pointer events back into page space. Remaining
-gaps: no real browser engine,
-DNS, or sockets; browser audio, HTML5 media, on-disk
-profile isolation, and refresh-on-activate remain
-contracts or fakes. `IN-013` remains planned.
+a zoomed surface's pointer events back into page space. `ProfileStore`
+isolates each profile in its own owner-only directory and persists its cookies
+as the strict canonical `freemix-browser-cookies 1` document with atomic
+writes, bounded decoding, and refusal of a symlinked root or profile
+directory. Remaining gaps: no real browser engine, DNS, or sockets; browser
+audio, HTML5 media, and refresh-on-activate remain contracts or fakes.
+`IN-013` remains planned.
 
 Current implementation boundary for item 4: `fm-data` parses bounded CSV and
 JSON from in-memory bytes into exact typed rows. CSV supports quoting, embedded
