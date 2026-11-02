@@ -464,7 +464,36 @@ pub(crate) struct TrackWavFinish {
     pub(crate) loudness_files: u64,
     /// Files whose measured loudness could not be patched.
     pub(crate) loudness_failures: u64,
+    /// Every file whose measured loudness was written, with its values.
+    pub(crate) measured: Vec<TrackWavLoudnessFile>,
     pub(crate) failures: Vec<String>,
+}
+
+/// One finalized track WAV and the loudness written into its `bext` chunk.
+#[cfg(feature = "native-media")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TrackWavLoudnessFile {
+    pub(crate) path: PathBuf,
+    pub(crate) loudness: fm_record::BextLoudness,
+}
+
+/// The `FREEMIXD_RECORD_TRACK_LOUDNESS_FILE` record for one patched file.
+/// Values are hundredths of LUFS, LU, or dBTP, exactly as written.
+#[cfg(feature = "native-media")]
+pub(crate) fn track_loudness_record(
+    slot: usize,
+    path: &Path,
+    loudness: fm_record::BextLoudness,
+) -> String {
+    format!(
+        "FREEMIXD_RECORD_TRACK_LOUDNESS_FILE\tv=1\tslot={slot}\tfile={}\tintegrated={}\trange={}\ttrue_peak={}\tmomentary={}\tshort_term={}",
+        diagnostic_field(&path.to_string_lossy()),
+        loudness.integrated_lufs,
+        loudness.range_lu,
+        loudness.max_true_peak_dbtp,
+        loudness.max_momentary_lufs,
+        loudness.max_short_term_lufs,
+    )
 }
 
 #[cfg(feature = "native-media")]
@@ -833,7 +862,13 @@ impl TrackWavState {
                 let loudness = measured_loudness(&reading, self.loudness_fallback);
                 for path in &paths {
                     match patch_track_loudness(path, loudness) {
-                        Ok(()) => finish.loudness_files = finish.loudness_files.saturating_add(1),
+                        Ok(()) => {
+                            finish.loudness_files = finish.loudness_files.saturating_add(1);
+                            finish.measured.push(TrackWavLoudnessFile {
+                                path: path.clone(),
+                                loudness,
+                            });
+                        }
                         Err(_) => {
                             finish.loudness_failures = finish.loudness_failures.saturating_add(1);
                         }

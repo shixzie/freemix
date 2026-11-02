@@ -12984,12 +12984,22 @@ fn track_wav_loudness_is_measured_and_patched() {
     assert!(finish.failures.is_empty(), "{:?}", finish.failures);
     assert!(finish.loudness_files >= 1, "{finish:?}");
     assert_eq!(finish.loudness_failures, 0, "{finish:?}");
+    assert_eq!(
+        finish.measured.len(),
+        usize::try_from(finish.loudness_files).unwrap(),
+        "every patched file is reported"
+    );
 
     let path = TrackWavState::path(&segment);
     let mut file = File::open(&path).unwrap();
     let info = read_wav_info(&mut file).unwrap();
     let bext = info.spec.bext.expect("BWF metadata");
     let loudness = bext.loudness.expect("measured loudness");
+    assert_eq!(finish.measured[0].path, path);
+    assert_eq!(
+        finish.measured[0].loudness, loudness,
+        "the report carries the values written into bext"
+    );
     assert_ne!(loudness.integrated_lufs, i16::MAX, "{loudness:?}");
     assert!(loudness.integrated_lufs < 0, "{loudness:?}");
     assert_ne!(loudness.max_true_peak_dbtp, i16::MAX, "{loudness:?}");
@@ -13442,5 +13452,22 @@ fn track_wav_metadata_carries_a_umid() {
         metadata
             .ixml
             .contains("<TIMECODE_RATE>25/1</TIMECODE_RATE>")
+    );
+}
+
+/// AU-010: one record names every measured field of one patched file.
+#[cfg(feature = "native-media")]
+#[test]
+fn track_loudness_records_name_every_measured_field() {
+    let loudness = fm_record::BextLoudness {
+        integrated_lufs: -2300,
+        range_lu: 750,
+        max_true_peak_dbtp: -120,
+        max_momentary_lufs: -2250,
+        max_short_term_lufs: -2310,
+    };
+    assert_eq!(
+        track_loudness_record(2, std::path::Path::new("/shows/bad\tname.wav"), loudness),
+        "FREEMIXD_RECORD_TRACK_LOUDNESS_FILE\tv=1\tslot=2\tfile=/shows/bad name.wav\tintegrated=-2300\trange=750\ttrue_peak=-120\tmomentary=-2250\tshort_term=-2310"
     );
 }

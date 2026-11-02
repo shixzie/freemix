@@ -1016,6 +1016,12 @@ impl NativeDaemon {
             report.loudness_files,
             report.loudness_failures,
         );
+        for file in &report.measured {
+            eprintln!(
+                "{}",
+                track_loudness_record(slot + 1, &file.path, file.loudness)
+            );
+        }
     }
 
     /// Begins opening one slot's next segment for a configured output: the

@@ -3895,6 +3895,8 @@ file from the exact samples it writes (K-weighted integrated loudness, range,
 maximum true peak, and maximum momentary and short-term loudness) and patches
 the measured version-2 fields into every finalized segment, including failover
 files; the authored document supplies any field a segment could not measure.
+Each patched file is reported as `FREEMIXD_RECORD_TRACK_LOUDNESS_FILE` with
+its path and the five hundredths values written into `bext`.
 Track WAV starts run the same free-space preflight as their MP4 segment,
 using the map's PCM bitrate, and refuse when every measured root is
 exhausted, reporting `FREEMIXD_RECORD_TRACK_SPACE`. Remaining gap: the WAVs
