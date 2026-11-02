@@ -6283,10 +6283,11 @@ once, unlinked decks advance together, a paused deck holds, and a backwards
 tick or reset re-anchors without moving a cursor. `EventDatabase` also stores
 per-list-entry angle, marks, and speed overrides, validates them against the
 event and its angles, and clears them when the event leaves the list.
-Remaining gaps in the library itself: those overrides and the clock are not
-yet consumed by a daemon or engine player, and no eight-camera storage
-profile is certified; the end-to-end slice below wires part of this to a
-server.
+`list_playback` resolves those overrides into effective playback entries, and
+`ReplayDecks::play_entry` cues and plays one while `ReplayPlaybackClock`
+advances it. Remaining gaps in the library itself: no daemon or engine player
+consumes that path, and no eight-camera storage profile is certified; the
+end-to-end slice below wires part of this to a server.
 `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a

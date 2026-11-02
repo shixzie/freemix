@@ -3,7 +3,7 @@ use fm_frame::NormalizedTimestamp;
 use fm_playback::{FrameIndex, Speed};
 
 use crate::{
-    CameraId, ChannelFrame, EventDatabase, EventId, ReplayError, ReplayEvent,
+    CameraId, ChannelFrame, EventDatabase, EventId, EventPlaybackEntry, ReplayError, ReplayEvent,
     RollingSegmentCatalog, SourceTimeline, TimelineRange,
 };
 
@@ -126,6 +126,17 @@ impl ReplayChannel {
             auto_return: false,
             audio: AudioPolicy::default(),
         }
+    }
+
+    fn cue_entry(&mut self, entry: &EventPlaybackEntry) {
+        self.mode = ChannelMode::Recorded {
+            event_id: entry.event,
+            timeline: entry.timeline,
+        };
+        self.angle = entry.angle;
+        self.cursor = entry.timeline.start;
+        self.transport = ChannelTransport::Paused;
+        self.rate = PlaybackRate::PAUSED;
     }
 
     fn cue(&mut self, event: &ReplayEvent) {
@@ -313,6 +324,17 @@ impl ReplayDecks {
 
     pub fn cue_event(&mut self, id: ReplayChannelId, event: &ReplayEvent) {
         self.for_transport_mut(id, |channel| channel.cue(event));
+    }
+
+    /// Cues a resolved list entry paused on its effective mark-in.
+    pub fn cue_entry(&mut self, id: ReplayChannelId, entry: &EventPlaybackEntry) {
+        self.for_transport_mut(id, |channel| channel.cue_entry(entry));
+    }
+
+    /// Cues a resolved list entry and plays it at its effective speed.
+    pub fn play_entry(&mut self, id: ReplayChannelId, entry: &EventPlaybackEntry) {
+        self.cue_entry(id, entry);
+        self.play(id, entry.speed);
     }
 
     pub fn go_live(&mut self, id: ReplayChannelId, live_edge: NormalizedTimestamp) {

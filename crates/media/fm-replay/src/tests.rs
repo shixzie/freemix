@@ -290,7 +290,9 @@ fn list_entries_carry_angle_marks_and_speed_overrides() {
     let mut database = EventDatabase::default();
     let event_id = EventId::new(nonzero(1));
     let list_id = ListId::new(nonzero(1));
-    database.insert_event(event(1, 0, 100, camera(1))).unwrap();
+    database
+        .insert_event(event(1, 0, 2_000_000_000, camera(1)))
+        .unwrap();
     database
         .add_list(EventList {
             id: list_id,
@@ -358,6 +360,78 @@ fn list_entries_carry_angle_marks_and_speed_overrides() {
         .unwrap();
     assert_eq!(database.list_override(list_id, event_id), None);
     assert!(database.list(list_id).unwrap().events.is_empty());
+}
+
+#[test]
+fn list_playback_resolves_overrides_and_the_clock_drives_them() {
+    let mut database = EventDatabase::default();
+    let event_id = EventId::new(nonzero(1));
+    let list_id = ListId::new(nonzero(1));
+    database
+        .insert_event(event(1, 0, 2_000_000_000, camera(1)))
+        .unwrap();
+    database
+        .add_list(EventList {
+            id: list_id,
+            name: "Playback".into(),
+            events: vec![event_id],
+        })
+        .unwrap();
+    let speed = PlaybackRate::from_milli(500).unwrap();
+    database
+        .set_list_override(
+            list_id,
+            event_id,
+            EventListOverride {
+                angle: Some(camera(2)),
+                marks: Some(range(1_000, 1_000_000_000)),
+                speed: Some(speed),
+            },
+        )
+        .unwrap();
+
+    let entries = database.list_playback(list_id).unwrap();
+    assert_eq!(
+        entries,
+        vec![EventPlaybackEntry {
+            event: event_id,
+            angle: camera(2),
+            timeline: range(1_000, 1_000_000_000),
+            speed,
+        }]
+    );
+
+    let mut decks = ReplayDecks::new(camera(1), camera(2), timestamp(2_000_000_000));
+    decks.set_linked(true);
+    decks.play_entry(ReplayChannelId::A, &entries[0]);
+    for id in [ReplayChannelId::A, ReplayChannelId::B] {
+        let channel = decks.channel(id);
+        assert_eq!(channel.angle, camera(2));
+        assert_eq!(channel.cursor.as_nanos(), 1_000);
+        assert_eq!(channel.transport, ChannelTransport::Playing);
+        assert_eq!(channel.rate, speed);
+        assert_eq!(
+            channel.mode,
+            ChannelMode::Recorded {
+                event_id,
+                timeline: range(1_000, 1_000_000_000),
+            }
+        );
+    }
+
+    let mut clock = ReplayPlaybackClock::new();
+    assert_eq!(clock.tick(0, &mut decks, timestamp(2_000_000_000)), 0);
+    assert_eq!(
+        clock.tick(100_000_000, &mut decks, timestamp(2_000_000_000)),
+        100_000_000
+    );
+    for id in [ReplayChannelId::A, ReplayChannelId::B] {
+        assert_eq!(
+            decks.channel(id).cursor.as_nanos(),
+            1_000 + 50_000_000,
+            "half speed advances half the elapsed interval"
+        );
+    }
 }
 
 #[test]

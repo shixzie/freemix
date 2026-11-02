@@ -80,6 +80,16 @@ pub struct EventList {
     pub events: Vec<EventId>,
 }
 
+/// One list entry resolved for playback: the event plus its effective angle,
+/// marks, and speed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventPlaybackEntry {
+    pub event: EventId,
+    pub angle: CameraId,
+    pub timeline: TimelineRange,
+    pub speed: PlaybackRate,
+}
+
 /// A list entry's per-event overrides. Any `None` keeps the event's own value.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EventListOverride {
@@ -461,6 +471,39 @@ impl EventDatabase {
     /// Clears one list entry's overrides.
     pub fn clear_list_override(&mut self, list_id: ListId, event_id: EventId) {
         self.overrides.remove(&(list_id, event_id));
+    }
+
+    /// Resolves every event in `list_id` to the angle, marks, and speed it
+    /// plays with, applying that list entry's overrides.
+    ///
+    /// # Errors
+    ///
+    /// The list must exist and every entry must still name an event.
+    pub fn list_playback(&self, list_id: ListId) -> Result<Vec<EventPlaybackEntry>, ReplayError> {
+        let list = self
+            .lists
+            .get(&list_id)
+            .ok_or(ReplayError::UnknownList(list_id))?;
+        list.events
+            .iter()
+            .map(|event_id| {
+                let event = self
+                    .events
+                    .get(event_id)
+                    .ok_or(ReplayError::UnknownEvent(*event_id))?;
+                let overrides = self
+                    .overrides
+                    .get(&(list_id, *event_id))
+                    .copied()
+                    .unwrap_or_default();
+                Ok(EventPlaybackEntry {
+                    event: *event_id,
+                    angle: overrides.angle.unwrap_or(event.preferred_angle),
+                    timeline: overrides.marks.unwrap_or(event.timeline),
+                    speed: overrides.speed.unwrap_or(PlaybackRate::FORWARD_1X),
+                })
+            })
+            .collect()
     }
 
     #[must_use]
