@@ -4929,8 +4929,16 @@ index, and match bounds and strict refusal of axes, functions, unions, and
 boolean predicates. `XmlRowsAdapter` turns those selected elements into typed
 rows for the same title mapper: attributes become `@name` fields, repeated
 child tags become lists, and an element with no attributes or children
-contributes its text as `_text`. Remaining gaps:
-no spreadsheet,
+contributes its text as `_text`. `fm-data` also reads a bounded `.xlsx`
+workbook: the first or a named worksheet's first non-empty row supplies
+headers and every later row becomes an object, with shared, inline, and
+rich-text strings resolved, boolean cells rendered `TRUE`/`FALSE`, and a
+number kept as the exact stored text. The package, each part, the total
+inflate budget, rows, columns, shared strings, and one cell's text are all
+bounded, and a duplicate header or a data cell under a blank header is
+refused. Remaining gaps:
+no `.xls` or ODS workbook, no date or style conversion (a date keeps its
+serial number), no
 Google Sheets, chat, or database adapters, no real network polling, and
 `fm-title-render`'s `apply_title_mapping` now writes a mapped report onto a
 `TitleScene` atomically by template field name, so title text, number, color,

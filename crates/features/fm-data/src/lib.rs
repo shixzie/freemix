@@ -22,6 +22,7 @@ mod source;
 mod title;
 mod transform;
 mod value;
+mod xlsx;
 mod xml;
 mod xpath;
 
@@ -66,6 +67,11 @@ pub use title::{
 };
 pub use transform::{Transform, TransformError, ValueSelector};
 pub use value::{DataValue, Decimal, DecimalError, ValueType};
+pub use xlsx::{
+    MAX_XLSX_BYTES, MAX_XLSX_CELL_BYTES, MAX_XLSX_COLUMNS, MAX_XLSX_INFLATED_BYTES,
+    MAX_XLSX_PART_BYTES, MAX_XLSX_ROWS, MAX_XLSX_SHARED_STRINGS, XlsxError, XlsxRowsAdapter,
+    parse_xlsx, parse_xlsx_sheet,
+};
 pub use xml::parse_xml;
 pub use xpath::{
     MAX_XPATH_BYTES, MAX_XPATH_INDEX, MAX_XPATH_MATCHES, MAX_XPATH_STEPS, XPathError, select_xml,

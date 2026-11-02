@@ -7,6 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 fm-types = { path = "../../foundation/fm-types" }
+# Pure-Rust ZIP reader for bounded XLSX workbooks; its deflate backend is the
+# same one the presentation package reader uses.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [lints]
 workspace = true
