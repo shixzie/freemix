@@ -35,8 +35,9 @@ pub use coordinator::{
 };
 pub use fmp4::{
     Fmp4Error, Fmp4Fragment, Fmp4Integrity, Fmp4Movie, Fmp4Repair, Fmp4Scan, Fmp4Splitter,
-    Fmp4Track, Fmp4TrackRun, Fmp4TrackSpan, Fmp4Unit, MAX_FMP4_INIT_BYTES, MAX_FMP4_MOOF_BYTES,
-    MAX_FMP4_TRACKS, SplitError, repair_fmp4_file, scan_fmp4, scan_fmp4_file,
+    Fmp4Track, Fmp4TrackRun, Fmp4TrackSpan, Fmp4Unit, MAX_FMP4_INDEX_FRAGMENTS,
+    MAX_FMP4_INIT_BYTES, MAX_FMP4_MFRA_BYTES, MAX_FMP4_MOOF_BYTES, MAX_FMP4_TRACKS, SplitError,
+    repair_fmp4_file, scan_fmp4, scan_fmp4_file,
 };
 pub use iso::{
     ISO_MANIFEST_NAME, IsoManifestEntry, IsoManifestError, IsoTapConfig, IsoTapError,

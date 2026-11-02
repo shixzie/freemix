@@ -3990,7 +3990,9 @@ Current implementation boundary for fault-tolerant recording (`OR-003`):
 `fm-record` scans fragmented MP4 files with bounded memory, classifies them as
 finalized, complete, torn, or unrecoverable, reports exact per-track coverage
 and loss, and repairs a torn tail by truncating to the last complete fragment
-without touching unrecoverable files. A `RecordingSession` names segments in an
+without touching unrecoverable files; a repaired file also gains the `mfra`
+index its crashed writer never wrote, so it scans as finalized and players can
+seek it without a second pass. A `RecordingSession` names segments in an
 atomically rewritten, CRC-checked manifest mirrored in every root before
 creating them, disables full, read-only, or missing roots at once, retries
 other errors a bounded number of times, records failures in a bounded ring,
@@ -4028,9 +4030,8 @@ thresholds are configurable with
 of recording left at its configured bitrate (Protocol 2.141), shown in
 Studio's recording row. Remaining gaps: no
 daemon test runs two `freemixd` processes against one directory (the lock is
-proven across processes in `fm-record`); repaired files are not
-re-finalized; corrupt mid-file fragments end recovery; and only fragmented MP4
-is handled. `OR-003` remains planned.
+proven across processes in `fm-record`); corrupt mid-file fragments end
+recovery; and only fragmented MP4 is handled. `OR-003` remains planned.
 
 
 Exit: a remote-controlled headless production can stream and record

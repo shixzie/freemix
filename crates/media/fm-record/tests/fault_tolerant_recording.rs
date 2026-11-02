@@ -334,22 +334,74 @@ fn repair_truncates_a_torn_file_on_disk_and_is_idempotent() {
 
     let repair = repair_fmp4_file(&path).expect("repair");
     assert_eq!(repair.truncated_bytes, cut - boundaries[3]);
-    assert_eq!(fs::metadata(&path).unwrap().len(), boundaries[3]);
+    assert!(repair.appended_bytes > 0, "a repaired file gains an index");
     assert_eq!(
-        fs::read(&path).unwrap(),
+        fs::metadata(&path).unwrap().len(),
+        boundaries[3] + repair.appended_bytes
+    );
+    assert_eq!(
+        &fs::read(&path).unwrap()[..usize::try_from(boundaries[3]).unwrap()],
         &bytes[..usize::try_from(boundaries[3]).unwrap()]
     );
 
+    // The appended `mfra` makes a later scan report the file finalized and
+    // carries one `tfra` entry per surviving fragment.
+    let finalized = scan_fmp4_file(&path).unwrap();
+    assert_eq!(finalized.integrity, Fmp4Integrity::Finalized);
+    assert_eq!(finalized.fragments, 3);
+    let index = &fs::read(&path).unwrap()[usize::try_from(boundaries[3]).unwrap()..];
+    assert_eq!(
+        u32::from_be_bytes(index[0..4].try_into().unwrap()) as usize,
+        index.len()
+    );
+    assert_eq!(&index[4..8], b"mfra");
+    assert_eq!(&index[12..16], b"tfra");
+    assert_eq!(
+        u32::from_be_bytes(index[16..20].try_into().unwrap()),
+        0x0100_0000,
+        "tfra version 1"
+    );
+    assert_eq!(
+        u32::from_be_bytes(index[20..24].try_into().unwrap()),
+        VIDEO.id
+    );
+    assert_eq!(u32::from_be_bytes(index[28..32].try_into().unwrap()), 3);
+    assert_eq!(u64::from_be_bytes(index[32..40].try_into().unwrap()), 0);
+    assert_eq!(
+        u64::from_be_bytes(index[40..48].try_into().unwrap()),
+        boundaries[0]
+    );
+    assert_eq!(&index[48..51], &[1, 1, 1], "first traf, trun, and sample");
+
     let again = repair_fmp4_file(&path).expect("second repair");
     assert_eq!(again.truncated_bytes, 0);
-    assert_eq!(again.scan.integrity, Fmp4Integrity::Complete);
+    assert_eq!(again.appended_bytes, 0);
+    assert_eq!(again.scan.integrity, Fmp4Integrity::Finalized);
     assert_eq!(again.scan.fragments, 3);
+}
+
+#[test]
+fn repair_leaves_a_complete_file_unfinalized() {
+    let temp = TempDirectory::new();
+    let (bytes, _) = stream(2);
+    let path = temp.join("complete.mp4");
+    fs::write(&path, &bytes).unwrap();
+
+    let repair = repair_fmp4_file(&path).unwrap();
+    assert_eq!(repair.truncated_bytes, 0);
+    assert_eq!(repair.appended_bytes, 0);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        scan_fmp4_file(&path).unwrap().integrity,
+        Fmp4Integrity::Complete
+    );
 }
 
 #[test]
 fn zero_filled_tail_from_power_loss_is_truncated() {
     let temp = TempDirectory::new();
     let (mut bytes, boundaries) = stream(2);
+    let prefix = bytes[..usize::try_from(boundaries[2]).unwrap()].to_vec();
     bytes.extend(std::iter::repeat_n(0u8, 4096));
     let path = temp.join("zeros.mp4");
     fs::write(&path, &bytes).unwrap();
@@ -362,7 +414,12 @@ fn zero_filled_tail_from_power_loss_is_truncated() {
         }
     ));
     assert_eq!(repair.truncated_bytes, 4096);
-    assert_eq!(scan_fmp4_file(&path).unwrap().valid_length, boundaries[2]);
+    let finalized = scan_fmp4_file(&path).unwrap();
+    assert_eq!(finalized.integrity, Fmp4Integrity::Finalized);
+    assert_eq!(
+        &fs::read(&path).unwrap()[..usize::try_from(boundaries[2]).unwrap()],
+        prefix.as_slice()
+    );
 }
 
 #[test]
@@ -836,9 +893,14 @@ fn bare_first_segment_recovery_repairs_the_operator_named_file() {
         recovery.segments[0].outcome
     );
     assert_eq!(recovery.kept_bytes(), boundaries[2]);
+    let repaired = primary.join("program.mp4");
+    assert!(
+        fs::metadata(&repaired).unwrap().len() > boundaries[2],
+        "recovery re-finalizes a repaired segment"
+    );
     assert_eq!(
-        fs::metadata(primary.join("program.mp4")).unwrap().len(),
-        boundaries[2]
+        scan_fmp4_file(&repaired).unwrap().integrity,
+        Fmp4Integrity::Finalized
     );
     assert_eq!(recovery.rewritten_roots, [0, 1]);
 }
@@ -1733,11 +1795,11 @@ fn killed_writer_recovers_every_complete_fragment_and_reports_the_torn_one() {
     assert_eq!(recovery.recovered_duration_nanos(), 3 * SECOND);
     assert_eq!(recovery.known_lost_duration_nanos(), SECOND);
     assert_eq!(recovery.segments_with_unknown_loss(), 0);
+    let repaired = config.segment_path(0, 1).unwrap();
+    assert!(fs::metadata(&repaired).unwrap().len() > boundaries[3]);
     assert_eq!(
-        fs::metadata(config.segment_path(0, 1).unwrap())
-            .unwrap()
-            .len(),
-        boundaries[3]
+        scan_fmp4_file(&repaired).unwrap().integrity,
+        Fmp4Integrity::Finalized
     );
     let after = read_manifest(&temp.join("recordings/show.fmsession"));
     assert_eq!(after.state, SessionState::Recovered);
@@ -1955,7 +2017,15 @@ fn ffmpeg_output_cut_mid_fragment_repairs_to_a_decodable_file() {
     let repair = repair_fmp4_file(&path).unwrap();
     assert!(matches!(repair.scan.integrity, Fmp4Integrity::Torn { .. }));
     assert_eq!(repair.scan.fragments, full.fragments - 1);
-    assert_eq!(fs::metadata(&path).unwrap().len(), last_start);
+    assert!(repair.appended_bytes > 0);
+    assert_eq!(
+        fs::metadata(&path).unwrap().len(),
+        last_start + repair.appended_bytes
+    );
+    assert_eq!(
+        scan_fmp4_file(&path).unwrap().integrity,
+        Fmp4Integrity::Finalized
+    );
     let frames = decoded_video_frames(&path);
     assert_eq!(frames, video_samples(&repair.scan));
     assert_eq!(frames, 75);

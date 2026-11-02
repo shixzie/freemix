@@ -23,7 +23,7 @@
 use std::{
     fmt,
     fs::OpenOptions,
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom, Write},
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -34,6 +34,10 @@ pub const MAX_FMP4_INIT_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_FMP4_MOOF_BYTES: u64 = 16 * 1024 * 1024;
 /// Most tracks a movie may declare.
 pub const MAX_FMP4_TRACKS: usize = 64;
+/// Most fragments a scan retains for a re-finalize index.
+pub const MAX_FMP4_INDEX_FRAGMENTS: usize = 500_000;
+/// Largest `mfra` index a repair appends.
+pub const MAX_FMP4_MFRA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TRUN_SAMPLES: u64 = 1 << 24;
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
@@ -173,6 +177,11 @@ pub struct Fmp4Scan {
     /// The torn fragment, when its `moof` was complete and consistent but its
     /// `mdat` was cut short, so the lost media span is known exactly.
     pub lost_fragment: Option<Fmp4Fragment>,
+    /// Every intact fragment in order, up to [`MAX_FMP4_INDEX_FRAGMENTS`], so
+    /// a repair can write the `mfra` index the crashed writer never wrote.
+    /// When it holds fewer entries than [`Self::fragments`], the index is
+    /// omitted instead of being written incomplete.
+    pub index_fragments: Vec<Fmp4Fragment>,
 }
 
 impl Fmp4Scan {
@@ -189,6 +198,7 @@ impl Fmp4Scan {
             valid_length: 0,
             integrity: Fmp4Integrity::Complete,
             lost_fragment: None,
+            index_fragments: Vec::new(),
         }
     }
 
@@ -232,6 +242,9 @@ pub struct Fmp4Repair {
     pub scan: Fmp4Scan,
     /// Bytes removed from the end of the file; zero unless the scan was torn.
     pub truncated_bytes: u64,
+    /// Bytes of `mfra` index appended after a truncation, so a repaired file
+    /// scans as [`Fmp4Integrity::Finalized`].
+    pub appended_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -296,10 +309,118 @@ pub fn repair_fmp4_file(path: &Path) -> Result<Fmp4Repair, Fmp4Error> {
     } else {
         0
     };
+    // A crashed writer never wrote the trailing `mfra` index. Give a repaired
+    // file one built from the fragments that survived, so players can seek it
+    // and a later scan reports it finalized. Appending is best-effort: the
+    // truncated file is already playable, so an index failure removes the
+    // partial append and keeps the repair.
+    let appended_bytes = if truncated_bytes > 0 {
+        append_mfra_index(&mut file, &scan)
+    } else {
+        0
+    };
     Ok(Fmp4Repair {
         scan,
         truncated_bytes,
+        appended_bytes,
     })
+}
+
+/// Appends a `mfra` index for `scan`'s intact fragments at the end of `file`.
+/// Returns the bytes written, or zero when the index is unavailable or the
+/// append failed (the partial tail is removed either way).
+fn append_mfra_index(file: &mut std::fs::File, scan: &Fmp4Scan) -> u64 {
+    let Some(movie) = &scan.movie else {
+        return 0;
+    };
+    // A scan that stopped retaining fragments cannot index the whole file.
+    if u64::try_from(scan.index_fragments.len()).ok() != Some(scan.fragments) {
+        return 0;
+    }
+    let Some(bytes) = build_mfra(movie, &scan.index_fragments) else {
+        return 0;
+    };
+    let prefix = scan.valid_length;
+    let result = (|| -> io::Result<()> {
+        file.seek(SeekFrom::Start(prefix))?;
+        file.write_all(&bytes)?;
+        file.sync_all()
+    })();
+    if result.is_ok() {
+        u64::try_from(bytes.len()).unwrap_or(0)
+    } else {
+        let _ = file.set_len(prefix);
+        let _ = file.sync_all();
+        0
+    }
+}
+
+/// Builds the `mfra`/`tfra`/`mfro` index for `fragments`, or `None` when it
+/// would be empty or larger than [`MAX_FMP4_MFRA_BYTES`].
+fn build_mfra(movie: &Fmp4Movie, fragments: &[Fmp4Fragment]) -> Option<Vec<u8>> {
+    let mut trafs = Vec::new();
+    for track in movie.tracks() {
+        let mut entries = Vec::new();
+        for fragment in fragments {
+            let Some((position, run)) = fragment
+                .runs
+                .iter()
+                .enumerate()
+                .find(|(_, run)| run.track_id == track.track_id)
+            else {
+                continue;
+            };
+            let traf_number = u8::try_from(position.checked_add(1)?).ok()?;
+            entries.push((run.base_decode_time, fragment.offset, traf_number));
+        }
+        if entries.is_empty() {
+            continue;
+        }
+        let mut payload = Vec::with_capacity(16 + entries.len() * 19);
+        // Version 1: 64-bit times and offsets, so a long show cannot wrap.
+        payload.extend_from_slice(&0x0100_0000_u32.to_be_bytes());
+        payload.extend_from_slice(&track.track_id.to_be_bytes());
+        // 26 reserved bits, then 2 bits each for the traf, trun, and sample
+        // number lengths. Zero means one byte each.
+        payload.extend_from_slice(&0_u32.to_be_bytes());
+        let count = u32::try_from(entries.len()).ok()?;
+        payload.extend_from_slice(&count.to_be_bytes());
+        for (time, offset, traf_number) in entries {
+            payload.extend_from_slice(&time.to_be_bytes());
+            payload.extend_from_slice(&offset.to_be_bytes());
+            payload.push(traf_number);
+            payload.push(1); // the traf's first track run
+            payload.push(1); // its first sample
+        }
+        push_box(&mut trafs, *b"tfra", &payload)?;
+    }
+    if trafs.is_empty() {
+        return None;
+    }
+    // The mfra header, the tfra boxes, and the mfro box.
+    let total = u64::try_from(trafs.len()).ok()?.checked_add(24)?;
+    if total > MAX_FMP4_MFRA_BYTES {
+        return None;
+    }
+    let total = u32::try_from(total).ok()?;
+    let mut out = Vec::with_capacity(usize::try_from(total).ok()?);
+    out.extend_from_slice(&total.to_be_bytes());
+    out.extend_from_slice(b"mfra");
+    out.extend_from_slice(&trafs);
+    out.extend_from_slice(&16_u32.to_be_bytes());
+    out.extend_from_slice(b"mfro");
+    out.extend_from_slice(&0_u32.to_be_bytes());
+    out.extend_from_slice(&total.to_be_bytes());
+    Some(out)
+}
+
+/// Appends one ISO BMFF box, or `None` when its size does not fit a `u32`.
+fn push_box(out: &mut Vec<u8>, kind: [u8; 4], payload: &[u8]) -> Option<()> {
+    let size = u32::try_from(payload.len().checked_add(8)?).ok()?;
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(&kind);
+    out.extend_from_slice(payload);
+    Some(())
 }
 
 /// Scans `length` bytes of fragmented MP4 from `reader`.
@@ -424,6 +545,14 @@ pub fn scan_fmp4<R: Read + Seek>(reader: &mut R, length: u64) -> io::Result<Fmp4
                 };
                 next_decode = trial;
                 spans.absorb(&movie, &runs);
+                if scan.index_fragments.len() < MAX_FMP4_INDEX_FRAGMENTS {
+                    scan.index_fragments.push(Fmp4Fragment {
+                        sequence_number: sequence,
+                        offset,
+                        length: mdat_end - offset,
+                        runs: runs.clone(),
+                    });
+                }
                 if let Some(last) = scan.last_sequence
                     && last.checked_add(1) != Some(sequence)
                 {
