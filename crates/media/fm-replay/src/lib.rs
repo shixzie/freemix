@@ -12,6 +12,7 @@ mod event;
 mod highlight;
 mod multiview;
 mod music;
+mod playback_clock;
 mod record_export;
 mod reel;
 mod resolve;
@@ -51,6 +52,7 @@ pub use music::{
     MAX_BED_SAMPLE_RATE, MAX_DUCK_INTERVALS, MAX_MUSIC_TRACKS, MIN_BED_SAMPLE_RATE, MusicBedError,
     MusicBedPlan, MusicBedSpec, MusicTrack,
 };
+pub use playback_clock::ReplayPlaybackClock;
 pub use record_export::{
     ExportChunk, MAX_EXPORT_CHUNK_FRAMES, MAX_RECORD_EXPORT_JOBS, MAX_SEGMENTS_PER_EXPORT,
     RecordExportError, RecordExportFailure, RecordExportJob, RecordExportProgress,

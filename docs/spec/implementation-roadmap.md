@@ -6258,10 +6258,14 @@ event angles at the same timeline instant and resolve the exact source frame
 and segment, or the live edge. `reclaim_and_delete` also deletes a root's oldest
 closed, unprotected files: a missing file counts as reclaimed, and an
 out-of-root path, directory, or failed removal stays in the catalog and is
-reported for a later retry. Remaining gaps in the library itself: A/B playback
-has no real clock, per-event list overrides and controller mapping are
-absent, and no eight-camera storage profile is certified; the end-to-end slice below wires
-part of this to a server. `OR-012` and `OR-013` remain planned.
+reported for a later retry. `ReplayPlaybackClock` turns a caller-supplied
+monotonic nanosecond clock into per-tick deck advances: linked decks advance
+once, unlinked decks advance together, a paused deck holds, and a backwards
+tick or reset re-anchors without moving a cursor. Remaining gaps in the
+library itself: playback is not yet driven by a daemon or engine clock,
+per-event list overrides are absent, and no eight-camera storage profile is
+certified; the end-to-end slice below wires part of this to a server.
+`OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a
 synchronized Quad View or a multiview of up to eight distinct angles plus A/B
