@@ -666,6 +666,7 @@ fn recovery_of_unfinalized_file_matches_finalized_bytes() {
                 time_reference: 7,
                 ..BextMetadata::default()
             }),
+            ixml: Some("<?xml version=\"1.0\"?><BWFXML><SCENE>iso</SCENE></BWFXML>".to_owned()),
             ..WavSpec::new(3, 44_100, WavSampleFormat::Float32)
         },
     ] {
