@@ -1018,6 +1018,44 @@ fn move_input_reorders_the_list_and_is_strict() {
 }
 
 #[test]
+fn set_balance_maps_the_vmix_range_and_is_strict() {
+    let state = state();
+    for (value, basis_points) in [
+        ("-1", -10_000),
+        ("-0.25", -2_500),
+        ("0", 0),
+        ("0.5", 5_000),
+        ("1", 10_000),
+        ("0.125", 1_250),
+    ] {
+        assert_eq!(
+            parse_http_query(
+                &format!("Function=SetBalance&Input=1&Value={value}"),
+                &state
+            ),
+            Ok(Translation::Compat(CompatIntent::SetInputBalance {
+                input: id(1),
+                balance_basis_points: basis_points,
+            })),
+            "{value}"
+        );
+    }
+    for value in ["2", "-1.5", "0.12345", "", "abc", ".5", "1."] {
+        assert!(
+            parse_http_query(
+                &format!("Function=SetBalance&Input=1&Value={value}"),
+                &state
+            )
+            .is_err(),
+            "accepted {value:?}"
+        );
+    }
+    assert!(parse_http_query("Function=SetBalance&Value=0", &state).is_err());
+    assert!(parse_http_query("Function=SetBalance&Input=1", &state).is_err());
+    assert!(parse_http_query("Function=SetBalance&Input=1&Value=0&Extra=1", &state).is_err());
+}
+
+#[test]
 fn playlist_verbs_translate_to_playlist_control() {
     let state = state();
     for (function, operation) in [

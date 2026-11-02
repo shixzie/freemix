@@ -6466,7 +6466,8 @@ transition duration and effect that a `Fade`
 without them uses (a configured `Cut` turns it into a cut), and
 recording/streaming toggles, input renaming, adding network-stream inputs,
 removing inputs (with the native refusal when something references one),
-moving an input to a chosen position with `MoveInput`,
+moving an input to a chosen position with `MoveInput`, input balance with
+`SetBalance` (vMix's -1 through 1),
 setting still images, input playback state/position/duration and mute/volume
 in the XML and XPath state, and
 playlist start/stop/next/previous in addition to the switcher, title,

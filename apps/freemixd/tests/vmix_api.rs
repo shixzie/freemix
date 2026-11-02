@@ -212,6 +212,18 @@ fn the_daemon_serves_the_vmix_tcp_api() {
         .unwrap();
     assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
 
+    writer
+        .write_all(b"FUNCTION SetBalance Input=1&Value=-0.5\r\n")
+        .unwrap();
+    assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
+    writer
+        .write_all(b"FUNCTION SetBalance Input=1&Value=2\r\n")
+        .unwrap();
+    assert!(
+        read_line(&mut reader).starts_with("FUNCTION ER invalid parameter Value"),
+        "an out-of-range balance is refused"
+    );
+
     writer.write_all(b"FUNCTION Nope\r\n").unwrap();
     assert_eq!(
         read_line(&mut reader),

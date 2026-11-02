@@ -377,7 +377,7 @@ fn execute_compat(
                 control,
                 principal,
                 now_millis,
-                audio_strip_payload(strip, Some(percent_to_millidb(percent)), None),
+                audio_strip_payload(strip, Some(percent_to_millidb(percent)), None, None),
                 next_command,
             )
         }
@@ -391,7 +391,24 @@ fn execute_compat(
                 control,
                 principal,
                 now_millis,
-                audio_strip_payload(strip, None, Some(muted)),
+                audio_strip_payload(strip, None, Some(muted), None),
+                next_command,
+            )
+        }
+        CompatIntent::SetInputBalance {
+            input,
+            balance_basis_points,
+        } => {
+            let strip = snapshot
+                .input_audio_strips
+                .iter()
+                .find(|strip| strip.input == input)
+                .ok_or_else(|| format!("input {} has no audio strip", input.get()))?;
+            submit(
+                control,
+                principal,
+                now_millis,
+                audio_strip_payload(strip, None, None, Some(balance_basis_points)),
                 next_command,
             )
         }
@@ -502,11 +519,12 @@ fn audio_strip_payload(
     strip: &fm_protocol::InputAudioStripStatus,
     gain_millidb: Option<i32>,
     muted: Option<bool>,
+    balance_basis_points: Option<i32>,
 ) -> CommandPayload {
     CommandPayload::SetInputAudioStrip {
         input: strip.input,
         gain_millidb: gain_millidb.unwrap_or(strip.gain_millidb),
-        balance_basis_points: strip.balance_basis_points,
+        balance_basis_points: balance_basis_points.unwrap_or(strip.balance_basis_points),
         pan_basis_points: strip.pan_basis_points,
         muted: muted.unwrap_or(strip.muted),
         soloed: strip.soloed,
@@ -662,13 +680,13 @@ mod tests {
             follow_video,
             delay_samples,
             ..
-        } = audio_strip_payload(&strip, Some(-6_021), Some(true))
+        } = audio_strip_payload(&strip, Some(-6_021), Some(true), Some(-2_500))
         else {
             panic!("an audio strip payload");
         };
         assert_eq!(input, strip.input);
         assert_eq!(gain_millidb, -6_021);
-        assert_eq!(balance_basis_points, 100);
+        assert_eq!(balance_basis_points, -2_500);
         assert_eq!(pan_basis_points, -200);
         assert!(muted);
         assert!(soloed);

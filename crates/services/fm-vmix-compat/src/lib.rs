@@ -525,6 +525,11 @@ pub enum CompatIntent {
     SetInputVolume { input: WireInputId, percent: u8 },
     /// Mute or unmute one input's audio strip.
     SetInputMuted { input: WireInputId, muted: bool },
+    /// Set one input's balance in basis points (vMix's -1 through 1).
+    SetInputBalance {
+        input: WireInputId,
+        balance_basis_points: i32,
+    },
     /// Toggle the primary recorder; the dispatcher reads the current state.
     ToggleRecording,
     /// Toggle all streams or one zero-based stream index; the dispatcher
@@ -885,6 +890,20 @@ fn translate(
                 .transpose()?;
             Ok(Translation::Compat(CompatIntent::ToggleStreaming {
                 stream,
+            }))
+        }
+        "SetBalance" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let balance_basis_points = parse_balance(required(parameters, "Value")?).ok_or(
+                ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "balance is -1 through 1 with at most four decimals",
+                },
+            )?;
+            Ok(Translation::Compat(CompatIntent::SetInputBalance {
+                input,
+                balance_basis_points,
             }))
         }
         "AudioOn" | "AudioOff" => {
@@ -1293,6 +1312,32 @@ fn parse_u32(
             parameter,
             reason: "integer is outside the accepted range",
         })
+}
+
+/// vMix's `-1` through `1` balance as basis points.
+fn parse_balance(value: &str) -> Option<i32> {
+    let (sign, digits) = match value.strip_prefix('-') {
+        Some(digits) => (-1_i32, digits),
+        None => (1, value),
+    };
+    let (whole, fraction, dotted) = match digits.split_once('.') {
+        Some((whole, fraction)) => (whole, fraction, true),
+        None => (digits, "", false),
+    };
+    if (whole != "0" && whole != "1")
+        || (dotted && fraction.is_empty())
+        || fraction.len() > 4
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut scaled = whole.parse::<i32>().ok()? * 10_000;
+    for (index, digit) in fraction.bytes().enumerate() {
+        let place = 10_i32.checked_pow(u32::try_from(3 - index).ok()?)?;
+        scaled += i32::from(digit - b'0') * place;
+    }
+    let value = sign * scaled;
+    (-10_000..=10_000).contains(&value).then_some(value)
 }
 
 fn parse_u16(value: &str, parameter: &'static str) -> Result<u16, ParseError> {
