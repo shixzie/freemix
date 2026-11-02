@@ -753,6 +753,8 @@ impl Client {
             | WireMessage::DiagnosticsResponse(_)
             | WireMessage::ClockControlRequest(_)
             | WireMessage::ClockControlResponse(_)
+            | WireMessage::PtzPresetsRequest(_)
+            | WireMessage::PtzPresetsResponse(_)
             | WireMessage::TitlePreviewRequest(_)
             | WireMessage::TitlePreviewFrame(_)
             | WireMessage::ScenePreviewRequest(_)

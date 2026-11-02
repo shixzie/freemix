@@ -3482,6 +3482,11 @@ pub enum WireMessage {
     ClockControlRequest(crate::ClockControlRequest),
     /// The daemon's answer to a production-clock control request.
     ClockControlResponse(crate::ClockControlResponse),
+    /// A client's request for the show's PTZ preset virtual inputs
+    /// (IN-028, Protocol 2.153).
+    PtzPresetsRequest(crate::PtzPresetsRequest),
+    /// The daemon's answer to a [`PtzPresetsRequest`].
+    PtzPresetsResponse(crate::PtzPresetsResponse),
     Error(ErrorMessage),
     TitleState(TitleStateMessage),
     /// Every title input's animation phase (Protocol 2.90), a lossy

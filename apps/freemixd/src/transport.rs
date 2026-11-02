@@ -284,6 +284,59 @@ pub(crate) fn error_message(code: &str, message: &str) -> WireMessage {
     })
 }
 
+/// Answers a PTZ preset request from the durable project's canonical
+/// `ptz_presets` document (IN-028). A malformed stored document yields a
+/// structured error rather than guessing at entries.
+pub(crate) fn ptz_presets_response(
+    project: &fm_model::Project,
+    request: fm_protocol::PtzPresetsRequest,
+) -> WireMessage {
+    let presets = match project.ptz_presets_document() {
+        None => Vec::new(),
+        Some(document) => match fm_ptz::PresetVirtualInputs::from_document(document) {
+            Ok(inputs) => inputs
+                .list()
+                .map(|input| fm_protocol::PtzPresetStatus {
+                    camera: input.id.camera_id().to_string(),
+                    preset: input.id.preset_id().get(),
+                    name: input.name.clone(),
+                    thumbnail: input.thumbnail.clone(),
+                    enabled: input.enabled,
+                })
+                .collect(),
+            Err(error) => {
+                return WireMessage::Error(ErrorMessage {
+                    request_id: Some(request.request_id),
+                    current_revision: None,
+                    error: StructuredError {
+                        code: "invalid_ptz_presets".into(),
+                        message: error.to_string(),
+                        fields: Vec::new(),
+                        retryable: false,
+                    },
+                });
+            }
+        },
+    };
+    if let Err(error) = fm_protocol::encode_presets(&presets) {
+        return WireMessage::Error(ErrorMessage {
+            request_id: Some(request.request_id),
+            current_revision: None,
+            error: StructuredError {
+                code: "ptz_presets_too_large".into(),
+                message: error.to_string(),
+                fields: Vec::new(),
+                retryable: false,
+            },
+        });
+    }
+    WireMessage::PtzPresetsResponse(fm_protocol::PtzPresetsResponse {
+        protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+        request_id: request.request_id,
+        presets,
+    })
+}
+
 pub(crate) fn shutdown_message() -> WireMessage {
     WireMessage::Error(ErrorMessage {
         request_id: None,

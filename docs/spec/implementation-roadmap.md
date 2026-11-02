@@ -5701,10 +5701,14 @@ replies, timeouts, and bytes. `ViscaSerialAdapter` implements the full
 encodes the shared VISCA command set, updates telemetry and presets only after
 the camera replies, and marks a camera disconnected with a typed reason when a
 transaction fails, with the same recovery lifecycle as the UDP adapter.
-Remaining gaps: neither adapter is bound to the engine, protocol, or UI; no
-real camera hardware has validated either transport; preset virtual inputs
-are not switchable from the engine or UI; and there is no ONVIF, Panasonic, or
-digital PTZ. `IN-028` remains planned.
+The control protocol publishes the show's preset virtual inputs
+(Protocol 2.153): `ptz_presets_request` answers with a canonical
+`ptz_presets_response` carrying each camera, preset slot, name, thumbnail, and
+enabled flag to any admitted session. Remaining gaps: neither adapter is bound
+to an engine consumer that recalls a preset; no real camera hardware has
+validated either transport; preset virtual inputs are not switchable from the
+engine or UI; and there is no ONVIF, Panasonic, or digital PTZ. `IN-028`
+remains planned.
 
 Current implementation boundary for item 10: `fm-telestrator` provides a
 sequenced, bounded collaborative board with normalized strokes, per-author and

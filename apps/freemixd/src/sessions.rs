@@ -48,8 +48,9 @@ use super::{
     admit_session_command, clock_control_response, current_handshake, diagnostics_response,
     error_message, execute_command_group, execute_session_command, group_commit_eligible,
     handshake_code, handshake_response, is_client_session_termination, native_group_eligible,
-    now_millis, reconciled_handshake_outcome, record_heartbeat, rejected_handshake_response,
-    requested_daemon_shutdown, server_identity, shutdown_message, structured_session_error,
+    now_millis, ptz_presets_response, reconciled_handshake_outcome, record_heartbeat,
+    rejected_handshake_response, requested_daemon_shutdown, server_identity, shutdown_message,
+    structured_session_error,
 };
 use crate::input_thumbnails::{ThumbnailKey, ThumbnailOutbox, ThumbnailWork, ThumbnailWorker};
 use crate::journal::DurableStore;
@@ -2510,6 +2511,11 @@ impl Runtime<'_> {
                         error: structured_session_error(&error),
                     }),
                 };
+                peer.reply(response)?;
+                Ok(())
+            }
+            WireMessage::PtzPresetsRequest(request) => {
+                let response = ptz_presets_response(durable.project(), request);
                 peer.reply(response)?;
                 Ok(())
             }

@@ -157,6 +157,12 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "clock_control_response" => {
             WireMessage::ClockControlResponse(decode_clock_control_response(&mut fields)?)
         }
+        "ptz_presets_request" => {
+            WireMessage::PtzPresetsRequest(decode_ptz_presets_request(&mut fields)?)
+        }
+        "ptz_presets_response" => {
+            WireMessage::PtzPresetsResponse(decode_ptz_presets_response(&mut fields)?)
+        }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
         "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
         "title_phases" => WireMessage::TitlePhases(crate::TitlePhasesMessage {
@@ -4222,6 +4228,38 @@ fn decode_clock_control_request(
         request_id,
         name,
         operation,
+    })
+}
+
+fn decode_ptz_presets_request(fields: &mut Fields) -> Result<crate::PtzPresetsRequest, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+        field: "protocol",
+        value: protocol,
+    })?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    Ok(crate::PtzPresetsRequest {
+        protocol,
+        request_id,
+    })
+}
+
+fn decode_ptz_presets_response(
+    fields: &mut Fields,
+) -> Result<crate::PtzPresetsResponse, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+        field: "protocol",
+        value: protocol,
+    })?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let presets = crate::decode_presets(&fields.required("presets")?)?;
+    Ok(crate::PtzPresetsResponse {
+        protocol,
+        request_id,
+        presets,
     })
 }
 

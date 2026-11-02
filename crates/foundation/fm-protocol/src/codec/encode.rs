@@ -149,6 +149,12 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::ClockControlResponse(message) => {
             encode_clock_control_response(&mut record, message)?;
         }
+        WireMessage::PtzPresetsRequest(message) => {
+            encode_ptz_presets_request(&mut record, message)?;
+        }
+        WireMessage::PtzPresetsResponse(message) => {
+            encode_ptz_presets_response(&mut record, message)?;
+        }
         WireMessage::Error(message) => encode_error_message(&mut record, message)?,
         WireMessage::TitleState(message) => encode_title_state(&mut record, message)?,
         WireMessage::TitlePhases(message) => encode_title_phases_record(&mut record, message)?,
@@ -3757,6 +3763,29 @@ fn encode_clock_control_request(
     if let Some(value) = message.operation.value_ns() {
         record.field("value_ns", value)?;
     }
+    Ok(())
+}
+
+fn encode_ptz_presets_request(
+    record: &mut Record,
+    message: &crate::PtzPresetsRequest,
+) -> Result<(), CodecError> {
+    record.kind("ptz_presets_request");
+    record.field("protocol", message.protocol)?;
+    validate_request_id(&message.request_id)?;
+    record.field_str("request_id", &message.request_id)?;
+    Ok(())
+}
+
+fn encode_ptz_presets_response(
+    record: &mut Record,
+    message: &crate::PtzPresetsResponse,
+) -> Result<(), CodecError> {
+    record.kind("ptz_presets_response");
+    record.field("protocol", message.protocol)?;
+    validate_request_id(&message.request_id)?;
+    record.field_str("request_id", &message.request_id)?;
+    record.field_string("presets", crate::encode_presets(&message.presets)?)?;
     Ok(())
 }
 

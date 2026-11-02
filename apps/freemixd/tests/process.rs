@@ -32,10 +32,10 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     DiagnosticsRequest, DiagnosticsResponse, EngineIdentity, EventCursor, EventPayload,
     HandshakeOutcome, HandshakeRequest, HeartbeatMessage, ManualTransitionKind,
-    ManualTransitionPosition, ManualTransitionStatus, ProtocolVersion, ResumeCursor, Role,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, WireInputId, WireMessage, WireStingerSlotId, WireStreamTargetId,
-    decode_line, encode_line,
+    ManualTransitionPosition, ManualTransitionStatus, ProtocolVersion, PtzPresetStatus,
+    PtzPresetsRequest, PtzPresetsResponse, ResumeCursor, Role, RuntimeLifecycleEvent,
+    ServerIdentity, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, WireInputId,
+    WireMessage, WireStingerSlotId, WireStreamTargetId, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
@@ -5056,6 +5056,85 @@ fn viewer_diagnostics_query_is_read_only_and_correlated() {
     let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(persisted.position().revision, handshake.current_revision);
     assert_eq!(persisted.idempotency_receipts(), []);
+    daemon.stop();
+}
+
+#[test]
+fn ptz_preset_virtual_inputs_are_published_to_viewers() {
+    let directory = TestDirectory::new("ptz-presets");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let stored = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    let mut project = stored.project().clone();
+    let mut inputs = fm_ptz::PresetVirtualInputs::new();
+    inputs
+        .insert(fm_ptz::PresetVirtualInput {
+            id: fm_ptz::PresetVirtualInputId::new(
+                fm_ptz::CameraId::new("cam-a").unwrap(),
+                fm_ptz::PresetId::new(3),
+            ),
+            name: "Wide".to_owned(),
+            thumbnail: Some("asset://thumbs/wide.png".to_owned()),
+            enabled: true,
+        })
+        .unwrap();
+    inputs
+        .insert(fm_ptz::PresetVirtualInput {
+            id: fm_ptz::PresetVirtualInputId::new(
+                fm_ptz::CameraId::new("cam-b").unwrap(),
+                fm_ptz::PresetId::new(0),
+            ),
+            name: "Close".to_owned(),
+            thumbnail: None,
+            enabled: false,
+        })
+        .unwrap();
+    project
+        .set_ptz_presets_document(inputs.to_document())
+        .unwrap();
+    ProjectStore::new(&project_path)
+        .unwrap()
+        .save(&stored.with_project(project).unwrap())
+        .unwrap();
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Viewer, None);
+    client.receive_snapshot();
+    client.send(&WireMessage::PtzPresetsRequest(PtzPresetsRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "ptz-1".into(),
+    }));
+    let WireMessage::PtzPresetsResponse(PtzPresetsResponse {
+        protocol,
+        request_id,
+        presets,
+    }) = client.receive()
+    else {
+        panic!("expected a preset response");
+    };
+    assert_eq!(protocol, CURRENT_PROTOCOL_VERSION);
+    assert_eq!(request_id, "ptz-1");
+    assert_eq!(
+        presets,
+        vec![
+            PtzPresetStatus {
+                camera: "cam-a".to_owned(),
+                preset: 3,
+                name: "Wide".to_owned(),
+                thumbnail: Some("asset://thumbs/wide.png".to_owned()),
+                enabled: true,
+            },
+            PtzPresetStatus {
+                camera: "cam-b".to_owned(),
+                preset: 0,
+                name: "Close".to_owned(),
+                thumbnail: None,
+                enabled: false,
+            },
+        ]
+    );
+    drop(client);
     daemon.stop();
 }
 

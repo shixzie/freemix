@@ -2376,12 +2376,14 @@ dependencies = [
  "fm-io-omt",
  "fm-preset-file",
  "fm-protocol",
+ "fm-record",
  "fm-sim",
  "fm-types",
  "fm-ui-egui",
  "fm-ui-model",
  "midir",
  "nix 0.27.1",
+ "tempfile",
  "tungstenite",
 ]
 
@@ -2438,6 +2440,7 @@ dependencies = [
  "fm-plugin-host-api",
  "fm-presentations",
  "fm-protocol",
+ "fm-ptz",
  "fm-record",
  "fm-replay",
  "fm-scheduler",

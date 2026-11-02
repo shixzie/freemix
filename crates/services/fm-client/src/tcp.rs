@@ -2108,6 +2108,8 @@ impl TcpSession {
             | WireMessage::CapabilityReport(_)
             | WireMessage::DiagnosticsRequest(_)
             | WireMessage::ClockControlRequest(_)
+            | WireMessage::PtzPresetsRequest(_)
+            | WireMessage::PtzPresetsResponse(_)
             | WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)

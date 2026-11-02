@@ -18,6 +18,7 @@ mod network_stream;
 mod output_failure;
 mod paged;
 mod production_clock;
+mod ptz;
 mod recorder_status;
 mod reel;
 mod replay;
@@ -218,6 +219,10 @@ pub use production_clock::{
     MAX_PRODUCTION_CLOCK_TEXT_BYTES, MAX_PRODUCTION_CLOCK_ZONE_BYTES, ProductionClockKind,
     ProductionClockState, ProductionClockStatus, clock_name_is_valid, decode_statuses,
     encode_statuses,
+};
+pub use ptz::{
+    MAX_PTZ_PRESETS, PtzPresetStatus, PtzPresetsRequest, PtzPresetsResponse, decode_presets,
+    encode_presets,
 };
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
