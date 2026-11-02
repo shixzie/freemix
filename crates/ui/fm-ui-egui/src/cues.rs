@@ -2999,7 +2999,7 @@ fn draw_params(
                         for clock in clocks {
                             if ui.selectable_label(clock == name, clock).clicked() && clock != name
                             {
-                                *name = clock.clone();
+                                name.clone_from(clock);
                                 change = Some(Change::Commit);
                             }
                         }
@@ -3019,7 +3019,7 @@ fn draw_params(
                         ] {
                             if ui.selectable_label(selected == token, token).clicked() {
                                 *operation = op;
-                                selected = token.to_owned();
+                                token.clone_into(&mut selected);
                                 change = Some(Change::Commit);
                             }
                         }
@@ -3042,7 +3042,7 @@ fn draw_params(
                         ] {
                             if ui.selectable_label(selected == token, token).clicked() {
                                 *operation = with_value(value.unwrap_or(0));
-                                selected = token.to_owned();
+                                token.clone_into(&mut selected);
                                 change = Some(Change::Commit);
                             }
                         }

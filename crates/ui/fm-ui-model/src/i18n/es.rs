@@ -9060,21 +9060,87 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::RecorderTracksFilesSplit,
         t("Archivos: <raíz del segmento>_NN_<pista>.wav"),
     ),
+    (Msg::RecorderTracksLayout, t("Diseño")),
     (
-        Msg::RecorderTracksEditorHover,
+        Msg::RecorderTracksLayoutHover,
+        t("Elegir un archivo entrelazado o un WAV por pista"),
+    ),
+    (Msg::RecorderTracksAddTrack, t("Añadir pista")),
+    (
+        Msg::RecorderTracksAddTrackHover,
+        t("Añadir una pista con un canal de Master"),
+    ),
+    (Msg::RecorderTracksRemoveTrack, t("Quitar pista")),
+    (
+        Msg::RecorderTracksRemoveTrackHover,
+        t("Quitar esta pista y sus canales del mapa"),
+    ),
+    (Msg::RecorderTracksAddChannel, t("Añadir canal")),
+    (
+        Msg::RecorderTracksAddChannelHover,
+        t("Añadir el siguiente canal libre del último bus de esta pista"),
+    ),
+    (Msg::RecorderTracksRemoveChannel, t("Quitar canal")),
+    (
+        Msg::RecorderTracksRemoveChannelHover,
+        t("Quitar este canal de la pista"),
+    ),
+    (
+        Msg::RecorderTracksBusHover,
+        t("El bus Master o auxiliar del que graba este canal"),
+    ),
+    (
+        Msg::RecorderTracksChannelHover,
+        t("El canal de ese bus, empezando por cero"),
+    ),
+    (Msg::RecorderTracksTrackName, t("Nombre de la pista")),
+    (
+        Msg::RecorderTracksTrackNameHover,
+        t("El nombre de la pista en el mapa y en los nombres de archivo divididos"),
+    ),
+    (
+        Msg::RecorderTracksDraftNoTracks,
+        t("Añada al menos una pista."),
+    ),
+    (
+        Msg::RecorderTracksDraftTooManyTracks,
+        t("Un mapa admite como máximo 32 pistas."),
+    ),
+    (
+        Msg::RecorderTracksDraftName,
         t(
-            "Edite el documento canónico freemix-record-track-map; Guardar lo valida antes de reemplazar el mapa guardado",
+            "Cada pista necesita un nombre de 1 a 64 bytes imprimibles sin espacios en los extremos.",
         ),
+    ),
+    (
+        Msg::RecorderTracksDraftDuplicateName,
+        t("Los nombres de pista deben ser únicos."),
+    ),
+    (
+        Msg::RecorderTracksDraftEmptyTrack,
+        t("Cada pista necesita al menos un canal."),
+    ),
+    (
+        Msg::RecorderTracksDraftTooWide,
+        t("Una pista admite como máximo 16 canales."),
+    ),
+    (
+        Msg::RecorderTracksDraftDuplicateChannel,
+        t("Una pista no puede usar el mismo canal de bus dos veces."),
+    ),
+    (
+        Msg::RecorderTracksDraftTooManyChannels,
+        t("Un mapa admite como máximo 64 canales."),
     ),
     (Msg::RecorderTracksSave, t("Guardar mapa")),
     (
         Msg::RecorderTracksSaveHover,
-        t("Validar este documento y escribirlo como mapa de pistas de la ranura de grabador"),
+        t("Validar el borrador y escribirlo como mapa de pistas de la ranura de grabador"),
     ),
-    (Msg::RecorderTracksReload, t("Recargar texto")),
+    (Msg::RecorderTracksReload, t("Recargar mapa")),
     (
         Msg::RecorderTracksReloadHover,
-        t("Descartar los cambios y volver a mostrar el documento guardado"),
+        t("Descartar los cambios y volver a mostrar el mapa guardado"),
     ),
     (
         Msg::RecorderTracksNoFiles,

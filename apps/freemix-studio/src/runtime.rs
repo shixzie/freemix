@@ -9,9 +9,9 @@ use fm_protocol::{
 };
 use fm_record::{RecordBus, RecorderTrackMap};
 use fm_ui_egui::{
-    DisplayOutputAnswer, RecorderTrackFileState, RecorderTrackFileView, RecorderTrackLayout,
-    RecorderTrackMapView, RecorderTrackRecordingState, RecorderTrackStatusView, RecorderTrackView,
-    TitleAnimationRefusal, TitleUpdate,
+    DisplayOutputAnswer, RecorderTrackBus, RecorderTrackFileState, RecorderTrackFileView,
+    RecorderTrackLayout, RecorderTrackMapView, RecorderTrackRecordingState, RecorderTrackSource,
+    RecorderTrackStatusView, RecorderTrackView, TitleAnimationRefusal, TitleUpdate,
 };
 
 use crate::titles::TitleRelay;
@@ -1304,6 +1304,17 @@ fn track_map_view(slot: usize, map: &RecorderTrackMap) -> RecorderTrackMapView {
             .map(|track| RecorderTrackView {
                 name: track.name().to_owned(),
                 channels: track.layout().channel_count(),
+                source_refs: track
+                    .sources()
+                    .iter()
+                    .map(|source| RecorderTrackSource {
+                        bus: match source.bus {
+                            RecordBus::Master => RecorderTrackBus::Master,
+                            RecordBus::Aux(bus) => RecorderTrackBus::Aux(bus.get()),
+                        },
+                        channel: source.channel,
+                    })
+                    .collect(),
                 sources: track
                     .sources()
                     .iter()

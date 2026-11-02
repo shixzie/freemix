@@ -3858,16 +3858,21 @@ recovery rules. Without either override a track file follows its MP4 segment
 and RF64 limits. Studio's View ▸ Recorder tracks window reads the supervised
 bundle's maps and lists each slot's layout, tracks, channels, sources, and WAV
 file names, with a Refresh action; a Studio connected to a daemon elsewhere
-says it has no local bundle. The same window edits a slot's canonical
-`freemix-record-track-map 1` document and saves it atomically after validation
-(a new slot starts from a stereo-Master template), so maps no longer require
-an offline import. The daemon rewrites each slot's
+says it has no local bundle. The same window is a structured editor: it picks
+the file layout, adds and removes named tracks, and gives every track ordered
+Master or aux bus channels (channel 0-63), refusing empty or duplicate names,
+empty tracks, duplicate channels, and over-limit maps before Save. Save builds
+the canonical `freemix-record-track-map 1` document from that draft and the
+runtime validates it through `fm-record` and replaces the stored map
+atomically, so an invalid draft never reaches the bundle and maps no longer
+require an offline import. The daemon rewrites each slot's
 `recorders/<slot>.trackstatus` at most once a second while a track session is
 open and once when it stops, naming every WAV path, its byte count, and its
 open/closed/failed/recovered/lost state; the window polls that file once a
 second while open and lists the live files beside the map. Remaining gaps:
-authoring is the canonical document rather than a structured track editor.
-WAV output is separate from the
+there is no time or byte limit editor in Studio, and the track-map document is
+not re-read from the bundle automatically after an external edit. WAV output
+is separate from the
 crash-safe packet spool, and metadata stops at version-1 `bext` without iXML,
 loudness, or UMID. `AU-010` remains planned.
 

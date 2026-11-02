@@ -3796,11 +3796,25 @@ fn scenes(language: Language) -> Vec<Scene> {
                     crate::RecorderTrackView {
                         name: "Program".to_owned(),
                         channels: 2,
+                        source_refs: vec![
+                            crate::RecorderTrackSource {
+                                bus: crate::RecorderTrackBus::Master,
+                                channel: 0,
+                            },
+                            crate::RecorderTrackSource {
+                                bus: crate::RecorderTrackBus::Master,
+                                channel: 1,
+                            },
+                        ],
                         sources: vec!["master 0".to_owned(), "master 1".to_owned()],
                     },
                     crate::RecorderTrackView {
                         name: "Bus A".to_owned(),
                         channels: 1,
+                        source_refs: vec![crate::RecorderTrackSource {
+                            bus: crate::RecorderTrackBus::Aux(1),
+                            channel: 0,
+                        }],
                         sources: vec!["aux A 0".to_owned()],
                     },
                 ],

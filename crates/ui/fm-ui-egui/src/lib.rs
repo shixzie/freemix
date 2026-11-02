@@ -699,12 +699,29 @@ pub struct RecorderTrackStatusView {
     pub files: Vec<RecorderTrackFileView>,
 }
 
+/// A bus a recorder track can take a channel from.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum RecorderTrackBus {
+    Master,
+    /// Aux bus A through G, numbered 1 through 7.
+    Aux(u8),
+}
+
+/// One bus channel in a recorder track, in output channel order.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RecorderTrackSource {
+    pub bus: RecorderTrackBus,
+    pub channel: u16,
+}
+
 /// One recorded track in a recorder track map.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecorderTrackView {
     pub name: String,
     /// Channels in this track.
     pub channels: u16,
+    /// Typed source channels in output order.
+    pub source_refs: Vec<RecorderTrackSource>,
     /// Source labels in channel order, such as `master 0` or `aux A 1`.
     pub sources: Vec<String>,
 }

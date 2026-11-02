@@ -207,8 +207,7 @@ pub const fn property_unit(property: Property) -> (&'static str, f64) {
         Property::ScaleX | Property::ScaleY => ("%", 100.0),
         Property::Rotation => ("°", 1_000.0),
         Property::Opacity => ("%", 2.55),
-        Property::Color => ("", 1.0),
-        Property::MatteInvert => ("", 1.0),
+        Property::Color | Property::MatteInvert => ("", 1.0),
         _ => (" px", 1.0),
     }
 }
