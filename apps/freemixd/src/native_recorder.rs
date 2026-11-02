@@ -553,6 +553,14 @@ impl TrackWavState {
             meters.push(meter);
         }
         let loudness_fallback = options.bext.as_ref().and_then(|bext| bext.loudness);
+        let bitrate = specs.iter().fold(0_u64, |sum, spec| {
+            sum.saturating_add(
+                u64::from(spec.channels)
+                    .saturating_mul(u64::from(spec.sample_rate))
+                    .saturating_mul(16),
+            )
+        });
+        recording_session::preflight_track_wav(recording_parent(segment), fallback, bitrate)?;
         let names = Self::session_names(segment, &map, mode);
         let writer_config = fm_record::ResilientWavConfig {
             max_segment_data_bytes: policy.max_segment_bytes,

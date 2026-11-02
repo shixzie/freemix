@@ -3895,8 +3895,12 @@ file from the exact samples it writes (K-weighted integrated loudness, range,
 maximum true peak, and maximum momentary and short-term loudness) and patches
 the measured version-2 fields into every finalized segment, including failover
 files; the authored document supplies any field a segment could not measure.
-Remaining gap: WAV output is separate from the crash-safe packet spool.
-`AU-010` remains planned.
+Track WAV starts run the same free-space preflight as their MP4 segment,
+using the map's PCM bitrate, and refuse when every measured root is
+exhausted, reporting `FREEMIXD_RECORD_TRACK_SPACE`. Remaining gap: the WAVs
+use their own resilient WAV sessions rather than the MP4 packet spool, while
+sharing its preflight, roots, manifests, and recovery behavior. `AU-010`
+remains planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):
 `fm-observability` provides a deterministic, clock-free statistics layer: a

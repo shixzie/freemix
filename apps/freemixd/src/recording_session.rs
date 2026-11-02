@@ -534,8 +534,8 @@ fn preflight_refuses(preflight: &SpacePreflight) -> bool {
     measured.peek().is_some() && measured.all(|estimate| estimate.level == SpaceLevel::Exhausted)
 }
 
-fn space_record(slot: usize, name: &str, bitrate: u64, preflight: &SpacePreflight) -> String {
-    let roots = preflight
+fn roots_field(preflight: &SpacePreflight) -> String {
+    preflight
         .roots
         .iter()
         .map(|root| match (root.estimate, root.probe_error) {
@@ -554,15 +554,56 @@ fn space_record(slot: usize, name: &str, bitrate: u64, preflight: &SpacePrefligh
             ),
         })
         .collect::<Vec<_>>()
-        .join(",");
+        .join(",")
+}
+
+fn space_record(slot: usize, name: &str, bitrate: u64, preflight: &SpacePreflight) -> String {
     format!(
-        "FREEMIXD_RECORDER_SPACE\tv=1\tslot={slot}\tsession={}\tbitrate_bps={bitrate}\tminimum_s={}\tsufficient_root={}\troots={roots}",
+        "FREEMIXD_RECORDER_SPACE\tv=1\tslot={slot}\tsession={}\tbitrate_bps={bitrate}\tminimum_s={}\tsufficient_root={}\troots={}",
         field(name),
         preflight.minimum.as_secs(),
         preflight
             .first_sufficient_root()
             .map_or_else(|| "none".to_owned(), |root| root.to_string()),
+        roots_field(preflight),
     )
+}
+
+/// Runs the recorder free-space preflight for a track WAV start at `root`
+/// with the optional fallback, using the PCM bitrate of the files about to
+/// be written.
+///
+/// # Errors
+///
+/// Refuses when every root with a known free-space figure is exhausted.
+pub(crate) fn preflight_track_wav(
+    root: &Path,
+    fallback: Option<&Path>,
+    bitrate_bits_per_second: u64,
+) -> Result<(), String> {
+    let roots: Vec<PathBuf> = std::iter::once(root.to_path_buf())
+        .chain(fallback.map(Path::to_path_buf))
+        .collect();
+    let mut space_probe = probe;
+    let preflight = preflight_recording_space(
+        &mut space_probe,
+        &roots,
+        bitrate_bits_per_second,
+        PREFLIGHT_MINIMUM,
+        &SpaceThresholds::default(),
+    );
+    eprintln!(
+        "FREEMIXD_RECORD_TRACK_SPACE\tv=1\tbitrate_bps={bitrate_bits_per_second}\tminimum_s={}\tsufficient_root={}\troots={}",
+        preflight.minimum.as_secs(),
+        preflight
+            .first_sufficient_root()
+            .map_or_else(|| "none".to_owned(), |root| root.to_string()),
+        roots_field(&preflight),
+    );
+    if preflight_refuses(&preflight) {
+        return Err("preflight:no track recording directory has usable free space".to_owned());
+    }
+    Ok(())
 }
 
 /// Removes the manifests of every session (video and WAV) that never
@@ -1191,6 +1232,25 @@ mod tests {
         assert_eq!(
             estimated_bitrate(1920, 1080, rate, 2, None, None),
             payload + payload / 32
+        );
+    }
+
+    #[test]
+    fn a_track_start_probes_its_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        preflight_track_wav(directory.path(), None, 1_536_000).unwrap();
+        // An unknown root never refuses; the primary still has room.
+        let missing = directory.path().join("missing");
+        preflight_track_wav(&missing, Some(directory.path()), 1_536_000).unwrap();
+        assert_eq!(
+            roots_field(&preflight_recording_space(
+                &mut |_: &Path| Err(io::Error::from(io::ErrorKind::Unsupported)),
+                &[directory.path().to_path_buf()],
+                1_536_000,
+                PREFLIGHT_MINIMUM,
+                &SpaceThresholds::default(),
+            )),
+            "0:unknown:Unsupported"
         );
     }
 
