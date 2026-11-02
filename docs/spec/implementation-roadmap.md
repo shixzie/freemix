@@ -4039,12 +4039,16 @@ recording into one directory: the second daemon's startup recovery reports
 the first's live session as `status=locked` and leaves its manifest in the
 `Recording` state, so the lock is proven through the daemon and not only in
 `fm-record`. A valid non-fragmented MP4 is classified as `Progressive`:
-the scanner validates its `moov` and track headers (and reads `mvhd`'s
-bounded duration), accepts a `moov` at the end after `mdat`, preserves every
-byte, reports it as `SegmentOutcome::Progressive` instead of repairing it, and
-counts it as `progressive=` in `FREEMIXD_RECORDING_RECOVERY`. Remaining gaps:
-progressive sample tables are not validated, so truncation inside a
-progressive `mdat` is not detected. `OR-003` remains planned.
+the scanner validates its `moov` and track headers, accepts a `moov` at the
+end after `mdat`, and validates each track's bounded `stbl` tables (`stts`,
+`stsc`, `stsz`/`stz2`, `stco`/`co64`) against the file length. `stts` supplies
+the exact duration; a sample whose data runs past the file is classified
+unrecoverable as `progressive sample data is truncated`, and the file is
+preserved untouched either way. Recovery reports it as
+`SegmentOutcome::Progressive` and counts it as `progressive=` in
+`FREEMIXD_RECORDING_RECOVERY`. Remaining evidence: power-loss recovery and
+the Windows/macOS recording paths are not certified in this sandbox.
+`OR-003` remains planned.
 
 
 Exit: a remote-controlled headless production can stream and record

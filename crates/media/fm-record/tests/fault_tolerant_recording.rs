@@ -166,6 +166,94 @@ fn init_segment(tracks: &[TrackSpec], fragmented: bool) -> Vec<u8> {
     cat(&[&ftyp, &mp4_box(*b"moov", &moov)])
 }
 
+/// A one-track progressive MP4 whose sample tables describe `samples`
+/// uniform samples of `sample_size` bytes in one `mdat`.
+///
+/// The track runs at 1 kHz with 40-tick samples, so its duration is
+/// `samples * 40 ms`. The `moov` is first or last, and the chunk offset is
+/// computed for that layout.
+fn progressive_file(moov_at_end: bool, samples: u32, sample_size: u32) -> Vec<u8> {
+    const TIMESCALE: u32 = 1_000;
+    const SAMPLE_DURATION: u32 = 40;
+    let ftyp = mp4_box(*b"ftyp", b"isom\0\0\x02\0isomiso6");
+    let data = vec![3_u8; usize::try_from(u64::from(samples) * u64::from(sample_size)).unwrap()];
+    let build_moov = |mdat_payload_offset: u32| {
+        let mut movie_header_body = vec![0_u8; 8];
+        movie_header_body.extend_from_slice(&TIMESCALE.to_be_bytes());
+        movie_header_body.extend_from_slice(&samples.saturating_mul(SAMPLE_DURATION).to_be_bytes());
+        movie_header_body.extend_from_slice(&[0_u8; 80]);
+        let mut tkhd = vec![0_u8; 8];
+        tkhd.extend_from_slice(&1_u32.to_be_bytes());
+        tkhd.extend_from_slice(&[0_u8; 68]);
+        let mut media_header_body = vec![0_u8; 8];
+        media_header_body.extend_from_slice(&TIMESCALE.to_be_bytes());
+        media_header_body.extend_from_slice(&[0_u8; 8]);
+        let mut hdlr = vec![0_u8; 4];
+        hdlr.extend_from_slice(b"vide");
+        hdlr.extend_from_slice(&[0_u8; 13]);
+        let stts = full_box(
+            *b"stts",
+            0,
+            0,
+            &cat(&[
+                &1_u32.to_be_bytes(),
+                &samples.to_be_bytes(),
+                &SAMPLE_DURATION.to_be_bytes(),
+            ]),
+        );
+        let sample_to_chunk = full_box(
+            *b"stsc",
+            0,
+            0,
+            &cat(&[
+                &1_u32.to_be_bytes(),
+                &1_u32.to_be_bytes(),
+                &samples.to_be_bytes(),
+                &1_u32.to_be_bytes(),
+            ]),
+        );
+        let sample_sizes = full_box(
+            *b"stsz",
+            0,
+            0,
+            &cat(&[&sample_size.to_be_bytes(), &samples.to_be_bytes()]),
+        );
+        let stco = full_box(
+            *b"stco",
+            0,
+            0,
+            &cat(&[&1_u32.to_be_bytes(), &mdat_payload_offset.to_be_bytes()]),
+        );
+        let stbl = mp4_box(
+            *b"stbl",
+            &cat(&[&stts, &sample_to_chunk, &sample_sizes, &stco]),
+        );
+        let minf = mp4_box(*b"minf", &stbl);
+        let mdia = mp4_box(
+            *b"mdia",
+            &cat(&[
+                &full_box(*b"mdhd", 0, 0, &media_header_body),
+                &full_box(*b"hdlr", 0, 0, &hdlr),
+                &minf,
+            ]),
+        );
+        let trak = mp4_box(*b"trak", &cat(&[&full_box(*b"tkhd", 0, 3, &tkhd), &mdia]));
+        mp4_box(
+            *b"moov",
+            &cat(&[&full_box(*b"mvhd", 0, 0, &movie_header_body), &trak]),
+        )
+    };
+    let mdat = mp4_box(*b"mdat", &data);
+    if moov_at_end {
+        let offset = u32::try_from(ftyp.len() + 8).unwrap();
+        cat(&[&ftyp, &mdat, &build_moov(offset)])
+    } else {
+        let moov = build_moov(0);
+        let offset = u32::try_from(ftyp.len() + moov.len() + 8).unwrap();
+        cat(&[&ftyp, &build_moov(offset), &mdat])
+    }
+}
+
 fn traf(track: &TrackSpec, decode_time: u64, data_offset: i32, explicit_base: bool) -> Vec<u8> {
     let tfhd = if explicit_base {
         let mut body = track.id.to_be_bytes().to_vec();
@@ -567,17 +655,21 @@ fn an_inconsistent_fragment_ends_the_playable_prefix() {
 #[test]
 fn a_progressive_file_is_classified_and_preserved() {
     let temp = TempDirectory::new();
-    let mut bytes = init_segment(&TRACKS, false);
-    bytes.extend(fragment(1));
+    let bytes = progressive_file(false, 10, 16);
     let path = temp.join("progressive.mp4");
     fs::write(&path, &bytes).unwrap();
 
     let scan = scan_fmp4_file(&path).unwrap();
     assert_eq!(scan.integrity, Fmp4Integrity::Progressive);
     assert_eq!(scan.fragments, 0);
-    assert_eq!(scan.movie.as_ref().unwrap().tracks().len(), 2);
+    assert_eq!(scan.movie.as_ref().unwrap().tracks().len(), 1);
     assert_eq!(scan.valid_length, bytes.len() as u64);
     assert_eq!(scan.unusable_bytes(), 0);
+    assert_eq!(
+        scan.recovered_duration_nanos(),
+        400_000_000,
+        "ten 40 ms samples"
+    );
 
     let repair = repair_fmp4_file(&path).unwrap();
     assert_eq!(repair.truncated_bytes, 0);
@@ -589,12 +681,7 @@ fn a_progressive_file_is_classified_and_preserved() {
 #[test]
 fn a_progressive_moov_at_the_end_is_detected_and_preserved() {
     let temp = TempDirectory::new();
-    let init = init_segment(&TRACKS, false);
-    let ftyp_len = usize::try_from(u32::from_be_bytes(init[0..4].try_into().unwrap())).unwrap();
-    let (ftyp, moov) = init.split_at(ftyp_len);
-    let mut bytes = Vec::from(ftyp);
-    bytes.extend(mp4_box(*b"mdat", &[7_u8; 64]));
-    bytes.extend_from_slice(moov);
+    let bytes = progressive_file(true, 10, 16);
     let path = temp.join("moov-at-end.mp4");
     fs::write(&path, &bytes).unwrap();
 
@@ -602,7 +689,33 @@ fn a_progressive_moov_at_the_end_is_detected_and_preserved() {
     assert_eq!(scan.integrity, Fmp4Integrity::Progressive);
     assert_eq!(scan.init_length, bytes.len() as u64);
     assert_eq!(scan.valid_length, bytes.len() as u64);
-    assert_eq!(scan.movie.as_ref().unwrap().tracks().len(), 2);
+    assert_eq!(scan.movie.as_ref().unwrap().tracks().len(), 1);
+    assert_eq!(scan.recovered_duration_nanos(), 400_000_000);
+    let repair = repair_fmp4_file(&path).unwrap();
+    assert_eq!(repair.truncated_bytes, 0);
+    assert_eq!(fs::read(&path).unwrap(), bytes, "the file was modified");
+}
+
+#[test]
+fn a_truncated_progressive_file_is_detected_and_preserved() {
+    let temp = TempDirectory::new();
+    let mut bytes = progressive_file(false, 10, 16);
+    bytes.truncate(bytes.len() - 20);
+    let path = temp.join("truncated-progressive.mp4");
+    fs::write(&path, &bytes).unwrap();
+
+    let scan = scan_fmp4_file(&path).unwrap();
+    assert!(
+        matches!(
+            scan.integrity,
+            Fmp4Integrity::Unrecoverable {
+                reason: "progressive sample data is truncated",
+                ..
+            }
+        ),
+        "{:?}",
+        scan.integrity
+    );
     let repair = repair_fmp4_file(&path).unwrap();
     assert_eq!(repair.truncated_bytes, 0);
     assert_eq!(fs::read(&path).unwrap(), bytes, "the file was modified");
@@ -619,8 +732,7 @@ fn session_recovery_preserves_a_progressive_segment() {
     let mut session =
         RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
     let opened = session.open_segment().unwrap();
-    let mut bytes = init_segment(&TRACKS, false);
-    bytes.extend(fragment(1));
+    let bytes = progressive_file(false, 4, 8);
     let mut sink = opened.sink;
     Write::write_all(&mut sink, &bytes).unwrap();
     drop(sink);

@@ -38,6 +38,10 @@ pub const MAX_FMP4_TRACKS: usize = 64;
 pub const MAX_FMP4_INDEX_FRAGMENTS: usize = 500_000;
 /// Largest `mfra` index a repair appends.
 pub const MAX_FMP4_MFRA_BYTES: u64 = 16 * 1024 * 1024;
+/// Most samples all progressive tracks together may declare.
+const MAX_PROGRESSIVE_SAMPLES: usize = 2_000_000;
+/// Most entries in one progressive timing, chunk, or sample-size table.
+const MAX_PROGRESSIVE_TABLE_ENTRIES: usize = 1_000_000;
 const MAX_TRUN_SAMPLES: u64 = 1 << 24;
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
@@ -229,6 +233,7 @@ impl Fmp4Scan {
             .iter()
             .map(Fmp4TrackSpan::duration_nanos)
             .max()
+            .or(self.duration_nanos)
             .unwrap_or(0)
     }
 
@@ -594,15 +599,32 @@ pub fn scan_fmp4<R: Read + Seek>(reader: &mut R, length: u64) -> io::Result<Fmp4
                     }
                     // A non-fragmented movie may sit after its media (a
                     // `moov` at the end is the common progressive layout).
-                    // The scanner validates its headers and preserves every
-                    // byte; sample tables are outside this bounded scanner.
+                    // Validate its bounded sample tables; a progressive file
+                    // cannot be truncated or re-indexed, so every byte is
+                    // preserved whatever the tables say.
                     Ok(parsed) => {
-                        scan.init_length = end;
-                        scan.valid_length = length;
-                        scan.movie = Some(parsed.movie);
-                        scan.duration_nanos = parsed.duration_nanos;
-                        scan.integrity = Fmp4Integrity::Progressive;
-                        return Ok(scan);
+                        let mut budget = MAX_PROGRESSIVE_SAMPLES;
+                        match progressive_sample_end(&payload, &parsed.movie, &mut budget) {
+                            Ok((duration, sample_end)) if sample_end <= length => {
+                                scan.init_length = end;
+                                scan.valid_length = length;
+                                scan.movie = Some(parsed.movie);
+                                scan.duration_nanos = match (parsed.duration_nanos, duration) {
+                                    (Some(left), Some(right)) => Some(left.max(right)),
+                                    (left, right) => left.or(right),
+                                };
+                                scan.integrity = Fmp4Integrity::Progressive;
+                                return Ok(scan);
+                            }
+                            Ok((_, sample_end)) => {
+                                return Ok(unrecoverable(
+                                    scan,
+                                    "progressive sample data is truncated",
+                                    sample_end,
+                                ));
+                            }
+                            Err(reason) => return Ok(unrecoverable(scan, reason, offset)),
+                        }
                     }
                     Err(reason) => return Ok(unrecoverable(scan, reason, offset)),
                 }
@@ -1229,6 +1251,273 @@ impl<'a> Children<'a> {
 fn full_box_version_flags(cursor: &mut Cursor<'_>) -> Result<(u8, u32), &'static str> {
     let word = cursor.u32()?;
     Ok(((word >> 24) as u8, word & 0x00ff_ffff))
+}
+
+/// One progressive track's bounded sample tables.
+struct SampleTables {
+    sample_count: u32,
+    /// Every sample has this size when the table stores one value.
+    uniform_size: Option<u32>,
+    sizes: Vec<u32>,
+    chunk_offsets: Vec<u64>,
+    /// `(first_chunk, samples_per_chunk)`, in chunk order.
+    stsc: Vec<(u32, u32)>,
+    /// `(sample_count, delta)` in track timescale ticks.
+    stts: Vec<(u32, u32)>,
+}
+
+/// Validates every progressive track's sample tables and returns its bounded
+/// duration and the furthest byte any sample reaches.
+///
+/// # Errors
+///
+/// Returns a reason for missing, oversized, inconsistent, or unsupported
+/// tables. Truncation is reported separately by comparing the end with the
+/// file length.
+fn progressive_sample_end(
+    payload: &[u8],
+    movie: &Fmp4Movie,
+    budget: &mut usize,
+) -> Result<(Option<u64>, u64), &'static str> {
+    let mut tracks = Vec::new();
+    for child in children(payload) {
+        let (kind, body) = child?;
+        if &kind == b"trak" {
+            if tracks.len() == movie.tracks().len() {
+                return Err("moov declares more tracks than it parsed");
+            }
+            tracks.push(body);
+        }
+    }
+    if tracks.len() != movie.tracks().len() {
+        return Err("moov track list is inconsistent");
+    }
+    let mut duration = None;
+    let mut sample_end = 0_u64;
+    for (track, body) in movie.tracks().iter().zip(tracks) {
+        let tables = parse_sample_tables(body)?;
+        let count = usize::try_from(tables.sample_count).map_err(|_| "sample count overflows")?;
+        *budget = budget
+            .checked_sub(count)
+            .ok_or("progressive files declare too many samples")?;
+        let (ticks, end) = validate_sample_tables(&tables)?;
+        sample_end = sample_end.max(end);
+        let nanos = ticks_to_nanos(ticks, track.timescale);
+        duration = Some(duration.map_or(nanos, |current: u64| current.max(nanos)));
+    }
+    Ok((duration, sample_end))
+}
+
+#[allow(clippy::too_many_lines)] // one branch per sample-table box
+fn parse_sample_tables(trak: &[u8]) -> Result<SampleTables, &'static str> {
+    let mut stbl = None;
+    for child in children(trak) {
+        let (kind, body) = child?;
+        if &kind != b"mdia" {
+            continue;
+        }
+        for child in children(body) {
+            let (kind, body) = child?;
+            if &kind != b"minf" {
+                continue;
+            }
+            for child in children(body) {
+                let (kind, body) = child?;
+                if &kind == b"stbl" {
+                    stbl = Some(body);
+                }
+            }
+        }
+    }
+    let mut tables = SampleTables {
+        sample_count: 0,
+        uniform_size: None,
+        sizes: Vec::new(),
+        chunk_offsets: Vec::new(),
+        stsc: Vec::new(),
+        stts: Vec::new(),
+    };
+    let mut seen_sizes = false;
+    let mut seen_times = false;
+    for child in children(stbl.ok_or("progressive track lacks a sample table")?) {
+        let (kind, body) = child?;
+        let mut cursor = Cursor::new(body);
+        match &kind {
+            b"stts" => {
+                full_box_version_flags(&mut cursor)?;
+                let count = bounded_count(&mut cursor)?;
+                for _ in 0..count {
+                    tables.stts.push((cursor.u32()?, cursor.u32()?));
+                }
+                seen_times = true;
+            }
+            b"stsc" => {
+                full_box_version_flags(&mut cursor)?;
+                let count = bounded_count(&mut cursor)?;
+                for _ in 0..count {
+                    let first_chunk = cursor.u32()?;
+                    let samples = cursor.u32()?;
+                    cursor.skip(4)?;
+                    tables.stsc.push((first_chunk, samples));
+                }
+            }
+            b"stsz" => {
+                full_box_version_flags(&mut cursor)?;
+                let uniform = cursor.u32()?;
+                let count = cursor.u32()?;
+                tables.sample_count = count;
+                if uniform == 0 {
+                    let count = bounded_len(count)?;
+                    tables.sizes.reserve(count);
+                    for _ in 0..count {
+                        tables.sizes.push(cursor.u32()?);
+                    }
+                } else {
+                    tables.uniform_size = Some(uniform);
+                }
+                seen_sizes = true;
+            }
+            b"stz2" => {
+                full_box_version_flags(&mut cursor)?;
+                cursor.skip(3)?;
+                let field_size = cursor.take(1)?[0];
+                let count = cursor.u32()?;
+                let count = bounded_len(count)?;
+                tables.sample_count = u32::try_from(count).map_err(|_| "sample count overflows")?;
+                tables.sizes.reserve(count);
+                match field_size {
+                    4 => {
+                        let mut index = 0;
+                        while index < count {
+                            let byte = cursor.take(1)?[0];
+                            tables.sizes.push(u32::from(byte >> 4));
+                            index += 1;
+                            if index < count {
+                                tables.sizes.push(u32::from(byte & 0x0F));
+                                index += 1;
+                            }
+                        }
+                    }
+                    8 => {
+                        for _ in 0..count {
+                            tables.sizes.push(u32::from(cursor.take(1)?[0]));
+                        }
+                    }
+                    16 => {
+                        for _ in 0..count {
+                            let bytes = cursor.take(2)?;
+                            tables
+                                .sizes
+                                .push(u32::from(u16::from_be_bytes([bytes[0], bytes[1]])));
+                        }
+                    }
+                    _ => return Err("progressive stz2 field size is unsupported"),
+                }
+                seen_sizes = true;
+            }
+            b"stco" => {
+                full_box_version_flags(&mut cursor)?;
+                let count = bounded_count(&mut cursor)?;
+                tables.chunk_offsets.reserve(count);
+                for _ in 0..count {
+                    tables.chunk_offsets.push(u64::from(cursor.u32()?));
+                }
+            }
+            b"co64" => {
+                full_box_version_flags(&mut cursor)?;
+                let count = bounded_count(&mut cursor)?;
+                tables.chunk_offsets.reserve(count);
+                for _ in 0..count {
+                    tables.chunk_offsets.push(cursor.u64()?);
+                }
+            }
+            _ => {}
+        }
+    }
+    if !seen_sizes || !seen_times {
+        return Err("progressive track lacks sample size or timing tables");
+    }
+    Ok(tables)
+}
+
+fn bounded_count(cursor: &mut Cursor<'_>) -> Result<usize, &'static str> {
+    let count = cursor.u32()?;
+    let count = bounded_len(count)?;
+    Ok(count)
+}
+
+fn bounded_len(count: u32) -> Result<usize, &'static str> {
+    let count = usize::try_from(count).map_err(|_| "table count overflows")?;
+    if count > MAX_PROGRESSIVE_TABLE_ENTRIES {
+        return Err("progressive table exceeds its entry bound");
+    }
+    Ok(count)
+}
+
+fn validate_sample_tables(tables: &SampleTables) -> Result<(u64, u64), &'static str> {
+    if tables.sample_count == 0 {
+        return Err("progressive track declares no samples");
+    }
+    if tables.chunk_offsets.is_empty() || tables.stsc.is_empty() || tables.stts.is_empty() {
+        return Err("progressive track lacks chunk or timing tables");
+    }
+    let count = usize::try_from(tables.sample_count).map_err(|_| "sample count overflows")?;
+    let size_at = |index: usize| -> Result<u64, &'static str> {
+        tables
+            .uniform_size
+            .map_or_else(|| tables.sizes.get(index).copied(), Some)
+            .map(u64::from)
+            .ok_or("progressive sample sizes are shorter than the sample count")
+    };
+    let mut timed = 0_u64;
+    for (sample_count, delta) in &tables.stts {
+        timed = timed
+            .checked_add(u64::from(*sample_count) * u64::from(*delta))
+            .ok_or("progressive timing table overflows")?;
+    }
+    let covered: u64 = tables.stts.iter().map(|(count, _)| u64::from(*count)).sum();
+    if covered != u64::from(tables.sample_count) {
+        return Err("progressive timing table does not cover every sample");
+    }
+    if tables.stsc[0].0 != 1 {
+        return Err("progressive sample-to-chunk table does not start at chunk 1");
+    }
+    for (index, (first, samples)) in tables.stsc.iter().enumerate() {
+        if *first == 0 || *samples == 0 {
+            return Err("progressive sample-to-chunk entry is empty");
+        }
+        if index > 0 && tables.stsc[index - 1].0 >= *first {
+            return Err("progressive sample-to-chunk table is out of order");
+        }
+    }
+    let mut sample = 0_usize;
+    let mut run = 0_usize;
+    let mut max_end = 0_u64;
+    for (index, offset) in tables.chunk_offsets.iter().enumerate() {
+        let chunk = u32::try_from(index + 1).map_err(|_| "chunk count overflows")?;
+        while run + 1 < tables.stsc.len() && tables.stsc[run + 1].0 <= chunk {
+            run += 1;
+        }
+        let per_chunk = usize::try_from(tables.stsc[run].1).map_err(|_| "chunk width overflows")?;
+        let mut chunk_bytes = 0_u64;
+        for _ in 0..per_chunk {
+            if sample >= count {
+                return Err("progressive chunk table covers more samples than it declares");
+            }
+            chunk_bytes = chunk_bytes
+                .checked_add(size_at(sample)?)
+                .ok_or("progressive sample sizes overflow")?;
+            sample += 1;
+        }
+        let end = offset
+            .checked_add(chunk_bytes)
+            .ok_or("progressive chunk offset overflows")?;
+        max_end = max_end.max(end);
+    }
+    if sample != count {
+        return Err("progressive chunk table does not cover every sample");
+    }
+    Ok((timed, max_end))
 }
 
 /// A parsed `moov`, whose shape decides whether the file is fragmented.
