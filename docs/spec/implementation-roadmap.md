@@ -5690,12 +5690,15 @@ now models camera presets as bounded, named, thumbnail-carrying virtual
 inputs, resolves an enabled one to its camera and recall intent, and
 persists as a strict canonical document in `project.json` (schema 106);
 `freemix-cli ptz-presets-check`, `ptz-presets-import`, and
-`ptz-presets-export` validate and move it. Remaining gaps: no serial
-transport, no hardware validation of the UDP adapter, and nothing binds the
-virtual inputs to the engine, protocol, or UI yet,
-no camera adapter or hardware validation, presets are not yet switchable
-virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic, or
-digital PTZ. `IN-028` remains planned.
+`ptz-presets-export` validate and move it. `ViscaSerialTransport` exchanges
+VISCA frames over a caller-supplied blocking serial port: it accepts only
+complete bounded frames, keeps replies completed in one read in order,
+surfaces timeouts and malformed replies as typed errors, and counts commands,
+replies, timeouts, and bytes. Remaining gaps: neither transport is bound to a
+`PtzAdapter` consumer in the engine, protocol, or UI; no real camera hardware
+has validated either transport; preset virtual inputs are not switchable from
+the engine or UI; and there is no ONVIF, Panasonic, or digital PTZ. `IN-028`
+remains planned.
 
 Current implementation boundary for item 10: `fm-telestrator` provides a
 sequenced, bounded collaborative board with normalized strokes, per-author and
