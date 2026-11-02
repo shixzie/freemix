@@ -246,6 +246,19 @@ fn the_daemon_serves_the_vmix_tcp_api() {
     assert!(xml.contains("title=\"Extra\""), "{xml}");
     assert!(xml.contains("<active>"), "{xml}");
 
+    // SetStinger1 assigns an existing input to the first stinger slot.
+    writer
+        .write_all(b"FUNCTION SetStinger1 Input=Other\r\n")
+        .unwrap();
+    assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
+    writer
+        .write_all(b"FUNCTION SetStinger1 Input=Nope\r\n")
+        .unwrap();
+    assert!(
+        read_line(&mut reader).starts_with("FUNCTION ER"),
+        "an unknown stinger input is refused"
+    );
+
     // MoveInput puts the added input at the front of the vMix order.
     writer
         .write_all(b"FUNCTION MoveInput Input=Extra&Value=1\r\n")

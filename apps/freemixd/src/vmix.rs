@@ -10,8 +10,10 @@ use fm_auth::Policy;
 use fm_control::ControlService;
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, CommandResult,
-    LiveInputSource, NetworkStreamConfig, SnapshotMessage, TitleAirRequirement, TitleFieldUpdate,
+    LiveInputSource, NetworkStreamConfig, SnapshotMessage, StingerAudioPolicy,
+    StingerMissingMediaFallback, StingerStatus, TitleAirRequirement, TitleFieldUpdate,
     TitleFieldValue, TransitionFavoriteEffect, WireInputId, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId,
 };
 use fm_vmix_compat::{
     CompatInput, CompatIntent, CompatState, TextFieldSelector, Translation, VmixHttpServer,
@@ -463,6 +465,21 @@ fn execute_compat(
                 next_command,
             )
         }
+        CompatIntent::SetStinger { slot, input } => {
+            let slot = WireStingerSlotId::new(slot)
+                .ok_or_else(|| format!("invalid stinger slot: {slot}"))?;
+            let current = snapshot
+                .stingers
+                .iter()
+                .find(|stinger| stinger.slot == slot);
+            submit(
+                control,
+                principal,
+                now_millis,
+                stinger_payload(slot, input, current),
+                next_command,
+            )
+        }
         CompatIntent::AddNetworkStream { url, name } => {
             let input =
                 free_input_id(snapshot).ok_or_else(|| "no free input identifier".to_owned())?;
@@ -481,6 +498,25 @@ fn execute_compat(
         other => Err(format!(
             "vMix function is not supported by this daemon yet: {other:?}"
         )),
+    }
+}
+
+fn stinger_payload(
+    slot: WireStingerSlotId,
+    media_input: WireInputId,
+    current: Option<&StingerStatus>,
+) -> CommandPayload {
+    CommandPayload::ConfigureStinger {
+        slot,
+        media_input,
+        preload: current.is_none_or(|stinger| stinger.preload),
+        cut_point_frames: current.map_or(0, |stinger| stinger.cut_point_frames),
+        audio_policy: current.map_or(StingerAudioPolicy::StingerOnly, |stinger| {
+            stinger.audio_policy
+        }),
+        missing_media_fallback: current.map_or(StingerMissingMediaFallback::Cut, |stinger| {
+            stinger.missing_media_fallback
+        }),
     }
 }
 
@@ -614,6 +650,53 @@ mod tests {
         assert_eq!(millis_to_frames(thirty, 0), 1);
         let ntsc = fm_types::FrameRate::new(30_000, 1_001).unwrap();
         assert_eq!(millis_to_frames(ntsc, 1_000), 29);
+    }
+
+    #[test]
+    fn stinger_payload_keeps_an_existing_slots_configuration() {
+        let slot = WireStingerSlotId::new(2).unwrap();
+        let input = WireInputId::new(std::num::NonZeroU128::new(7).unwrap());
+        let CommandPayload::ConfigureStinger {
+            slot: got,
+            media_input,
+            preload,
+            cut_point_frames,
+            audio_policy,
+            missing_media_fallback,
+        } = stinger_payload(slot, input, None)
+        else {
+            panic!("a stinger payload");
+        };
+        assert_eq!(got, slot);
+        assert_eq!(media_input, input);
+        assert!(preload);
+        assert_eq!(cut_point_frames, 0);
+        assert_eq!(audio_policy, StingerAudioPolicy::StingerOnly);
+        assert_eq!(missing_media_fallback, StingerMissingMediaFallback::Cut);
+
+        let current = StingerStatus {
+            slot,
+            media_input: input,
+            preload: false,
+            cut_point_frames: 12,
+            audio_policy: StingerAudioPolicy::MixWithProgram,
+            missing_media_fallback: StingerMissingMediaFallback::Fade,
+            readiness: fm_protocol::StingerReadiness::Ready,
+        };
+        let CommandPayload::ConfigureStinger {
+            preload,
+            cut_point_frames,
+            audio_policy,
+            missing_media_fallback,
+            ..
+        } = stinger_payload(slot, input, Some(&current))
+        else {
+            panic!("a stinger payload");
+        };
+        assert!(!preload);
+        assert_eq!(cut_point_frames, 12);
+        assert_eq!(audio_policy, StingerAudioPolicy::MixWithProgram);
+        assert_eq!(missing_media_fallback, StingerMissingMediaFallback::Fade);
     }
 
     #[test]

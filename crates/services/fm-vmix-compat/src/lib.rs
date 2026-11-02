@@ -504,6 +504,9 @@ pub enum CompatIntent {
         output: u8,
         input: Option<WireInputId>,
     },
+    /// Assign a media input to one of vMix's four stinger slots; the
+    /// dispatcher preserves the slot's configured policy when it has one.
+    SetStinger { slot: u8, input: WireInputId },
     /// Set one title field.
     SetText {
         input: WireInputId,
@@ -996,6 +999,21 @@ fn translate(
             }))
         }
         "AddInput" => translate_add_input(parameters),
+        "SetStinger1" | "SetStinger2" | "SetStinger3" | "SetStinger4" => {
+            allowed(parameters, &["Function", "Input"])?;
+            let slot = function
+                .strip_prefix("SetStinger")
+                .and_then(|suffix| suffix.parse::<u8>().ok())
+                .filter(|slot| (1..=4).contains(slot))
+                .ok_or(ParseError::InvalidParameter {
+                    parameter: "Function",
+                    reason: "a stinger slot is 1 through 4",
+                })?;
+            Ok(Translation::Compat(CompatIntent::SetStinger {
+                slot,
+                input: state.resolve_input(required(parameters, "Input")?)?,
+            }))
+        }
         "SetOutput" | "SetOutput2" | "SetOutput3" | "SetOutput4" => {
             allowed(parameters, &["Function", "Input"])?;
             let output = match function {

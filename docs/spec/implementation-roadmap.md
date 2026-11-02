@@ -6514,7 +6514,9 @@ without them uses (a configured `Cut` turns it into a cut), and
 recording/streaming toggles, input renaming, adding network-stream inputs,
 removing inputs (with the native refusal when something references one),
 moving an input to a chosen position with `MoveInput`, input balance with
-`SetBalance` (vMix's -1 through 1),
+`SetBalance` (vMix's -1 through 1), assigning an input to one of the four
+stinger slots with `SetStinger1`-`SetStinger4` (preserving that slot's
+configured preload, cut point, audio policy, and missing-media fallback),
 setting still images, input playback state/position/duration and mute/volume
 in the XML and XPath state, and
 playlist start/stop/next/previous in addition to the switcher, title,

@@ -993,6 +993,24 @@ fn remove_input_resolves_the_input_and_is_strict() {
 }
 
 #[test]
+fn stinger_functions_pick_the_slot_and_resolve_the_input() {
+    let state = state();
+    for slot in 1..=4 {
+        assert_eq!(
+            parse_http_query(&format!("Function=SetStinger{slot}&Input=Spare"), &state),
+            Ok(Translation::Compat(CompatIntent::SetStinger {
+                slot,
+                input: id(3),
+            })),
+            "slot {slot}"
+        );
+    }
+    assert!(parse_http_query("Function=SetStinger1", &state).is_err());
+    assert!(parse_http_query("Function=SetStinger1&Input=99", &state).is_err());
+    assert!(parse_http_query("Function=SetStinger1&Input=2&Extra=1", &state).is_err());
+}
+
+#[test]
 fn move_input_reorders_the_list_and_is_strict() {
     let state = state();
     assert_eq!(
