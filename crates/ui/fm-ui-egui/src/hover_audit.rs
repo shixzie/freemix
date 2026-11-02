@@ -3780,6 +3780,14 @@ fn scenes(language: Language) -> Vec<Scene> {
         let mut state = ready(true, Variant::default());
         state.recorder_tracks_local = local;
         if local {
+            state.recorder_track_status[0] = Some(crate::RecorderTrackStatusView {
+                state: crate::RecorderTrackRecordingState::Recording,
+                files: vec![crate::RecorderTrackFileView {
+                    path: "/tmp/show.tracks-0002.wav".to_owned(),
+                    bytes: 4_096,
+                    state: crate::RecorderTrackFileState::Open,
+                }],
+            });
             state.recorder_track_maps[0] = Some(crate::RecorderTrackMapView {
                 slot: 1,
                 layout: crate::RecorderTrackLayout::SplitPerTrack,

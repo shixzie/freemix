@@ -12820,6 +12820,7 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
         2,
         None,
         TrackWavPolicy::default(),
+        None,
     )
     .unwrap();
     let timing = MediaTiming::new(
@@ -12890,6 +12891,7 @@ fn a_split_track_map_writes_one_file_per_track() {
         2,
         None,
         TrackWavPolicy::default(),
+        None,
     )
     .unwrap();
     assert_eq!(track.mode(), fm_record::TrackFileMode::SplitPerTrack);
@@ -13106,7 +13108,7 @@ fn track_wav_sessions_roll_over_on_time_and_bytes() {
         let directory = tempfile::tempdir().unwrap();
         let segment = directory.path().join("show.mp4");
         let mut track =
-            TrackWavState::create_with_policy(map.clone(), &segment, 48_000, 2, None, policy)
+            TrackWavState::create_with_policy(map.clone(), &segment, 48_000, 2, None, policy, None)
                 .unwrap();
         for _ in 0..3 {
             let timing = MediaTiming::new(
@@ -13140,4 +13142,67 @@ fn track_wav_sessions_roll_over_on_time_and_bytes() {
             "{label}: the second track segment exists"
         );
     }
+}
+
+/// AU-010: the daemon-written status names live track files and their state.
+#[cfg(feature = "native-media")]
+#[test]
+fn track_wav_status_reports_live_files() {
+    use fm_record::{BusInventory, RecordBus, RecordTrack, RecorderTrackMap, TrackSource};
+
+    let directory = tempfile::tempdir().unwrap();
+    let segment = directory.path().join("show.mp4");
+    let status = directory.path().join("recorders/1.trackstatus");
+    let map = RecorderTrackMap::new(
+        vec![RecordTrack::stereo(
+            "Program",
+            TrackSource::master(0),
+            TrackSource::master(1),
+        )],
+        BusInventory::new(vec![(RecordBus::Master, 2)]).unwrap(),
+    )
+    .unwrap();
+    let mut track = TrackWavState::create_with_policy(
+        map,
+        &segment,
+        48_000,
+        2,
+        None,
+        TrackWavPolicy::default(),
+        Some(status.clone()),
+    )
+    .unwrap();
+    let audio = AudioBlock::new(
+        MediaTiming::new(
+            OriginalTimestamp::new(
+                MediaTimestamp::new(0),
+                fm_frame::TimeBase::new(1, 48_000).unwrap(),
+            ),
+            NormalizedTimestamp::from_nanos(0),
+            NormalizedDuration::from_nanos(1_000_000_000).unwrap(),
+            native_clock_domain(),
+            SequenceNumber::new(0),
+        )
+        .unwrap(),
+        SampleRate::new(48_000).unwrap(),
+        ChannelLayout::stereo(),
+        vec![vec![0.25; 48_000]; 2],
+    )
+    .unwrap();
+    track.write(&audio, &[], 2).unwrap();
+    let live = fs::read_to_string(&status).unwrap();
+    assert!(
+        live.starts_with("freemix-record-track-status 1\nstate=recording\n"),
+        "{live}"
+    );
+    assert!(
+        live.lines().any(|line| line.starts_with("file\t")),
+        "{live}"
+    );
+    track.finish();
+    let stopped = fs::read_to_string(&status).unwrap();
+    assert!(
+        stopped.starts_with("freemix-record-track-status 1\nstate=stopped\n"),
+        "{stopped}"
+    );
 }

@@ -55,6 +55,8 @@ pub(crate) struct NativeDaemon {
     pub(crate) runtime: Arc<NativeMediaRuntime>,
     pub(crate) resolved_sources: Arc<Vec<NativeResolvedSource>>,
     pub(crate) assets_root: PathBuf,
+    /// The project bundle root, for daemon-written recorder track status.
+    pub(crate) bundle_root: PathBuf,
     pub(crate) pending_stinger_mutation: Option<NativeStingerMutation>,
     pub(crate) stinger_retirements: NativeStingerRetirements,
     /// Realization state of every configured recorder slot: slot 0 is
@@ -472,6 +474,7 @@ impl NativeDaemon {
             runtime,
             resolved_sources: Arc::new(resolved_sources),
             assets_root: store.assets_root().clone(),
+            bundle_root: store.root().to_path_buf(),
             pending_stinger_mutation: None,
             stinger_retirements: NativeStingerRetirements::start()?,
             recorders: [ProgramRecording::Off, ProgramRecording::Off],
@@ -935,6 +938,10 @@ impl NativeDaemon {
         let Some(map) = &self.record_track_maps[slot] else {
             return Ok(());
         };
+        let status_path = self
+            .bundle_root
+            .join("recorders")
+            .join(format!("{}.trackstatus", slot + 1));
         let track = TrackWavState::create_with_policy(
             map.as_ref().clone(),
             segment,
@@ -942,6 +949,7 @@ impl NativeDaemon {
             channels,
             fallback,
             self.record_track_policy,
+            Some(status_path),
         )
         .map_err(|error| AppFailure(format!("record track map: {error}")))?;
         self.record_track_wavs[slot] = Some(track);

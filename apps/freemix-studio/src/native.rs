@@ -3635,6 +3635,9 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
             state
                 .recorder_track_documents
                 .clone_from(runtime.record_track_documents());
+            state
+                .recorder_track_status
+                .clone_from(runtime.record_track_status());
             state.recorder_tracks_local = runtime.record_tracks_local();
             state.recorder_track_error = runtime.record_track_error().map(str::to_owned);
             state.source_sync = runtime.session().latest_source_sync_status().cloned();

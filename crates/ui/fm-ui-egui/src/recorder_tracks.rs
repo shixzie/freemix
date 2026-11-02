@@ -8,13 +8,21 @@
 //! This is a read-only monitor. The map itself is authored offline with
 //! `freemix-cli record-track-map-import`.
 
-use egui::{Button, RichText, TextEdit, Ui};
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use egui::{Label, RichText, TextEdit, Ui};
 
 use crate::l10n::{Arg, Msg};
 use crate::theme::{Tone, card, muted_color, status_chip};
-use crate::{RecorderTrackLayout, StudioIntent, StudioShell, StudioUiState};
+use crate::{
+    RecorderTrackFileState, RecorderTrackLayout, RecorderTrackRecordingState, StudioIntent,
+    StudioShell, StudioUiState,
+};
 
 const DIALOG_WIDTH: f32 = 640.0;
+/// How often the open window asks for live file status.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The window's only state.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -23,6 +31,7 @@ pub(crate) struct RecorderTracksWindow {
     /// One canonical document draft per slot, loaded when the window opens.
     drafts: [String; 2],
     loaded: bool,
+    last_refresh: Option<Instant>,
 }
 
 impl StudioShell {
@@ -35,6 +44,16 @@ impl StudioShell {
     ) {
         if !self.recorder_tracks.open {
             return;
+        }
+        if state.recorder_tracks_local
+            && self
+                .recorder_tracks
+                .last_refresh
+                .is_none_or(|at| at.elapsed() >= REFRESH_INTERVAL)
+        {
+            intents.push(StudioIntent::RefreshRecorderTracks);
+            self.recorder_tracks.last_refresh = Some(Instant::now());
+            context.request_repaint_after(REFRESH_INTERVAL);
         }
         if !self.recorder_tracks.loaded {
             for (slot, draft) in self.recorder_tracks.drafts.iter_mut().enumerate() {
@@ -55,6 +74,7 @@ impl StudioShell {
         if close {
             self.recorder_tracks.open = false;
             self.recorder_tracks.loaded = false;
+            self.recorder_tracks.last_refresh = None;
         }
     }
 }
@@ -189,6 +209,71 @@ fn draw_slot(
             .color(muted_color()),
     );
     ui.add_space(4.0);
+    if let Some(status) = &state.recorder_track_status[slot] {
+        status_chip(
+            ui,
+            l.text(recording_label(status.state)),
+            recording_tone(status.state),
+            chip_width(l.text(recording_label(status.state))),
+        );
+        if status.files.is_empty() {
+            ui.label(
+                RichText::new(l.text(Msg::RecorderTracksNoFiles))
+                    .size(crate::theme::legible(10.0))
+                    .color(muted_color()),
+            );
+        } else {
+            for file in status.files.iter().take(6) {
+                let name = Path::new(&file.path)
+                    .file_name()
+                    .map_or_else(|| file.path.as_str(), |name| name.to_str().unwrap_or(""));
+                ui.horizontal(|ui| {
+                    ui.add(
+                        Label::new(
+                            RichText::new(name)
+                                .monospace()
+                                .size(crate::theme::legible(10.0)),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&file.path);
+                    ui.label(
+                        RichText::new(l.format(
+                            Msg::RecorderTracksFileBytes,
+                            &[("count", Arg::Count(file.bytes))],
+                        ))
+                        .size(crate::theme::legible(10.0))
+                        .color(muted_color()),
+                    );
+                    ui.label(
+                        RichText::new(l.text(file_label(file.state)))
+                            .size(crate::theme::legible(10.0))
+                            .color(muted_color()),
+                    );
+                });
+            }
+            if status.files.len() > 6 {
+                ui.label(
+                    RichText::new(l.format(
+                        Msg::RecorderTracksMoreFiles,
+                        &[(
+                            "count",
+                            Arg::Count(u64::try_from(status.files.len() - 6).unwrap_or(u64::MAX)),
+                        )],
+                    ))
+                    .size(crate::theme::legible(10.0))
+                    .color(muted_color()),
+                );
+            }
+        }
+    } else {
+        ui.label(
+            RichText::new(l.text(Msg::RecorderTracksNoFiles))
+                .size(crate::theme::legible(10.0))
+                .color(muted_color()),
+        );
+    }
+    ui.add_space(4.0);
     ui.add(
         TextEdit::multiline(&mut window.drafts[slot])
             .code_editor()
@@ -217,6 +302,34 @@ fn draw_slot(
                 .unwrap_or_else(default_document);
         }
     });
+}
+
+const fn recording_label(state: RecorderTrackRecordingState) -> Msg {
+    match state {
+        RecorderTrackRecordingState::Recording => Msg::RecorderTracksStateRecording,
+        RecorderTrackRecordingState::Stopped => Msg::RecorderTracksStateStopped,
+        RecorderTrackRecordingState::Failed => Msg::RecorderTracksStateFailed,
+        RecorderTrackRecordingState::Recovered => Msg::RecorderTracksStateRecovered,
+    }
+}
+
+const fn recording_tone(state: RecorderTrackRecordingState) -> Tone {
+    match state {
+        RecorderTrackRecordingState::Recording => Tone::Pending,
+        RecorderTrackRecordingState::Stopped => Tone::Ready,
+        RecorderTrackRecordingState::Failed => Tone::Fault,
+        RecorderTrackRecordingState::Recovered => Tone::Pending,
+    }
+}
+
+const fn file_label(state: RecorderTrackFileState) -> Msg {
+    match state {
+        RecorderTrackFileState::Open => Msg::RecorderTracksFileOpen,
+        RecorderTrackFileState::Closed => Msg::RecorderTracksFileClosed,
+        RecorderTrackFileState::Failed => Msg::RecorderTracksFileFailed,
+        RecorderTrackFileState::Recovered => Msg::RecorderTracksFileRecovered,
+        RecorderTrackFileState::Lost => Msg::RecorderTracksFileLost,
+    }
 }
 
 /// A valid starter map for a slot that has none yet: one stereo Master track.

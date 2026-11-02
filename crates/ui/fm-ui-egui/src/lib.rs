@@ -665,6 +665,40 @@ pub enum RecorderTrackLayout {
     SplitPerTrack,
 }
 
+/// Whether a track session is recording, finished, or failed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecorderTrackRecordingState {
+    Recording,
+    Stopped,
+    Failed,
+    Recovered,
+}
+
+/// One live track WAV file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecorderTrackFileState {
+    Open,
+    Closed,
+    Failed,
+    Recovered,
+    Lost,
+}
+
+/// One live track file reported by the daemon.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecorderTrackFileView {
+    pub path: String,
+    pub bytes: u64,
+    pub state: RecorderTrackFileState,
+}
+
+/// The daemon's live track-file status for one recorder slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecorderTrackStatusView {
+    pub state: RecorderTrackRecordingState,
+    pub files: Vec<RecorderTrackFileView>,
+}
+
 /// One recorded track in a recorder track map.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecorderTrackView {
@@ -721,6 +755,8 @@ pub struct StudioUiState {
     pub recorder_track_maps: [Option<RecorderTrackMapView>; RECORDER_SLOT_COUNT],
     /// Each slot's canonical track-map document, exactly as stored.
     pub recorder_track_documents: [Option<String>; RECORDER_SLOT_COUNT],
+    /// The daemon-written live track-file status per slot.
+    pub recorder_track_status: [Option<RecorderTrackStatusView>; RECORDER_SLOT_COUNT],
     /// Whether this Studio has the supervised project bundle locally, so its
     /// recorder track maps can be read.
     pub recorder_tracks_local: bool,
@@ -854,6 +890,7 @@ impl StudioUiState {
             recorder_realized: [None, None],
             recorder_track_maps: [None, None],
             recorder_track_documents: [None, None],
+            recorder_track_status: [None, None],
             recorder_tracks_local: false,
             recorder_track_error: None,
             source_sync: None,

@@ -169,6 +169,32 @@ pub(crate) struct TrackWavState {
     frames_written: u64,
     rotation_every: Option<u64>,
     next_rotation: Option<u64>,
+    /// The daemon-written live status document beside the map.
+    status_path: Option<PathBuf>,
+    last_status: Option<Instant>,
+}
+
+/// Stable status token for one track session state.
+#[cfg(feature = "native-media")]
+const fn session_state_token(state: fm_record::SessionState) -> &'static str {
+    match state {
+        fm_record::SessionState::Recording => "recording",
+        fm_record::SessionState::Stopped => "stopped",
+        fm_record::SessionState::Failed => "failed",
+        fm_record::SessionState::Recovered => "recovered",
+    }
+}
+
+/// Stable status token for one track file's segment state.
+#[cfg(feature = "native-media")]
+const fn segment_state_token(state: fm_record::SegmentState) -> &'static str {
+    match state {
+        fm_record::SegmentState::Open => "open",
+        fm_record::SegmentState::Closed => "closed",
+        fm_record::SegmentState::Failed => "failed",
+        fm_record::SegmentState::Recovered => "recovered",
+        fm_record::SegmentState::Lost => "lost",
+    }
 }
 
 /// Whole frames covering `duration` at `sample_rate`, at least one.
@@ -248,6 +274,7 @@ impl TrackWavState {
         channels: u16,
         fallback: Option<&Path>,
         policy: TrackWavPolicy,
+        status_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         map.validate_against_channels(channels)
             .map_err(|error| error.to_string())?;
@@ -292,6 +319,8 @@ impl TrackWavState {
             frames_written: 0,
             rotation_every,
             next_rotation: rotation_every,
+            status_path,
+            last_status: None,
         })
     }
 
@@ -413,11 +442,71 @@ impl TrackWavState {
         self.frames_written = self
             .frames_written
             .saturating_add(u64::try_from(frames).unwrap_or(u64::MAX));
+        if self
+            .last_status
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+        {
+            self.write_status(None);
+            self.last_status = Some(Instant::now());
+        }
         Ok(())
+    }
+
+    /// Writes the live track-file status beside the map, if the daemon asked
+    /// for it. Paths are hex so spaces and tabs survive the text contract.
+    fn write_status(&self, state_override: Option<&'static str>) {
+        let Some(path) = &self.status_path else {
+            return;
+        };
+        let state = state_override.map_or_else(
+            || {
+                self.writers
+                    .first()
+                    .map_or("stopped", |writer| {
+                        session_state_token(writer.session().manifest().state)
+                    })
+                    .to_owned()
+            },
+            str::to_owned,
+        );
+        let mut document = format!("freemix-record-track-status 1\nstate={state}\n");
+        for writer in &self.writers {
+            let session = writer.session();
+            let config = session.config();
+            for segment in &session.manifest().segments {
+                let Some(file) = config.segment_path(segment.root, segment.index) else {
+                    continue;
+                };
+                let path = file.to_string_lossy();
+                let mut hex = String::with_capacity(path.len() * 2);
+                for byte in path.bytes() {
+                    use core::fmt::Write as _;
+                    let _ = write!(hex, "{byte:02x}");
+                }
+                use core::fmt::Write as _;
+                let _ = writeln!(
+                    document,
+                    "file\t{hex}\t{}\t{}",
+                    segment.bytes,
+                    segment_state_token(segment.state)
+                );
+            }
+        }
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let temporary = path.with_extension("trackstatus.tmp");
+        if fs::write(&temporary, document).is_ok() {
+            let _ = fs::rename(&temporary, path);
+        }
     }
 
     /// Finalizes every WAV session and reports what each one did.
     pub(crate) fn finish(&mut self) -> TrackWavFinish {
+        self.write_status(Some("stopped"));
         let mut finish = TrackWavFinish::default();
         for (file, writer) in std::mem::take(&mut self.writers).into_iter().enumerate() {
             let report = writer.finish_report();

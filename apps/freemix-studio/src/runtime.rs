@@ -9,7 +9,8 @@ use fm_protocol::{
 };
 use fm_record::{RecordBus, RecorderTrackMap};
 use fm_ui_egui::{
-    DisplayOutputAnswer, RecorderTrackLayout, RecorderTrackMapView, RecorderTrackView,
+    DisplayOutputAnswer, RecorderTrackFileState, RecorderTrackFileView, RecorderTrackLayout,
+    RecorderTrackMapView, RecorderTrackRecordingState, RecorderTrackStatusView, RecorderTrackView,
     TitleAnimationRefusal, TitleUpdate,
 };
 
@@ -154,6 +155,8 @@ pub struct StudioRuntime {
     record_track_maps: [Option<RecorderTrackMapView>; 2],
     /// Each slot's canonical track-map document, exactly as stored.
     record_track_documents: [Option<String>; 2],
+    /// The daemon-written live track-file status per slot.
+    record_track_status: [Option<RecorderTrackStatusView>; 2],
     /// Why the bundle's track maps could not be read, if they could not.
     record_track_error: Option<String>,
 }
@@ -183,7 +186,7 @@ impl StudioRuntime {
             ConnectionConfig::Supervised(supervised) => Some(supervised.project_bundle.clone()),
             ConnectionConfig::Existing(_) => None,
         };
-        let (record_track_maps, record_track_documents, record_track_error) =
+        let (record_track_maps, record_track_documents, record_track_status, record_track_error) =
             load_record_track_views(project_bundle.as_deref());
         let (supervisor, address, project_id) = match config.connection {
             ConnectionConfig::Supervised(supervised) => {
@@ -224,6 +227,7 @@ impl StudioRuntime {
             project_bundle,
             record_track_maps,
             record_track_documents,
+            record_track_status,
             record_track_error,
         })
     }
@@ -468,6 +472,12 @@ impl StudioRuntime {
         &self.record_track_documents
     }
 
+    /// The daemon-written live track-file status per slot.
+    #[must_use]
+    pub(crate) fn record_track_status(&self) -> &[Option<RecorderTrackStatusView>; 2] {
+        &self.record_track_status
+    }
+
     /// Validates and saves one slot's track-map document into the supervised
     /// bundle, replacing the stored map. Returns whether it was written and
     /// reloads the console views.
@@ -511,9 +521,11 @@ impl StudioRuntime {
 
     /// Re-reads the supervised bundle's recorder track maps (AU-010).
     pub(crate) fn reload_record_track_views(&mut self) {
-        let (maps, documents, error) = load_record_track_views(self.project_bundle.as_deref());
+        let (maps, documents, statuses, error) =
+            load_record_track_views(self.project_bundle.as_deref());
         self.record_track_maps = maps;
         self.record_track_documents = documents;
+        self.record_track_status = statuses;
         self.record_track_error = error;
     }
 
@@ -1182,18 +1194,20 @@ impl StudioRuntime {
 
 /// Reads both recorder slots' track maps from a supervised project bundle
 /// (AU-010). The bundle stores them as `recorders/<slot>.trackmap`.
-fn load_record_track_views(
-    bundle: Option<&std::path::Path>,
-) -> (
+type LoadedRecorderTracks = (
     [Option<RecorderTrackMapView>; 2],
     [Option<String>; 2],
+    [Option<RecorderTrackStatusView>; 2],
     Option<String>,
-) {
+);
+
+fn load_record_track_views(bundle: Option<&std::path::Path>) -> LoadedRecorderTracks {
     let Some(bundle) = bundle else {
-        return ([None, None], [None, None], None);
+        return ([None, None], [None, None], [None, None], None);
     };
     let mut views: [Option<RecorderTrackMapView>; 2] = [None, None];
     let mut documents: [Option<String>; 2] = [None, None];
+    let mut statuses: [Option<RecorderTrackStatusView>; 2] = [None, None];
     let mut error = None;
     for (index, slot) in views.iter_mut().enumerate() {
         let path = bundle
@@ -1216,8 +1230,65 @@ fn load_record_track_views(
                 error.get_or_insert_with(|| format!("recorder {} track map: {read}", index + 1));
             }
         }
+        let status_path = bundle
+            .join("recorders")
+            .join(format!("{}.trackstatus", index + 1));
+        if let Ok(status) = std::fs::read_to_string(status_path) {
+            statuses[index] = parse_track_status(&status);
+        }
     }
-    (views, documents, error)
+    (views, documents, statuses, error)
+}
+
+/// Parses the daemon's `freemix-record-track-status 1` document.
+fn parse_track_status(text: &str) -> Option<RecorderTrackStatusView> {
+    let mut lines = text.lines();
+    if lines.next() != Some("freemix-record-track-status 1") {
+        return None;
+    }
+    let state = match lines.next()?.strip_prefix("state=")? {
+        "recording" => RecorderTrackRecordingState::Recording,
+        "stopped" => RecorderTrackRecordingState::Stopped,
+        "failed" => RecorderTrackRecordingState::Failed,
+        "recovered" => RecorderTrackRecordingState::Recovered,
+        _ => return None,
+    };
+    let mut files = Vec::new();
+    for line in lines {
+        let parts: Vec<&str> = line.split('\t').collect();
+        let ["file", path, bytes, file_state] = parts.as_slice() else {
+            return None;
+        };
+        let path = decode_hex(path)?;
+        let bytes = bytes.parse().ok()?;
+        let state = match *file_state {
+            "open" => RecorderTrackFileState::Open,
+            "closed" => RecorderTrackFileState::Closed,
+            "failed" => RecorderTrackFileState::Failed,
+            "recovered" => RecorderTrackFileState::Recovered,
+            "lost" => RecorderTrackFileState::Lost,
+            _ => return None,
+        };
+        files.push(RecorderTrackFileView { path, bytes, state });
+    }
+    Some(RecorderTrackStatusView { state, files })
+}
+
+fn decode_hex(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    };
+    let mut output = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks(2) {
+        output.push((digit(pair[0])? << 4) | digit(pair[1])?);
+    }
+    String::from_utf8(output).ok()
 }
 
 fn track_map_view(slot: usize, map: &RecorderTrackMap) -> RecorderTrackMapView {
@@ -1274,6 +1345,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn track_status_parses_live_files() {
+        let text = "freemix-record-track-status 1\nstate=recording\n\
+                    file\t2f746d702f70726f6772616d2e747261636b732e776176\t1234\topen\n";
+        let status = parse_track_status(text).unwrap();
+        assert_eq!(status.state, RecorderTrackRecordingState::Recording);
+        assert_eq!(status.files.len(), 1);
+        assert_eq!(status.files[0].path, "/tmp/program.tracks.wav");
+        assert_eq!(status.files[0].bytes, 1234);
+        assert_eq!(status.files[0].state, RecorderTrackFileState::Open);
+        assert!(parse_track_status("state=recording\n").is_none());
+    }
+
+    #[test]
     fn saving_a_bundle_track_map_validates_before_replacing() {
         let directory = tempfile::tempdir().unwrap();
         let bundle = directory.path().join("show.freemix");
@@ -1320,7 +1404,13 @@ mod tests {
         .unwrap()
         .with_layout(fm_record::TrackMapLayout::SplitPerTrack);
         std::fs::write(bundle.join("recorders/1.trackmap"), map.to_document()).unwrap();
-        let (views, documents, error) = load_record_track_views(Some(&bundle));
+        std::fs::write(
+            bundle.join("recorders/1.trackstatus"),
+            "freemix-record-track-status 1\nstate=recording\n\
+             file\t2f746d702f73686f772e747261636b732e776176\t4096\topen\n",
+        )
+        .unwrap();
+        let (views, documents, statuses, error) = load_record_track_views(Some(&bundle));
         assert!(error.is_none(), "{error:?}");
         let view = views[0].as_ref().unwrap();
         assert_eq!(view.slot, 1);
@@ -1332,6 +1422,11 @@ mod tests {
         assert!(views[1].is_none());
         assert_eq!(documents[0].as_deref(), Some(map.to_document().as_str()));
         assert!(documents[1].is_none());
-        assert!(load_record_track_views(None).2.is_none());
+        let status = statuses[0].as_ref().unwrap();
+        assert_eq!(status.state, RecorderTrackRecordingState::Recording);
+        assert_eq!(status.files[0].path, "/tmp/show.tracks.wav");
+        assert_eq!(status.files[0].bytes, 4_096);
+        assert!(statuses[1].is_none());
+        assert!(load_record_track_views(None).3.is_none());
     }
 }

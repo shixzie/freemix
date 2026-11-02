@@ -3861,9 +3861,13 @@ file names, with a Refresh action; a Studio connected to a daemon elsewhere
 says it has no local bundle. The same window edits a slot's canonical
 `freemix-record-track-map 1` document and saves it atomically after validation
 (a new slot starts from a stereo-Master template), so maps no longer require
-an offline import. Remaining gaps: authoring is the canonical document rather
-than a structured track editor, and the window does not live-list files as
-they are written. WAV output is separate from the
+an offline import. The daemon rewrites each slot's
+`recorders/<slot>.trackstatus` at most once a second while a track session is
+open and once when it stops, naming every WAV path, its byte count, and its
+open/closed/failed/recovered/lost state; the window polls that file once a
+second while open and lists the live files beside the map. Remaining gaps:
+authoring is the canonical document rather than a structured track editor.
+WAV output is separate from the
 crash-safe packet spool, and metadata stops at version-1 `bext` without iXML,
 loudness, or UMID. `AU-010` remains planned.
 
