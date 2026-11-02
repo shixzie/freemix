@@ -72,6 +72,7 @@ pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOpera
                     event: entry.event,
                     angle: entry.angle.map(WireInputId::to_domain),
                     speed: entry.speed,
+                    marks: None,
                 })
                 .collect(),
         },

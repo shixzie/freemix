@@ -3545,6 +3545,30 @@ impl Engine {
         self.replay.status(self.commands.state())
     }
 
+    /// Replaces event list `list` in the replay database (OR-012).
+    pub fn replay_set_list(&mut self, list: fm_replay::EventList) {
+        self.replay.set_list(list);
+    }
+
+    /// Sets one list entry's angle, marks, and speed overrides (OR-012).
+    pub fn replay_set_list_override(
+        &mut self,
+        list: u32,
+        event: u32,
+        angle: Option<InputId>,
+        marks: Option<(u64, u64)>,
+        speed: Option<fm_types::replay::ReplaySpeed>,
+    ) {
+        self.replay
+            .set_list_override(list, event, angle, marks, speed);
+    }
+
+    /// Builds Replay input `input`'s playlist from event list `list`,
+    /// applying its overrides (OR-012). Returns `false` for an unknown list.
+    pub fn replay_set_playlist_from_list(&mut self, input: InputId, list: u32) -> bool {
+        self.replay.playlist_from_list(input, list)
+    }
+
     /// A counter that moves whenever [`Self::replay_status`] may have
     /// changed (OR-012).
     #[must_use]

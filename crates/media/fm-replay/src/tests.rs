@@ -397,6 +397,7 @@ fn list_playback_resolves_overrides_and_the_clock_drives_them() {
             event: event_id,
             angle: camera(2),
             timeline: range(1_000, 1_000_000_000),
+            timeline_overridden: true,
             speed,
         }]
     );

@@ -13,7 +13,7 @@ pub enum ReplayChannelId {
     B,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PlaybackRate(i32);
 
 impl PlaybackRate {

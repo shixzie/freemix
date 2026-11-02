@@ -73,7 +73,7 @@ pub struct ReplayEvent {
     pub folders: BTreeSet<FolderId>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct EventList {
     pub id: ListId,
     pub name: String,
@@ -87,6 +87,8 @@ pub struct EventPlaybackEntry {
     pub event: EventId,
     pub angle: CameraId,
     pub timeline: TimelineRange,
+    /// Whether `timeline` came from a list override rather than the event.
+    pub timeline_overridden: bool,
     pub speed: PlaybackRate,
 }
 
@@ -473,6 +475,12 @@ impl EventDatabase {
         self.overrides.remove(&(list_id, event_id));
     }
 
+    /// Removes one event list and its per-entry overrides.
+    pub fn remove_list(&mut self, id: ListId) -> Option<EventList> {
+        self.overrides.retain(|(list, _), _| *list != id);
+        self.lists.remove(&id)
+    }
+
     /// Resolves every event in `list_id` to the angle, marks, and speed it
     /// plays with, applying that list entry's overrides.
     ///
@@ -500,6 +508,7 @@ impl EventDatabase {
                     event: *event_id,
                     angle: overrides.angle.unwrap_or(event.preferred_angle),
                     timeline: overrides.marks.unwrap_or(event.timeline),
+                    timeline_overridden: overrides.marks.is_some(),
                     speed: overrides.speed.unwrap_or(PlaybackRate::FORWARD_1X),
                 })
             })

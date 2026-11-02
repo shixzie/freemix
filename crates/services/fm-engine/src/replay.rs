@@ -53,11 +53,11 @@ use fm_command::{FieldIssue, Rejection, RejectionCode};
 use fm_frame::{ClockDomainId, NormalizedTimestamp, SequenceNumber};
 use fm_playback::FrameIndex;
 use fm_replay::{
-    CameraId, CameraSource, CompiledReel, EventDatabase, EventId, MAX_MULTIVIEW_ANGLES,
-    MAX_RECORD_EXPORT_JOBS, MAX_SEGMENTS_PER_EXPORT, ProtectionReference, RecordExportError,
-    RecordExportQueue, RecordExportState, ReplayError, ReplayEvent, RollingSegmentCatalog,
-    SegmentId, SegmentMetadata, SegmentState, SourceCatalog, SourceTimeline, StorageRoot,
-    StorageRootId, TimelineRange,
+    CameraId, CameraSource, CompiledReel, EventDatabase, EventId, ListId, MAX_MULTIVIEW_ANGLES,
+    MAX_RECORD_EXPORT_JOBS, MAX_SEGMENTS_PER_EXPORT, PlaybackRate, ProtectionReference,
+    RecordExportError, RecordExportQueue, RecordExportState, ReplayError, ReplayEvent,
+    RollingSegmentCatalog, SegmentId, SegmentMetadata, SegmentState, SourceCatalog, SourceTimeline,
+    StorageRoot, StorageRootId, TimelineRange,
 };
 use fm_types::{
     ChannelLayout, FrameRate, InputId,
@@ -90,6 +90,9 @@ pub struct EngineReplayPlaylistEntry {
     pub angle: Option<InputId>,
     /// The speed the entry plays at.
     pub speed: ReplaySpeed,
+    /// Inclusive first and exclusive last engine frame this entry plays
+    /// instead of the event's own marks.
+    pub marks: Option<(u64, u64)>,
 }
 
 /// One replay command (OR-012).
@@ -387,6 +390,9 @@ struct Player {
     shuttling: bool,
     /// Milli-quarter-frames carried between frames while shuttling.
     shuttle_remainder: i32,
+    /// This entry's effective engine-frame range, when it overrides the
+    /// event's own marks.
+    marks: Option<(u64, u64)>,
     /// Quarter frames since the event's first frame.
     position: u64,
     /// The player played its event to the end while on Program, and
@@ -415,7 +421,32 @@ impl Player {
         self.rate_milli = 0;
         self.shuttling = false;
         self.shuttle_remainder = 0;
+        self.marks = entry.marks;
         self.position = 0;
+    }
+
+    /// The engine frames this entry plays: its own marks, clamped to the
+    /// event, or the event's whole range.
+    fn bounds(&self, event: &Event) -> (u64, u64) {
+        let (start, end) = self.marks.unwrap_or((event.in_frame, event.out_frame));
+        let start = start.clamp(event.in_frame, event.out_frame.saturating_sub(1));
+        let end = end.max(start.saturating_add(1)).min(event.out_frame);
+        (start, end)
+    }
+
+    /// Maps a resolved list entry's playback rate onto the engine's quarter
+    /// speed steps.
+    fn speed_of(rate: PlaybackRate) -> ReplaySpeed {
+        let milli = rate.as_milli();
+        if milli <= 375 {
+            ReplaySpeed::Quarter
+        } else if milli <= 625 {
+            ReplaySpeed::Half
+        } else if milli <= 875 {
+            ReplaySpeed::ThreeQuarters
+        } else {
+            ReplaySpeed::Full
+        }
     }
 
     /// The first playlist entry after the current one whose event still
@@ -1256,6 +1287,81 @@ impl ReplayRuntime {
         self.touch();
     }
 
+    /// Replaces event list `list` in the replay database (OR-012).
+    pub(crate) fn set_list(&mut self, list: fm_replay::EventList) {
+        self.store_mut().events.remove_list(list.id);
+        let _ = self.store_mut().events.add_list(list);
+        self.touch();
+    }
+
+    /// Sets one list entry's angle, marks, and speed overrides (OR-012).
+    pub(crate) fn set_list_override(
+        &mut self,
+        list: u32,
+        event: u32,
+        angle: Option<InputId>,
+        marks: Option<(u64, u64)>,
+        speed: Option<ReplaySpeed>,
+    ) {
+        let list_id = ListId::new(NonZeroU128::new(u128::from(list)).unwrap_or(NonZeroU128::MIN));
+        let event_id =
+            EventId::new(NonZeroU128::new(u128::from(event)).unwrap_or(NonZeroU128::MIN));
+        let angle = angle.map(camera);
+        let marks = marks.and_then(|(start, end)| range_of(self.frame_rate, start, end));
+        let speed =
+            speed.and_then(|speed| PlaybackRate::from_milli(i32::from(speed.percent()) * 10).ok());
+        let overrides = fm_replay::EventListOverride {
+            angle,
+            marks,
+            speed,
+        };
+        let _ = self
+            .store_mut()
+            .events
+            .set_list_override(list_id, event_id, overrides);
+        self.touch();
+    }
+
+    /// Builds Replay input `input`'s playlist from event list `list`.
+    ///
+    /// Returns `false` when the list does not exist.
+    pub(crate) fn playlist_from_list(&mut self, input: InputId, list: u32) -> bool {
+        let list_id = ListId::new(NonZeroU128::new(u128::from(list)).unwrap_or(NonZeroU128::MIN));
+        let Ok(entries) = self.store.events.list_playback(list_id) else {
+            return false;
+        };
+        let entries: Vec<EngineReplayPlaylistEntry> = entries
+            .into_iter()
+            .filter_map(|entry| {
+                let event = u32::try_from(entry.event.get().get()).ok()?;
+                let start = frame_of(self.frame_rate, entry.timeline.start);
+                let end = frame_of(self.frame_rate, entry.timeline.end);
+                if end <= start {
+                    return None;
+                }
+                Some(EngineReplayPlaylistEntry {
+                    event,
+                    angle: Some(InputId::new(entry.angle.get())),
+                    speed: Player::speed_of(entry.speed),
+                    marks: entry.timeline_overridden.then_some((start, end)),
+                })
+            })
+            .collect();
+        let player = self.players.entry(input).or_default();
+        player.playlist.clone_from(&entries);
+        player.playlist_index = player.event.and_then(|event| {
+            player
+                .playlist
+                .iter()
+                .position(|entry| entry.event == event)
+        });
+        player.marks = player
+            .playlist_index
+            .and_then(|index| player.playlist.get(index).and_then(|entry| entry.marks));
+        self.touch();
+        true
+    }
+
     /// Realizes one accepted operation on frame `frame`.
     #[allow(clippy::too_many_lines)] // one arm per replay operation
     pub(crate) fn realize(
@@ -1344,6 +1450,9 @@ impl ReplayRuntime {
                             .playlist
                             .iter()
                             .position(|entry| entry.event == *event);
+                        player.marks = player.playlist_index.and_then(|index| {
+                            player.playlist.get(index).and_then(|entry| entry.marks)
+                        });
                     }
                     self.touch();
                 }
@@ -1419,6 +1528,9 @@ impl ReplayRuntime {
                         .iter()
                         .position(|entry| entry.event == event)
                 });
+                player.marks = player
+                    .playlist_index
+                    .and_then(|index| player.playlist.get(index).and_then(|entry| entry.marks));
                 self.touch();
             }
             EngineReplayOperation::PlaylistNext { input } => {
@@ -1474,7 +1586,8 @@ impl ReplayRuntime {
         let Some(event) = player.event.and_then(|id| self.store.event_frames.get(&id)) else {
             return;
         };
-        let last = (event.out_frame - event.in_frame).saturating_sub(1);
+        let (start, end) = player.bounds(event);
+        let last = (end - start).saturating_sub(1);
         let current = player.position / 4;
         let distance = u64::from(frames.unsigned_abs());
         let target = if frames < 0 {
@@ -1582,6 +1695,7 @@ impl ReplayRuntime {
 
     /// Steps the runtime to frame `frame` and reports what every Replay
     /// input shows on it.
+    #[allow(clippy::too_many_lines)] // one arm per player state
     pub(crate) fn step(&mut self, show: &ShowState, frame: u64) -> Vec<EngineReplayFrame> {
         self.follow(show.replay());
         if self.feed == EngineReplayFeed::Synthetic {
@@ -1620,7 +1734,8 @@ impl ReplayRuntime {
             let player = self.players.entry(input).or_default().clone();
             let event = player.event.and_then(|id| self.store.event_frames.get(&id));
             let source_frame = event.map(|event| {
-                (event.in_frame + player.position / 4).min(event.out_frame.saturating_sub(1))
+                let (start, end) = player.bounds(event);
+                (start + player.position / 4).min(end.saturating_sub(1))
             });
             let location = player
                 .angle
@@ -1640,7 +1755,8 @@ impl ReplayRuntime {
             if player.playing
                 && let Some(event) = event
             {
-                let length = event.out_frame - event.in_frame;
+                let (start, end) = player.bounds(event);
+                let length = end - start;
                 let delta = if player.shuttling {
                     let total =
                         i64::from(player.rate_milli) * 4 + i64::from(player.shuttle_remainder);
@@ -2237,8 +2353,8 @@ impl ReplayRuntime {
             .event
             .and_then(|id| self.store.event_frames.get(&id).map(|stored| (id, stored)))?;
         let (id, stored) = event;
-        let source_frame =
-            (stored.in_frame + player.position / 4).min(stored.out_frame.saturating_sub(1));
+        let (start, end) = player.bounds(stored);
+        let source_frame = (start + player.position / 4).min(end.saturating_sub(1));
         let mut channels: Vec<EngineReplayTile> = self.channel_tile(input).into_iter().collect();
         if let Some(linked) = linked
             && linked != input
@@ -2270,8 +2386,8 @@ impl ReplayRuntime {
         let event = player
             .event
             .and_then(|id| self.store.event_frames.get(&id))?;
-        let source_frame =
-            (event.in_frame + player.position / 4).min(event.out_frame.saturating_sub(1));
+        let (start, end) = player.bounds(event);
+        let source_frame = (start + player.position / 4).min(end.saturating_sub(1));
         let angle = player
             .angle
             .filter(|angle| event.angles.contains(angle))
@@ -2368,8 +2484,8 @@ impl ReplayRuntime {
                     .event
                     .and_then(|id| self.store.event_frames.get(&id))
                     .map(|event| {
-                        (event.in_frame + player.position / 4)
-                            .min(event.out_frame.saturating_sub(1))
+                        let (start, end) = player.bounds(event);
+                        (start + player.position / 4).min(end.saturating_sub(1))
                     });
                 EngineReplayPlayerStatus {
                     input,

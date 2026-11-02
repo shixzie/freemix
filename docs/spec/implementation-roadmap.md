@@ -6285,9 +6285,12 @@ per-list-entry angle, marks, and speed overrides, validates them against the
 event and its angles, and clears them when the event leaves the list.
 `list_playback` resolves those overrides into effective playback entries, and
 `ReplayDecks::play_entry` cues and plays one while `ReplayPlaybackClock`
-advances it. Remaining gaps in the library itself: no daemon or engine player
-consumes that path, and no eight-camera storage profile is certified; the
-end-to-end slice below wires part of this to a server.
+advances it. The engine now stores event lists and their overrides and builds
+a Replay input's playlist from a list, applying each entry's angle, marks, and
+speed; its player honors per-entry marks for cueing, jogging, frame
+reporting, and end-of-entry. Remaining gaps: no protocol or UI exposes list
+creation or playlist-from-list yet, no eight-camera storage profile is
+certified, and the end-to-end slice below wires part of this to a server.
 `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a

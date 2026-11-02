@@ -13,6 +13,7 @@ use fm_engine::{
     Engine, EngineCommand, EngineCommandKind, EngineCommandOutcome, EngineEvent, EngineInputSource,
     EngineReplayFeed, EngineReplayOperation, EngineReplayPlaylistEntry, FrameResult, ShowState,
 };
+use fm_replay::{EventId, EventList, ListId};
 use fm_types::replay::{ReplaySettings, ReplaySpeed};
 use fm_types::{FrameRate, InputId};
 
@@ -848,6 +849,84 @@ fn a_finished_replay_on_program_returns_to_the_live_source() {
     assert_eq!(program(&engine), input(9));
 }
 
+#[test]
+#[allow(clippy::too_many_lines)] // configure, two captures, overrides, and play
+fn a_playlist_from_an_event_list_applies_its_overrides() {
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1, 2], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last-1",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, FPS);
+    replay(
+        &mut engine,
+        "last-2",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    let first = engine.replay_status().events[0].clone();
+    let list = 1;
+    engine.replay_set_list(EventList {
+        id: ListId::new(NonZeroU128::new(u128::from(list)).unwrap()),
+        name: "Highlights".into(),
+        events: vec![
+            EventId::new(NonZeroU128::new(1).unwrap()),
+            EventId::new(NonZeroU128::new(2).unwrap()),
+        ],
+    });
+    let mark_in = first.in_frame + FPS;
+    let mark_out = first.out_frame - FPS;
+    engine.replay_set_list_override(
+        list,
+        1,
+        Some(input(2)),
+        Some((mark_in, mark_out)),
+        Some(ReplaySpeed::Half),
+    );
+    assert!(engine.replay_set_playlist_from_list(input(9), list));
+    settle(&mut engine);
+    let status = engine.replay_status();
+    let playlist = &status.players[0].playlist;
+    assert_eq!(playlist.len(), 2);
+    assert_eq!(playlist[0].event, 1);
+    assert_eq!(playlist[0].angle, Some(input(2)));
+    assert_eq!(playlist[0].speed, ReplaySpeed::Half);
+    assert_eq!(playlist[0].marks, Some((mark_in, mark_out)));
+    assert_eq!(playlist[1].marks, None);
+
+    // Play starts the player, then moving to the list's first entry applies
+    // its marks and speed.
+    replay(
+        &mut engine,
+        "play",
+        EngineReplayOperation::Play {
+            input: input(9),
+            speed: ReplaySpeed::Half,
+        },
+    );
+    replay(
+        &mut engine,
+        "next",
+        EngineReplayOperation::PlaylistNext { input: input(9) },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 1);
+    let status = engine.replay_status();
+    assert_eq!(status.players[0].frame, Some(mark_in));
+    assert_eq!(status.players[0].speed, ReplaySpeed::Half);
+    assert_eq!(status.players[0].angle, Some(input(2)));
+}
+
 /// Protocol 2.119: a Replay input's playlist plays its events back to
 /// back, and Program returns to the live source only after the last one.
 #[test]
@@ -883,6 +962,7 @@ fn a_playlist_plays_its_events_back_to_back_and_returns_after_the_last() {
         event,
         angle: angle.map(input),
         speed,
+        marks: None,
     };
     replay(
         &mut engine,
@@ -990,6 +1070,7 @@ fn playlist_next_and_prev_cue_entries_and_clear_keeps_the_player() {
         event,
         angle: None,
         speed,
+        marks: None,
     };
     replay(
         &mut engine,
@@ -1294,6 +1375,7 @@ fn linked_players_leave_an_event_only_together() {
         event,
         angle: None,
         speed: ReplaySpeed::Full,
+        marks: None,
     };
     let mut engine = engine();
     add_player(&mut engine, 9);
