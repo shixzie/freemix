@@ -3780,6 +3780,10 @@ fn scenes(language: Language) -> Vec<Scene> {
         let mut state = ready(true, Variant::default());
         state.recorder_tracks_local = local;
         if local {
+            state.recorder_track_limits = crate::RecorderTrackLimitsView {
+                max_seconds: Some(600),
+                max_bytes: None,
+            };
             state.recorder_track_status[0] = Some(crate::RecorderTrackStatusView {
                 state: crate::RecorderTrackRecordingState::Recording,
                 files: vec![crate::RecorderTrackFileView {

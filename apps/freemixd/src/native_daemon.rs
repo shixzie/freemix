@@ -451,6 +451,7 @@ impl NativeDaemon {
         )?;
         let pacer_start_offset = host_deadline_offset(&pacer)?;
         let record_track_maps = load_record_track_maps(store, stored)?;
+        let record_track_policy = load_record_track_policy(store)?;
         let origin = Instant::now();
         let telemetry = NativeRuntimeTelemetry::new(origin, runtime.context().adapter_info());
         Ok(Self {
@@ -484,7 +485,7 @@ impl NativeDaemon {
             record_wav: false,
             record_track_maps,
             record_track_wavs: [None, None],
-            record_track_policy: TrackWavPolicy::from_environment(),
+            record_track_policy,
             record_segment_seconds: [None; RECORDER_SLOTS],
             record_bitrates: [None, None],
             record_audio_bitrates: [None, None],

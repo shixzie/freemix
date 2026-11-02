@@ -283,6 +283,12 @@ pub enum StudioIntent {
     /// Validates and saves one recorder slot's canonical track-map document
     /// into the supervised project bundle (AU-010).
     SaveRecorderTrackMap { slot: u8, document: String },
+    /// Saves the project's track-file rollover limits (AU-010) into the
+    /// supervised project bundle.
+    SaveRecorderTrackLimits {
+        max_seconds: Option<u32>,
+        max_bytes: Option<u64>,
+    },
     /// Operates one project production clock (SW-013, Protocol 2.150); the
     /// answer carries the reading afterwards or the daemon's refusal.
     ClockControl {
@@ -714,6 +720,15 @@ pub struct RecorderTrackSource {
     pub channel: u16,
 }
 
+/// The project's authored track-file rollover limits (AU-010).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RecorderTrackLimitsView {
+    /// Close a track file after this many seconds of audio.
+    pub max_seconds: Option<u32>,
+    /// Close a track file before its data reaches this many bytes.
+    pub max_bytes: Option<u64>,
+}
+
 /// One recorded track in a recorder track map.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecorderTrackView {
@@ -774,6 +789,8 @@ pub struct StudioUiState {
     pub recorder_track_documents: [Option<String>; RECORDER_SLOT_COUNT],
     /// The daemon-written live track-file status per slot.
     pub recorder_track_status: [Option<RecorderTrackStatusView>; RECORDER_SLOT_COUNT],
+    /// The project's authored track-file rollover limits (AU-010).
+    pub recorder_track_limits: RecorderTrackLimitsView,
     /// Whether this Studio has the supervised project bundle locally, so its
     /// recorder track maps can be read.
     pub recorder_tracks_local: bool,
@@ -908,6 +925,10 @@ impl StudioUiState {
             recorder_track_maps: [None, None],
             recorder_track_documents: [None, None],
             recorder_track_status: [None, None],
+            recorder_track_limits: RecorderTrackLimitsView {
+                max_seconds: None,
+                max_bytes: None,
+            },
             recorder_tracks_local: false,
             recorder_track_error: None,
             source_sync: None,

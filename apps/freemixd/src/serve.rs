@@ -246,6 +246,23 @@ pub(crate) fn serve_inner(
             );
         }
     }
+    // The project's track-file rollover limits are authored offline or in
+    // Studio; a malformed document refuses startup rather than surprising a
+    // recorder later.
+    if let Some(limits) = store
+        .load_recorder_track_limits()
+        .map_err(|error| AppFailure(format!("recorder track limits: {error}")))?
+    {
+        eprintln!(
+            "FREEMIXD_RECORD_TRACK_LIMITS\tv=1\tseconds={}\tbytes={}",
+            limits
+                .max_segment_seconds()
+                .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+            limits
+                .max_segment_bytes()
+                .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+        );
+    }
     let bundle_assets = load_bundle_assets(&store, project.project())?;
     // Opened once and held for the run: this process is the journal's only
     // writer, and reopening it per command is what made an accepted command

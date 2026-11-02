@@ -1489,6 +1489,7 @@ fn run_worker(
                 | StudioIntent::RequestClocks
                 | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::SaveRecorderTrackMap { .. }
+                | StudioIntent::SaveRecorderTrackLimits { .. }
                 | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
@@ -1610,6 +1611,7 @@ fn run_worker(
                 | StudioIntent::RequestClocks
                 | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::SaveRecorderTrackMap { .. }
+                | StudioIntent::SaveRecorderTrackLimits { .. }
                 | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
@@ -1774,6 +1776,16 @@ fn handle_preview_request(
         }
         return publish_recovery_runtime(runtime, publisher, recovery);
     }
+    if let StudioIntent::SaveRecorderTrackLimits {
+        max_seconds,
+        max_bytes,
+    } = &request
+    {
+        if !recovery.active() {
+            runtime.save_recorder_track_limits(*max_seconds, *max_bytes);
+        }
+        return publish_recovery_runtime(runtime, publisher, recovery);
+    }
     if let StudioIntent::ClockControl { name, operation } = &request {
         if !recovery.active() {
             runtime.request_clock_control(name, *operation);
@@ -1847,6 +1859,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestClocks
         | StudioIntent::RefreshRecorderTracks
         | StudioIntent::SaveRecorderTrackMap { .. }
+        | StudioIntent::SaveRecorderTrackLimits { .. }
         | StudioIntent::ClockControl { .. }
         | StudioIntent::WebAccess(_)
         | StudioIntent::HealthAlert { .. }
@@ -3262,6 +3275,9 @@ fn intent_payload(
         StudioIntent::SaveRecorderTrackMap { .. } => {
             return Err("A recorder track map save is not a command".to_owned());
         }
+        StudioIntent::SaveRecorderTrackLimits { .. } => {
+            return Err("A recorder track limit save is not a command".to_owned());
+        }
         StudioIntent::ClockControl { .. } => {
             return Err("A clock control is not a command".to_owned());
         }
@@ -3638,6 +3654,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
             state
                 .recorder_track_status
                 .clone_from(runtime.record_track_status());
+            state.recorder_track_limits = runtime.record_track_limits();
             state.recorder_tracks_local = runtime.record_tracks_local();
             state.recorder_track_error = runtime.record_track_error().map(str::to_owned);
             state.source_sync = runtime.session().latest_source_sync_status().cloned();
@@ -7136,6 +7153,16 @@ mod tests {
     fn clock_intents_are_not_commands_and_only_readings_coalesce() {
         assert!(intent_payload(StudioIntent::RequestClocks, None).is_err());
         assert!(intent_payload(StudioIntent::RefreshRecorderTracks, None).is_err());
+        assert!(
+            intent_payload(
+                StudioIntent::SaveRecorderTrackLimits {
+                    max_seconds: Some(600),
+                    max_bytes: None,
+                },
+                None,
+            )
+            .is_err()
+        );
         let control = StudioIntent::ClockControl {
             name: "Countdown".to_owned(),
             operation: fm_protocol::ClockControlOperation::Start,

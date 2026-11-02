@@ -3850,12 +3850,14 @@ sync, or creation failure (the same directory or `--record-fallback-dir`),
 and startup WAV recovery finds it by its derived name and repairs its sizes.
 Stopping a segment finalizes every file and prints `FREEMIXD_RECORD_TRACK`
 with its mode, file count, segments, bytes, failovers, and first failure.
-`FREEMIXD_RECORD_TRACK_SEGMENT_SECONDS` and
-`FREEMIXD_RECORD_TRACK_SEGMENT_BYTES` set per-file time and byte rollover
-limits (1 second to 24 hours; 1 byte to 1 TiB); a track session then closes
-the whole file and continues in `<name>-NNNN.wav` under the same failover and
-recovery rules. Without either override a track file follows its MP4 segment
-and RF64 limits. Studio's View ▸ Recorder tracks window reads the supervised
+The project's rollover limits are authored as the canonical
+`freemix-record-track-limits 1` document at `recorders/limits.tracklimits`
+(1 second to 24 hours; 1 byte to 1 TiB), loaded strictly at startup; a track
+session then closes the whole file and continues in `<name>-NNNN.wav` under
+the same failover and recovery rules. `FREEMIXD_RECORD_TRACK_SEGMENT_SECONDS`
+and `FREEMIXD_RECORD_TRACK_SEGMENT_BYTES` still override one or both authored
+values for a run. Without a limit a track file follows its MP4 segment and
+RF64 limits. Studio's View ▸ Recorder tracks window reads the supervised
 bundle's maps and lists each slot's layout, tracks, channels, sources, and WAV
 file names, with a Refresh action; a Studio connected to a daemon elsewhere
 says it has no local bundle. The same window is a structured editor: it picks
@@ -3869,10 +3871,11 @@ require an offline import. The daemon rewrites each slot's
 `recorders/<slot>.trackstatus` at most once a second while a track session is
 open and once when it stops, naming every WAV path, its byte count, and its
 open/closed/failed/recovered/lost state; the window polls that file once a
-second while open and lists the live files beside the map. Remaining gaps:
-there is no time or byte limit editor in Studio, and the track-map document is
-not re-read from the bundle automatically after an external edit. WAV output
-is separate from the
+second while open and lists the live files beside the map. The same window
+edits the project's time and byte rollover limits with an on/off key for each
+and saves the canonical document atomically. Remaining gaps: the track-map
+and limits documents are not re-read from the bundle automatically after an
+external edit. WAV output is separate from the
 crash-safe packet spool, and metadata stops at version-1 `bext` without iXML,
 loudness, or UMID. `AU-010` remains planned.
 

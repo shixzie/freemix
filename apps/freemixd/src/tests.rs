@@ -13206,3 +13206,29 @@ fn track_wav_status_reports_live_files() {
         "{stopped}"
     );
 }
+
+/// AU-010: the bundle's authored limits become the recorder's rollover
+/// policy, and a malformed document refuses startup.
+#[cfg(feature = "native-media")]
+#[test]
+fn bundle_track_limits_reach_the_recorder_policy() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+    let unlimited = load_record_track_policy(&store).unwrap();
+    assert!(unlimited.max_segment_bytes.is_none());
+    assert!(unlimited.max_segment_duration.is_none());
+
+    store
+        .save_recorder_track_limits(fm_record::TrackLimits::new(Some(30), Some(1 << 20)).unwrap())
+        .unwrap();
+    let policy = load_record_track_policy(&store).unwrap();
+    assert_eq!(policy.max_segment_duration, Some(Duration::from_secs(30)));
+    assert_eq!(policy.max_segment_bytes, std::num::NonZeroU64::new(1 << 20));
+
+    fs::write(
+        store.recorder_track_limits_path(),
+        "freemix-record-track-limits 1\nmax-seconds=0\n",
+    )
+    .unwrap();
+    assert!(load_record_track_policy(&store).is_err());
+}

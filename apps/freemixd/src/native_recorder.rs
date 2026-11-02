@@ -105,6 +105,20 @@ pub(crate) fn load_record_track_maps(
     Ok(maps)
 }
 
+/// Loads the project's authored track-file rollover limits, then applies the
+/// environment overrides (AU-010). A malformed document refuses startup.
+#[cfg(feature = "native-media")]
+pub(crate) fn load_record_track_policy(store: &ProjectStore) -> AppResult<TrackWavPolicy> {
+    let policy = match store
+        .load_recorder_track_limits()
+        .map_err(|error| AppFailure(format!("recorder track limits: {error}")))?
+    {
+        Some(limits) => TrackWavPolicy::from_limits(limits),
+        None => TrackWavPolicy::default(),
+    };
+    Ok(policy.with_environment())
+}
+
 /// A started recorder and the session it writes into.
 #[cfg(feature = "native-media")]
 pub(crate) struct OpenedRecorder {
@@ -124,29 +138,41 @@ pub(crate) struct TrackWavPolicy {
 
 #[cfg(feature = "native-media")]
 impl TrackWavPolicy {
+    /// The policy a bundle's authored limits describe (AU-010).
+    pub(crate) fn from_limits(limits: fm_record::TrackLimits) -> Self {
+        Self {
+            max_segment_bytes: core::num::NonZeroU64::new(limits.max_segment_bytes().unwrap_or(0)),
+            max_segment_duration: limits
+                .max_segment_seconds()
+                .map(|seconds| Duration::from_secs(u64::from(seconds))),
+        }
+    }
+
     /// Reads the operator overrides from the environment:
     /// `FREEMIXD_RECORD_TRACK_SEGMENT_BYTES` and
-    /// `FREEMIXD_RECORD_TRACK_SEGMENT_SECONDS`. An unparsable value is
-    /// reported and ignored rather than refusing the daemon.
-    pub(crate) fn from_environment() -> Self {
-        let mut policy = Self::default();
+    /// `FREEMIXD_RECORD_TRACK_SEGMENT_SECONDS`, replacing the bundle's
+    /// authored value for each one set. An unparsable value is reported and
+    /// ignored rather than refusing the daemon.
+    pub(crate) fn with_environment(mut self) -> Self {
         if let Ok(value) = std::env::var("FREEMIXD_RECORD_TRACK_SEGMENT_BYTES") {
             match value.parse::<u64>() {
-                Ok(bytes) if (1..=1_099_511_627_776).contains(&bytes) => {
-                    policy.max_segment_bytes = core::num::NonZeroU64::new(bytes);
+                Ok(bytes) if (1..=fm_record::MAX_TRACK_SEGMENT_BYTES).contains(&bytes) => {
+                    self.max_segment_bytes = core::num::NonZeroU64::new(bytes);
                 }
                 _ => eprintln!("FREEMIXD_RECORD_TRACK\tv=1\tstatus=invalid_bytes\tvalue={value}"),
             }
         }
         if let Ok(value) = std::env::var("FREEMIXD_RECORD_TRACK_SEGMENT_SECONDS") {
             match value.parse::<u64>() {
-                Ok(seconds) if (1..=86_400).contains(&seconds) => {
-                    policy.max_segment_duration = Some(Duration::from_secs(seconds));
+                Ok(seconds)
+                    if (1..=u64::from(fm_record::MAX_TRACK_SEGMENT_SECONDS)).contains(&seconds) =>
+                {
+                    self.max_segment_duration = Some(Duration::from_secs(seconds));
                 }
                 _ => eprintln!("FREEMIXD_RECORD_TRACK\tv=1\tstatus=invalid_seconds\tvalue={value}"),
             }
         }
-        policy
+        self
     }
 }
 
@@ -340,6 +366,7 @@ impl TrackWavState {
     ///
     /// `aux` is bus-major, each bus `mixer_channels` wide. The map's
     /// inventory may record fewer channels than the mixer exposes.
+    #[allow(clippy::too_many_lines)] // per-bus routing plus rollover and status steps
     pub(crate) fn write(
         &mut self,
         audio: &AudioBlock,
@@ -480,10 +507,8 @@ impl TrackWavState {
                 let path = file.to_string_lossy();
                 let mut hex = String::with_capacity(path.len() * 2);
                 for byte in path.bytes() {
-                    use core::fmt::Write as _;
                     let _ = write!(hex, "{byte:02x}");
                 }
-                use core::fmt::Write as _;
                 let _ = writeln!(
                     document,
                     "file\t{hex}\t{}\t{}",

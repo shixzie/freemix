@@ -1,14 +1,18 @@
-//! Per-recorder track-map documents in a project bundle (AU-010).
+//! Per-recorder track-map and rollover documents in a project bundle (AU-010).
 //!
 //! A track map is stored as `recorders/<slot>.trackmap` beside the manifest.
 //! The file is the same canonical `freemix-record-track-map 1` document the
 //! `fm-record` model validates, so a rewrite is byte-identical and an
-//! unsupported map is refused before it reaches a recorder.
+//! unsupported map is refused before it reaches a recorder. The project's
+//! track-file rollover limits live beside the maps as
+//! `recorders/limits.tracklimits`, the canonical `fm-record` limits document.
 
 use std::{fmt, fs, io, path::PathBuf};
 
 use fm_model::RecorderSlot;
-use fm_record::{RecorderTrackMap, TrackMapDocumentError};
+use fm_record::{
+    RecorderTrackMap, TRACK_LIMITS_FILE_NAME, TrackLimits, TrackLimitsError, TrackMapDocumentError,
+};
 
 use crate::fsutil;
 use crate::store::ProjectStore;
@@ -17,6 +21,8 @@ use crate::store::ProjectStore;
 pub const RECORDER_TRACK_MAP_DIRECTORY: &str = "recorders";
 /// Extension of one recorder track map.
 pub const RECORDER_TRACK_MAP_EXTENSION: &str = "trackmap";
+/// File name of the project's track-file rollover limits.
+pub const RECORDER_TRACK_LIMITS_FILE: &str = TRACK_LIMITS_FILE_NAME;
 
 /// Why a recorder track map could not be read or written.
 #[derive(Debug)]
@@ -55,7 +61,83 @@ impl From<TrackMapDocumentError> for TrackMapStoreError {
     }
 }
 
+/// Why a recorder track-limits document could not be read or written.
+#[derive(Debug)]
+pub enum TrackLimitsStoreError {
+    Io(io::Error),
+    Document(TrackLimitsError),
+}
+
+impl fmt::Display for TrackLimitsStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "recorder track limits: {error}"),
+            Self::Document(error) => write!(formatter, "recorder track limits: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for TrackLimitsStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Document(error) => Some(error),
+        }
+    }
+}
+
+impl From<io::Error> for TrackLimitsStoreError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<TrackLimitsError> for TrackLimitsStoreError {
+    fn from(error: TrackLimitsError) -> Self {
+        Self::Document(error)
+    }
+}
+
 impl ProjectStore {
+    /// The path of the project's track-file rollover limits.
+    #[must_use]
+    pub fn recorder_track_limits_path(&self) -> PathBuf {
+        self.root()
+            .join(RECORDER_TRACK_MAP_DIRECTORY)
+            .join(RECORDER_TRACK_LIMITS_FILE)
+    }
+
+    /// Atomically stores the project's track-file rollover limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns the directory creation, temporary-file, sync, or rename error.
+    pub fn save_recorder_track_limits(
+        &self,
+        limits: TrackLimits,
+    ) -> Result<(), TrackLimitsStoreError> {
+        let path = self.recorder_track_limits_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fsutil::write_atomically(&path, limits.to_document().as_bytes())?;
+        Ok(())
+    }
+
+    /// Loads the project's track-file rollover limits, or `None` when the
+    /// bundle has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read error or the strict document error.
+    pub fn load_recorder_track_limits(&self) -> Result<Option<TrackLimits>, TrackLimitsStoreError> {
+        match fs::read_to_string(self.recorder_track_limits_path()) {
+            Ok(text) => Ok(Some(TrackLimits::from_document(&text)?)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(TrackLimitsStoreError::Io(error)),
+        }
+    }
+
     /// The path of `slot`'s track map inside this bundle.
     #[must_use]
     pub fn recorder_track_map_path(&self, slot: RecorderSlot) -> PathBuf {
@@ -134,6 +216,24 @@ mod tests {
             BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(sub), 2)]).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn track_limits_round_trip_and_refuse_a_bad_document() {
+        let (directory, store) = store();
+        assert!(store.load_recorder_track_limits().unwrap().is_none());
+        let limits = TrackLimits::new(Some(600), Some(1 << 20)).unwrap();
+        store.save_recorder_track_limits(limits).unwrap();
+        assert_eq!(store.load_recorder_track_limits().unwrap(), Some(limits));
+        assert_eq!(
+            fs::read_to_string(store.recorder_track_limits_path()).unwrap(),
+            limits.to_document()
+        );
+
+        let path = store.recorder_track_limits_path();
+        fs::write(&path, "not a limits document").unwrap();
+        assert!(store.load_recorder_track_limits().is_err());
+        let _ = directory;
     }
 
     fn store() -> (tempfile::TempDir, ProjectStore) {

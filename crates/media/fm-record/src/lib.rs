@@ -21,6 +21,7 @@ mod resilient;
 mod resilient_wav;
 mod session;
 mod space;
+mod track_limits;
 mod track_map;
 mod track_map_document;
 mod track_wav;
@@ -61,6 +62,10 @@ pub use space::{
     MAX_REMAINING_THRESHOLDS, RemainingTimeAlarm, RemainingTimeTransition, RootPreflight,
     SpaceEstimate, SpaceLevel, SpaceMonitor, SpacePreflight, SpaceThresholds, SpaceTransition,
     estimate_recording_space, observed_bitrate, preflight_recording_space,
+};
+pub use track_limits::{
+    MAX_TRACK_SEGMENT_BYTES, MAX_TRACK_SEGMENT_SECONDS, TRACK_LIMITS_FILE_NAME,
+    TRACK_LIMITS_HEADER, TrackLimits, TrackLimitsError,
 };
 pub use track_map::{
     BusInventory, MAX_BUS_CHANNELS, MAX_INVENTORY_BUSES, MAX_RECORDER_CHANNELS,

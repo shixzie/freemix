@@ -7,11 +7,12 @@ use fm_protocol::{
     AudioPluginStatusRequest, CommandMessage, CommandPayload, HeartbeatMessage,
     ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
 };
-use fm_record::{RecordBus, RecorderTrackMap};
+use fm_record::{RecordBus, RecorderTrackMap, TrackLimits};
 use fm_ui_egui::{
     DisplayOutputAnswer, RecorderTrackBus, RecorderTrackFileState, RecorderTrackFileView,
-    RecorderTrackLayout, RecorderTrackMapView, RecorderTrackRecordingState, RecorderTrackSource,
-    RecorderTrackStatusView, RecorderTrackView, TitleAnimationRefusal, TitleUpdate,
+    RecorderTrackLayout, RecorderTrackLimitsView, RecorderTrackMapView,
+    RecorderTrackRecordingState, RecorderTrackSource, RecorderTrackStatusView, RecorderTrackView,
+    TitleAnimationRefusal, TitleUpdate,
 };
 
 use crate::titles::TitleRelay;
@@ -157,6 +158,8 @@ pub struct StudioRuntime {
     record_track_documents: [Option<String>; 2],
     /// The daemon-written live track-file status per slot.
     record_track_status: [Option<RecorderTrackStatusView>; 2],
+    /// The project's authored track-file rollover limits.
+    record_track_limits: RecorderTrackLimitsView,
     /// Why the bundle's track maps could not be read, if they could not.
     record_track_error: Option<String>,
 }
@@ -186,8 +189,13 @@ impl StudioRuntime {
             ConnectionConfig::Supervised(supervised) => Some(supervised.project_bundle.clone()),
             ConnectionConfig::Existing(_) => None,
         };
-        let (record_track_maps, record_track_documents, record_track_status, record_track_error) =
-            load_record_track_views(project_bundle.as_deref());
+        let (
+            record_track_maps,
+            record_track_documents,
+            record_track_status,
+            record_track_limits,
+            record_track_error,
+        ) = load_record_track_views(project_bundle.as_deref());
         let (supervisor, address, project_id) = match config.connection {
             ConnectionConfig::Supervised(supervised) => {
                 let supervisor = DaemonSupervisor::launch_cancellable(
@@ -228,6 +236,7 @@ impl StudioRuntime {
             record_track_maps,
             record_track_documents,
             record_track_status,
+            record_track_limits,
             record_track_error,
         })
     }
@@ -478,6 +487,45 @@ impl StudioRuntime {
         &self.record_track_status
     }
 
+    /// The project's authored track-file rollover limits.
+    #[must_use]
+    pub(crate) const fn record_track_limits(&self) -> RecorderTrackLimitsView {
+        self.record_track_limits
+    }
+
+    /// Validates and saves the project's track-file rollover limits into the
+    /// supervised bundle. Returns whether they were written.
+    pub(crate) fn save_recorder_track_limits(
+        &mut self,
+        max_seconds: Option<u32>,
+        max_bytes: Option<u64>,
+    ) -> bool {
+        let Some(bundle) = &self.project_bundle else {
+            self.record_track_error = Some(
+                "track-file limits can be saved only into a supervised project bundle".to_owned(),
+            );
+            return false;
+        };
+        let limits = match TrackLimits::new(max_seconds, max_bytes) {
+            Ok(limits) => limits,
+            Err(error) => {
+                self.record_track_error = Some(format!("recorder track limits: {error}"));
+                return false;
+            }
+        };
+        match write_recorder_track_limits(bundle, limits) {
+            Ok(()) => {
+                self.record_track_limits = limits_view(limits);
+                self.record_track_error = None;
+                true
+            }
+            Err(error) => {
+                self.record_track_error = Some(error);
+                false
+            }
+        }
+    }
+
     /// Validates and saves one slot's track-map document into the supervised
     /// bundle, replacing the stored map. Returns whether it was written and
     /// reloads the console views.
@@ -521,11 +569,12 @@ impl StudioRuntime {
 
     /// Re-reads the supervised bundle's recorder track maps (AU-010).
     pub(crate) fn reload_record_track_views(&mut self) {
-        let (maps, documents, statuses, error) =
+        let (maps, documents, statuses, limits, error) =
             load_record_track_views(self.project_bundle.as_deref());
         self.record_track_maps = maps;
         self.record_track_documents = documents;
         self.record_track_status = statuses;
+        self.record_track_limits = limits;
         self.record_track_error = error;
     }
 
@@ -1198,12 +1247,19 @@ type LoadedRecorderTracks = (
     [Option<RecorderTrackMapView>; 2],
     [Option<String>; 2],
     [Option<RecorderTrackStatusView>; 2],
+    RecorderTrackLimitsView,
     Option<String>,
 );
 
 fn load_record_track_views(bundle: Option<&std::path::Path>) -> LoadedRecorderTracks {
     let Some(bundle) = bundle else {
-        return ([None, None], [None, None], [None, None], None);
+        return (
+            [None, None],
+            [None, None],
+            [None, None],
+            RecorderTrackLimitsView::default(),
+            None,
+        );
     };
     let mut views: [Option<RecorderTrackMapView>; 2] = [None, None];
     let mut documents: [Option<String>; 2] = [None, None];
@@ -1237,7 +1293,46 @@ fn load_record_track_views(bundle: Option<&std::path::Path>) -> LoadedRecorderTr
             statuses[index] = parse_track_status(&status);
         }
     }
-    (views, documents, statuses, error)
+    let limits = match std::fs::read_to_string(
+        bundle
+            .join("recorders")
+            .join(fm_record::TRACK_LIMITS_FILE_NAME),
+    ) {
+        Ok(text) => match TrackLimits::from_document(&text) {
+            Ok(limits) => limits_view(limits),
+            Err(read) => {
+                error.get_or_insert_with(|| format!("recorder track limits: {read}"));
+                RecorderTrackLimitsView::default()
+            }
+        },
+        Err(_) => RecorderTrackLimitsView::default(),
+    };
+    (views, documents, statuses, limits, error)
+}
+
+fn limits_view(limits: TrackLimits) -> RecorderTrackLimitsView {
+    RecorderTrackLimitsView {
+        max_seconds: limits.max_segment_seconds(),
+        max_bytes: limits.max_segment_bytes(),
+    }
+}
+
+/// Validates and atomically writes the bundle's track-file rollover limits.
+fn write_recorder_track_limits(
+    bundle: &std::path::Path,
+    limits: TrackLimits,
+) -> Result<(), String> {
+    let directory = bundle.join("recorders");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("recorder track limits: {error}"))?;
+    let temporary = directory.join(".limits.tracklimits.tmp");
+    std::fs::write(&temporary, limits.to_document())
+        .map_err(|error| format!("recorder track limits: {error}"))?;
+    std::fs::rename(
+        &temporary,
+        directory.join(fm_record::TRACK_LIMITS_FILE_NAME),
+    )
+    .map_err(|error| format!("recorder track limits: {error}"))
 }
 
 /// Parses the daemon's `freemix-record-track-status 1` document.
@@ -1369,6 +1464,24 @@ mod tests {
     }
 
     #[test]
+    fn saving_track_limits_writes_the_canonical_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("show.freemix");
+        write_recorder_track_limits(&bundle, TrackLimits::new(Some(600), None).unwrap()).unwrap();
+        let path = bundle.join("recorders/limits.tracklimits");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "freemix-record-track-limits 1\nmax-seconds=600\n"
+        );
+        let (_, _, _, limits, error) = load_record_track_views(Some(&bundle));
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(limits.max_seconds, Some(600));
+        assert_eq!(limits.max_bytes, None);
+        assert!(TrackLimits::new(Some(0), None).is_err());
+        assert!(!bundle.join("recorders/.limits.tracklimits.tmp").exists());
+    }
+
+    #[test]
     fn saving_a_bundle_track_map_validates_before_replacing() {
         let directory = tempfile::tempdir().unwrap();
         let bundle = directory.path().join("show.freemix");
@@ -1421,7 +1534,7 @@ mod tests {
              file\t2f746d702f73686f772e747261636b732e776176\t4096\topen\n",
         )
         .unwrap();
-        let (views, documents, statuses, error) = load_record_track_views(Some(&bundle));
+        let (views, documents, statuses, limits, error) = load_record_track_views(Some(&bundle));
         assert!(error.is_none(), "{error:?}");
         let view = views[0].as_ref().unwrap();
         assert_eq!(view.slot, 1);
@@ -1438,6 +1551,7 @@ mod tests {
         assert_eq!(status.files[0].path, "/tmp/show.tracks.wav");
         assert_eq!(status.files[0].bytes, 4_096);
         assert!(statuses[1].is_none());
-        assert!(load_record_track_views(None).3.is_none());
+        assert_eq!(limits, RecorderTrackLimitsView::default());
+        assert!(load_record_track_views(None).4.is_none());
     }
 }

@@ -9077,6 +9077,38 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::RecorderTracksBusEntryHover,
         t("Grabar este canal desde ese bus"),
     ),
+    (
+        Msg::RecorderTracksLimits,
+        t("Rotación de archivos de pista"),
+    ),
+    (Msg::RecorderTracksLimitTime, t("Límite de tiempo")),
+    (
+        Msg::RecorderTracksLimitTimeHover,
+        t(
+            "Cerrar cada archivo de pista tras este tiempo de audio y continuar en el siguiente archivo numerado",
+        ),
+    ),
+    (
+        Msg::RecorderTracksLimitSecondsHover,
+        t("Segundos de audio en un archivo de pista"),
+    ),
+    (Msg::RecorderTracksLimitSize, t("Límite de tamaño")),
+    (
+        Msg::RecorderTracksLimitSizeHover,
+        t(
+            "Cerrar cada archivo de pista antes de que sus datos alcancen estos bytes y continuar en el siguiente archivo numerado",
+        ),
+    ),
+    (
+        Msg::RecorderTracksLimitBytesHover,
+        t("Bytes de datos en un archivo de pista"),
+    ),
+    (Msg::RecorderTracksLimitOff, t("el límite está desactivado")),
+    (Msg::RecorderTracksSaveLimits, t("Guardar límites")),
+    (
+        Msg::RecorderTracksSaveLimitsHover,
+        t("Escribir los límites de rotación de archivos de pista del proyecto en el paquete"),
+    ),
     (Msg::RecorderTracksAddTrack, t("Añadir pista")),
     (
         Msg::RecorderTracksAddTrackHover,

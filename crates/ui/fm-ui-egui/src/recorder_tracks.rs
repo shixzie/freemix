@@ -22,8 +22,9 @@ use crate::gating::Hint;
 use crate::l10n::{Arg, Msg};
 use crate::theme::{Tone, card, muted_color, status_chip};
 use crate::{
-    RecorderTrackBus, RecorderTrackFileState, RecorderTrackLayout, RecorderTrackMapView,
-    RecorderTrackRecordingState, RecorderTrackSource, StudioIntent, StudioShell, StudioUiState,
+    RecorderTrackBus, RecorderTrackFileState, RecorderTrackLayout, RecorderTrackLimitsView,
+    RecorderTrackMapView, RecorderTrackRecordingState, RecorderTrackSource, StudioIntent,
+    StudioShell, StudioUiState,
 };
 
 const DIALOG_WIDTH: f32 = 680.0;
@@ -36,6 +37,9 @@ const MAX_TRACK_CHANNELS: usize = 16;
 const MAX_TOTAL_CHANNELS: usize = 64;
 const MAX_TRACK_NAME_BYTES: usize = 64;
 const MAX_BUS_CHANNEL: u16 = 63;
+/// Mirrored from `fm-record`'s track-limits document.
+const MAX_LIMIT_SECONDS: u32 = 86_400;
+const MAX_LIMIT_BYTES: u64 = 1_099_511_627_776;
 
 /// One track in an editable map.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -226,13 +230,67 @@ fn next_track_name(tracks: &[TrackDraft]) -> String {
     "Track".to_owned()
 }
 
+/// The project's track-file rollover limits as an editable draft.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LimitsDraft {
+    seconds_on: bool,
+    seconds: u32,
+    bytes_on: bool,
+    bytes: u64,
+}
+
+impl Default for LimitsDraft {
+    fn default() -> Self {
+        Self {
+            seconds_on: false,
+            seconds: 600,
+            bytes_on: false,
+            bytes: 1 << 30,
+        }
+    }
+}
+
+impl LimitsDraft {
+    fn from_view(view: RecorderTrackLimitsView) -> Self {
+        let mut draft = Self::default();
+        if let Some(seconds) = view.max_seconds {
+            draft.seconds_on = true;
+            draft.seconds = seconds;
+        }
+        if let Some(bytes) = view.max_bytes {
+            draft.bytes_on = true;
+            draft.bytes = bytes;
+        }
+        draft
+    }
+
+    /// The authored pair; an unchecked limit is off.
+    const fn values(self) -> (Option<u32>, Option<u64>) {
+        (
+            if self.seconds_on {
+                Some(self.seconds)
+            } else {
+                None
+            },
+            if self.bytes_on {
+                Some(self.bytes)
+            } else {
+                None
+            },
+        )
+    }
+}
+
 /// The window's own state: whether it is open, one structured draft per
-/// slot, and when live status was last asked for.
+/// slot, the project's rollover limits, and when live status was last asked
+/// for.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RecorderTracksWindow {
     pub(crate) open: bool,
     /// One structured map draft per slot, seeded when the window opens.
     drafts: [MapDraft; 2],
+    /// The project's rollover limits, seeded when the window opens.
+    limits: LimitsDraft,
     loaded: bool,
     last_refresh: Option<Instant>,
 }
@@ -262,6 +320,7 @@ impl StudioShell {
             for (slot, draft) in self.recorder_tracks.drafts.iter_mut().enumerate() {
                 *draft = MapDraft::from_view(state.recorder_track_maps[slot].as_ref());
             }
+            self.recorder_tracks.limits = LimitsDraft::from_view(state.recorder_track_limits);
             self.recorder_tracks.loaded = true;
         }
         let l = self.locale;
@@ -303,6 +362,8 @@ fn draw_contents(
         ui.add_space(4.0);
     }
     if state.recorder_tracks_local {
+        draw_limits(ui, window, intents);
+        ui.add_space(6.0);
         egui::ScrollArea::vertical()
             .id_salt("studio-recorder-tracks-scroll")
             .max_height(560.0)
@@ -330,6 +391,64 @@ fn draw_contents(
     {
         intents.push(StudioIntent::RefreshRecorderTracks);
     }
+}
+
+/// The project-wide track-file rollover limits editor.
+fn draw_limits(ui: &mut Ui, window: &mut RecorderTracksWindow, intents: &mut Vec<StudioIntent>) {
+    let l = crate::l10n::locale(ui.ctx());
+    card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            RichText::new(l.text(Msg::RecorderTracksLimits))
+                .size(crate::theme::legible(12.0))
+                .strong(),
+        );
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut window.limits.seconds_on,
+                l.text(Msg::RecorderTracksLimitTime),
+            )
+            .on_hover_text(l.text(Msg::RecorderTracksLimitTimeHover));
+            let action = l.text(Msg::RecorderTracksLimitSecondsHover);
+            let reason = l.text(Msg::RecorderTracksLimitOff);
+            ui.add_enabled(
+                window.limits.seconds_on,
+                DragValue::new(&mut window.limits.seconds)
+                    .range(1..=MAX_LIMIT_SECONDS)
+                    .speed(1.0)
+                    .suffix(" s"),
+            )
+            .hint(action, if window.limits.seconds_on { "" } else { reason });
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut window.limits.bytes_on,
+                l.text(Msg::RecorderTracksLimitSize),
+            )
+            .on_hover_text(l.text(Msg::RecorderTracksLimitSizeHover));
+            let action = l.text(Msg::RecorderTracksLimitBytesHover);
+            let reason = l.text(Msg::RecorderTracksLimitOff);
+            ui.add_enabled(
+                window.limits.bytes_on,
+                DragValue::new(&mut window.limits.bytes)
+                    .range(1..=MAX_LIMIT_BYTES)
+                    .speed(1_048_576.0)
+                    .suffix(" B"),
+            )
+            .hint(action, if window.limits.bytes_on { "" } else { reason });
+        });
+        let (max_seconds, max_bytes) = window.limits.values();
+        if ui
+            .button(l.text(Msg::RecorderTracksSaveLimits))
+            .on_hover_text(l.text(Msg::RecorderTracksSaveLimitsHover))
+            .clicked()
+        {
+            intents.push(StudioIntent::SaveRecorderTrackLimits {
+                max_seconds,
+                max_bytes,
+            });
+        }
+    });
 }
 
 fn draw_slot(
@@ -796,6 +915,22 @@ mod tests {
             "the next channel continues the last bus"
         );
         assert_eq!(path(next_source(&[])), "Master 0");
+    }
+
+    #[test]
+    fn limit_drafts_survive_a_round_trip() {
+        let view = RecorderTrackLimitsView {
+            max_seconds: Some(600),
+            max_bytes: Some(1 << 30),
+        };
+        let draft = LimitsDraft::from_view(view);
+        assert_eq!(draft.values(), (Some(600), Some(1 << 30)));
+        assert!(draft.seconds_on);
+        assert!(draft.bytes_on);
+        let off = LimitsDraft::from_view(RecorderTrackLimitsView::default());
+        assert_eq!(off.values(), (None, None));
+        assert!(!off.seconds_on);
+        assert!(!off.bytes_on);
     }
 
     #[test]
