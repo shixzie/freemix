@@ -1,6 +1,6 @@
 //! A bounded polling source that reads one file from disk (GX-004).
 //!
-//! The parsers in [`crate::parse`] never perform I/O; this adapter supplies
+//! The CSV, JSON, and XLSX parsers never perform I/O; this adapter supplies
 //! the bytes. It reads at most [`MAX_FILE_SOURCE_BYTES`], skips a poll while
 //! the file's length and modification time are unchanged, and reports read
 //! and parse failures as [`SourceError::Adapter`]. A vanished file is not an
@@ -13,17 +13,20 @@ use crate::adapters::DataAdapter;
 use crate::parse::{CsvOptions, ParseLimits, parse_csv, parse_json};
 use crate::source::{DataSource, PollingSource, SourceError, SourceEvent, SourceState};
 use crate::value::DataValue;
+use crate::xlsx::{parse_xlsx, parse_xlsx_sheet};
 
 /// The largest file a file source reads, in bytes.
 pub const MAX_FILE_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 
 /// How a file source parses its bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileFormat {
     /// Comma-separated values with the given dialect and limits.
     Csv(CsvOptions),
     /// One JSON document with the given limits.
     Json(ParseLimits),
+    /// The first worksheet, or the named worksheet, of an `.xlsx` workbook.
+    Xlsx { sheet: Option<String> },
 }
 
 /// A polling source backed by one file on disk.
@@ -72,16 +75,26 @@ impl FilePollingSource {
     }
 
     fn parse(&self, bytes: &[u8]) -> Result<DataValue, SourceError> {
-        match self.format {
+        match &self.format {
             FileFormat::Csv(options) => {
-                let adapter = parse_csv(bytes, &options)
+                let adapter = parse_csv(bytes, options)
                     .map_err(|error| SourceError::Adapter(error.to_string()))?;
                 adapter
                     .representation()
                     .map_err(|error| SourceError::Adapter(error.to_string()))
             }
             FileFormat::Json(limits) => {
-                parse_json(bytes, &limits).map_err(|error| SourceError::Adapter(error.to_string()))
+                parse_json(bytes, limits).map_err(|error| SourceError::Adapter(error.to_string()))
+            }
+            FileFormat::Xlsx { sheet } => {
+                let adapter = match sheet.as_deref() {
+                    Some(name) => parse_xlsx_sheet(bytes, name),
+                    None => parse_xlsx(bytes),
+                }
+                .map_err(|error| SourceError::Adapter(error.to_string()))?;
+                adapter
+                    .representation()
+                    .map_err(|error| SourceError::Adapter(error.to_string()))
             }
         }
     }
@@ -235,6 +248,109 @@ mod tests {
             )
         );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    fn package(parts: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, contents) in parts {
+            writer
+                .start_file(
+                    (*name).to_owned(),
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )
+                .unwrap();
+            writer.write_all(contents.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn workbook() -> Vec<u8> {
+        package(&[
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Other" sheetId="2" r:id="rId2"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="worksheet" Target="/xl/worksheets/sheet2.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<worksheet><sheetData><row><c r="A1"><v>Name</v></c><c r="B1"><v>Score</v></c></row><row><c r="A2"><v>Ada</v></c><c r="B2"><v>7</v></c></row></sheetData></worksheet>"#,
+            ),
+            (
+                "xl/worksheets/sheet2.xml",
+                r#"<worksheet><sheetData><row><c r="A1"><v>Label</v></c></row><row><c r="A2"><v>Other</v></c></row></sheetData></worksheet>"#,
+            ),
+        ])
+    }
+
+    #[test]
+    fn an_xlsx_file_polls_a_worksheet_and_emits_only_on_change() {
+        let path = temp_path("xlsx");
+        std::fs::write(&path, workbook()).unwrap();
+        let mut source = FilePollingSource::new(
+            "xlsx",
+            &path,
+            FileFormat::Xlsx {
+                sheet: Some("Data".to_owned()),
+            },
+            Duration::from_secs(1),
+        );
+        source.start().unwrap();
+        let first = source.poll().unwrap().unwrap();
+        assert_eq!(first.sequence, 0);
+        let DataValue::List(rows) = first.value else {
+            panic!("an XLSX source emits rows");
+        };
+        assert_eq!(rows.len(), 1);
+        let DataValue::Object(row) = &rows[0] else {
+            panic!("an XLSX row is an object");
+        };
+        assert_eq!(row["Name"], DataValue::from("Ada"));
+        assert_eq!(row["Score"], DataValue::from("7"));
+        assert_eq!(source.poll().unwrap(), None, "an unchanged file is skipped");
+
+        let mut named = FilePollingSource::new(
+            "xlsx-named",
+            &path,
+            FileFormat::Xlsx {
+                sheet: Some("Other".to_owned()),
+            },
+            Duration::from_secs(1),
+        );
+        named.start().unwrap();
+        let event = named.poll().unwrap().unwrap();
+        assert_eq!(
+            event.value,
+            DataValue::List(vec![DataValue::Object(
+                [("Label".to_owned(), DataValue::from("Other"))]
+                    .into_iter()
+                    .collect()
+            )])
+        );
+    }
+
+    #[test]
+    fn a_missing_xlsx_sheet_is_an_adapter_error() {
+        let path = temp_path("xlsx-missing");
+        std::fs::write(&path, workbook()).unwrap();
+        let mut source = FilePollingSource::new(
+            "xlsx-missing",
+            &path,
+            FileFormat::Xlsx {
+                sheet: Some("Nope".to_owned()),
+            },
+            Duration::from_secs(1),
+        );
+        source.start().unwrap();
+        assert!(matches!(
+            source.poll(),
+            Err(SourceError::Adapter(message)) if message.contains("no worksheet named Nope")
+        ));
     }
 
     #[test]

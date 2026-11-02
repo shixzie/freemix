@@ -4916,7 +4916,8 @@ wrap edges, stays valid across refresh, and selects by exact key. A validated
 title mapper coerces values onto text, number, color, and image fields with
 explicit rounding and color rules, fallbacks, optional fields, and per-field
 diagnostics. `fm-data` also provides a bounded file polling source that
-re-reads one CSV or JSON file at a caller interval and emits only when its
+re-reads one CSV, JSON, or `.xlsx` file (the first or a named worksheet) at a
+caller interval and emits only when its
 length or modification time changes, and a bounded XML reader that turns one
 document into nested typed elements (no DOCTYPE, entity expansion limited to
 the five named entities and numeric references), and reads RSS 2.0 and Atom
