@@ -10,9 +10,10 @@ use fm_auth::Policy;
 use fm_control::ControlService;
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, CommandResult,
-    LiveInputSource, NetworkStreamConfig, SnapshotMessage, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerStatus, TitleAirRequirement, TitleFieldUpdate,
-    TitleFieldValue, TransitionFavoriteEffect, WireInputId, WireOverlayChannelId, WireRecorderSlot,
+    LiveInputSource, ManualTransitionKind, ManualTransitionPosition, ManualTransitionStatus,
+    NetworkStreamConfig, SnapshotMessage, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerStatus, TitleAirRequirement, TitleFieldUpdate, TitleFieldValue,
+    TransitionFavoriteEffect, WireInputId, WireOverlayChannelId, WireRecorderSlot,
     WireStingerSlotId,
 };
 use fm_vmix_compat::{
@@ -464,6 +465,69 @@ fn execute_compat(
                 },
                 next_command,
             )
+        }
+        CompatIntent::SetFader { basis_points } => {
+            let position = ManualTransitionPosition::new(basis_points)
+                .ok_or_else(|| format!("fader position {basis_points} is outside 0..=10000"))?;
+            let active = matches!(
+                snapshot.desired_manual_transition,
+                ManualTransitionStatus::Active(_)
+            );
+            if basis_points == 0 {
+                if active {
+                    submit(
+                        control,
+                        principal,
+                        now_millis,
+                        CommandPayload::CancelManualTransition,
+                        next_command,
+                    )?;
+                }
+                return Ok(());
+            }
+            if !active {
+                let kind = match *transition_effect {
+                    TransitionFavoriteEffect::Mix(mix) => ManualTransitionKind::from_mix(mix),
+                    TransitionFavoriteEffect::Stinger(slot) => {
+                        let duration = snapshot
+                            .stingers
+                            .iter()
+                            .find(|stinger| stinger.slot == slot)
+                            .map_or(1, |stinger| stinger.cut_point_frames.max(1));
+                        ManualTransitionKind::Stinger {
+                            slot,
+                            duration_frames: duration,
+                        }
+                    }
+                    TransitionFavoriteEffect::Cut => {
+                        return Err("SetFader needs a mix or stinger transition effect".into());
+                    }
+                };
+                submit(
+                    control,
+                    principal,
+                    now_millis,
+                    CommandPayload::StartManualTransition { kind },
+                    next_command,
+                )?;
+            }
+            submit(
+                control,
+                principal,
+                now_millis,
+                CommandPayload::SetManualTransitionPosition { position },
+                next_command,
+            )?;
+            if basis_points == ManualTransitionPosition::MAX {
+                submit(
+                    control,
+                    principal,
+                    now_millis,
+                    CommandPayload::CommitManualTransition,
+                    next_command,
+                )?;
+            }
+            Ok(())
         }
         CompatIntent::SetAudioBus { input, bus, on } => {
             let strip = snapshot

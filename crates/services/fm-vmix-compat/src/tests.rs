@@ -1033,6 +1033,30 @@ fn audio_bus_functions_route_master_and_aux_buses() {
 }
 
 #[test]
+fn set_fader_maps_the_vmix_range_to_basis_points() {
+    let state = state();
+    for (value, basis_points) in [("0", 0), ("128", 5_020), ("255", 10_000)] {
+        assert_eq!(
+            parse_http_query(&format!("Function=SetFader&Value={value}"), &state),
+            Ok(Translation::Compat(CompatIntent::SetFader { basis_points })),
+            "{value}"
+        );
+    }
+    for query in [
+        "Function=SetFader",
+        "Function=SetFader&Value=256",
+        "Function=SetFader&Value=-1",
+        "Function=SetFader&Value=abc",
+        "Function=SetFader&Value=0&Input=2",
+    ] {
+        assert!(
+            parse_http_query(query, &state).is_err(),
+            "accepted {query:?}"
+        );
+    }
+}
+
+#[test]
 fn set_rate_translates_playback_speed_into_basis_points() {
     let state = state();
     for (value, basis_points) in [

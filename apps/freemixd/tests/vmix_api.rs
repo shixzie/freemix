@@ -284,6 +284,21 @@ fn the_daemon_serves_the_vmix_tcp_api() {
         .unwrap();
     assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
 
+    // SetFader drives the T-bar from the selected transition effect.
+    writer
+        .write_all(b"FUNCTION SetFader Value=255\r\n")
+        .unwrap();
+    assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
+    writer.write_all(b"FUNCTION SetFader Value=0\r\n").unwrap();
+    assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
+    writer
+        .write_all(b"FUNCTION SetFader Value=256\r\n")
+        .unwrap();
+    assert!(
+        read_line(&mut reader).starts_with("FUNCTION ER"),
+        "a fader position past 255 is refused"
+    );
+
     // MoveInput puts the added input at the front of the vMix order.
     writer
         .write_all(b"FUNCTION MoveInput Input=Extra&Value=1\r\n")

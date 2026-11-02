@@ -513,6 +513,8 @@ pub enum CompatIntent {
         bus: CompatAudioBus,
         on: bool,
     },
+    /// Move the T-bar to one position in basis points (`0..=10_000`).
+    SetFader { basis_points: u16 },
     /// Set one title field.
     SetText {
         input: WireInputId,
@@ -841,6 +843,17 @@ fn translate(
                 input,
                 operation,
             }))
+        }
+        "SetFader" => {
+            allowed(parameters, &["Function", "Value"])?;
+            let value = parse_u32(required(parameters, "Value")?, "Value", 0, 255)?;
+            let basis_points = u16::try_from((value * 10_000 + 127) / 255).map_err(|_| {
+                ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "fader position is 0 through 255",
+                }
+            })?;
+            Ok(Translation::Compat(CompatIntent::SetFader { basis_points }))
         }
         "SetRate" => {
             allowed(parameters, &["Function", "Input", "Value"])?;
