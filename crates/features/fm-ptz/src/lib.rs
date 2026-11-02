@@ -14,6 +14,7 @@ mod visca;
 mod visca_ip;
 mod visca_ip_transport;
 mod visca_serial;
+mod visca_serial_adapter;
 mod visca_udp_adapter;
 
 pub use adapter::{AdapterError, CommandOutcome, PtzAdapter};
@@ -51,4 +52,5 @@ pub use visca_serial::{
     MAX_VISCA_SERIAL_COMMAND_LEN, SerialPort, ViscaSerialCounters, ViscaSerialError,
     ViscaSerialTransport,
 };
+pub use visca_serial_adapter::{ViscaSerialAdapter, ViscaSerialCamera};
 pub use visca_udp_adapter::{ViscaUdpAdapter, ViscaUdpCamera};

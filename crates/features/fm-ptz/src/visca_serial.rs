@@ -39,6 +39,12 @@ pub trait SerialPort: Read + Write {
     fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()>;
 }
 
+impl<T: SerialPort + ?Sized> SerialPort for Box<T> {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        (**self).set_read_timeout(timeout)
+    }
+}
+
 /// Counters kept by one serial transport.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ViscaSerialCounters {

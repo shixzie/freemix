@@ -5694,11 +5694,15 @@ persists as a strict canonical document in `project.json` (schema 106);
 VISCA frames over a caller-supplied blocking serial port: it accepts only
 complete bounded frames, keeps replies completed in one read in order,
 surfaces timeouts and malformed replies as typed errors, and counts commands,
-replies, timeouts, and bytes. Remaining gaps: neither transport is bound to a
-`PtzAdapter` consumer in the engine, protocol, or UI; no real camera hardware
-has validated either transport; preset virtual inputs are not switchable from
-the engine or UI; and there is no ONVIF, Panasonic, or digital PTZ. `IN-028`
-remains planned.
+replies, timeouts, and bytes. `ViscaSerialAdapter` implements the full
+`PtzAdapter` contract over that transport: it validates and clamps intents,
+encodes the shared VISCA command set, updates telemetry and presets only after
+the camera replies, and marks a camera disconnected with a typed reason when a
+transaction fails, with the same recovery lifecycle as the UDP adapter.
+Remaining gaps: neither adapter is bound to the engine, protocol, or UI; no
+real camera hardware has validated either transport; preset virtual inputs
+are not switchable from the engine or UI; and there is no ONVIF, Panasonic, or
+digital PTZ. `IN-028` remains planned.
 
 Current implementation boundary for item 10: `fm-telestrator` provides a
 sequenced, bounded collaborative board with normalized strokes, per-author and
