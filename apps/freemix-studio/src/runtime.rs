@@ -1,4 +1,11 @@
-use std::{env, error::Error, fmt, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{
+    env,
+    error::Error,
+    fmt,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime},
+};
 
 use fm_client::{
     Client, ConnectionState, ReconnectBackoff, SessionEvent, TcpSession, TcpSessionError,
@@ -162,6 +169,16 @@ pub struct StudioRuntime {
     record_track_limits: RecorderTrackLimitsView,
     /// Why the bundle's track maps could not be read, if they could not.
     record_track_error: Option<String>,
+    /// The file stamps the published track views were read at, so an
+    /// external edit of the bundle is noticed without a manual refresh.
+    record_track_stamp: RecordTrackStamp,
+}
+
+/// Modification stamp of every recorder track document in a bundle.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RecordTrackStamp {
+    maps: [Option<(SystemTime, u64)>; 2],
+    limits: Option<(SystemTime, u64)>,
 }
 
 impl StudioRuntime {
@@ -189,6 +206,7 @@ impl StudioRuntime {
             ConnectionConfig::Supervised(supervised) => Some(supervised.project_bundle.clone()),
             ConnectionConfig::Existing(_) => None,
         };
+        let record_track_stamp = record_track_stamp(project_bundle.as_deref());
         let (
             record_track_maps,
             record_track_documents,
@@ -238,6 +256,7 @@ impl StudioRuntime {
             record_track_status,
             record_track_limits,
             record_track_error,
+            record_track_stamp,
         })
     }
 
@@ -567,6 +586,24 @@ impl StudioRuntime {
         self.project_bundle.is_some()
     }
 
+    /// Re-reads the bundle's recorder track documents when any changed on
+    /// disk since the last read, so an external edit (another Studio, the
+    /// CLI, or an operator) reaches the console without a manual refresh.
+    pub(crate) fn refresh_record_track_views_if_changed(&mut self) -> bool {
+        let Some((maps, documents, statuses, limits, error)) = reload_changed_record_track_views(
+            self.project_bundle.as_deref(),
+            &mut self.record_track_stamp,
+        ) else {
+            return false;
+        };
+        self.record_track_maps = maps;
+        self.record_track_documents = documents;
+        self.record_track_status = statuses;
+        self.record_track_limits = limits;
+        self.record_track_error = error;
+        true
+    }
+
     /// Re-reads the supervised bundle's recorder track maps (AU-010).
     pub(crate) fn reload_record_track_views(&mut self) {
         let (maps, documents, statuses, limits, error) =
@@ -576,6 +613,7 @@ impl StudioRuntime {
         self.record_track_status = statuses;
         self.record_track_limits = limits;
         self.record_track_error = error;
+        self.record_track_stamp = record_track_stamp(self.project_bundle.as_deref());
     }
 
     /// The latest production-clock readings (SW-013), in name order.
@@ -1426,6 +1464,39 @@ fn track_map_view(slot: usize, map: &RecorderTrackMap) -> RecorderTrackMapView {
     }
 }
 
+/// The recorder track documents' modification stamps, or all `None` when
+/// Studio has no local bundle.
+fn record_track_stamp(bundle: Option<&Path>) -> RecordTrackStamp {
+    let Some(bundle) = bundle else {
+        return RecordTrackStamp::default();
+    };
+    let directory = bundle.join("recorders");
+    let stamp = |name: &str| {
+        let path = directory.join(name);
+        std::fs::metadata(path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok().map(|at| (at, metadata.len())))
+    };
+    RecordTrackStamp {
+        maps: [stamp("1.trackmap"), stamp("2.trackmap")],
+        limits: stamp(fm_record::TRACK_LIMITS_FILE_NAME),
+    }
+}
+
+/// Reloads every recorder track view when the bundle's documents changed
+/// since `stamp`; `None` when nothing changed.
+fn reload_changed_record_track_views(
+    bundle: Option<&Path>,
+    stamp: &mut RecordTrackStamp,
+) -> Option<LoadedRecorderTracks> {
+    let current = record_track_stamp(bundle);
+    if current == *stamp {
+        return None;
+    }
+    *stamp = current;
+    Some(load_record_track_views(bundle))
+}
+
 /// Validates `document` and writes it atomically as slot `index`'s track map.
 fn write_recorder_track_map(
     bundle: &std::path::Path,
@@ -1479,6 +1550,45 @@ mod tests {
         assert_eq!(limits.max_bytes, None);
         assert!(TrackLimits::new(Some(0), None).is_err());
         assert!(!bundle.join("recorders/.limits.tracklimits.tmp").exists());
+    }
+
+    #[test]
+    fn an_external_track_edit_is_reloaded_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("show.freemix");
+        let mut stamp = RecordTrackStamp::default();
+        assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
+
+        write_recorder_track_map(&bundle, 0, &RecorderTrackMap::master_stereo().to_document())
+            .unwrap();
+        let first = reload_changed_record_track_views(Some(&bundle), &mut stamp).unwrap();
+        assert_eq!(first.0[0].as_ref().unwrap().tracks[0].name, "Master");
+        assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
+
+        let edited = RecorderTrackMap::new(
+            vec![fm_record::RecordTrack::mono(
+                "Host",
+                fm_record::TrackSource::master(0),
+            )],
+            fm_record::BusInventory::new(vec![(RecordBus::Master, 1)]).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(bundle.join("recorders/1.trackmap"), edited.to_document()).unwrap();
+        let second = reload_changed_record_track_views(Some(&bundle), &mut stamp).unwrap();
+        assert_eq!(second.0[0].as_ref().unwrap().tracks[0].name, "Host");
+        assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
+
+        write_recorder_track_limits(&bundle, TrackLimits::new(Some(30), Some(1 << 20)).unwrap())
+            .unwrap();
+        let third = reload_changed_record_track_views(Some(&bundle), &mut stamp).unwrap();
+        assert_eq!(
+            third.3,
+            RecorderTrackLimitsView {
+                max_seconds: Some(30),
+                max_bytes: Some(1 << 20),
+            }
+        );
+        assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
     }
 
     #[test]

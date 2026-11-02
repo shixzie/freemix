@@ -3873,11 +3873,13 @@ open and once when it stops, naming every WAV path, its byte count, and its
 open/closed/failed/recovered/lost state; the window polls that file once a
 second while open and lists the live files beside the map. The same window
 edits the project's time and byte rollover limits with an on/off key for each
-and saves the canonical document atomically. Remaining gaps: the track-map
-and limits documents are not re-read from the bundle automatically after an
-external edit. WAV output is separate from the
-crash-safe packet spool, and metadata stops at version-1 `bext` without iXML,
-loudness, or UMID. `AU-010` remains planned.
+and saves the canonical document atomically. While Studio runs, its worker
+checks the maps' and limits' modification stamps about once a second and
+republishes the views when any changed, so an edit made by the CLI, another
+Studio, or an operator reaches the console without a manual refresh. Remaining
+gaps: WAV output is separate from the crash-safe packet spool, and metadata
+stops at version-1 `bext` without iXML, loudness, or UMID. `AU-010` remains
+planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):
 `fm-observability` provides a deterministic, clock-free statistics layer: a

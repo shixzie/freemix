@@ -57,6 +57,9 @@ const IO_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(25);
+/// How often the worker checks the supervised bundle's recorder track
+/// documents for an external edit.
+const RECORD_TRACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const REQUEST_CAPACITY: usize = 16;
 const DEFERRED_INTENT_CAPACITY: usize = 16;
 const STATE_NOTIFICATION_CAPACITY: usize = 1;
@@ -1456,10 +1459,22 @@ fn run_worker(
     };
     let started = Instant::now();
     let mut next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+    let mut next_record_track_poll = Instant::now() + RECORD_TRACK_POLL_INTERVAL;
     let mut keys = IdempotencyKeys::new(worker_nonce());
 
     // Poll requests before one bounded socket read so neither source starves.
     loop {
+        // Track maps and limits are plain bundle files an operator, another
+        // Studio, or the CLI may edit while this console runs; re-read and
+        // republish them when their modification stamps change.
+        if Instant::now() >= next_record_track_poll {
+            next_record_track_poll = Instant::now() + RECORD_TRACK_POLL_INTERVAL;
+            if runtime.refresh_record_track_views_if_changed()
+                && !publish_recovery_runtime(&mut runtime, publisher, &recovery)
+            {
+                break;
+            }
+        }
         if !recovery.active()
             && let Some(intent) = recovery.deferred_intents.pop_front()
         {
