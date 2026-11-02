@@ -11,7 +11,9 @@ use std::{fmt, fs, io, path::PathBuf};
 
 use fm_model::RecorderSlot;
 use fm_record::{
-    RecorderTrackMap, TRACK_LIMITS_FILE_NAME, TrackLimits, TrackLimitsError, TrackMapDocumentError,
+    BextLoudness, RecorderTrackMap, TRACK_LIMITS_FILE_NAME, TRACK_LOUDNESS_FILE_NAME, TrackLimits,
+    TrackLimitsError, TrackLoudnessError, TrackMapDocumentError, decode_track_loudness,
+    encode_track_loudness,
 };
 
 use crate::fsutil;
@@ -23,6 +25,8 @@ pub const RECORDER_TRACK_MAP_DIRECTORY: &str = "recorders";
 pub const RECORDER_TRACK_MAP_EXTENSION: &str = "trackmap";
 /// File name of the project's track-file rollover limits.
 pub const RECORDER_TRACK_LIMITS_FILE: &str = TRACK_LIMITS_FILE_NAME;
+/// File name of the project's track loudness metadata.
+pub const RECORDER_TRACK_LOUDNESS_FILE: &str = TRACK_LOUDNESS_FILE_NAME;
 
 /// Why a recorder track map could not be read or written.
 #[derive(Debug)]
@@ -98,7 +102,85 @@ impl From<TrackLimitsError> for TrackLimitsStoreError {
     }
 }
 
+/// Why a recorder track-loudness document could not be read or written.
+#[derive(Debug)]
+pub enum TrackLoudnessStoreError {
+    Io(io::Error),
+    Document(TrackLoudnessError),
+}
+
+impl fmt::Display for TrackLoudnessStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "recorder track loudness: {error}"),
+            Self::Document(error) => write!(formatter, "recorder track loudness: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for TrackLoudnessStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Document(error) => Some(error),
+        }
+    }
+}
+
+impl From<io::Error> for TrackLoudnessStoreError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<TrackLoudnessError> for TrackLoudnessStoreError {
+    fn from(error: TrackLoudnessError) -> Self {
+        Self::Document(error)
+    }
+}
+
 impl ProjectStore {
+    /// The path of the project's recorder track loudness document.
+    #[must_use]
+    pub fn recorder_track_loudness_path(&self) -> PathBuf {
+        self.root()
+            .join(RECORDER_TRACK_MAP_DIRECTORY)
+            .join(RECORDER_TRACK_LOUDNESS_FILE)
+    }
+
+    /// Atomically stores the project's recorder track loudness metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns the directory creation, temporary-file, sync, or rename error.
+    pub fn save_recorder_track_loudness(
+        &self,
+        loudness: BextLoudness,
+    ) -> Result<(), TrackLoudnessStoreError> {
+        let path = self.recorder_track_loudness_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fsutil::write_atomically(&path, encode_track_loudness(loudness).as_bytes())?;
+        Ok(())
+    }
+
+    /// Loads the project's recorder track loudness metadata, or `None` when
+    /// the bundle has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read error or the strict document error.
+    pub fn load_recorder_track_loudness(
+        &self,
+    ) -> Result<Option<BextLoudness>, TrackLoudnessStoreError> {
+        match fs::read_to_string(self.recorder_track_loudness_path()) {
+            Ok(text) => Ok(Some(decode_track_loudness(&text)?)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(TrackLoudnessStoreError::Io(error)),
+        }
+    }
+
     /// The path of the project's track-file rollover limits.
     #[must_use]
     pub fn recorder_track_limits_path(&self) -> PathBuf {
@@ -216,6 +298,32 @@ mod tests {
             BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(sub), 2)]).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn track_loudness_round_trips_and_refuses_a_bad_document() {
+        let (_directory, store) = store();
+        assert!(store.load_recorder_track_loudness().unwrap().is_none());
+        let loudness = BextLoudness {
+            integrated_lufs: -2300,
+            range_lu: 750,
+            max_true_peak_dbtp: -120,
+            max_momentary_lufs: -2250,
+            max_short_term_lufs: -2310,
+        };
+        store.save_recorder_track_loudness(loudness).unwrap();
+        assert_eq!(
+            store.load_recorder_track_loudness().unwrap(),
+            Some(loudness)
+        );
+        assert_eq!(
+            fs::read_to_string(store.recorder_track_loudness_path()).unwrap(),
+            encode_track_loudness(loudness)
+        );
+
+        let path = store.recorder_track_loudness_path();
+        fs::write(&path, "not loudness").unwrap();
+        assert!(store.load_recorder_track_loudness().is_err());
     }
 
     #[test]

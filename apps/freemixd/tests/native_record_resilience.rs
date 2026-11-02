@@ -860,6 +860,17 @@ fn an_authored_track_map_writes_master_and_aux_channels_beside_the_segment() {
         .unwrap()
         .save_recorder_track_map(RecorderSlot::new(1).unwrap(), &map)
         .unwrap();
+    let loudness = fm_record::BextLoudness {
+        integrated_lufs: -2300,
+        range_lu: 750,
+        max_true_peak_dbtp: -120,
+        max_momentary_lufs: -2250,
+        max_short_term_lufs: -2310,
+    };
+    ProjectStore::new(&project)
+        .unwrap()
+        .save_recorder_track_loudness(loudness)
+        .unwrap();
 
     let output = directory.path().join("program.mp4");
     let mut arguments = os(&["--record-program"]);
@@ -886,6 +897,11 @@ fn an_authored_track_map_writes_master_and_aux_channels_beside_the_segment() {
         &bext.umid[..12],
         &fm_record::UMID_UNIVERSAL_LABEL[..],
         "the track WAV carries a basic SMPTE UMID"
+    );
+    assert_eq!(
+        bext.loudness,
+        Some(loudness),
+        "the project's authored loudness reaches the bext version-2 fields"
     );
     let ixml = info.spec.ixml.as_deref().expect("iXML document");
     assert!(ixml.contains("<SCENE>program</SCENE>"), "{ixml}");

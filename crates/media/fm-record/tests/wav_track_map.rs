@@ -404,6 +404,50 @@ fn bext_umid_round_trips_and_requires_the_smpte_label() {
 }
 
 #[test]
+fn bext_loudness_is_written_as_version_two() {
+    let loudness = fm_record::BextLoudness {
+        integrated_lufs: -2300,
+        range_lu: 750,
+        max_true_peak_dbtp: -120,
+        max_momentary_lufs: -2250,
+        max_short_term_lufs: -2310,
+    };
+    let bext = BextMetadata {
+        description: "loud".into(),
+        loudness: Some(loudness),
+        ..BextMetadata::default()
+    };
+    let spec = WavSpec {
+        bext: Some(bext.clone()),
+        ..riff_spec(1, WavSampleFormat::Pcm16)
+    };
+    let bytes = write_all(spec, &[0.0, 0.0]);
+    let chunk = bytes
+        .windows(4)
+        .position(|window| window == b"bext")
+        .unwrap();
+    let payload = chunk + 8;
+    assert_eq!(
+        &bytes[payload + 346..payload + 348],
+        &2_u16.to_le_bytes(),
+        "loudness promotes the chunk to version 2"
+    );
+    assert_eq!(
+        &bytes[payload + 412..payload + 414],
+        &(-2300_i16).to_le_bytes()
+    );
+    assert_eq!(
+        &bytes[payload + 420..payload + 422],
+        &(-2310_i16).to_le_bytes()
+    );
+
+    let mut cursor = io::Cursor::new(bytes);
+    let info = read_wav_info(&mut cursor).unwrap();
+    assert_eq!(info.spec.bext, Some(bext));
+    assert_eq!(info.spec.bext.unwrap().loudness, Some(loudness));
+}
+
+#[test]
 fn ixml_round_trips_as_its_own_chunk() {
     let document = "<?xml version=\"1.0\"?><BWFXML><SCENE>show</SCENE><TAKE>2</TAKE></BWFXML>";
     let spec = WavSpec {

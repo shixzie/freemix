@@ -3884,9 +3884,14 @@ UMID whose material number is the project identity and whose instance number
 is the one-based recorder slot; the daemon derives it from the segment's first
 frame and exact frame rate. Each track WAV also carries an iXML chunk with
 the project, scene (segment stem), take, recorder note, and speed/timecode
-flag. Remaining gaps: WAV output is separate from the crash-safe packet
-spool, and metadata stops at `bext`/iXML without loudness authoring. `AU-010`
-remains planned.
+flag. Loudness metadata is authored as the canonical
+`freemix-record-track-loudness 1` document at
+`recorders/loudness.trackloudness` (integrated, range, true peak, momentary,
+and short-term in hundredths); the daemon loads it strictly and promotes the
+`bext` chunk to version 2 so the five fields land at their standard offsets.
+Remaining gaps: loudness values must be measured upstream and authored in
+that document (no Studio editor or internal measurement), and WAV output is
+separate from the crash-safe packet spool. `AU-010` remains planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):
 `fm-observability` provides a deterministic, clock-free statistics layer: a

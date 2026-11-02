@@ -263,6 +263,19 @@ pub(crate) fn serve_inner(
                 .map_or_else(|| "none".to_owned(), |value| value.to_string()),
         );
     }
+    if let Some(loudness) = store
+        .load_recorder_track_loudness()
+        .map_err(|error| AppFailure(format!("recorder track loudness: {error}")))?
+    {
+        eprintln!(
+            "FREEMIXD_RECORD_TRACK_LOUDNESS\tv=1\tintegrated={}\trange={}\ttrue_peak={}\tmomentary={}\tshort_term={}",
+            loudness.integrated_lufs,
+            loudness.range_lu,
+            loudness.max_true_peak_dbtp,
+            loudness.max_momentary_lufs,
+            loudness.max_short_term_lufs,
+        );
+    }
     let bundle_assets = load_bundle_assets(&store, project.project())?;
     // Opened once and held for the run: this process is the journal's only
     // writer, and reopening it per command is what made an accepted command

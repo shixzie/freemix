@@ -22,6 +22,7 @@ mod resilient_wav;
 mod session;
 mod space;
 mod track_limits;
+mod track_loudness;
 mod track_map;
 mod track_map_document;
 mod track_wav;
@@ -67,6 +68,10 @@ pub use track_limits::{
     MAX_TRACK_SEGMENT_BYTES, MAX_TRACK_SEGMENT_SECONDS, TRACK_LIMITS_FILE_NAME,
     TRACK_LIMITS_HEADER, TrackLimits, TrackLimitsError,
 };
+pub use track_loudness::{
+    TRACK_LOUDNESS_FILE_NAME, TRACK_LOUDNESS_HEADER, TrackLoudnessError, decode_track_loudness,
+    encode_track_loudness,
+};
 pub use track_map::{
     BusInventory, MAX_BUS_CHANNELS, MAX_INVENTORY_BUSES, MAX_RECORDER_CHANNELS,
     MAX_RECORDER_TRACKS, MAX_ROUTE_FRAMES, MAX_TRACK_CHANNELS, MAX_TRACK_NAME_BYTES, RecordBus,
@@ -82,8 +87,8 @@ pub use types::{
     TimecodeSource, TimedPacketMetadata, VideoPacketMetadata,
 };
 pub use wav::{
-    BEXT_FIXED_BYTES, BextField, BextMetadata, DS64_PAYLOAD_BYTES, FinalizedWav, LargeFilePolicy,
-    MAX_CODING_HISTORY_BYTES, MAX_IXML_BYTES, MAX_RIFF_SIZE, MAX_WAV_BUFFER_BYTES,
+    BEXT_FIXED_BYTES, BextField, BextLoudness, BextMetadata, DS64_PAYLOAD_BYTES, FinalizedWav,
+    LargeFilePolicy, MAX_CODING_HISTORY_BYTES, MAX_IXML_BYTES, MAX_RIFF_SIZE, MAX_WAV_BUFFER_BYTES,
     MAX_WAV_CHANNELS, UMID_BYTES, UMID_UNIVERSAL_LABEL, WavError, WavInfo, WavRecovery,
     WavRecoveryTarget, WavSampleFormat, WavSink, WavSource, WavSpec, WavSummary, WavWriter,
     encode_sample, encode_wav_header, read_wav_info, recover_wav, recover_wav_file,

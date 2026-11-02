@@ -105,7 +105,20 @@ pub enum LargeFilePolicy {
     Rf64WhenNeeded,
 }
 
-/// Broadcast Wave Format `bext` metadata (written as version 1).
+/// Broadcast Wave Format `bext` loudness fields (version 2), all in
+/// hundredths: LUFS for integrated, momentary, and short-term loudness, LU
+/// for range, and dBTP for the maximum true peak.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct BextLoudness {
+    pub integrated_lufs: i16,
+    pub range_lu: i16,
+    pub max_true_peak_dbtp: i16,
+    pub max_momentary_lufs: i16,
+    pub max_short_term_lufs: i16,
+}
+
+/// Broadcast Wave Format `bext` metadata (written as version 1, or version 2
+/// when loudness fields are present).
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct BextMetadata {
     /// Up to 256 printable ASCII bytes.
@@ -124,6 +137,8 @@ pub struct BextMetadata {
     /// Empty, or a 64-byte SMPTE 330M UMID beginning with
     /// [`UMID_UNIVERSAL_LABEL`].
     pub umid: Vec<u8>,
+    /// Version-2 loudness fields; `None` writes reserved zeros as version 1.
+    pub loudness: Option<BextLoudness>,
     /// Printable ASCII plus CR/LF, at most [`MAX_CODING_HISTORY_BYTES`].
     pub coding_history: String,
 }
@@ -235,14 +250,29 @@ impl BextMetadata {
         put_fixed_ascii(out, &self.origination_date, 10);
         put_fixed_ascii(out, &self.origination_time, 8);
         out.extend_from_slice(&self.time_reference.to_le_bytes());
-        out.extend_from_slice(&1_u16.to_le_bytes());
+        let version = if self.loudness.is_some() {
+            2_u16
+        } else {
+            1_u16
+        };
+        out.extend_from_slice(&version.to_le_bytes());
         if self.umid.len() == UMID_BYTES {
             out.extend_from_slice(&self.umid);
         } else {
             out.resize(out.len() + UMID_BYTES, 0);
         }
-        // Version-1 reserved bytes (190) stay zero.
-        out.resize(out.len() + 190, 0);
+        if let Some(loudness) = &self.loudness {
+            out.extend_from_slice(&loudness.integrated_lufs.to_le_bytes());
+            out.extend_from_slice(&loudness.range_lu.to_le_bytes());
+            out.extend_from_slice(&loudness.max_true_peak_dbtp.to_le_bytes());
+            out.extend_from_slice(&loudness.max_momentary_lufs.to_le_bytes());
+            out.extend_from_slice(&loudness.max_short_term_lufs.to_le_bytes());
+        }
+        // Version-1/2 reserved bytes (190 or 180) stay zero.
+        out.resize(
+            out.len() + 190 - if self.loudness.is_some() { 10 } else { 0 },
+            0,
+        );
         out.extend_from_slice(self.coding_history.as_bytes());
     }
 
@@ -252,6 +282,14 @@ impl BextMetadata {
         }
         let time_low = u64::from(le_u32(&payload[338..342]));
         let time_high = u64::from(le_u32(&payload[342..346]));
+        let version = u16::from_le_bytes([payload[346], payload[347]]);
+        let loudness = (version >= 2).then(|| BextLoudness {
+            integrated_lufs: i16::from_le_bytes([payload[412], payload[413]]),
+            range_lu: i16::from_le_bytes([payload[414], payload[415]]),
+            max_true_peak_dbtp: i16::from_le_bytes([payload[416], payload[417]]),
+            max_momentary_lufs: i16::from_le_bytes([payload[418], payload[419]]),
+            max_short_term_lufs: i16::from_le_bytes([payload[420], payload[421]]),
+        });
         Ok(Self {
             description: fixed_ascii(&payload[0..256]),
             originator: fixed_ascii(&payload[256..288]),
@@ -259,6 +297,7 @@ impl BextMetadata {
             origination_date: fixed_ascii(&payload[320..330]),
             origination_time: fixed_ascii(&payload[330..338]),
             time_reference: time_low | (time_high << 32),
+            loudness,
             umid: {
                 let umid = &payload[348..348 + UMID_BYTES];
                 if umid.iter().all(|byte| *byte == 0) {

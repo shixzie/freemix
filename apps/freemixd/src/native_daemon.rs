@@ -59,6 +59,9 @@ pub(crate) struct NativeDaemon {
     pub(crate) bundle_root: PathBuf,
     /// The project identity, used as the material number of recorder UMIDs.
     pub(crate) project_id: fm_types::ProjectId,
+    /// The project's authored track loudness metadata, when it has any.
+    #[cfg(feature = "native-media")]
+    pub(crate) record_track_loudness: Option<fm_record::BextLoudness>,
     pub(crate) pending_stinger_mutation: Option<NativeStingerMutation>,
     pub(crate) stinger_retirements: NativeStingerRetirements,
     /// Realization state of every configured recorder slot: slot 0 is
@@ -454,6 +457,9 @@ impl NativeDaemon {
         let pacer_start_offset = host_deadline_offset(&pacer)?;
         let record_track_maps = load_record_track_maps(store, stored)?;
         let record_track_policy = load_record_track_policy(store)?;
+        let record_track_loudness = store
+            .load_recorder_track_loudness()
+            .map_err(|error| AppFailure(format!("recorder track loudness: {error}")))?;
         let origin = Instant::now();
         let telemetry = NativeRuntimeTelemetry::new(origin, runtime.context().adapter_info());
         Ok(Self {
@@ -479,6 +485,7 @@ impl NativeDaemon {
             assets_root: store.assets_root().clone(),
             bundle_root: store.root().to_path_buf(),
             project_id: stored.project().id(),
+            record_track_loudness,
             pending_stinger_mutation: None,
             stinger_retirements: NativeStingerRetirements::start()?,
             recorders: [ProgramRecording::Off, ProgramRecording::Off],
@@ -931,6 +938,7 @@ impl NativeDaemon {
             timecode,
             frame_rate,
             sample_rate,
+            self.record_track_loudness,
         );
         self.start_track_wav_with(
             slot,
@@ -2361,6 +2369,7 @@ impl NativeDaemon {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // format, segment, metadata, and status in one rotation
     pub(crate) fn rotate_running_recording(&mut self, slot: usize, sequence: SequenceNumber) {
         let (next_format, still_priming) = match &self.recorders[slot] {
             ProgramRecording::Running(recorder)
@@ -2439,6 +2448,7 @@ impl NativeDaemon {
                             timecode,
                             frame_rate,
                             rate,
+                            self.record_track_loudness,
                         );
                         self.start_track_wav_with(
                             slot,

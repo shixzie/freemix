@@ -12842,7 +12842,22 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
     let project = fm_types::ProjectId::new(std::num::NonZeroU128::new(99).unwrap());
     let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
     let timecode = fm_types::Timecode::new(0, 0, 1, 0, 25).unwrap();
-    let metadata = track_wav_metadata(project, 0, &segment, Some(timecode), frame_rate, 48_000);
+    let loudness = fm_record::BextLoudness {
+        integrated_lufs: -2300,
+        range_lu: 750,
+        max_true_peak_dbtp: -120,
+        max_momentary_lufs: -2250,
+        max_short_term_lufs: -2310,
+    };
+    let metadata = track_wav_metadata(
+        project,
+        0,
+        &segment,
+        Some(timecode),
+        frame_rate,
+        48_000,
+        Some(loudness),
+    );
     assert_eq!(metadata.bext.time_reference, 48_000);
     assert_eq!(metadata.bext.umid, track_wav_umid(project, 0));
     let mut track = open_track_wav(
@@ -12888,6 +12903,11 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
         "the BWF metadata is written into the track WAV"
     );
     assert_eq!(
+        info.spec.bext.as_ref().unwrap().loudness,
+        Some(loudness),
+        "the version-2 loudness fields survive the header"
+    );
+    assert_eq!(
         info.spec.ixml.as_deref(),
         Some(metadata.ixml.as_str()),
         "the iXML document is written into the track WAV"
@@ -12905,6 +12925,7 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
 /// and samples.
 #[cfg(feature = "native-media")]
 #[test]
+#[allow(clippy::too_many_lines)] // one end-to-end write, read, and metadata pass
 fn a_split_track_map_writes_one_file_per_track() {
     use fm_record::{
         BusInventory, RecordBus, RecordTrack, RecorderTrackMap, TrackMapLayout, TrackSource,
@@ -12927,7 +12948,15 @@ fn a_split_track_map_writes_one_file_per_track() {
     let project = fm_types::ProjectId::new(std::num::NonZeroU128::new(99).unwrap());
     let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
     let timecode = fm_types::Timecode::new(0, 0, 1, 0, 25).unwrap();
-    let metadata = track_wav_metadata(project, 0, &segment, Some(timecode), frame_rate, 48_000);
+    let metadata = track_wav_metadata(
+        project,
+        0,
+        &segment,
+        Some(timecode),
+        frame_rate,
+        48_000,
+        None,
+    );
     let mut track = open_track_wav(
         map,
         &segment,
@@ -13307,6 +13336,13 @@ fn track_wav_metadata_carries_a_umid() {
     assert_eq!(&umid[32..], &[0; 32]);
 
     let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
+    let loudness = fm_record::BextLoudness {
+        integrated_lufs: -2300,
+        range_lu: 750,
+        max_true_peak_dbtp: -120,
+        max_momentary_lufs: -2250,
+        max_short_term_lufs: -2310,
+    };
     let metadata = track_wav_metadata(
         project,
         0,
@@ -13314,7 +13350,9 @@ fn track_wav_metadata_carries_a_umid() {
         None,
         frame_rate,
         48_000,
+        Some(loudness),
     );
+    assert_eq!(metadata.bext.loudness, Some(loudness));
     assert_eq!(metadata.bext.originator, "FreeMix");
     assert_eq!(metadata.bext.originator_reference, "show-0001");
     assert_eq!(metadata.bext.umid, track_wav_umid(project, 0));

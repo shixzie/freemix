@@ -207,9 +207,18 @@ pub(crate) fn track_wav_metadata(
     timecode: Option<fm_types::Timecode>,
     frame_rate: fm_types::FrameRate,
     sample_rate: u32,
+    loudness: Option<fm_record::BextLoudness>,
 ) -> TrackWavMetadata {
     TrackWavMetadata {
-        bext: track_wav_bext(project, slot, segment, timecode, frame_rate, sample_rate),
+        bext: track_wav_bext(
+            project,
+            slot,
+            segment,
+            timecode,
+            frame_rate,
+            sample_rate,
+            loudness,
+        ),
         ixml: track_wav_ixml(slot, segment, frame_rate),
     }
 }
@@ -265,6 +274,7 @@ pub(crate) fn track_wav_bext(
     timecode: Option<fm_types::Timecode>,
     frame_rate: fm_types::FrameRate,
     sample_rate: u32,
+    loudness: Option<fm_record::BextLoudness>,
 ) -> fm_record::BextMetadata {
     let stem = segment
         .file_stem()
@@ -286,6 +296,7 @@ pub(crate) fn track_wav_bext(
         originator_reference,
         time_reference,
         umid: track_wav_umid(project, slot),
+        loudness,
         ..fm_record::BextMetadata::default()
     }
 }

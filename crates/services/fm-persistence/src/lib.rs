@@ -74,8 +74,9 @@ pub use recent::{
     RecentProjectsError,
 };
 pub use recorder_track_map::{
-    RECORDER_TRACK_LIMITS_FILE, RECORDER_TRACK_MAP_DIRECTORY, RECORDER_TRACK_MAP_EXTENSION,
-    TrackLimitsStoreError, TrackMapStoreError,
+    RECORDER_TRACK_LIMITS_FILE, RECORDER_TRACK_LOUDNESS_FILE, RECORDER_TRACK_MAP_DIRECTORY,
+    RECORDER_TRACK_MAP_EXTENSION, TrackLimitsStoreError, TrackLoudnessStoreError,
+    TrackMapStoreError,
 };
 pub use settings_export::{
     EntityKey, MAX_SECRET_BYTES, MAX_SETTING_KEY_BYTES, MAX_SETTING_KEY_SEGMENT_BYTES,
