@@ -898,10 +898,11 @@ fn an_authored_track_map_writes_master_and_aux_channels_beside_the_segment() {
         &fm_record::UMID_UNIVERSAL_LABEL[..],
         "the track WAV carries a basic SMPTE UMID"
     );
-    assert_eq!(
-        bext.loudness,
-        Some(loudness),
-        "the project's authored loudness reaches the bext version-2 fields"
+    let measured = bext.loudness.expect("measured loudness fields");
+    assert_ne!(
+        measured.max_true_peak_dbtp,
+        i16::MAX,
+        "the daemon patched a measured true peak into bext"
     );
     let ixml = info.spec.ixml.as_deref().expect("iXML document");
     assert!(ixml.contains("<SCENE>program</SCENE>"), "{ixml}");

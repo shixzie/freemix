@@ -988,6 +988,7 @@ impl WavInfo {
 struct ParsedLayout {
     reserve_offset: Option<u64>,
     fact_payload_offset: Option<u64>,
+    bext_payload_offset: Option<u64>,
     data_size_offset: u64,
 }
 
@@ -1001,8 +1002,41 @@ pub fn read_wav_info(source: &mut dyn WavSource) -> Result<WavInfo, WavError> {
     parse_header(source).map(|(info, _)| info)
 }
 
+/// Rewrites one file's `bext` loudness fields in place, promoting the chunk
+/// to version 2. The header layout is unchanged, so this is safe after the
+/// file has been finalized.
+///
+/// # Errors
+///
+/// Returns [`WavError::Malformed`] when the file has no `bext` chunk, and the
+/// read, seek, or write error otherwise.
+pub fn patch_bext_loudness(
+    target: &mut dyn WavRecoveryTarget,
+    loudness: BextLoudness,
+) -> Result<(), WavError> {
+    let (_, layout) = parse_header(target)?;
+    let payload = layout
+        .bext_payload_offset
+        .ok_or(WavError::Malformed("bext chunk is missing"))?;
+    target.seek(SeekFrom::Start(payload + 346))?;
+    target.write_all(&2_u16.to_le_bytes())?;
+    target.seek(SeekFrom::Start(payload + 412))?;
+    for value in [
+        loudness.integrated_lufs,
+        loudness.range_lu,
+        loudness.max_true_peak_dbtp,
+        loudness.max_momentary_lufs,
+        loudness.max_short_term_lufs,
+    ] {
+        target.write_all(&value.to_le_bytes())?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
-fn parse_header(source: &mut dyn WavSource) -> Result<(WavInfo, ParsedLayout), WavError> {
+fn parse_header<S: Read + Seek + ?Sized>(
+    source: &mut S,
+) -> Result<(WavInfo, ParsedLayout), WavError> {
     source.seek(SeekFrom::Start(0))?;
     let mut head = [0_u8; 12];
     source.read_exact(&mut head)?;
@@ -1020,6 +1054,7 @@ fn parse_header(source: &mut dyn WavSource) -> Result<(WavInfo, ParsedLayout), W
     let mut fmt: Option<(WavSampleFormat, u16, u32, u32)> = None;
     let mut fact_payload_offset = None;
     let mut bext = None;
+    let mut bext_payload_offset = None;
     let mut ixml = None;
     let mut offset = 12_u64;
     for _ in 0..MAX_HEADER_CHUNKS {
@@ -1068,6 +1103,7 @@ fn parse_header(source: &mut dyn WavSource) -> Result<(WavInfo, ParsedLayout), W
                     ParsedLayout {
                         reserve_offset,
                         fact_payload_offset,
+                        bext_payload_offset,
                         data_size_offset: offset + 4,
                     },
                 ));
@@ -1112,6 +1148,7 @@ fn parse_header(source: &mut dyn WavSource) -> Result<(WavInfo, ParsedLayout), W
                 }
                 let payload = read_payload(source, payload_offset, size)?;
                 bext = Some(BextMetadata::decode(&payload)?);
+                bext_payload_offset = Some(payload_offset);
             }
             _ => {}
         }
@@ -1159,7 +1196,11 @@ fn parse_fmt(payload: &[u8]) -> Result<(WavSampleFormat, u16, u32, u32), WavErro
     Ok((format, channels, sample_rate, channel_mask))
 }
 
-fn read_payload(source: &mut dyn WavSource, offset: u64, size: u32) -> Result<Vec<u8>, WavError> {
+fn read_payload<S: Read + Seek + ?Sized>(
+    source: &mut S,
+    offset: u64,
+    size: u32,
+) -> Result<Vec<u8>, WavError> {
     let mut payload = vec![0; usize::try_from(size).map_err(|_| WavError::Truncated)?];
     source.seek(SeekFrom::Start(offset))?;
     source.read_exact(&mut payload)?;

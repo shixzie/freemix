@@ -12897,15 +12897,15 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
     assert_eq!(info.spec.channels, 3);
     assert_eq!(info.spec.sample_rate, 48_000);
     assert_eq!(info.frames(), 2, "two frames in a three-channel file");
+    let bext = info.spec.bext.as_ref().expect("BWF metadata");
+    assert_eq!(bext.description, metadata.bext.description);
+    assert_eq!(bext.originator, "FreeMix");
+    assert_eq!(bext.time_reference, 48_000);
+    assert_eq!(bext.umid, metadata.bext.umid);
+    let patched = bext.loudness.expect("measured loudness fields");
     assert_eq!(
-        info.spec.bext.as_ref(),
-        Some(&metadata.bext),
-        "the BWF metadata is written into the track WAV"
-    );
-    assert_eq!(
-        info.spec.bext.as_ref().unwrap().loudness,
-        Some(loudness),
-        "the version-2 loudness fields survive the header"
+        patched.integrated_lufs, loudness.integrated_lufs,
+        "two frames cannot measure integrated loudness, so the authored value stays"
     );
     assert_eq!(
         info.spec.ixml.as_deref(),
@@ -12919,6 +12919,80 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
         .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
         .collect();
     assert_eq!(samples, [8192, 16_384, 24_576, 16_384, 24_576, 8192]);
+}
+
+/// AU-010: the daemon meters the exact track samples and patches the
+/// measured loudness into the finalized version-2 bext fields.
+#[cfg(feature = "native-media")]
+#[test]
+fn track_wav_loudness_is_measured_and_patched() {
+    use fm_record::read_wav_info;
+
+    let directory = tempfile::tempdir().unwrap();
+    let segment = directory.path().join("show.mp4");
+    let map = fm_record::RecorderTrackMap::new(
+        vec![fm_record::RecordTrack::stereo(
+            "Program",
+            fm_record::TrackSource::master(0),
+            fm_record::TrackSource::master(1),
+        )],
+        fm_record::BusInventory::new(vec![(RecordBus::Master, 2)]).unwrap(),
+    )
+    .unwrap();
+    let project = fm_types::ProjectId::new(std::num::NonZeroU128::new(99).unwrap());
+    let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
+    let bext = track_wav_bext(project, 0, &segment, None, frame_rate, 48_000, None);
+    let mut track = open_track_wav(
+        map,
+        &segment,
+        TrackWavPolicy::default(),
+        None,
+        Some(bext),
+        None,
+    );
+    let chunks = 40_u64;
+    let frames = 4_800_usize;
+    for chunk in 0..chunks {
+        let mut plane = Vec::with_capacity(frames);
+        for frame in 0..frames {
+            let sample = u64::try_from(frame).unwrap() + chunk * u64::try_from(frames).unwrap();
+            #[allow(clippy::cast_precision_loss)]
+            let seconds = sample as f32 / 48_000.0;
+            plane.push(0.25 * (core::f32::consts::TAU * 1_000.0 * seconds).sin());
+        }
+        let timing = MediaTiming::new(
+            OriginalTimestamp::new(
+                MediaTimestamp::new(0),
+                fm_frame::TimeBase::new(1, 48_000).unwrap(),
+            ),
+            NormalizedTimestamp::from_nanos(0),
+            NormalizedDuration::from_nanos(100_000_000).unwrap(),
+            native_clock_domain(),
+            SequenceNumber::new(chunk),
+        )
+        .unwrap();
+        let audio = AudioBlock::new(
+            timing,
+            SampleRate::new(48_000).unwrap(),
+            ChannelLayout::stereo(),
+            vec![plane.clone(), plane],
+        )
+        .unwrap();
+        track.write(&audio, &[], 2).unwrap();
+    }
+    let finish = track.finish();
+    assert!(finish.failures.is_empty(), "{:?}", finish.failures);
+    assert!(finish.loudness_files >= 1, "{finish:?}");
+    assert_eq!(finish.loudness_failures, 0, "{finish:?}");
+
+    let path = TrackWavState::path(&segment);
+    let mut file = File::open(&path).unwrap();
+    let info = read_wav_info(&mut file).unwrap();
+    let bext = info.spec.bext.expect("BWF metadata");
+    let loudness = bext.loudness.expect("measured loudness");
+    assert_ne!(loudness.integrated_lufs, i16::MAX, "{loudness:?}");
+    assert!(loudness.integrated_lufs < 0, "{loudness:?}");
+    assert_ne!(loudness.max_true_peak_dbtp, i16::MAX, "{loudness:?}");
 }
 
 /// AU-010: a split-layout map writes one WAV per track with its own channels

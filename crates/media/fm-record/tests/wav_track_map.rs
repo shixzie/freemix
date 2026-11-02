@@ -448,6 +448,35 @@ fn bext_loudness_is_written_as_version_two() {
 }
 
 #[test]
+fn loudness_can_be_patched_into_a_finalized_file() {
+    let spec = WavSpec {
+        bext: Some(BextMetadata {
+            description: "patch".into(),
+            ..BextMetadata::default()
+        }),
+        ..riff_spec(1, WavSampleFormat::Pcm16)
+    };
+    let mut cursor = io::Cursor::new(write_all(spec, &[0.0, 0.25]));
+    let loudness = fm_record::BextLoudness {
+        integrated_lufs: -2300,
+        range_lu: 750,
+        max_true_peak_dbtp: -120,
+        max_momentary_lufs: -2250,
+        max_short_term_lufs: -2310,
+    };
+    fm_record::patch_bext_loudness(&mut cursor, loudness).unwrap();
+    cursor.seek(SeekFrom::Start(0)).unwrap();
+    let info = read_wav_info(&mut cursor).unwrap();
+    assert_eq!(info.spec.bext.unwrap().loudness, Some(loudness));
+
+    let mut without = io::Cursor::new(write_all(
+        riff_spec(1, WavSampleFormat::Pcm16),
+        &[0.0, 0.25],
+    ));
+    assert!(fm_record::patch_bext_loudness(&mut without, loudness).is_err());
+}
+
+#[test]
 fn ixml_round_trips_as_its_own_chunk() {
     let document = "<?xml version=\"1.0\"?><BWFXML><SCENE>show</SCENE><TAKE>2</TAKE></BWFXML>";
     let spec = WavSpec {

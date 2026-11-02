@@ -1007,12 +1007,14 @@ impl NativeDaemon {
             .first()
             .map_or_else(|| "none".to_owned(), |error| diagnostic_field(error));
         eprintln!(
-            "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus={status}\tmode={mode}\tfiles={}\tsegments={}\tbytes={}\tfailovers={}\tfailure={failure}",
+            "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus={status}\tmode={mode}\tfiles={}\tsegments={}\tbytes={}\tfailovers={}\tloudness_files={}\tloudness_failures={}\tfailure={failure}",
             slot + 1,
             files,
             report.segments,
             report.data_bytes,
             report.failovers,
+            report.loudness_files,
+            report.loudness_failures,
         );
     }
 

@@ -336,6 +336,89 @@ pub(crate) struct TrackWavState {
     /// The daemon-written live status document beside the map.
     status_path: Option<PathBuf>,
     last_status: Option<Instant>,
+    /// One loudness meter per output file; `None` for a file with too many
+    /// channels to label, which keeps the authored fallback only.
+    meters: Vec<Option<fm_audio::LoudnessMeter>>,
+    /// The authored loudness, used for fields a segment cannot measure.
+    loudness_fallback: Option<fm_record::BextLoudness>,
+}
+
+/// A channel layout for measuring `channels`, or `None` past the layout bound.
+#[cfg(feature = "native-media")]
+fn metering_layout(channels: u16) -> Option<fm_types::ChannelLayout> {
+    let count = usize::from(channels);
+    let labels: Vec<fm_types::Channel> = match count {
+        0 => return None,
+        1 => vec![fm_types::Channel::Mono],
+        2 => vec![fm_types::Channel::Left, fm_types::Channel::Right],
+        n if n <= fm_types::ChannelLayout::MAX_CHANNELS => (1..=n)
+            .map(|number| {
+                u8::try_from(number)
+                    .ok()
+                    .and_then(fm_types::DiscreteChannel::new)
+                    .map(fm_types::Channel::Discrete)
+            })
+            .collect::<Option<Vec<_>>>()?,
+        _ => return None,
+    };
+    fm_types::ChannelLayout::new(labels)
+}
+
+/// Hundredths of LUFS/LU/dBTP, clamped into the `bext` range.
+#[cfg(feature = "native-media")]
+#[allow(clippy::cast_possible_truncation)] // clamped and rounded into i16
+fn loudness_hundredths(value: f64) -> i16 {
+    (value.clamp(-327.68, 327.67) * 100.0).round() as i16
+}
+
+/// The measured reading, with the authored value for each field the segment
+/// could not measure (and `0x7FFF`, the BWF unknown marker, when neither).
+#[cfg(feature = "native-media")]
+fn measured_loudness(
+    reading: &fm_audio::LoudnessReading,
+    fallback: Option<fm_record::BextLoudness>,
+) -> fm_record::BextLoudness {
+    let field = |value: Option<f64>, fallback: Option<i16>| {
+        value
+            .map(loudness_hundredths)
+            .or(fallback)
+            .unwrap_or(i16::MAX)
+    };
+    fm_record::BextLoudness {
+        integrated_lufs: field(
+            reading.integrated_lufs,
+            fallback.map(|value| value.integrated_lufs),
+        ),
+        range_lu: field(
+            reading.loudness_range_lu,
+            fallback.map(|value| value.range_lu),
+        ),
+        max_true_peak_dbtp: field(
+            reading.max_true_peak_dbtp,
+            fallback.map(|value| value.max_true_peak_dbtp),
+        ),
+        max_momentary_lufs: field(
+            reading.momentary_lufs,
+            fallback.map(|value| value.max_momentary_lufs),
+        ),
+        max_short_term_lufs: field(
+            reading.short_term_lufs,
+            fallback.map(|value| value.max_short_term_lufs),
+        ),
+    }
+}
+
+/// Opens one finalized track file and rewrites its `bext` loudness fields.
+#[cfg(feature = "native-media")]
+fn patch_track_loudness(path: &Path, loudness: fm_record::BextLoudness) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("track loudness {}: {error}", path.display()))?;
+    fm_record::patch_bext_loudness(&mut file, loudness).map_err(|error| error.to_string())?;
+    file.sync_all()
+        .map_err(|error| format!("track loudness {}: {error}", path.display()))
 }
 
 /// Stable status token for one track session state.
@@ -377,6 +460,10 @@ pub(crate) struct TrackWavFinish {
     pub(crate) segments: u64,
     pub(crate) data_bytes: u64,
     pub(crate) failovers: u64,
+    /// Finalized files whose measured loudness was patched into `bext`.
+    pub(crate) loudness_files: u64,
+    /// Files whose measured loudness could not be patched.
+    pub(crate) loudness_failures: u64,
     pub(crate) failures: Vec<String>,
 }
 
@@ -457,6 +544,15 @@ impl TrackWavState {
             buffer_frames: 1024,
         };
         let specs = TrackWavRecorder::file_specs(&map, mode, &options);
+        let mut meters = Vec::with_capacity(specs.len());
+        for spec in &specs {
+            let meter = metering_layout(spec.channels)
+                .map(|layout| fm_audio::LoudnessMeter::new(spec.sample_rate, &layout))
+                .transpose()
+                .map_err(|error| format!("track loudness meter: {error}"))?;
+            meters.push(meter);
+        }
+        let loudness_fallback = options.bext.as_ref().and_then(|bext| bext.loudness);
         let names = Self::session_names(segment, &map, mode);
         let writer_config = fm_record::ResilientWavConfig {
             max_segment_data_bytes: policy.max_segment_bytes,
@@ -491,6 +587,8 @@ impl TrackWavState {
             next_rotation: rotation_every,
             status_path,
             last_status: None,
+            meters,
+            loudness_fallback,
         })
     }
 
@@ -602,6 +700,20 @@ impl TrackWavState {
                 .route(frames, &buses)
                 .map_err(|error| error.to_string())?,
         };
+        for (meter, buffer) in self.meters.iter_mut().zip(&buffers) {
+            let Some(meter) = meter else {
+                continue;
+            };
+            let meter_channels = meter.channels();
+            let mut frame = [0.0_f32; fm_audio::MAX_CHANNELS];
+            for index in 0..frames {
+                let base = index * meter_channels;
+                for (channel, slot) in frame[..meter_channels].iter_mut().enumerate() {
+                    *slot = buffer.get(base + channel).copied().unwrap_or(0.0);
+                }
+                meter.push_frame(&frame[..meter_channels]);
+            }
+        }
         let mut encoded = Vec::new();
         for (writer, buffer) in self.writers.iter_mut().zip(buffers) {
             encoded.clear();
@@ -677,11 +789,30 @@ impl TrackWavState {
     pub(crate) fn finish(&mut self) -> TrackWavFinish {
         self.write_status(Some("stopped"));
         let mut finish = TrackWavFinish::default();
-        for (file, writer) in std::mem::take(&mut self.writers).into_iter().enumerate() {
+        let meters = std::mem::take(&mut self.meters);
+        for (file, (writer, meter)) in std::mem::take(&mut self.writers)
+            .into_iter()
+            .zip(meters)
+            .enumerate()
+        {
+            // The manifest names every segment of this file, including
+            // failover files; patch all of them after the session closes.
+            let paths: Vec<PathBuf> = {
+                let session = writer.session();
+                let config = session.config();
+                session
+                    .manifest()
+                    .segments
+                    .iter()
+                    .filter_map(|segment| config.segment_path(segment.root, segment.index))
+                    .collect()
+            };
+            let reading = meter.map(|meter| meter.reading());
             let report = writer.finish_report();
             finish.segments = finish.segments.saturating_add(report.stats.segments_opened);
             finish.data_bytes = finish.data_bytes.saturating_add(report.stats.data_bytes);
             finish.failovers = finish.failovers.saturating_add(report.stats.failovers);
+            let failed = report.error.is_some();
             if let Some(error) = report.error {
                 finish.failures.push(format!("file {file}: {error}"));
             }
@@ -689,6 +820,17 @@ impl TrackWavState {
                 finish
                     .failures
                     .push(format!("file {file} session: {error}"));
+            }
+            if let Some(reading) = reading.filter(|_| !failed) {
+                let loudness = measured_loudness(&reading, self.loudness_fallback);
+                for path in &paths {
+                    match patch_track_loudness(path, loudness) {
+                        Ok(()) => finish.loudness_files = finish.loudness_files.saturating_add(1),
+                        Err(_) => {
+                            finish.loudness_failures = finish.loudness_failures.saturating_add(1);
+                        }
+                    }
+                }
             }
         }
         finish
