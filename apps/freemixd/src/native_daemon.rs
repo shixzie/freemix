@@ -57,6 +57,8 @@ pub(crate) struct NativeDaemon {
     pub(crate) assets_root: PathBuf,
     /// The project bundle root, for daemon-written recorder track status.
     pub(crate) bundle_root: PathBuf,
+    /// The project identity, used as the material number of recorder UMIDs.
+    pub(crate) project_id: fm_types::ProjectId,
     pub(crate) pending_stinger_mutation: Option<NativeStingerMutation>,
     pub(crate) stinger_retirements: NativeStingerRetirements,
     /// Realization state of every configured recorder slot: slot 0 is
@@ -476,6 +478,7 @@ impl NativeDaemon {
             resolved_sources: Arc::new(resolved_sources),
             assets_root: store.assets_root().clone(),
             bundle_root: store.root().to_path_buf(),
+            project_id: stored.project().id(),
             pending_stinger_mutation: None,
             stinger_retirements: NativeStingerRetirements::start()?,
             recorders: [ProgramRecording::Off, ProgramRecording::Off],
@@ -921,7 +924,14 @@ impl NativeDaemon {
         let frame_rate = stored.project().settings().frame_rate;
         let timecode = recording_start_timecode(stored.position().frames_rendered, frame_rate);
         let fallback = self.segment_names.fallback().map(Path::to_path_buf);
-        let bext = track_wav_bext(slot, segment, timecode, frame_rate, sample_rate);
+        let bext = track_wav_bext(
+            self.project_id,
+            slot,
+            segment,
+            timecode,
+            frame_rate,
+            sample_rate,
+        );
         self.start_track_wav_with(
             slot,
             segment,
@@ -2421,7 +2431,14 @@ impl NativeDaemon {
                 let track = rotated_segment.zip(track_format).map_or(
                     Ok(()),
                     |(segment, (rate, channels, frame_rate, timecode))| {
-                        let bext = track_wav_bext(slot, &segment, timecode, frame_rate, rate);
+                        let bext = track_wav_bext(
+                            self.project_id,
+                            slot,
+                            &segment,
+                            timecode,
+                            frame_rate,
+                            rate,
+                        );
                         self.start_track_wav_with(
                             slot,
                             &segment,

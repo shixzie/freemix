@@ -193,6 +193,7 @@ pub(crate) struct TrackWavOpen<'a> {
 /// segment stem, and the first sample's offset from midnight.
 #[cfg(feature = "native-media")]
 pub(crate) fn track_wav_bext(
+    project: fm_types::ProjectId,
     slot: usize,
     segment: &Path,
     timecode: Option<fm_types::Timecode>,
@@ -218,8 +219,22 @@ pub(crate) fn track_wav_bext(
         originator: "FreeMix".to_owned(),
         originator_reference,
         time_reference,
+        umid: track_wav_umid(project, slot),
         ..fm_record::BextMetadata::default()
     }
+}
+
+/// A basic SMPTE 330M UMID for one recorder slot: the project identity is
+/// the material number and the one-based slot is the instance number.
+#[cfg(feature = "native-media")]
+pub(crate) fn track_wav_umid(project: fm_types::ProjectId, slot: usize) -> Vec<u8> {
+    let mut umid = vec![0_u8; fm_record::UMID_BYTES];
+    umid[..fm_record::UMID_UNIVERSAL_LABEL.len()].copy_from_slice(&fm_record::UMID_UNIVERSAL_LABEL);
+    // Number of bytes that follow the universal label.
+    umid[12] = 0x13;
+    umid[13..16].copy_from_slice(&[0, 0, u8::try_from(slot + 1).unwrap_or(u8::MAX)]);
+    umid[16..32].copy_from_slice(&project.get().get().to_be_bytes());
+    umid
 }
 
 /// One segment's authored track-map recording (AU-010).

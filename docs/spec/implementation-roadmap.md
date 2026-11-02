@@ -3878,12 +3878,13 @@ checks the maps' and limits' modification stamps about once a second and
 republishes the views when any changed, so an edit made by the CLI, another
 Studio, or an operator reaches the console without a manual refresh. Every
 track WAV carries version-1 BWF `bext` metadata: the recorder slot and segment
-stem as description/reference and the first sample's offset from midnight as
-the time reference (split files append ` track=<name>`); the daemon derives
-it from the segment's first frame and exact frame rate. Remaining gaps: WAV
-output is separate from the crash-safe packet spool, and metadata stops at
-version-1 `bext` without iXML, loudness, or UMID authoring. `AU-010` remains
-planned.
+stem as description/reference, the first sample's offset from midnight as the
+time reference (split files append ` track=<name>`), and a basic SMPTE 330M
+UMID whose material number is the project identity and whose instance number
+is the one-based recorder slot; the daemon derives it from the segment's first
+frame and exact frame rate. Remaining gaps: WAV output is separate from the
+crash-safe packet spool, and metadata stops at version-1 `bext` without iXML
+or loudness authoring. `AU-010` remains planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):
 `fm-observability` provides a deterministic, clock-free statistics layer: a

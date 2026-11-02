@@ -881,6 +881,12 @@ fn an_authored_track_map_writes_master_and_aux_channels_beside_the_segment() {
     assert_eq!(bext.description, "FreeMix recorder 1 track map");
     assert_eq!(bext.originator, "FreeMix");
     assert_eq!(bext.originator_reference, "program");
+    assert_eq!(bext.umid.len(), fm_record::UMID_BYTES);
+    assert_eq!(
+        &bext.umid[..12],
+        &fm_record::UMID_UNIVERSAL_LABEL[..],
+        "the track WAV carries a basic SMPTE UMID"
+    );
     assert!(
         lines(&stderr, "FREEMIXD_RECORD_TRACK")
             .iter()

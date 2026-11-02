@@ -12837,13 +12837,12 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
         BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(bus), 2)]).unwrap(),
     )
     .unwrap();
-    let bext = fm_record::BextMetadata {
-        description: "FreeMix recorder 1 track map".to_owned(),
-        originator: "FreeMix".to_owned(),
-        originator_reference: "show-0001".to_owned(),
-        time_reference: 48_000,
-        ..fm_record::BextMetadata::default()
-    };
+    let project = fm_types::ProjectId::new(std::num::NonZeroU128::new(99).unwrap());
+    let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
+    let timecode = fm_types::Timecode::new(0, 0, 1, 0, 25).unwrap();
+    let bext = track_wav_bext(project, 0, &segment, Some(timecode), frame_rate, 48_000);
+    assert_eq!(bext.time_reference, 48_000);
+    assert_eq!(bext.umid, track_wav_umid(project, 0));
     let mut track = open_track_wav(
         map,
         &segment,
@@ -12917,20 +12916,11 @@ fn a_split_track_map_writes_one_file_per_track() {
     )
     .unwrap()
     .with_layout(TrackMapLayout::SplitPerTrack);
-    let mut track = open_track_wav(
-        map,
-        &segment,
-        TrackWavPolicy::default(),
-        None,
-        Some(fm_record::BextMetadata {
-            description: "FreeMix recorder 1 track map".to_owned(),
-            originator: "FreeMix".to_owned(),
-            origination_date: String::new(),
-            origination_time: String::new(),
-            time_reference: 48_000,
-            ..fm_record::BextMetadata::default()
-        }),
-    );
+    let project = fm_types::ProjectId::new(std::num::NonZeroU128::new(99).unwrap());
+    let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
+    let timecode = fm_types::Timecode::new(0, 0, 1, 0, 25).unwrap();
+    let bext = track_wav_bext(project, 0, &segment, Some(timecode), frame_rate, 48_000);
+    let mut track = open_track_wav(map, &segment, TrackWavPolicy::default(), None, Some(bext));
     assert_eq!(track.mode(), fm_record::TrackFileMode::SplitPerTrack);
     assert_eq!(
         track
@@ -13279,4 +13269,30 @@ fn bundle_track_limits_reach_the_recorder_policy() {
     )
     .unwrap();
     assert!(load_record_track_policy(&store).is_err());
+}
+
+/// AU-010: recorder metadata carries a project UMID and slot instance.
+#[cfg(feature = "native-media")]
+#[test]
+fn track_wav_metadata_carries_a_umid() {
+    let project = fm_types::ProjectId::new(std::num::NonZeroU128::new(99).unwrap());
+    let umid = track_wav_umid(project, 1);
+    assert_eq!(umid.len(), fm_record::UMID_BYTES);
+    assert_eq!(&umid[..12], &fm_record::UMID_UNIVERSAL_LABEL[..]);
+    assert_eq!(&umid[13..16], &[0, 0, 2]);
+    assert_eq!(&umid[16..32], &99_u128.to_be_bytes());
+    assert_eq!(&umid[32..], &[0; 32]);
+
+    let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
+    let bext = track_wav_bext(
+        project,
+        0,
+        std::path::Path::new("/tmp/show-0001.mp4"),
+        None,
+        frame_rate,
+        48_000,
+    );
+    assert_eq!(bext.originator, "FreeMix");
+    assert_eq!(bext.originator_reference, "show-0001");
+    assert_eq!(bext.umid, track_wav_umid(project, 0));
 }

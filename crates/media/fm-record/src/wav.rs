@@ -29,6 +29,12 @@ pub const MAX_WAV_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub const BEXT_FIXED_BYTES: usize = 602;
 /// Maximum coding-history bytes accepted in a `bext` chunk.
 pub const MAX_CODING_HISTORY_BYTES: usize = 1024;
+/// Size of the `bext` UMID field, in bytes.
+pub const UMID_BYTES: usize = 64;
+/// SMPTE 330M basic UMID universal label.
+pub const UMID_UNIVERSAL_LABEL: [u8; 12] = [
+    0x06, 0x0A, 0x2B, 0x34, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x0F, 0x00,
+];
 /// Size of the reserved `JUNK`/`ds64` payload.
 pub const DS64_PAYLOAD_BYTES: u32 = 28;
 /// Largest RIFF size expressible without RF64 (`0xFFFF_FFFF` is the RF64 marker).
@@ -113,6 +119,9 @@ pub struct BextMetadata {
     pub origination_time: String,
     /// Sample count since midnight of the first sample.
     pub time_reference: u64,
+    /// Empty, or a 64-byte SMPTE 330M UMID beginning with
+    /// [`UMID_UNIVERSAL_LABEL`].
+    pub umid: Vec<u8>,
     /// Printable ASCII plus CR/LF, at most [`MAX_CODING_HISTORY_BYTES`].
     pub coding_history: String,
 }
@@ -125,6 +134,7 @@ pub enum BextField {
     OriginatorReference,
     OriginationDate,
     OriginationTime,
+    Umid,
     CodingHistory,
 }
 
@@ -191,6 +201,14 @@ impl BextMetadata {
                 field: BextField::OriginationTime,
             });
         }
+        if !self.umid.is_empty()
+            && (self.umid.len() != UMID_BYTES
+                || self.umid[..UMID_UNIVERSAL_LABEL.len()] != UMID_UNIVERSAL_LABEL[..])
+        {
+            return Err(WavError::InvalidBext {
+                field: BextField::Umid,
+            });
+        }
         if self.coding_history.len() > MAX_CODING_HISTORY_BYTES
             || !self
                 .coding_history
@@ -216,8 +234,13 @@ impl BextMetadata {
         put_fixed_ascii(out, &self.origination_time, 8);
         out.extend_from_slice(&self.time_reference.to_le_bytes());
         out.extend_from_slice(&1_u16.to_le_bytes());
-        // UMID (64) and version-1 reserved bytes (190) stay zero.
-        out.resize(out.len() + 64 + 190, 0);
+        if self.umid.len() == UMID_BYTES {
+            out.extend_from_slice(&self.umid);
+        } else {
+            out.resize(out.len() + UMID_BYTES, 0);
+        }
+        // Version-1 reserved bytes (190) stay zero.
+        out.resize(out.len() + 190, 0);
         out.extend_from_slice(self.coding_history.as_bytes());
     }
 
@@ -234,6 +257,14 @@ impl BextMetadata {
             origination_date: fixed_ascii(&payload[320..330]),
             origination_time: fixed_ascii(&payload[330..338]),
             time_reference: time_low | (time_high << 32),
+            umid: {
+                let umid = &payload[348..348 + UMID_BYTES];
+                if umid.iter().all(|byte| *byte == 0) {
+                    Vec::new()
+                } else {
+                    umid.to_vec()
+                }
+            },
             coding_history: fixed_ascii(&payload[BEXT_FIXED_BYTES..]),
         })
     }

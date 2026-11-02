@@ -294,6 +294,7 @@ fn float_stereo_with_bext_has_fact_and_metadata_bytes() {
         origination_time: "12:34:56".into(),
         time_reference,
         coding_history: "A=PCM,F=48000\r\n".into(),
+        ..BextMetadata::default()
     };
     let spec = WavSpec {
         bext: Some(bext.clone()),
@@ -352,6 +353,54 @@ fn float_stereo_with_bext_has_fact_and_metadata_bytes() {
         (684, 16, 2)
     );
     assert!(!info.rf64);
+}
+
+#[test]
+fn bext_umid_round_trips_and_requires_the_smpte_label() {
+    let mut umid = vec![0_u8; 64];
+    umid[..12].copy_from_slice(&fm_record::UMID_UNIVERSAL_LABEL);
+    umid[12] = 0x13;
+    umid[13..16].copy_from_slice(&[0, 0, 1]);
+    umid[16..32].copy_from_slice(&7_u128.to_be_bytes());
+    let bext = BextMetadata {
+        description: "umid".into(),
+        umid: umid.clone(),
+        ..BextMetadata::default()
+    };
+    let spec = WavSpec {
+        bext: Some(bext.clone()),
+        ..riff_spec(1, WavSampleFormat::Pcm16)
+    };
+    let bytes = write_all(spec, &[0.25, -0.25]);
+    let mut cursor = io::Cursor::new(bytes);
+    let info = read_wav_info(&mut cursor).unwrap();
+    assert_eq!(info.spec.bext, Some(bext));
+    assert_eq!(
+        info.spec.bext.as_ref().unwrap().umid,
+        umid,
+        "the 64 UMID bytes survive a header round trip"
+    );
+
+    assert_eq!(
+        BextMetadata {
+            umid: vec![1; 64],
+            ..BextMetadata::default()
+        }
+        .validate(),
+        Err(WavError::InvalidBext {
+            field: BextField::Umid
+        })
+    );
+    assert_eq!(
+        BextMetadata {
+            umid: vec![0; 63],
+            ..BextMetadata::default()
+        }
+        .validate(),
+        Err(WavError::InvalidBext {
+            field: BextField::Umid
+        })
+    );
 }
 
 #[test]

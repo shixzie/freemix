@@ -83,10 +83,10 @@ pub use types::{
 };
 pub use wav::{
     BEXT_FIXED_BYTES, BextField, BextMetadata, DS64_PAYLOAD_BYTES, FinalizedWav, LargeFilePolicy,
-    MAX_CODING_HISTORY_BYTES, MAX_RIFF_SIZE, MAX_WAV_BUFFER_BYTES, MAX_WAV_CHANNELS, WavError,
-    WavInfo, WavRecovery, WavRecoveryTarget, WavSampleFormat, WavSink, WavSource, WavSpec,
-    WavSummary, WavWriter, encode_sample, encode_wav_header, read_wav_info, recover_wav,
-    recover_wav_file,
+    MAX_CODING_HISTORY_BYTES, MAX_RIFF_SIZE, MAX_WAV_BUFFER_BYTES, MAX_WAV_CHANNELS, UMID_BYTES,
+    UMID_UNIVERSAL_LABEL, WavError, WavInfo, WavRecovery, WavRecoveryTarget, WavSampleFormat,
+    WavSink, WavSource, WavSpec, WavSummary, WavWriter, encode_sample, encode_wav_header,
+    read_wav_info, recover_wav, recover_wav_file,
 };
 
 #[cfg(test)]
