@@ -1110,11 +1110,17 @@ pub(crate) fn recovery_record(slot: usize, name: &str, recovery: &SessionRecover
     let mut missing = 0;
     let mut indexed = 0;
     let mut indexed_bytes = 0;
+    let mut salvaged = 0;
     for segment in &recovery.segments {
         match segment.outcome {
             SegmentOutcome::Intact { .. } => intact += 1,
-            SegmentOutcome::Repaired { appended_bytes, .. } => {
+            SegmentOutcome::Repaired {
+                appended_bytes,
+                salvaged_fragments,
+                ..
+            } => {
                 repaired += 1;
+                salvaged += salvaged_fragments;
                 if appended_bytes > 0 {
                     indexed += 1;
                     indexed_bytes += appended_bytes;
@@ -1126,7 +1132,7 @@ pub(crate) fn recovery_record(slot: usize, name: &str, recovery: &SessionRecover
         }
     }
     format!(
-        "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot={slot}\tsession={}\tstatus=recovered\tprevious_state={}\tsegments={}\tintact={intact}\trepaired={repaired}\tunrecoverable={unrecoverable}\tmissing={missing}\tkept_bytes={}\tdiscarded_bytes={}\trecovered_ms={}\tknown_lost_ms={}\tunknown_loss_segments={}\tindexed={indexed}\tindexed_bytes={indexed_bytes}\tmanifest_generation={}",
+        "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot={slot}\tsession={}\tstatus=recovered\tprevious_state={}\tsegments={}\tintact={intact}\trepaired={repaired}\tunrecoverable={unrecoverable}\tmissing={missing}\tkept_bytes={}\tdiscarded_bytes={}\trecovered_ms={}\tknown_lost_ms={}\tunknown_loss_segments={}\tindexed={indexed}\tindexed_bytes={indexed_bytes}\tsalvaged_fragments={salvaged}\tmanifest_generation={}",
         field(name),
         recovery
             .previous_state()
@@ -1350,6 +1356,7 @@ mod tests {
                 scan: scan(100),
                 truncated_bytes: 7,
                 appended_bytes,
+                salvaged_fragments: if appended_bytes > 0 { 2 } else { 0 },
             },
         };
         let recovery = fm_record::SessionRecovery {
@@ -1362,7 +1369,7 @@ mod tests {
         let record = recovery_record(1, "program", &recovery);
         assert!(record.contains("\trepaired=2\t"), "{record}");
         assert!(
-            record.contains("\tindexed=1\tindexed_bytes=128\t"),
+            record.contains("\tindexed=1\tindexed_bytes=128\tsalvaged_fragments=2\t"),
             "{record}"
         );
         assert!(record.ends_with("\tmanifest_generation=2"), "{record}");

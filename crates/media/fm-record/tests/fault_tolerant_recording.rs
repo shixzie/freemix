@@ -398,6 +398,108 @@ fn repair_leaves_a_complete_file_unfinalized() {
 }
 
 #[test]
+fn a_corrupt_middle_fragment_is_skipped_and_later_fragments_survive() {
+    let temp = TempDirectory::new();
+    let (mut bytes, boundaries) = stream(1);
+    let fragment_len = boundaries[1] - boundaries[0];
+    // Fragment 2 claims data one byte past its mdat, so the scanner stops
+    // there; fragments 3 and 4 are whole and relocatable.
+    bytes.extend(fragment_with(2, &TRACKS, false, 1));
+    bytes.extend(fragment(3));
+    bytes.extend(fragment(4));
+    let original = bytes.len() as u64;
+    let path = temp.join("resync.mp4");
+    fs::write(&path, &bytes).unwrap();
+
+    let repair = repair_fmp4_file(&path).unwrap();
+    assert!(
+        matches!(repair.scan.integrity, Fmp4Integrity::Finalized),
+        "{:?}",
+        repair.scan.integrity
+    );
+    assert_eq!(repair.salvaged_fragments, 2);
+    assert_eq!(repair.truncated_bytes, fragment_len);
+    assert!(repair.appended_bytes > 0);
+    assert_eq!(repair.scan.file_length, original);
+    assert_eq!(
+        repair.scan.valid_length,
+        boundaries[1] + 2 * fragment_len,
+        "the init segment, fragment 1, and both salvaged fragments"
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().len(),
+        boundaries[1] + 2 * fragment_len + repair.appended_bytes
+    );
+
+    // The init segment and fragment 1 stayed put, and fragments 3 and 4 were
+    // moved left intact over the corrupt fragment.
+    let compacted = fs::read(&path).unwrap();
+    let start = usize::try_from(boundaries[1]).unwrap();
+    let len = usize::try_from(fragment_len).unwrap();
+    assert_eq!(&compacted[..start], &bytes[..start]);
+    assert_eq!(&compacted[start..start + len], fragment(3));
+    assert_eq!(&compacted[start + len..start + 2 * len], fragment(4));
+
+    let after = scan_fmp4_file(&path).unwrap();
+    assert_eq!(after.integrity, Fmp4Integrity::Finalized);
+    assert_eq!(after.fragments, 3);
+    assert_eq!(after.sequence_gaps, 1);
+    assert_eq!(
+        (after.first_sequence, after.last_sequence),
+        (Some(1), Some(4))
+    );
+    assert_eq!(after.recovered_duration_nanos(), 4 * SECOND);
+    assert!(after.is_recoverable());
+}
+
+/// A crash that leaves a corrupt middle fragment is reported as a repair,
+/// not as an intact segment: the later fragments survive, but the corrupt
+/// one and its bytes are lost.
+#[test]
+fn session_recovery_reports_a_resynchronized_middle_fragment() {
+    let temp = TempDirectory::new();
+    let primary = temp.join("primary");
+    fs::create_dir(&primary).unwrap();
+    let config = SessionConfig::new("program", &primary)
+        .unwrap()
+        .with_bare_first_segment();
+    let mut session =
+        RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
+    let opened = session.open_segment().unwrap();
+    let (base, boundaries) = stream(1);
+    let fragment_len = boundaries[1] - boundaries[0];
+    let mut bytes = base;
+    bytes.extend(fragment_with(2, &TRACKS, false, 1));
+    bytes.extend(fragment(3));
+    bytes.extend(fragment(4));
+    let mut sink = opened.sink;
+    Write::write_all(&mut sink, &bytes).unwrap();
+    drop(sink);
+    drop(session);
+
+    let recovery = recover_session(&config).unwrap();
+    let segment = &recovery.segments[0];
+    assert!(
+        matches!(
+            segment.outcome,
+            SegmentOutcome::Repaired {
+                salvaged_fragments: 2,
+                ..
+            }
+        ),
+        "{:?}",
+        segment.outcome
+    );
+    assert_eq!(segment.kept_bytes(), boundaries[1] + 2 * fragment_len);
+    assert_eq!(recovery.discarded_bytes(), fragment_len);
+    assert!(segment.has_unknown_loss());
+    assert_eq!(
+        read_manifest(&primary.join("program.fmsession")).state,
+        SessionState::Recovered
+    );
+}
+
+#[test]
 fn zero_filled_tail_from_power_loss_is_truncated() {
     let temp = TempDirectory::new();
     let (mut bytes, boundaries) = stream(2);
@@ -1786,12 +1888,14 @@ fn killed_writer_recovers_every_complete_fragment_and_reports_the_torn_one() {
         scan,
         truncated_bytes,
         appended_bytes,
+        salvaged_fragments,
     } = &segment.outcome
     else {
         panic!("expected a repaired segment, got {:?}", segment.outcome);
     };
     assert_eq!(*truncated_bytes, tear_at - boundaries[3]);
     assert!(*appended_bytes > 0, "the repair wrote an mfra index");
+    assert_eq!(*salvaged_fragments, 0, "a torn tail has nothing to salvage");
     assert_eq!(scan.fragments, 3);
     assert_eq!(scan.lost_fragment.as_ref().unwrap().sequence_number, 4);
     assert_eq!(recovery.recovered_duration_nanos(), 3 * SECOND);

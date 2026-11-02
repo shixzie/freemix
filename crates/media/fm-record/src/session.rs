@@ -1606,6 +1606,9 @@ pub enum SegmentOutcome {
         /// Bytes of `mfra` index appended after the truncation, so the file
         /// scans as finalized.
         appended_bytes: u64,
+        /// Fragments recovered after a corrupt middle fragment by
+        /// resynchronizing at the next box boundary.
+        salvaged_fragments: u64,
     },
     /// The init segment is missing or invalid; the file was left untouched.
     Unrecoverable {
@@ -2036,19 +2039,23 @@ pub(crate) fn stat_segment(
 
 fn repair_segment(path: &Path) -> SegmentOutcome {
     match repair_fmp4_file(path) {
-        Ok(repair) => match repair.scan.integrity {
-            Fmp4Integrity::Unrecoverable { .. } => {
+        Ok(repair) => {
+            if matches!(repair.scan.integrity, Fmp4Integrity::Unrecoverable { .. }) {
                 SegmentOutcome::Unrecoverable { scan: repair.scan }
-            }
-            Fmp4Integrity::Torn { .. } => SegmentOutcome::Repaired {
-                truncated_bytes: repair.truncated_bytes,
-                appended_bytes: repair.appended_bytes,
-                scan: repair.scan,
-            },
-            Fmp4Integrity::Complete | Fmp4Integrity::Finalized => {
+            } else if repair.truncated_bytes > 0 || repair.salvaged_fragments > 0 {
+                // The repaired file scans as complete or finalized, but the
+                // original lost bytes: a truncated tail or a corrupt middle
+                // fragment that resynchronization skipped.
+                SegmentOutcome::Repaired {
+                    truncated_bytes: repair.truncated_bytes,
+                    appended_bytes: repair.appended_bytes,
+                    salvaged_fragments: repair.salvaged_fragments,
+                    scan: repair.scan,
+                }
+            } else {
                 SegmentOutcome::Intact { scan: repair.scan }
             }
-        },
+        }
         Err(error) => SegmentOutcome::Unreadable {
             kind: error.source.kind(),
         },

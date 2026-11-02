@@ -245,6 +245,9 @@ pub struct Fmp4Repair {
     /// Bytes of `mfra` index appended after a truncation, so a repaired file
     /// scans as [`Fmp4Integrity::Finalized`].
     pub appended_bytes: u64,
+    /// Fragments recovered after a corrupt middle fragment by
+    /// resynchronizing at the next box boundary instead of truncating.
+    pub salvaged_fragments: u64,
 }
 
 #[derive(Debug)]
@@ -281,10 +284,13 @@ pub fn scan_fmp4_file(path: &Path) -> Result<Fmp4Scan, Fmp4Error> {
     scan_fmp4(&mut file, length).map_err(wrap)
 }
 
-/// Scans a fragmented MP4 file and truncates a torn tail back to the last
-/// complete fragment, then syncs the file.
+/// Scans a fragmented MP4 file and repairs it, then syncs the file.
 ///
-/// Complete, finalized, and unrecoverable files are left untouched.
+/// A torn tail is truncated back to the last complete fragment. A corrupt
+/// middle fragment is skipped when later fragments can be moved left intact
+/// (box-aligned resynchronization); those are compacted over the corrupt
+/// range and the result is rescanned. Complete, finalized, and unrecoverable
+/// files are left untouched.
 ///
 /// # Errors
 ///
@@ -302,6 +308,29 @@ pub fn repair_fmp4_file(path: &Path) -> Result<Fmp4Repair, Fmp4Error> {
         .map_err(wrap)?;
     let length = file.metadata().map_err(wrap)?.len();
     let scan = scan_fmp4(&mut file, length).map_err(wrap)?;
+    // A corrupt fragment in the middle of the file does not have to end the
+    // recording: the bytes after it are still whole box-aligned units. Keep
+    // every later fragment that parses as a relocatable unit, compact them
+    // over the corrupt range, and rescan the result.
+    if matches!(scan.integrity, Fmp4Integrity::Torn { .. })
+        && let Some(ranges) = salvage_ranges(&mut file, &scan, length).map_err(wrap)?
+    {
+        let compacted = compact_ranges(&mut file, scan.valid_length, &ranges).map_err(wrap)?;
+        let mut fresh = scan_fmp4(&mut file, compacted).map_err(wrap)?;
+        // Report the bytes the original file held, so `unusable_bytes`
+        // includes everything resynchronization dropped.
+        fresh.file_length = length;
+        let appended_bytes = append_mfra_index(&mut file, &fresh);
+        if appended_bytes > 0 {
+            fresh.integrity = Fmp4Integrity::Finalized;
+        }
+        return Ok(Fmp4Repair {
+            scan: fresh,
+            truncated_bytes: length - compacted,
+            appended_bytes,
+            salvaged_fragments: u64::try_from(ranges.len()).unwrap_or(u64::MAX),
+        });
+    }
     let truncated_bytes = if matches!(scan.integrity, Fmp4Integrity::Torn { .. }) {
         file.set_len(scan.valid_length).map_err(wrap)?;
         file.sync_all().map_err(wrap)?;
@@ -323,7 +352,97 @@ pub fn repair_fmp4_file(path: &Path) -> Result<Fmp4Repair, Fmp4Error> {
         scan,
         truncated_bytes,
         appended_bytes,
+        salvaged_fragments: 0,
     })
+}
+
+/// Finds whole fragments after `scan.valid_length` that can be moved to a new
+/// offset, stopping at the first byte that is not a valid box header.
+///
+/// A fragment qualifies only when its sample data offsets are relative to its
+/// own `moof` (no explicit `tfhd` base data offset), so removing the bytes
+/// before it leaves every offset inside it valid.
+fn salvage_ranges(
+    file: &mut std::fs::File,
+    scan: &Fmp4Scan,
+    length: u64,
+) -> io::Result<Option<Vec<Range<u64>>>> {
+    let Some(movie) = &scan.movie else {
+        return Ok(None);
+    };
+    if !matches!(scan.integrity, Fmp4Integrity::Torn { .. }) {
+        return Ok(None);
+    }
+    let mut next_decode = vec![0_u64; movie.tracks().len()];
+    for span in &scan.spans {
+        if let Some(index) = movie
+            .tracks()
+            .iter()
+            .position(|track| track.track_id == span.track_id)
+        {
+            next_decode[index] = span.end_decode_time;
+        }
+    }
+    let mut ranges = Vec::new();
+    let mut offset = scan.valid_length;
+    while offset < length {
+        let header = match read_top_header(file, offset, length)? {
+            Header::Box(header) => header,
+            Header::Incomplete | Header::Invalid(_) => break,
+        };
+        let Some(end) = offset.checked_add(header.size).filter(|end| *end <= length) else {
+            break;
+        };
+        if &header.kind == b"moof"
+            && header.size <= MAX_FMP4_MOOF_BYTES
+            && let Ok(payload) = read_payload(file, offset, header)
+            && let Header::Box(mdat) = read_top_header(file, end, length)?
+            && &mdat.kind == b"mdat"
+            && let Some(mdat_end) = end.checked_add(mdat.size).filter(|end| *end <= length)
+        {
+            let mut trial = next_decode.clone();
+            if let Ok((_, _)) = parse_moof(
+                &payload,
+                offset,
+                end + mdat.header_len..mdat_end,
+                movie,
+                &mut trial,
+                false,
+            ) {
+                next_decode = trial;
+                ranges.push(offset..mdat_end);
+                offset = mdat_end;
+                continue;
+            }
+        }
+        offset = end;
+    }
+    Ok((!ranges.is_empty()).then_some(ranges))
+}
+
+/// Moves `ranges` left over the bytes before them, starting at `prefix`, and
+/// truncates the file to the compacted length. Ranges are visited in order,
+/// so every write lands before the bytes still to be read.
+fn compact_ranges(file: &mut std::fs::File, prefix: u64, ranges: &[Range<u64>]) -> io::Result<u64> {
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    let mut write_at = prefix;
+    for range in ranges {
+        let mut read_at = range.start;
+        while read_at < range.end {
+            let take = usize::try_from((range.end - read_at).min(buffer.len() as u64))
+                .unwrap_or(buffer.len());
+            file.seek(SeekFrom::Start(read_at))?;
+            file.read_exact(&mut buffer[..take])?;
+            file.seek(SeekFrom::Start(write_at))?;
+            file.write_all(&buffer[..take])?;
+            let take = u64::try_from(take).unwrap_or(0);
+            read_at += take;
+            write_at += take;
+        }
+    }
+    file.set_len(write_at)?;
+    file.sync_all()?;
+    Ok(write_at)
 }
 
 /// Appends a `mfra` index for `scan`'s intact fragments at the end of `file`.

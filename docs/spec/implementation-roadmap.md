@@ -3992,8 +3992,13 @@ finalized, complete, torn, or unrecoverable, reports exact per-track coverage
 and loss, and repairs a torn tail by truncating to the last complete fragment
 without touching unrecoverable files; a repaired file also gains the `mfra`
 index its crashed writer never wrote, so it scans as finalized and players can
-seek it without a second pass. `FREEMIXD_RECORDING_RECOVERY` reports the
-re-finalized files and index bytes as `indexed=` and `indexed_bytes=`. A `RecordingSession` names segments in an
+seek it without a second pass. When corruption is a whole box-aligned
+fragment in the middle rather than the tail, repair skips it, moves every
+later fragment whose sample offsets are relative over the corrupt range,
+rescans the compacted result, and indexes it; later fragments with absolute
+data offsets are left behind. `FREEMIXD_RECORDING_RECOVERY` reports the
+re-finalized files, index bytes, and resynchronized fragments as `indexed=`,
+`indexed_bytes=`, and `salvaged_fragments=`. A `RecordingSession` names segments in an
 atomically rewritten, CRC-checked manifest mirrored in every root before
 creating them, disables full, read-only, or missing roots at once, retries
 other errors a bounded number of times, records failures in a bounded ring,
@@ -4033,8 +4038,8 @@ Studio's recording row. A two-daemon test starts two `freemixd` processes
 recording into one directory: the second daemon's startup recovery reports
 the first's live session as `status=locked` and leaves its manifest in the
 `Recording` state, so the lock is proven through the daemon and not only in
-`fm-record`. Remaining gaps: corrupt mid-file fragments end recovery; and
-only fragmented MP4 is handled. `OR-003` remains planned.
+`fm-record`. Remaining gaps: only fragmented MP4 is handled. `OR-003`
+remains planned.
 
 
 Exit: a remote-controlled headless production can stream and record
