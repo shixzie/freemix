@@ -1073,6 +1073,44 @@ impl CrawlSnapshot {
         .map_err(CrawlDocumentError::Invalid)
     }
 
+    /// Replaces every item's text, keeping the style of the item at the same
+    /// position and leaving extra items unstyled.
+    ///
+    /// The new snapshot is validated before it replaces `self`, so a blank,
+    /// oversized, over-count, or control-character item leaves the original
+    /// untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrawlDocumentError::Invalid`] when the resulting snapshot
+    /// violates a crawl bound.
+    pub fn set_item_texts(
+        &mut self,
+        texts: impl IntoIterator<Item = String>,
+    ) -> Result<(), CrawlDocumentError> {
+        let existing = self.items.clone();
+        let mut items = Vec::new();
+        for (index, text) in texts.into_iter().enumerate() {
+            if index >= MAX_CRAWL_ITEMS {
+                return Err(CrawlDocumentError::Invalid(CrawlError::TooManyItems {
+                    count: index + 1,
+                    maximum: MAX_CRAWL_ITEMS,
+                }));
+            }
+            let style = existing.get(index);
+            items.push(CrawlItemSnapshot {
+                text,
+                fill: style.and_then(|item| item.fill),
+                logo: style.and_then(|item| item.logo.clone()),
+            });
+        }
+        let mut candidate = self.clone();
+        candidate.items = items;
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
+
     /// Serializes the snapshot as a strict, versioned text document.
     #[must_use]
     pub fn to_document(&self) -> String {

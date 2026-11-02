@@ -11,12 +11,11 @@
 //! untouched. `--keep-live` keeps the stored value of each failed field and
 //! applies the rest.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 use fm_data::{
-    CoercionPolicy, CsvOptions, DataAdapter, DataValue, ParseLimits, TitleFieldKind,
-    TitleFieldReport, TitleFieldStatus, TitleMappingReport, coerce_title_value, parse_csv,
-    parse_json, parse_ods, parse_xlsx,
+    CoercionPolicy, DataValue, TitleFieldKind, TitleFieldReport, TitleFieldStatus,
+    TitleMappingReport, coerce_title_value,
 };
 use fm_model::{InputKind, TitleFieldEntry, TitleFieldId, TitleInput};
 use fm_persistence::{ProjectStore, StoredProject};
@@ -24,6 +23,7 @@ use fm_titles::{FieldType, TitleFieldSet, TitleTemplate};
 use fm_types::InputId;
 
 use crate::app::{AppFailure, AppResult, input_id, load_stored_project};
+use crate::table_row::read_row;
 
 /// Applies `row_path` onto title input `input` of the bundle at `path`, or
 /// reports the per-field changes without saving when `preview` is set.
@@ -105,79 +105,6 @@ fn title_input(project: &fm_model::Project, input: InputId) -> AppResult<(&str, 
         return Err(AppFailure(format!("input {input} is not a title input")).into());
     };
     Ok((title.template_uri.as_str(), title))
-}
-
-fn read_row(path: &Path, row_number: u64) -> AppResult<BTreeMap<String, DataValue>> {
-    if row_number == 0 {
-        return Err(AppFailure("row number is 1-based and cannot be zero".into()).into());
-    }
-    let bytes = fs::read(path).map_err(|error| {
-        AppFailure(format!("row {} could not be read: {error}", path.display()))
-    })?;
-    let extension = path
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let value = match extension.as_str() {
-        "json" => {
-            if row_number != 1 {
-                return Err(AppFailure(format!(
-                    "row {} is a JSON object and has no row {row_number}",
-                    path.display()
-                ))
-                .into());
-            }
-            let row = parse_json(&bytes, &ParseLimits::default())
-                .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?;
-            let DataValue::Object(row) = row else {
-                return Err(AppFailure(format!(
-                    "row {} must be a JSON object keyed by field name",
-                    path.display()
-                ))
-                .into());
-            };
-            return Ok(row);
-        }
-        "csv" | "tsv" => {
-            let options = CsvOptions {
-                delimiter: if extension == "tsv" { b'\t' } else { b',' },
-                ..CsvOptions::default()
-            };
-            let adapter = parse_csv(&bytes, &options)
-                .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?;
-            adapter
-                .representation()
-                .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?
-        }
-        "xlsx" => parse_xlsx(&bytes)
-            .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?
-            .representation()
-            .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?,
-        "ods" => parse_ods(&bytes)
-            .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?
-            .representation()
-            .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?,
-        _ => {
-            return Err(AppFailure(format!(
-                "row {} must be .json, .csv, .tsv, .xlsx, or .ods",
-                path.display()
-            ))
-            .into());
-        }
-    };
-    let DataValue::List(rows) = value else {
-        return Err(AppFailure(format!("row {} did not produce a table", path.display())).into());
-    };
-    let index = usize::try_from(row_number - 1).unwrap_or(usize::MAX);
-    let Some(DataValue::Object(row)) = rows.into_iter().nth(index) else {
-        return Err(AppFailure(format!(
-            "row {} has no data row {row_number}",
-            path.display()
-        ))
-        .into());
-    };
-    Ok(row)
 }
 
 fn check_unknown_fields(

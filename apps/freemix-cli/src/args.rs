@@ -1129,6 +1129,14 @@ pub enum Command {
         /// Print the per-field changes without saving anything.
         preview: bool,
     },
+    /// `crawl-apply-table <project> <input> <table> --field <column>`:
+    /// replace a stored crawl's item texts with one table column (GX-004).
+    CrawlApplyTable {
+        path: PathBuf,
+        input: u128,
+        table: PathBuf,
+        field: String,
+    },
     /// `title-design-import <project> <design.fmdesign> --id <input>
     /// --name <name> [--font <Family=path>]`: flattens a validated designer
     /// document into a stored template and adds a title input (GX-002).
@@ -2681,6 +2689,26 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 name: name.ok_or(ArgsError::MissingValue("--name"))?,
                 design,
                 fonts,
+            })
+        }
+        "crawl-apply-table" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let table = required_path(&mut arguments, "table path")?;
+            let mut field = None;
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--field" => {
+                        field = Some(required(&mut arguments, "field name")?);
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::CrawlApplyTable {
+                path,
+                input,
+                table,
+                field: field.ok_or(ArgsError::MissingValue("--field"))?,
             })
         }
         "title-apply-row" => {

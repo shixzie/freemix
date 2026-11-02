@@ -7,13 +7,14 @@
 
 use fm_titles::{
     Alignment, AssetCatalog, Bounds, ClockDirection, ClockFormat, Color, Crawl, CrawlConfig,
-    CrawlError, CrawlItem, CrawlLayer, CrawlLogo, CrawlMeasure, CrawlMode, CrawlSegment,
-    CrawlSegmentKind, CrawlSpeed, Element, ElementId, ElementKind, FieldDefinition, FieldId,
-    FieldValue, FontCrawlMeasure, FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS,
-    MAX_CRAWL_LOGO_WIDTH, MAX_ROSTER_PLAYERS, Player, ReferenceRenderer, Scoreboard,
-    ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent, ScoreboardPreset,
-    ScoreboardRules, ScoreboardSnapshot, Style, TeamSide, TeamState, TemplateId, TitleId,
-    TitleScene, TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
+    CrawlError, CrawlItem, CrawlItemSnapshot, CrawlLayer, CrawlLogo, CrawlLogoSnapshot,
+    CrawlMeasure, CrawlMode, CrawlSegment, CrawlSegmentKind, CrawlSnapshot, CrawlSpeed, Element,
+    ElementId, ElementKind, FieldDefinition, FieldId, FieldValue, FontCrawlMeasure, FontStyle,
+    GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS, MAX_CRAWL_LOGO_WIDTH,
+    MAX_ROSTER_PLAYERS, Player, ReferenceRenderer, Scoreboard, ScoreboardAction, ScoreboardBinding,
+    ScoreboardError, ScoreboardEvent, ScoreboardPreset, ScoreboardRules, ScoreboardSnapshot, Style,
+    TeamSide, TeamState, TemplateId, TitleId, TitleScene, TitleTemplate, UpdateError,
+    VerticalAlignment, actions_from_external,
 };
 use fm_types::FrameRate;
 use std::fs;
@@ -96,6 +97,66 @@ fn summary(segments: &[CrawlSegment<'_>]) -> Vec<(String, i64, u64)> {
 // ---------------------------------------------------------------------------
 // Crawl timing
 // ---------------------------------------------------------------------------
+
+#[test]
+fn snapshot_item_texts_replace_and_keep_positional_styles() {
+    let mut snapshot = CrawlSnapshot {
+        config: crawl_config(
+            CrawlMode::Crawl,
+            Bounds {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 20,
+            },
+            120,
+            (30, 1),
+        ),
+        items: vec![
+            CrawlItemSnapshot {
+                text: "Old".into(),
+                fill: None,
+                logo: Some(CrawlLogoSnapshot {
+                    asset: "asset://logos/news.png".into(),
+                    width_px: 32,
+                }),
+            },
+            CrawlItemSnapshot {
+                text: "Gone".into(),
+                fill: Some(Color::new(255, 0, 0, 255)),
+                logo: None,
+            },
+        ],
+    };
+    snapshot
+        .set_item_texts(["New".to_owned(), "Second".to_owned(), "Third".to_owned()])
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>(),
+        ["New", "Second", "Third"]
+    );
+    assert_eq!(
+        snapshot.items[0].logo.as_ref().unwrap().asset,
+        "asset://logos/news.png",
+        "the first item keeps its logo"
+    );
+    assert_eq!(snapshot.items[1].fill, Some(Color::new(255, 0, 0, 255)));
+    assert!(snapshot.items[2].fill.is_none());
+    assert!(snapshot.items[2].logo.is_none());
+
+    let before = snapshot.clone();
+    assert!(snapshot.set_item_texts([String::new()]).is_err());
+    assert_eq!(snapshot, before, "a refused update changes nothing");
+    assert!(
+        snapshot
+            .set_item_texts((0..=MAX_CRAWL_ITEMS).map(|index| format!("item {index}")))
+            .is_err()
+    );
+}
 
 #[test]
 fn distance_is_an_exact_rational_function_of_the_frame_index() {

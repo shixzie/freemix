@@ -880,6 +880,128 @@ fn title_apply_row_reads_a_chosen_table_row() {
     assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
 }
 
+fn crawl_document() -> String {
+    use fm_titles::{
+        Alignment, Bounds, Color, CrawlConfig, CrawlItemSnapshot, CrawlLogoSnapshot, CrawlMode,
+        CrawlSnapshot, CrawlSpeed, FontStyle,
+    };
+    CrawlSnapshot {
+        config: CrawlConfig {
+            mode: CrawlMode::Crawl,
+            bounds: Bounds {
+                x: 0,
+                y: 900,
+                width: 1_920,
+                height: 120,
+            },
+            speed: CrawlSpeed::new(120, 1).unwrap(),
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            start_frame: 0,
+            separator: " | ".into(),
+            gap_px: 16,
+            font: FontStyle {
+                family: "Inter".into(),
+                size_px: 48,
+            },
+            fill: Color::new(255, 255, 255, 255),
+            background: None,
+            opacity: 255,
+            alignment: Alignment::default(),
+        },
+        items: vec![
+            CrawlItemSnapshot {
+                text: "Old".into(),
+                fill: None,
+                logo: Some(CrawlLogoSnapshot {
+                    asset: "asset://logos/news.png".into(),
+                    width_px: 32,
+                }),
+            },
+            CrawlItemSnapshot {
+                text: "Gone".into(),
+                fill: Some(Color::new(255, 0, 0, 255)),
+                logo: None,
+            },
+        ],
+    }
+    .to_document()
+}
+
+#[test]
+fn crawl_apply_table_replaces_item_texts_from_one_column() {
+    let root = TempRoot::new();
+    let show = root.path("crawl-table.freemix");
+    new_project(&show, "Crawl table");
+    let template = root.path("score-bar.fmtitle");
+    fs::write(&template, ROW_TITLE_SOURCE).unwrap();
+    assert_success(&run(&[
+        "title-input-add",
+        text(&show),
+        "--id",
+        "9",
+        "--name",
+        "Crawl title",
+        "--template",
+        text(&template),
+    ]));
+    let document = root.path("crawl.txt");
+    fs::write(&document, crawl_document()).unwrap();
+    assert_success(&run(&["crawl-import", text(&show), "9", text(&document)]));
+
+    let table = root.path("headlines.csv");
+    fs::write(
+        &table,
+        "Headline,Other\nFirst,one\nSecond,two\nThird,three\n",
+    )
+    .unwrap();
+    let out = assert_success(&run(&[
+        "crawl-apply-table",
+        text(&show),
+        "9",
+        text(&table),
+        "--field",
+        "Headline",
+    ]));
+    assert_eq!(
+        out.lines().last(),
+        Some("crawl-apply-table: input=9 items=3")
+    );
+
+    let exported = assert_success(&run(&["crawl-export", text(&show), "9"]));
+    let snapshot = fm_titles::CrawlSnapshot::from_document(&exported).unwrap();
+    assert_eq!(
+        snapshot
+            .items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>(),
+        ["First", "Second", "Third"]
+    );
+    assert_eq!(
+        snapshot.items[0].logo.as_ref().unwrap().asset,
+        "asset://logos/news.png"
+    );
+    assert_eq!(
+        snapshot.items[1].fill,
+        Some(fm_titles::Color::new(255, 0, 0, 255))
+    );
+    assert!(snapshot.items[2].logo.is_none());
+
+    let manifest = fs::read(show.join("project.json")).unwrap();
+    assert_failure_contains(
+        &run(&[
+            "crawl-apply-table",
+            text(&show),
+            "9",
+            text(&table),
+            "--field",
+            "Nope",
+        ]),
+        "has no field `Nope`",
+    );
+    assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
+}
+
 #[test]
 fn input_media_list_import_appends_playlist_files() {
     let root = TempRoot::new();

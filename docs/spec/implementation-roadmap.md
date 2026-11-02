@@ -4957,8 +4957,10 @@ each value with `fm-data`'s title rules,
 refuses unknown field names, failed fields, and non-`asset://` images before
 saving (or keeps the live value of a failed field with `--keep-live`), and
 writes the mapped values and per-field revisions into the title input's
-`project.json` fields. Mapped values do not yet feed crawl item lists, the
-daemon, or a UI. Item 4 remains incomplete and `GX-004` remains planned.
+`project.json` fields. `freemix-cli crawl-apply-table` feeds one table column
+(CSV/TSV, `.xlsx`, or `.ods`) into a stored crawl's item texts, keeping each
+item's fill and logo by position. A daemon or UI still does not drive mapped
+values. Item 4 remains incomplete and `GX-004` remains planned.
 
 Current implementation boundary for item 4 title binding (`GX-005`):
 `fm-data` binds rows onto text, integer, color, validated image URI (scheme

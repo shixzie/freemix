@@ -1105,6 +1105,12 @@ pub fn run(command: Command) -> AppResult<()> {
             document,
         } => scoreboard_import(&path, input, &document)?,
         Command::ScoreboardExport { path, input } => scoreboard_export(&path, input)?,
+        Command::CrawlApplyTable {
+            path,
+            input,
+            table,
+            field,
+        } => crate::crawl_table::apply_table(&path, input, &table, &field)?,
         Command::CrawlCheck { path } => crawl_check(&path)?,
         Command::CrawlImport {
             path,
@@ -7659,6 +7665,7 @@ Usage:
   freemix-cli ptz-presets-import <show.freemix> <presets.txt>
   freemix-cli ptz-presets-export <show.freemix>
   freemix-cli title-design-check <design.fmdesign>
+  freemix-cli crawl-apply-table <show.freemix> <input-id> <table.(csv|tsv|xlsx|ods)> --field <column>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.(json|csv|tsv|xlsx|ods)> [--row <n>] [--keep-live] [--preview]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...
   freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp:-10000..=10000>]

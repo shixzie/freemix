@@ -1,6 +1,7 @@
 mod app;
 mod args;
 mod auto_key;
+mod crawl_table;
 mod grading;
 mod media_list_import;
 mod presets;
@@ -9,6 +10,7 @@ mod remote;
 mod scene_animation;
 mod scene_render;
 mod shortcut_sets;
+mod table_row;
 mod title_animation;
 mod title_row;
 
