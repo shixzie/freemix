@@ -1108,17 +1108,25 @@ pub(crate) fn recovery_record(slot: usize, name: &str, recovery: &SessionRecover
     let mut repaired = 0;
     let mut unrecoverable = 0;
     let mut missing = 0;
+    let mut indexed = 0;
+    let mut indexed_bytes = 0;
     for segment in &recovery.segments {
         match segment.outcome {
             SegmentOutcome::Intact { .. } => intact += 1,
-            SegmentOutcome::Repaired { .. } => repaired += 1,
+            SegmentOutcome::Repaired { appended_bytes, .. } => {
+                repaired += 1;
+                if appended_bytes > 0 {
+                    indexed += 1;
+                    indexed_bytes += appended_bytes;
+                }
+            }
             SegmentOutcome::Unrecoverable { .. } => unrecoverable += 1,
             SegmentOutcome::Missing | SegmentOutcome::Unreadable { .. } => missing += 1,
             SegmentOutcome::NeverCreated => {}
         }
     }
     format!(
-        "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot={slot}\tsession={}\tstatus=recovered\tprevious_state={}\tsegments={}\tintact={intact}\trepaired={repaired}\tunrecoverable={unrecoverable}\tmissing={missing}\tkept_bytes={}\tdiscarded_bytes={}\trecovered_ms={}\tknown_lost_ms={}\tunknown_loss_segments={}\tmanifest_generation={}",
+        "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot={slot}\tsession={}\tstatus=recovered\tprevious_state={}\tsegments={}\tintact={intact}\trepaired={repaired}\tunrecoverable={unrecoverable}\tmissing={missing}\tkept_bytes={}\tdiscarded_bytes={}\trecovered_ms={}\tknown_lost_ms={}\tunknown_loss_segments={}\tindexed={indexed}\tindexed_bytes={indexed_bytes}\tmanifest_generation={}",
         field(name),
         recovery
             .previous_state()
@@ -1315,6 +1323,49 @@ mod tests {
         assert!(!derives_from("program-0002", "program"));
         assert!(!derives_from("programs", "program"));
         assert!(!derives_from("other-002", "program"));
+    }
+
+    #[test]
+    fn a_recovery_record_reports_re_finalized_index_bytes() {
+        let scan = |valid_length| fm_record::Fmp4Scan {
+            file_length: valid_length,
+            init_length: 0,
+            movie: None,
+            fragments: 0,
+            first_sequence: None,
+            last_sequence: None,
+            sequence_gaps: 0,
+            spans: Vec::new(),
+            valid_length,
+            integrity: fm_record::Fmp4Integrity::Finalized,
+            lost_fragment: None,
+            index_fragments: Vec::new(),
+        };
+        let repaired = |index, appended_bytes| fm_record::RecoveredSessionSegment {
+            index,
+            root: 0,
+            path: None,
+            recorded: None,
+            outcome: fm_record::SegmentOutcome::Repaired {
+                scan: scan(100),
+                truncated_bytes: 7,
+                appended_bytes,
+            },
+        };
+        let recovery = fm_record::SessionRecovery {
+            manifests: Vec::new(),
+            manifest: None,
+            segments: vec![repaired(1, 128), repaired(2, 0)],
+            rewritten_generation: Some(2),
+            rewritten_roots: vec![0],
+        };
+        let record = recovery_record(1, "program", &recovery);
+        assert!(record.contains("\trepaired=2\t"), "{record}");
+        assert!(
+            record.contains("\tindexed=1\tindexed_bytes=128\t"),
+            "{record}"
+        );
+        assert!(record.ends_with("\tmanifest_generation=2"), "{record}");
     }
 
     #[test]

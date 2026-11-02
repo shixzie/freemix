@@ -3992,7 +3992,8 @@ finalized, complete, torn, or unrecoverable, reports exact per-track coverage
 and loss, and repairs a torn tail by truncating to the last complete fragment
 without touching unrecoverable files; a repaired file also gains the `mfra`
 index its crashed writer never wrote, so it scans as finalized and players can
-seek it without a second pass. A `RecordingSession` names segments in an
+seek it without a second pass. `FREEMIXD_RECORDING_RECOVERY` reports the
+re-finalized files and index bytes as `indexed=` and `indexed_bytes=`. A `RecordingSession` names segments in an
 atomically rewritten, CRC-checked manifest mirrored in every root before
 creating them, disables full, read-only, or missing roots at once, retries
 other errors a bounded number of times, records failures in a bounded ring,

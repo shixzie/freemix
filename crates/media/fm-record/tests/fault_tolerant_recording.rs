@@ -1785,18 +1785,23 @@ fn killed_writer_recovers_every_complete_fragment_and_reports_the_torn_one() {
     let SegmentOutcome::Repaired {
         scan,
         truncated_bytes,
+        appended_bytes,
     } = &segment.outcome
     else {
         panic!("expected a repaired segment, got {:?}", segment.outcome);
     };
     assert_eq!(*truncated_bytes, tear_at - boundaries[3]);
+    assert!(*appended_bytes > 0, "the repair wrote an mfra index");
     assert_eq!(scan.fragments, 3);
     assert_eq!(scan.lost_fragment.as_ref().unwrap().sequence_number, 4);
     assert_eq!(recovery.recovered_duration_nanos(), 3 * SECOND);
     assert_eq!(recovery.known_lost_duration_nanos(), SECOND);
     assert_eq!(recovery.segments_with_unknown_loss(), 0);
     let repaired = config.segment_path(0, 1).unwrap();
-    assert!(fs::metadata(&repaired).unwrap().len() > boundaries[3]);
+    assert_eq!(
+        fs::metadata(&repaired).unwrap().len(),
+        boundaries[3] + appended_bytes
+    );
     assert_eq!(
         scan_fmp4_file(&repaired).unwrap().integrity,
         Fmp4Integrity::Finalized

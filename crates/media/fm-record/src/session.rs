@@ -1603,6 +1603,9 @@ pub enum SegmentOutcome {
     Repaired {
         scan: Fmp4Scan,
         truncated_bytes: u64,
+        /// Bytes of `mfra` index appended after the truncation, so the file
+        /// scans as finalized.
+        appended_bytes: u64,
     },
     /// The init segment is missing or invalid; the file was left untouched.
     Unrecoverable {
@@ -2039,6 +2042,7 @@ fn repair_segment(path: &Path) -> SegmentOutcome {
             }
             Fmp4Integrity::Torn { .. } => SegmentOutcome::Repaired {
                 truncated_bytes: repair.truncated_bytes,
+                appended_bytes: repair.appended_bytes,
                 scan: repair.scan,
             },
             Fmp4Integrity::Complete | Fmp4Integrity::Finalized => {
