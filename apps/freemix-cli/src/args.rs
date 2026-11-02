@@ -7284,15 +7284,70 @@ fn replay_playlist_entry(value: &str) -> Result<fm_protocol::ReplayPlaylistEntry
     })
 }
 
+fn replay_list_entry(value: &str) -> Result<fm_protocol::ReplayListEntry, ArgsError> {
+    use fm_protocol::{ReplayListEntry, ReplaySpeed};
+    let (head, speed) = match value.rsplit_once('@') {
+        Some((head, percent)) => (
+            head,
+            Some(
+                ReplaySpeed::from_percent(number(percent, "speed")?).ok_or_else(|| {
+                    ArgsError::InvalidChoice {
+                        field: "speed",
+                        value: percent.to_owned(),
+                    }
+                })?,
+            ),
+        ),
+        None => (value, None),
+    };
+    let (head, marks) = match head.rsplit_once('#') {
+        Some((head, range)) => {
+            let Some((start, end)) = range.split_once('-') else {
+                return Err(ArgsError::InvalidChoice {
+                    field: "marks",
+                    value: range.to_owned(),
+                });
+            };
+            let start: u64 = number(start, "mark in")?;
+            let end: u64 = number(end, "mark out")?;
+            if start >= end {
+                return Err(ArgsError::InvalidChoice {
+                    field: "marks",
+                    value: range.to_owned(),
+                });
+            }
+            (head, Some((start, end)))
+        }
+        None => (head, None),
+    };
+    let (event, angle) = match head.split_once('/') {
+        Some((event, angle)) => (
+            event,
+            (!angle.is_empty())
+                .then(|| replay_input(angle))
+                .transpose()?,
+        ),
+        None => (head, None),
+    };
+    Ok(ReplayListEntry {
+        event: number(event, "event")?,
+        angle,
+        marks,
+        speed,
+    })
+}
+
 /// `remote-replay-do <address> <operation> ...` (OR-012):
 /// `mark-in`, `mark-out`, `capture [--name NAME]`, `last 5|10|20`,
 /// `rename EVENT NAME`, `delete EVENT`, `cue INPUT EVENT [--angle INPUT]`,
 /// `angle INPUT ANGLE`, `play INPUT [25|50|75|100]`, `pause INPUT`,
 /// `cue-in INPUT`, `step INPUT FRAMES`, `link INPUT [LINKED]`,
 /// `playlist INPUT [ENTRY ...]`,
+/// `list-set LIST NAME [ENTRY ...]`, `playlist-from-list INPUT LIST`,
 /// `playlist-next INPUT`, and `playlist-prev INPUT`, each with an optional
-/// `--key`. A playlist `ENTRY` is `EVENT[/ANGLE][@SPEED]` (no entries
-/// clears the playlist).
+/// `--key`. A playlist `ENTRY` is `EVENT[/ANGLE][@SPEED]`; a list `ENTRY`
+/// additionally accepts `#IN-OUT` marks. No entries clears the playlist or
+/// list.
 #[allow(clippy::too_many_lines)] // one arm per replay operation
 fn parse_remote_replay_do(
     mut arguments: impl Iterator<Item = String>,
@@ -7404,6 +7459,18 @@ fn parse_remote_replay_do(
                 .iter()
                 .map(|entry| replay_playlist_entry(entry))
                 .collect::<Result<Vec<_>, _>>()?,
+        },
+        ("list-set", [list, list_name, entries @ ..]) => ReplayOperation::ListSet {
+            list: number(list, "list")?,
+            name: list_name.clone(),
+            entries: entries
+                .iter()
+                .map(|entry| replay_list_entry(entry))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        ("playlist-from-list", [input, list]) => ReplayOperation::PlaylistFromList {
+            input: replay_input(input)?,
+            list: number(list, "list")?,
         },
         ("playlist-next", [input]) => ReplayOperation::PlaylistNext {
             input: replay_input(input)?,
@@ -10788,6 +10855,76 @@ mod tests {
         // Escapes belong in names and title text only.
         assert!(cue_specs(r"1:A:0:wait.\5").is_err());
         assert!(cue_specs(r"1:A:0:wait.5\").is_err());
+    }
+
+    #[test]
+    fn parses_replay_list_set_and_playlist_from_list() {
+        use fm_protocol::{ReplayListEntry, ReplayOperation, ReplaySpeed};
+        let Ok(Command::RemoteReplayDo {
+            operation:
+                ReplayOperation::ListSet {
+                    list,
+                    name,
+                    entries,
+                },
+            ..
+        }) = parse(strings(&[
+            "remote-replay-do",
+            "127.0.0.1:9000",
+            "list-set",
+            "3",
+            "Highlights",
+            "1/2#10-20@50",
+            "2",
+        ]))
+        else {
+            panic!("expected list-set");
+        };
+        assert_eq!(list, 3);
+        assert_eq!(name, "Highlights");
+        assert_eq!(
+            entries,
+            vec![
+                ReplayListEntry {
+                    event: 1,
+                    angle: Some(fm_protocol::WireInputId::new(
+                        core::num::NonZeroU128::new(2).unwrap()
+                    )),
+                    marks: Some((10, 20)),
+                    speed: Some(ReplaySpeed::Half),
+                },
+                ReplayListEntry {
+                    event: 2,
+                    angle: None,
+                    marks: None,
+                    speed: None,
+                },
+            ]
+        );
+        assert!(matches!(
+            parse(strings(&[
+                "remote-replay-do",
+                "127.0.0.1:9000",
+                "playlist-from-list",
+                "9",
+                "3"
+            ])),
+            Ok(Command::RemoteReplayDo {
+                operation: ReplayOperation::PlaylistFromList { list: 3, .. },
+                ..
+            })
+        ));
+        assert!(
+            parse(strings(&[
+                "remote-replay-do",
+                "127.0.0.1:9000",
+                "list-set",
+                "3",
+                "Highlights",
+                "1#20-10"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

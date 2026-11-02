@@ -6291,9 +6291,10 @@ speed; its player honors per-entry marks for cueing, jogging, frame
 reporting, and end-of-entry. Protocol 2.154 exposes both steps:
 `replay_list_set` installs or replaces an event list with each entry's angle,
 marks, and speed, and `replay_playlist_from_list` builds a Replay input's
-playlist from it. Remaining gaps: no UI exposes either yet, no eight-camera
-storage profile is certified, and the end-to-end slice below wires part of
-this to a server.
+playlist from it; `freemix-cli remote-replay-do` exposes `list-set` and
+`playlist-from-list`, with list entries accepting `#IN-OUT` marks. Remaining
+gaps: no UI exposes either yet, no eight-camera storage profile is certified,
+and the end-to-end slice below wires part of this to a server.
 `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a
