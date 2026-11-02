@@ -176,6 +176,52 @@ impl TrackWavPolicy {
     }
 }
 
+/// Everything one track WAV segment needs to start.
+#[cfg(feature = "native-media")]
+pub(crate) struct TrackWavOpen<'a> {
+    pub(crate) segment: &'a Path,
+    pub(crate) sample_rate: u32,
+    pub(crate) channels: u16,
+    pub(crate) fallback: Option<&'a Path>,
+    pub(crate) policy: TrackWavPolicy,
+    pub(crate) status_path: Option<PathBuf>,
+    /// BWF metadata for every file; split files add their track name.
+    pub(crate) bext: Option<fm_record::BextMetadata>,
+}
+
+/// The BWF metadata every track file of this segment carries: the slot, the
+/// segment stem, and the first sample's offset from midnight.
+#[cfg(feature = "native-media")]
+pub(crate) fn track_wav_bext(
+    slot: usize,
+    segment: &Path,
+    timecode: Option<fm_types::Timecode>,
+    frame_rate: fm_types::FrameRate,
+    sample_rate: u32,
+) -> fm_record::BextMetadata {
+    let stem = segment
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    let originator_reference: String = stem
+        .chars()
+        .filter(|character| character.is_ascii_graphic() || *character == ' ')
+        .take(32)
+        .collect();
+    let time_reference = timecode
+        .and_then(|timecode| {
+            fm_record::BextMetadata::time_reference_for_timecode(timecode, frame_rate, sample_rate)
+                .ok()
+        })
+        .unwrap_or(0);
+    fm_record::BextMetadata {
+        description: format!("FreeMix recorder {} track map", slot + 1),
+        originator: "FreeMix".to_owned(),
+        originator_reference,
+        time_reference,
+        ..fm_record::BextMetadata::default()
+    }
+}
+
 /// One segment's authored track-map recording (AU-010).
 ///
 /// Every file is a crash-safe `fm-record` WAV session: its first segment is
@@ -295,13 +341,17 @@ impl TrackWavState {
     /// audio is accepted, with explicit time and byte rollover limits.
     pub(crate) fn create_with_policy(
         map: RecorderTrackMap,
-        segment: &Path,
-        sample_rate: u32,
-        channels: u16,
-        fallback: Option<&Path>,
-        policy: TrackWavPolicy,
-        status_path: Option<PathBuf>,
+        open: TrackWavOpen<'_>,
     ) -> Result<Self, String> {
+        let TrackWavOpen {
+            segment,
+            sample_rate,
+            channels,
+            fallback,
+            policy,
+            status_path,
+            bext,
+        } = open;
         map.validate_against_channels(channels)
             .map_err(|error| error.to_string())?;
         let mode = TrackFileMode::from(map.layout());
@@ -309,7 +359,7 @@ impl TrackWavState {
             sample_rate,
             format: WavSampleFormat::Pcm16,
             large_file: LargeFilePolicy::Rf64WhenNeeded,
-            bext: None,
+            bext,
             buffer_frames: 1024,
         };
         let specs = TrackWavRecorder::file_specs(&map, mode, &options);

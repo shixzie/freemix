@@ -877,6 +877,10 @@ fn an_authored_track_map_writes_master_and_aux_channels_beside_the_segment() {
     assert_eq!(info.spec.channels, 3, "Master stereo plus one aux channel");
     assert_eq!(info.spec.sample_rate, 48_000);
     assert!(info.frames() > 0);
+    let bext = info.spec.bext.as_ref().expect("BWF metadata");
+    assert_eq!(bext.description, "FreeMix recorder 1 track map");
+    assert_eq!(bext.originator, "FreeMix");
+    assert_eq!(bext.originator_reference, "program");
     assert!(
         lines(&stderr, "FREEMIXD_RECORD_TRACK")
             .iter()
@@ -925,9 +929,23 @@ fn a_split_track_map_writes_one_file_per_track_beside_the_segment() {
     });
     let stderr = daemon.stop();
     let mut file = fs::File::open(&program_track).unwrap();
-    assert_eq!(read_wav_info(&mut file).unwrap().spec.channels, 2);
+    let program = read_wav_info(&mut file).unwrap();
+    assert_eq!(program.spec.channels, 2);
+    assert_eq!(
+        program
+            .spec
+            .bext
+            .as_ref()
+            .map(|bext| bext.description.as_str()),
+        Some("FreeMix recorder 1 track map track=Program")
+    );
     let mut file = fs::File::open(&bus_track).unwrap();
-    assert_eq!(read_wav_info(&mut file).unwrap().spec.channels, 1);
+    let bus = read_wav_info(&mut file).unwrap();
+    assert_eq!(bus.spec.channels, 1);
+    assert_eq!(
+        bus.spec.bext.as_ref().map(|bext| bext.description.as_str()),
+        Some("FreeMix recorder 1 track map track=Bus A")
+    );
     assert!(
         lines(&stderr, "FREEMIXD_RECORD_TRACK")
             .iter()

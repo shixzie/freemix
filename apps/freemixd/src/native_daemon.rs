@@ -917,13 +917,18 @@ impl NativeDaemon {
         let audio = &stored.project().settings().audio;
         let channels = u16::try_from(audio.channels.channels().len())
             .map_err(|_| AppFailure("project audio channel count exceeds u16".into()))?;
+        let sample_rate = audio.sample_rate.hertz();
+        let frame_rate = stored.project().settings().frame_rate;
+        let timecode = recording_start_timecode(stored.position().frames_rendered, frame_rate);
         let fallback = self.segment_names.fallback().map(Path::to_path_buf);
+        let bext = track_wav_bext(slot, segment, timecode, frame_rate, sample_rate);
         self.start_track_wav_with(
             slot,
             segment,
-            audio.sample_rate.hertz(),
+            sample_rate,
             channels,
             fallback.as_deref(),
+            bext,
         )
     }
 
@@ -934,6 +939,7 @@ impl NativeDaemon {
         sample_rate: u32,
         channels: u16,
         fallback: Option<&Path>,
+        bext: fm_record::BextMetadata,
     ) -> AppResult<()> {
         self.finish_track_wav(slot);
         let Some(map) = &self.record_track_maps[slot] else {
@@ -945,12 +951,15 @@ impl NativeDaemon {
             .join(format!("{}.trackstatus", slot + 1));
         let track = TrackWavState::create_with_policy(
             map.as_ref().clone(),
-            segment,
-            sample_rate,
-            channels,
-            fallback,
-            self.record_track_policy,
-            Some(status_path),
+            TrackWavOpen {
+                segment,
+                sample_rate,
+                channels,
+                fallback,
+                policy: self.record_track_policy,
+                status_path: Some(status_path),
+                bext: Some(bext),
+            },
         )
         .map_err(|error| AppFailure(format!("record track map: {error}")))?;
         self.record_track_wavs[slot] = Some(track);
@@ -2371,6 +2380,8 @@ impl NativeDaemon {
             (
                 format.sample_rate().hertz(),
                 u16::try_from(format.channel_layout().channels().len()).unwrap_or(u16::MAX),
+                format.frame_rate(),
+                recording_start_timecode(sequence.get(), format.frame_rate()),
             )
         });
         let track_fallback = self.segment_names.fallback().map(Path::to_path_buf);
@@ -2409,13 +2420,15 @@ impl NativeDaemon {
             Ok(recorder) => {
                 let track = rotated_segment.zip(track_format).map_or(
                     Ok(()),
-                    |(segment, (rate, channels))| {
+                    |(segment, (rate, channels, frame_rate, timecode))| {
+                        let bext = track_wav_bext(slot, &segment, timecode, frame_rate, rate);
                         self.start_track_wav_with(
                             slot,
                             &segment,
                             rate,
                             channels,
                             track_fallback.as_deref(),
+                            bext,
                         )
                     },
                 );

@@ -3876,9 +3876,13 @@ edits the project's time and byte rollover limits with an on/off key for each
 and saves the canonical document atomically. While Studio runs, its worker
 checks the maps' and limits' modification stamps about once a second and
 republishes the views when any changed, so an edit made by the CLI, another
-Studio, or an operator reaches the console without a manual refresh. Remaining
-gaps: WAV output is separate from the crash-safe packet spool, and metadata
-stops at version-1 `bext` without iXML, loudness, or UMID. `AU-010` remains
+Studio, or an operator reaches the console without a manual refresh. Every
+track WAV carries version-1 BWF `bext` metadata: the recorder slot and segment
+stem as description/reference and the first sample's offset from midnight as
+the time reference (split files append ` track=<name>`); the daemon derives
+it from the segment's first frame and exact frame rate. Remaining gaps: WAV
+output is separate from the crash-safe packet spool, and metadata stops at
+version-1 `bext` without iXML, loudness, or UMID authoring. `AU-010` remains
 planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):

@@ -12792,6 +12792,30 @@ fn templates_whose_animation_has_no_wire_encoding_refuse_to_start() {
     assert!(error.to_string().contains("animation"), "{error}");
 }
 
+/// Opens one track WAV state at the test format with the given options.
+#[cfg(feature = "native-media")]
+fn open_track_wav(
+    map: fm_record::RecorderTrackMap,
+    segment: &Path,
+    policy: TrackWavPolicy,
+    status_path: Option<std::path::PathBuf>,
+    bext: Option<fm_record::BextMetadata>,
+) -> TrackWavState {
+    TrackWavState::create_with_policy(
+        map,
+        TrackWavOpen {
+            segment,
+            sample_rate: 48_000,
+            channels: 2,
+            fallback: None,
+            policy,
+            status_path,
+            bext,
+        },
+    )
+    .unwrap()
+}
+
 /// AU-010: an authored track map routes Master and aux bus samples into one
 /// interleaved WAV beside the segment.
 #[cfg(feature = "native-media")]
@@ -12813,16 +12837,20 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
         BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(bus), 2)]).unwrap(),
     )
     .unwrap();
-    let mut track = TrackWavState::create_with_policy(
+    let bext = fm_record::BextMetadata {
+        description: "FreeMix recorder 1 track map".to_owned(),
+        originator: "FreeMix".to_owned(),
+        originator_reference: "show-0001".to_owned(),
+        time_reference: 48_000,
+        ..fm_record::BextMetadata::default()
+    };
+    let mut track = open_track_wav(
         map,
         &segment,
-        48_000,
-        2,
-        None,
         TrackWavPolicy::default(),
         None,
-    )
-    .unwrap();
+        Some(bext.clone()),
+    );
     let timing = MediaTiming::new(
         OriginalTimestamp::new(
             MediaTimestamp::new(0),
@@ -12852,6 +12880,11 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
     assert_eq!(info.spec.channels, 3);
     assert_eq!(info.spec.sample_rate, 48_000);
     assert_eq!(info.frames(), 2, "two frames in a three-channel file");
+    assert_eq!(
+        info.spec.bext.as_ref(),
+        Some(&bext),
+        "the BWF metadata is written into the track WAV"
+    );
     let data = fs::read(&path).unwrap();
     let offset = usize::try_from(info.data_offset).unwrap();
     let samples: Vec<i16> = data[offset..]
@@ -12884,16 +12917,20 @@ fn a_split_track_map_writes_one_file_per_track() {
     )
     .unwrap()
     .with_layout(TrackMapLayout::SplitPerTrack);
-    let mut track = TrackWavState::create_with_policy(
+    let mut track = open_track_wav(
         map,
         &segment,
-        48_000,
-        2,
-        None,
         TrackWavPolicy::default(),
         None,
-    )
-    .unwrap();
+        Some(fm_record::BextMetadata {
+            description: "FreeMix recorder 1 track map".to_owned(),
+            originator: "FreeMix".to_owned(),
+            origination_date: String::new(),
+            origination_time: String::new(),
+            time_reference: 48_000,
+            ..fm_record::BextMetadata::default()
+        }),
+    );
     assert_eq!(track.mode(), fm_record::TrackFileMode::SplitPerTrack);
     assert_eq!(
         track
@@ -12932,10 +12969,26 @@ fn a_split_track_map_writes_one_file_per_track() {
     let program_info = read_wav_info(&mut file).unwrap();
     assert_eq!(program_info.spec.channels, 2);
     assert_eq!(program_info.frames(), 2);
+    assert_eq!(
+        program_info
+            .spec
+            .bext
+            .as_ref()
+            .map(|bext| bext.description.as_str()),
+        Some("FreeMix recorder 1 track map track=Program")
+    );
     let mut file = File::open(&bus_a).unwrap();
     let bus_info = read_wav_info(&mut file).unwrap();
     assert_eq!(bus_info.spec.channels, 1);
     assert_eq!(bus_info.frames(), 2);
+    assert_eq!(
+        bus_info
+            .spec
+            .bext
+            .as_ref()
+            .map(|bext| bext.description.as_str()),
+        Some("FreeMix recorder 1 track map track=Bus A")
+    );
     let data = fs::read(&bus_a).unwrap();
     let offset = usize::try_from(bus_info.data_offset).unwrap();
     let samples: Vec<i16> = data[offset..]
@@ -13107,9 +13160,7 @@ fn track_wav_sessions_roll_over_on_time_and_bytes() {
     ] {
         let directory = tempfile::tempdir().unwrap();
         let segment = directory.path().join("show.mp4");
-        let mut track =
-            TrackWavState::create_with_policy(map.clone(), &segment, 48_000, 2, None, policy, None)
-                .unwrap();
+        let mut track = open_track_wav(map.clone(), &segment, policy, None, None);
         for _ in 0..3 {
             let timing = MediaTiming::new(
                 OriginalTimestamp::new(
@@ -13162,16 +13213,13 @@ fn track_wav_status_reports_live_files() {
         BusInventory::new(vec![(RecordBus::Master, 2)]).unwrap(),
     )
     .unwrap();
-    let mut track = TrackWavState::create_with_policy(
+    let mut track = open_track_wav(
         map,
         &segment,
-        48_000,
-        2,
-        None,
         TrackWavPolicy::default(),
         Some(status.clone()),
-    )
-    .unwrap();
+        None,
+    );
     let audio = AudioBlock::new(
         MediaTiming::new(
             OriginalTimestamp::new(
