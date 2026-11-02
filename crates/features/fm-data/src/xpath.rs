@@ -429,14 +429,14 @@ fn fields(node: &DataValue) -> Option<&std::collections::BTreeMap<String, DataVa
     }
 }
 
-fn element_tag(node: &DataValue) -> Option<&str> {
+pub(crate) fn element_tag(node: &DataValue) -> Option<&str> {
     match fields(node)?.get("tag")? {
         DataValue::String(tag) => Some(tag),
         _ => None,
     }
 }
 
-fn element_attribute_map(
+pub(crate) fn element_attribute_map(
     node: &DataValue,
 ) -> Option<&std::collections::BTreeMap<String, DataValue>> {
     match fields(node)?.get("attributes")? {
@@ -452,7 +452,7 @@ fn attribute<'a>(node: &'a DataValue, name: &str) -> Option<&'a str> {
     }
 }
 
-fn child_elements(node: &DataValue) -> impl Iterator<Item = &DataValue> {
+pub(crate) fn child_elements(node: &DataValue) -> impl Iterator<Item = &DataValue> {
     let children = match fields(node).and_then(|fields| fields.get("children")) {
         Some(DataValue::List(children)) => children.as_slice(),
         _ => &[],
@@ -462,7 +462,7 @@ fn child_elements(node: &DataValue) -> impl Iterator<Item = &DataValue> {
 
 /// The text inside `node`: every text run in document order, including runs
 /// nested in inline markup.
-fn element_text(node: &DataValue) -> String {
+pub(crate) fn element_text(node: &DataValue) -> String {
     let mut text = String::new();
     collect_text(node, &mut text);
     text

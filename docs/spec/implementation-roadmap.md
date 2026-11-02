@@ -4913,7 +4913,10 @@ bounded XPath subset over a parsed XML document: absolute, relative, and `//`
 descendant element paths, `*`, `@name`/`@*`, `text()`, and one `[n]`,
 `[@name]`, or `[@name='value']` predicate per step, with expression, step,
 index, and match bounds and strict refusal of axes, functions, unions, and
-boolean predicates. Remaining gaps:
+boolean predicates. `XmlRowsAdapter` turns those selected elements into typed
+rows for the same title mapper: attributes become `@name` fields, repeated
+child tags become lists, and an element with no attributes or children
+contributes its text as `_text`. Remaining gaps:
 no spreadsheet,
 Google Sheets, chat, or database adapters, no real network polling, and
 `fm-title-render`'s `apply_title_mapping` now writes a mapped report onto a

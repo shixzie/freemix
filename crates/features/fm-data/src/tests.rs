@@ -1,10 +1,11 @@
 use std::{collections::BTreeMap, str::FromStr, time::Duration};
 
 use crate::{
-    BoundedCache, CsvRowsAdapter, DataAdapter, DataPath, DataSource, DataValue, Decimal,
-    FakePollingSource, FakePushSource, FieldBinding, JsonObjectAdapter, ManualClock, Mapper,
-    MappingStatus, PollingSource, PushSource, RetryError, RetryOutcome, RetryPolicy, RetryState,
-    Schema, SchemaType, SecretRefId, SourceError, Transform, ValueSelector, ValueType,
+    AdapterError, BoundedCache, CsvRowsAdapter, DataAdapter, DataPath, DataSource, DataValue,
+    Decimal, FakePollingSource, FakePushSource, FieldBinding, JsonObjectAdapter, ManualClock,
+    Mapper, MappingStatus, ParseLimits, PollingSource, PushSource, RetryError, RetryOutcome,
+    RetryPolicy, RetryState, Schema, SchemaType, SecretRefId, SourceError, Transform,
+    ValueSelector, ValueType, XmlRowsAdapter, parse_xml,
 };
 
 fn object(fields: impl IntoIterator<Item = (&'static str, DataValue)>) -> DataValue {
@@ -222,6 +223,73 @@ fn fake_adapter_representations_are_typed_and_validated() {
         json.representation().unwrap(),
         object([("enabled", DataValue::Bool(true))])
     );
+}
+
+#[test]
+fn an_xml_row_adapter_turns_selected_elements_into_rows() {
+    let document = parse_xml(
+        br#"<feed>
+              <entry id="a"><title>One <b>bold</b></title><link>u1</link><tag>x</tag><tag>y</tag></entry>
+              <entry id="b"><title>Two</title><link>u2</link></entry>
+              <note>ignored</note>
+            </feed>"#,
+        &ParseLimits::default(),
+    )
+    .unwrap();
+    let adapter = XmlRowsAdapter::new(document, "//entry");
+    assert_eq!(adapter.row_xpath(), "//entry");
+    let DataValue::List(rows) = adapter.representation().unwrap() else {
+        panic!("an XML row adapter returns a list");
+    };
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0],
+        object([
+            ("@id", DataValue::from("a")),
+            ("title", DataValue::from("One bold")),
+            ("link", DataValue::from("u1")),
+            (
+                "tag",
+                DataValue::List(vec![DataValue::from("x"), DataValue::from("y")])
+            ),
+        ])
+    );
+    assert_eq!(
+        rows[1],
+        object([
+            ("@id", DataValue::from("b")),
+            ("title", DataValue::from("Two")),
+            ("link", DataValue::from("u2")),
+        ])
+    );
+}
+
+#[test]
+fn xml_row_selection_is_strict_and_allows_text_rows() {
+    let text_document =
+        parse_xml(br"<root><row>only</row></root>", &ParseLimits::default()).unwrap();
+    let text_row = XmlRowsAdapter::new(text_document, "//row");
+    assert_eq!(
+        text_row.representation().unwrap(),
+        DataValue::List(vec![object([("_text", DataValue::from("only"))])])
+    );
+
+    let document = parse_xml(
+        br#"<root><row id="x">only</row></root>"#,
+        &ParseLimits::default(),
+    )
+    .unwrap();
+    let attribute = XmlRowsAdapter::new(document.clone(), "//row/@id");
+    assert_eq!(attribute.representation(), Err(AdapterError::RowNotElement));
+    let text = XmlRowsAdapter::new(document.clone(), "//row/text()");
+    assert_eq!(text.representation(), Err(AdapterError::RowNotElement));
+    let empty = XmlRowsAdapter::new(document.clone(), "//missing");
+    assert_eq!(empty.representation().unwrap(), DataValue::List(Vec::new()));
+    let invalid = XmlRowsAdapter::new(document, "//row[");
+    assert!(matches!(
+        invalid.representation(),
+        Err(AdapterError::XPath(_))
+    ));
 }
 
 #[test]

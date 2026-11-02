@@ -25,7 +25,10 @@ mod value;
 mod xml;
 mod xpath;
 
-pub use adapters::{AdapterError, CsvRowsAdapter, DataAdapter, JsonObjectAdapter};
+pub use adapters::{
+    AdapterError, CsvRowsAdapter, DataAdapter, JsonObjectAdapter, MAX_XML_ROW_FIELDS,
+    XmlRowsAdapter,
+};
 pub use bind::{
     BindingConfigError, BindingError, BindingFieldReport, BindingKind, BindingReport, BindingSet,
     BindingStatus, BoundValue, BoundValueKind, CompareOp, DataBinding, ImageUriError,
