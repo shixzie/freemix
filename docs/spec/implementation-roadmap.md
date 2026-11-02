@@ -4916,8 +4916,8 @@ wrap edges, stays valid across refresh, and selects by exact key. A validated
 title mapper coerces values onto text, number, color, and image fields with
 explicit rounding and color rules, fallbacks, optional fields, and per-field
 diagnostics. `fm-data` also provides a bounded file polling source that
-re-reads one CSV, JSON, or `.xlsx` file (the first or a named worksheet) at a
-caller interval and emits only when its
+re-reads one CSV, JSON, `.xlsx`, or `.ods` file (the first or a named
+worksheet/table) at a caller interval and emits only when its
 length or modification time changes, and a bounded XML reader that turns one
 document into nested typed elements (no DOCTYPE, entity expansion limited to
 the five named entities and numeric references), and reads RSS 2.0 and Atom
@@ -4937,9 +4937,14 @@ rich-text strings resolved, boolean cells rendered `TRUE`/`FALSE`, and a
 number kept as the exact stored text. The package, each part, the total
 inflate budget, rows, columns, shared strings, and one cell's text are all
 bounded, and a duplicate header or a data cell under a blank header is
-refused. Remaining gaps:
-no `.xls` or ODS workbook, no date or style conversion (a date keeps its
-serial number), no
+refused. `parse_ods` reads the first or a named table of an OpenDocument
+Spreadsheet with the same header and row shape: text paragraphs (including
+spans, explicit spaces, tabs, and line breaks) become text, float, currency,
+percentage, date, and time cells keep the stored value, and boolean cells
+render `TRUE`/`FALSE`; repeated rows and columns expand under the same
+bounds. Remaining gaps:
+no `.xls` workbook, no date, style, or formula-display conversion (a date
+keeps its stored value), no
 Google Sheets, chat, or database adapters, no real network polling, and
 `fm-title-render`'s `apply_title_mapping` now writes a mapped report onto a
 `TitleScene` atomically by template field name, so title text, number, color,

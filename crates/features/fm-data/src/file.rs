@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::adapters::DataAdapter;
+use crate::ods::{parse_ods, parse_ods_sheet};
 use crate::parse::{CsvOptions, ParseLimits, parse_csv, parse_json};
 use crate::source::{DataSource, PollingSource, SourceError, SourceEvent, SourceState};
 use crate::value::DataValue;
@@ -27,6 +28,8 @@ pub enum FileFormat {
     Json(ParseLimits),
     /// The first worksheet, or the named worksheet, of an `.xlsx` workbook.
     Xlsx { sheet: Option<String> },
+    /// The first table, or the named table, of an `.ods` spreadsheet.
+    Ods { sheet: Option<String> },
 }
 
 /// A polling source backed by one file on disk.
@@ -90,6 +93,16 @@ impl FilePollingSource {
                 let adapter = match sheet.as_deref() {
                     Some(name) => parse_xlsx_sheet(bytes, name),
                     None => parse_xlsx(bytes),
+                }
+                .map_err(|error| SourceError::Adapter(error.to_string()))?;
+                adapter
+                    .representation()
+                    .map_err(|error| SourceError::Adapter(error.to_string()))
+            }
+            FileFormat::Ods { sheet } => {
+                let adapter = match sheet.as_deref() {
+                    Some(name) => parse_ods_sheet(bytes, name),
+                    None => parse_ods(bytes),
                 }
                 .map_err(|error| SourceError::Adapter(error.to_string()))?;
                 adapter
@@ -351,6 +364,41 @@ mod tests {
             source.poll(),
             Err(SourceError::Adapter(message)) if message.contains("no worksheet named Nope")
         ));
+    }
+
+    fn ods_package() -> Vec<u8> {
+        package(&[(
+            "content.xml",
+            r#"<office:document-content xmlns:office="o" xmlns:table="t" xmlns:text="x"><office:body><office:spreadsheet><table:table table:name="Data"><table:table-row><table:table-cell office:value-type="string"><text:p>Name</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>Score</text:p></table:table-cell></table:table-row><table:table-row><table:table-cell office:value-type="string"><text:p>Ada</text:p></table:table-cell><table:table-cell office:value-type="float" office:value="7"/></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>"#,
+        )])
+    }
+
+    #[test]
+    fn an_ods_file_polls_a_named_table() {
+        let path = temp_path("ods");
+        std::fs::write(&path, ods_package()).unwrap();
+        let mut source = FilePollingSource::new(
+            "ods",
+            &path,
+            FileFormat::Ods {
+                sheet: Some("Data".to_owned()),
+            },
+            Duration::from_secs(1),
+        );
+        source.start().unwrap();
+        let event = source.poll().unwrap().unwrap();
+        assert_eq!(
+            event.value,
+            DataValue::List(vec![DataValue::Object(
+                [
+                    ("Name".to_owned(), DataValue::from("Ada")),
+                    ("Score".to_owned(), DataValue::from("7")),
+                ]
+                .into_iter()
+                .collect()
+            )])
+        );
+        assert_eq!(source.poll().unwrap(), None);
     }
 
     #[test]

@@ -12,6 +12,7 @@ mod file;
 mod format;
 mod html;
 mod mapping;
+mod ods;
 mod parse;
 mod preview;
 mod retry;
@@ -44,6 +45,10 @@ pub use format::{
 };
 pub use html::parse_html_table;
 pub use mapping::{FieldBinding, FieldMappingReport, Mapper, MappingReport, MappingStatus};
+pub use ods::{
+    MAX_ODS_BYTES, MAX_ODS_CELL_BYTES, MAX_ODS_COLUMNS, MAX_ODS_CONTENT_BYTES, MAX_ODS_ROWS,
+    MAX_ODS_SHEET_NAME_BYTES, OdsError, OdsRowsAdapter, parse_ods, parse_ods_sheet,
+};
 pub use parse::{CsvOptions, ParseError, ParseErrorKind, ParseLimits, parse_csv, parse_json};
 pub use preview::{
     CommitOutcome, FieldChange, MAX_PREVIEW_DOCUMENT_BYTES, MAX_PREVIEW_FIELD_NAME_BYTES,
