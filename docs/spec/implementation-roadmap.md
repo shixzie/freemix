@@ -4899,8 +4899,13 @@ length or modification time changes, and a bounded XML reader that turns one
 document into nested typed elements (no DOCTYPE, entity expansion limited to
 the five named entities and numeric references), and reads RSS 2.0 and Atom
 feeds into rows of title, link, summary, published, and id, and reads an
-HTML table's header and body cells into rows. Remaining gaps:
-no XPath, spreadsheet,
+HTML table's header and body cells into rows. `fm-data` also evaluates a
+bounded XPath subset over a parsed XML document: absolute, relative, and `//`
+descendant element paths, `*`, `@name`/`@*`, `text()`, and one `[n]`,
+`[@name]`, or `[@name='value']` predicate per step, with expression, step,
+index, and match bounds and strict refusal of axes, functions, unions, and
+boolean predicates. Remaining gaps:
+no spreadsheet,
 Google Sheets, chat, or database adapters, no real network polling, and
 `fm-title-render`'s `apply_title_mapping` now writes a mapped report onto a
 `TitleScene` atomically by template field name, so title text, number, color,

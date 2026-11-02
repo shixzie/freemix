@@ -23,6 +23,7 @@ mod title;
 mod transform;
 mod value;
 mod xml;
+mod xpath;
 
 pub use adapters::{AdapterError, CsvRowsAdapter, DataAdapter, JsonObjectAdapter};
 pub use bind::{
@@ -63,6 +64,9 @@ pub use title::{
 pub use transform::{Transform, TransformError, ValueSelector};
 pub use value::{DataValue, Decimal, DecimalError, ValueType};
 pub use xml::parse_xml;
+pub use xpath::{
+    MAX_XPATH_BYTES, MAX_XPATH_INDEX, MAX_XPATH_MATCHES, MAX_XPATH_STEPS, XPathError, select_xml,
+};
 
 #[cfg(test)]
 mod tests;
