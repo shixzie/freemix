@@ -1,6 +1,9 @@
 //! `title-apply-row`: writes one mapped data row onto a project title (GX-005).
 //!
-//! The row is a flat JSON object keyed by template field name. Values are
+//! The row is read from a flat JSON object, a CSV/TSV table, or the first or
+//! named worksheet/table of an `.xlsx` or `.ods` workbook, and is keyed by
+//! template field name. `--row` selects a 1-based data row in a table (JSON
+//! holds exactly one row). Values are
 //! coerced with `fm-data`'s title coercion rules (the same rules the daemon's
 //! data bindings use) and written through `fm-title-render`'s mapping bridge
 //! onto the project's stored field set, so a row that names an unknown field,
@@ -11,8 +14,9 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use fm_data::{
-    CoercionPolicy, DataValue, ParseLimits, TitleFieldKind, TitleFieldReport, TitleFieldStatus,
-    TitleMappingReport, coerce_title_value, parse_json,
+    CoercionPolicy, CsvOptions, DataAdapter, DataValue, ParseLimits, TitleFieldKind,
+    TitleFieldReport, TitleFieldStatus, TitleMappingReport, coerce_title_value, parse_csv,
+    parse_json, parse_ods, parse_xlsx,
 };
 use fm_model::{InputKind, TitleFieldEntry, TitleFieldId, TitleInput};
 use fm_persistence::{ProjectStore, StoredProject};
@@ -27,6 +31,7 @@ pub fn apply_row(
     path: &Path,
     input: u128,
     row_path: &Path,
+    row_number: u64,
     keep_live: bool,
     preview: bool,
 ) -> AppResult<()> {
@@ -39,7 +44,7 @@ pub fn apply_row(
         .map_err(|error| AppFailure(format!("title template {template_uri}: {error}")))?;
     let template = &stored_template.template;
 
-    let row = read_row(row_path)?;
+    let row = read_row(row_path, row_number)?;
     check_unknown_fields(&row, template, template_uri)?;
     let report = mapped_report(&row, template);
     print_report(&report);
@@ -102,15 +107,72 @@ fn title_input(project: &fm_model::Project, input: InputId) -> AppResult<(&str, 
     Ok((title.template_uri.as_str(), title))
 }
 
-fn read_row(path: &Path) -> AppResult<BTreeMap<String, DataValue>> {
+fn read_row(path: &Path, row_number: u64) -> AppResult<BTreeMap<String, DataValue>> {
+    if row_number == 0 {
+        return Err(AppFailure("row number is 1-based and cannot be zero".into()).into());
+    }
     let bytes = fs::read(path).map_err(|error| {
         AppFailure(format!("row {} could not be read: {error}", path.display()))
     })?;
-    let row = parse_json(&bytes, &ParseLimits::default())
-        .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?;
-    let DataValue::Object(row) = row else {
+    let extension = path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let value = match extension.as_str() {
+        "json" => {
+            if row_number != 1 {
+                return Err(AppFailure(format!(
+                    "row {} is a JSON object and has no row {row_number}",
+                    path.display()
+                ))
+                .into());
+            }
+            let row = parse_json(&bytes, &ParseLimits::default())
+                .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?;
+            let DataValue::Object(row) = row else {
+                return Err(AppFailure(format!(
+                    "row {} must be a JSON object keyed by field name",
+                    path.display()
+                ))
+                .into());
+            };
+            return Ok(row);
+        }
+        "csv" | "tsv" => {
+            let options = CsvOptions {
+                delimiter: if extension == "tsv" { b'\t' } else { b',' },
+                ..CsvOptions::default()
+            };
+            let adapter = parse_csv(&bytes, &options)
+                .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?;
+            adapter
+                .representation()
+                .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?
+        }
+        "xlsx" => parse_xlsx(&bytes)
+            .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?
+            .representation()
+            .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?,
+        "ods" => parse_ods(&bytes)
+            .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?
+            .representation()
+            .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?,
+        _ => {
+            return Err(AppFailure(format!(
+                "row {} must be .json, .csv, .tsv, .xlsx, or .ods",
+                path.display()
+            ))
+            .into());
+        }
+    };
+    let DataValue::List(rows) = value else {
+        return Err(AppFailure(format!("row {} did not produce a table", path.display())).into());
+    };
+    let index = usize::try_from(row_number - 1).unwrap_or(usize::MAX);
+    let Some(DataValue::Object(row)) = rows.into_iter().nth(index) else {
         return Err(AppFailure(format!(
-            "row {} must be a JSON object keyed by field name",
+            "row {} has no data row {row_number}",
             path.display()
         ))
         .into());

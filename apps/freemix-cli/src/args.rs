@@ -1114,12 +1114,15 @@ pub enum Command {
     TitleDesignCheck {
         path: PathBuf,
     },
-    /// `title-apply-row <project> <input> <row.json>`: coerce a flat JSON
-    /// row onto a title input's template fields and save it (GX-005).
+    /// `title-apply-row <project> <input> <row>`: coerce one row from a
+    /// JSON object, CSV/TSV, `.xlsx`, or `.ods` file onto a title input's
+    /// template fields and save it (GX-005).
     TitleApplyRow {
         path: PathBuf,
         input: u128,
         row: PathBuf,
+        /// 1-based data row in a table; JSON files hold row 1.
+        row_number: u64,
         /// Apply the fields that mapped and keep the live value of any field
         /// that failed instead of refusing the whole row.
         keep_live: bool,
@@ -2684,10 +2687,15 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "project path")?;
             let input = number(&required(&mut arguments, "input")?, "input")?;
             let row = required_path(&mut arguments, "row path")?;
+            let mut row_number = 1;
             let mut keep_live = false;
             let mut preview = false;
-            for option in arguments.by_ref() {
+            while let Some(option) = arguments.next() {
                 match option.as_str() {
+                    "--row" => {
+                        row_number =
+                            number(&required(&mut arguments, "row number")?, "row number")?;
+                    }
                     "--keep-live" => keep_live = true,
                     "--preview" => preview = true,
                     _ => return Err(ArgsError::UnknownOption(option)),
@@ -2697,6 +2705,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 path,
                 input,
                 row,
+                row_number,
                 keep_live,
                 preview,
             })

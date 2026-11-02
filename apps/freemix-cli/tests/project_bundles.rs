@@ -825,6 +825,62 @@ fn title_apply_row_writes_a_mapped_row_into_the_project() {
 }
 
 #[test]
+fn title_apply_row_reads_a_chosen_table_row() {
+    let root = TempRoot::new();
+    let show = root.path("table-row.freemix");
+    new_project(&show, "Table row");
+    let template = root.path("score-bar.fmtitle");
+    fs::write(&template, ROW_TITLE_SOURCE).unwrap();
+    assert_success(&run(&[
+        "title-input-add",
+        text(&show),
+        "--id",
+        "9",
+        "--name",
+        "Score bar",
+        "--template",
+        text(&template),
+    ]));
+
+    let table = root.path("rows.csv");
+    fs::write(&table, "Score,Bar color\n10,#112233\n14,#445566\n").unwrap();
+    let out = assert_success(&run(&[
+        "title-apply-row",
+        text(&show),
+        "9",
+        text(&table),
+        "--row",
+        "2",
+    ]));
+    assert_eq!(
+        out.lines().last(),
+        Some("title-apply-row: input=9 fields=2 revision=1")
+    );
+    let (revision, fields) = title_fields(&load(&show), 9);
+    assert_eq!(revision, 1);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(14));
+    assert_eq!(
+        fields[1].value,
+        fm_model::TitleFieldValue::Color(fm_model::Rgba8::new(0x44, 0x55, 0x66, 0xff))
+    );
+
+    // A row past the table refuses before saving anything.
+    let manifest = fs::read(show.join("project.json")).unwrap();
+    assert_failure_contains(
+        &run(&[
+            "title-apply-row",
+            text(&show),
+            "9",
+            text(&table),
+            "--row",
+            "3",
+        ]),
+        "has no data row 3",
+    );
+    assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
+}
+
+#[test]
 fn input_media_list_import_appends_playlist_files() {
     let root = TempRoot::new();
     let show = root.path("list.freemix");

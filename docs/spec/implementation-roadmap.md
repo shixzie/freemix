@@ -4950,8 +4950,10 @@ Google Sheets, chat, or database adapters, no real network polling, and
 `TitleScene` atomically by template field name, so title text, number, color,
 image, and field-backed ticker elements update, and
 `apply_title_mapping_to_fields` writes the same report onto a standalone
-`TitleFieldSet`. `freemix-cli title-apply-row` reads one flat JSON row keyed
-by template field name, coerces each value with `fm-data`'s title rules,
+`TitleFieldSet`. `freemix-cli title-apply-row` reads one row keyed
+by template field name from a flat JSON object, a CSV/TSV table, or an
+`.xlsx`/`.ods` workbook (selecting a 1-based data row with `--row`), coerces
+each value with `fm-data`'s title rules,
 refuses unknown field names, failed fields, and non-`asset://` images before
 saving (or keeps the live value of a failed field with `--keep-live`), and
 writes the mapped values and per-field revisions into the title input's
@@ -4971,9 +4973,10 @@ and commits atomically with a revision counter, stale-stage detection, and a
 choice between refusing errored results and keeping live values for failed
 fields. `fm-title-render` writes mapped reports onto a `TitleScene` and a
 standalone `TitleFieldSet` by template field name, and
-`freemix-cli title-apply-row` coerces one flat JSON row (refusing unknown
-fields, failed coercions, and non-`asset://` images unless `--keep-live`
-keeps the live value of each failed field) and saves the result into the
+`freemix-cli title-apply-row` coerces one row from JSON, CSV/TSV, `.xlsx`, or
+`.ods` (refusing unknown fields, failed coercions, and non-`asset://` images
+unless `--keep-live` keeps the live value of each failed field) and saves the
+result into the
 title input's `project.json` fields with per-field revisions; `--preview`
 prints each mapped field's current and new value without saving. Remaining gaps:
 no daemon, protocol command, or UI preview drives a mapped row; there is no
