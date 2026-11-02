@@ -993,6 +993,46 @@ fn remove_input_resolves_the_input_and_is_strict() {
 }
 
 #[test]
+fn audio_bus_functions_route_master_and_aux_buses() {
+    let state = state();
+    for (value, bus) in [
+        ("M", CompatAudioBus::Master),
+        ("Master", CompatAudioBus::Master),
+        ("A", CompatAudioBus::Aux(1)),
+        ("g", CompatAudioBus::Aux(7)),
+    ] {
+        assert_eq!(
+            parse_http_query(
+                &format!("Function=AudioBusOn&Input=2&Value={value}"),
+                &state
+            ),
+            Ok(Translation::Compat(CompatIntent::SetAudioBus {
+                input: id(2),
+                bus,
+                on: true,
+            })),
+            "{value}"
+        );
+        assert_eq!(
+            parse_http_query(
+                &format!("Function=AudioBusOFF&Input=2&Value={value}"),
+                &state
+            ),
+            Ok(Translation::Compat(CompatIntent::SetAudioBus {
+                input: id(2),
+                bus,
+                on: false,
+            })),
+            "{value}"
+        );
+    }
+    assert!(parse_http_query("Function=AudioBusOn&Input=2", &state).is_err());
+    assert!(parse_http_query("Function=AudioBusOn&Input=2&Value=H", &state).is_err());
+    assert!(parse_http_query("Function=AudioBusOn&Input=99&Value=A", &state).is_err());
+    assert!(parse_http_query("Function=AudioBusOn&Input=2&Value=A&Extra=1", &state).is_err());
+}
+
+#[test]
 fn stinger_functions_pick_the_slot_and_resolve_the_input() {
     let state = state();
     for slot in 1..=4 {

@@ -16,8 +16,8 @@ use fm_protocol::{
     WireStingerSlotId,
 };
 use fm_vmix_compat::{
-    CompatInput, CompatIntent, CompatState, TextFieldSelector, Translation, VmixHttpServer,
-    VmixTcpServer,
+    CompatAudioBus, CompatInput, CompatIntent, CompatState, TextFieldSelector, Translation,
+    VmixHttpServer, VmixTcpServer,
 };
 
 /// A bound vMix listener and the compat-only state between passes.
@@ -379,7 +379,7 @@ fn execute_compat(
                 control,
                 principal,
                 now_millis,
-                audio_strip_payload(strip, Some(percent_to_millidb(percent)), None, None),
+                audio_strip_payload(strip, Some(percent_to_millidb(percent)), None, None, None),
                 next_command,
             )
         }
@@ -393,7 +393,7 @@ fn execute_compat(
                 control,
                 principal,
                 now_millis,
-                audio_strip_payload(strip, None, Some(muted), None),
+                audio_strip_payload(strip, None, Some(muted), None, None),
                 next_command,
             )
         }
@@ -410,7 +410,7 @@ fn execute_compat(
                 control,
                 principal,
                 now_millis,
-                audio_strip_payload(strip, None, None, Some(balance_basis_points)),
+                audio_strip_payload(strip, None, None, Some(balance_basis_points), None),
                 next_command,
             )
         }
@@ -462,6 +462,28 @@ fn execute_compat(
                     active,
                     duration_frames: millis_to_frames(snapshot.frame_rate, *transition_millis),
                 },
+                next_command,
+            )
+        }
+        CompatIntent::SetAudioBus { input, bus, on } => {
+            let strip = snapshot
+                .input_audio_strips
+                .iter()
+                .find(|strip| strip.input == input)
+                .ok_or_else(|| format!("input {} has no audio strip", input.get()))?;
+            let sends = match bus {
+                CompatAudioBus::Master => strip.sends.with_master(on),
+                CompatAudioBus::Aux(number) => {
+                    let bus = fm_types::audio_bus::AuxBusNumber::new(number)
+                        .ok_or_else(|| format!("invalid aux bus: {number}"))?;
+                    strip.sends.with_aux(bus, on)
+                }
+            };
+            submit(
+                control,
+                principal,
+                now_millis,
+                audio_strip_payload(strip, None, None, None, Some(sends)),
                 next_command,
             )
         }
@@ -556,6 +578,7 @@ fn audio_strip_payload(
     gain_millidb: Option<i32>,
     muted: Option<bool>,
     balance_basis_points: Option<i32>,
+    sends: Option<fm_types::audio_bus::AudioSends>,
 ) -> CommandPayload {
     CommandPayload::SetInputAudioStrip {
         input: strip.input,
@@ -566,7 +589,7 @@ fn audio_strip_payload(
         soloed: strip.soloed,
         follow_video: strip.follow_video,
         delay_samples: strip.delay_samples,
-        sends: strip.sends,
+        sends: sends.unwrap_or(strip.sends),
     }
 }
 
@@ -650,6 +673,38 @@ mod tests {
         assert_eq!(millis_to_frames(thirty, 0), 1);
         let ntsc = fm_types::FrameRate::new(30_000, 1_001).unwrap();
         assert_eq!(millis_to_frames(ntsc, 1_000), 29);
+    }
+
+    #[test]
+    fn audio_strip_payload_applies_a_bus_send_override() {
+        let strip = fm_protocol::InputAudioStripStatus {
+            input: fm_protocol::WireInputId::new(std::num::NonZeroU128::new(3).unwrap()),
+            gain_millidb: -1_000,
+            balance_basis_points: 100,
+            pan_basis_points: -200,
+            group: Some(2),
+            muted: false,
+            soloed: true,
+            follow_video: true,
+            delay_samples: 48,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
+        };
+        let aux = fm_types::audio_bus::AuxBusNumber::new(2).unwrap();
+        let sends = strip.sends.with_master(false).with_aux(aux, true);
+        let CommandPayload::SetInputAudioStrip {
+            input,
+            gain_millidb,
+            sends: got,
+            ..
+        } = audio_strip_payload(&strip, None, None, None, Some(sends))
+        else {
+            panic!("an audio strip payload");
+        };
+        assert_eq!(input, strip.input);
+        assert_eq!(gain_millidb, strip.gain_millidb, "the gain is preserved");
+        assert_eq!(got, sends);
+        assert!(!got.master());
+        assert!(got.aux(aux).enabled);
     }
 
     #[test]
@@ -763,7 +818,7 @@ mod tests {
             follow_video,
             delay_samples,
             ..
-        } = audio_strip_payload(&strip, Some(-6_021), Some(true), Some(-2_500))
+        } = audio_strip_payload(&strip, Some(-6_021), Some(true), Some(-2_500), None)
         else {
             panic!("an audio strip payload");
         };

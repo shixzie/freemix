@@ -193,6 +193,7 @@ fn read_line(reader: &mut BufReader<TcpStream>) -> String {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one scripted vMix session
 fn the_daemon_serves_the_vmix_tcp_api() {
     let directory = TestDirectory::new("api");
     save_project(&directory.project());
@@ -258,6 +259,30 @@ fn the_daemon_serves_the_vmix_tcp_api() {
         read_line(&mut reader).starts_with("FUNCTION ER"),
         "an unknown stinger input is refused"
     );
+
+    // AudioBusOn routes an input to Master or an aux bus; a bus outside
+    // M and A through G is refused, and AudioBusOff clears the route.
+    for function in ["AudioBusOn", "AudioBusOff"] {
+        writer
+            .write_all(format!("FUNCTION {function} Input=Other&Value=A\r\n").as_bytes())
+            .unwrap();
+        assert_eq!(
+            read_line(&mut reader),
+            "FUNCTION OK Completed\r\n",
+            "{function}"
+        );
+    }
+    writer
+        .write_all(b"FUNCTION AudioBusOn Input=Other&Value=H\r\n")
+        .unwrap();
+    assert!(
+        read_line(&mut reader).starts_with("FUNCTION ER"),
+        "an aux bus past G is refused"
+    );
+    writer
+        .write_all(b"FUNCTION AudioBusOn Input=Other&Value=M\r\n")
+        .unwrap();
+    assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
 
     // MoveInput puts the added input at the front of the vMix order.
     writer

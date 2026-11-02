@@ -507,6 +507,12 @@ pub enum CompatIntent {
     /// Assign a media input to one of vMix's four stinger slots; the
     /// dispatcher preserves the slot's configured policy when it has one.
     SetStinger { slot: u8, input: WireInputId },
+    /// Route an input's audio to Master or one aux bus.
+    SetAudioBus {
+        input: WireInputId,
+        bus: CompatAudioBus,
+        on: bool,
+    },
     /// Set one title field.
     SetText {
         input: WireInputId,
@@ -556,6 +562,14 @@ pub enum CompatIntent {
         output: u8,
         input: Option<WireInputId>,
     },
+}
+
+/// The Master or aux bus a vMix audio-bus function targets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompatAudioBus {
+    Master,
+    /// Aux bus A through G, numbered 1 through 7.
+    Aux(u8),
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -1012,6 +1026,32 @@ fn translate(
             Ok(Translation::Compat(CompatIntent::SetStinger {
                 slot,
                 input: state.resolve_input(required(parameters, "Input")?)?,
+            }))
+        }
+        "AudioBusOn" | "AudioBusON" | "AudioBusOff" | "AudioBusOFF" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let value = required(parameters, "Value")?.to_ascii_lowercase();
+            let bus = match value.as_str() {
+                "m" | "master" => CompatAudioBus::Master,
+                value
+                    if value.len() == 1
+                        && value.as_bytes()[0].is_ascii_alphabetic()
+                        && (b'a'..=b'g').contains(&value.as_bytes()[0]) =>
+                {
+                    CompatAudioBus::Aux(value.as_bytes()[0] - b'a' + 1)
+                }
+                _ => {
+                    return Err(ParseError::InvalidParameter {
+                        parameter: "Value",
+                        reason: "an audio bus is M or A through G",
+                    });
+                }
+            };
+            Ok(Translation::Compat(CompatIntent::SetAudioBus {
+                input,
+                bus,
+                on: matches!(function, "AudioBusOn" | "AudioBusON"),
             }))
         }
         "SetOutput" | "SetOutput2" | "SetOutput3" | "SetOutput4" => {

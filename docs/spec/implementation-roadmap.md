@@ -6517,6 +6517,8 @@ moving an input to a chosen position with `MoveInput`, input balance with
 `SetBalance` (vMix's -1 through 1), assigning an input to one of the four
 stinger slots with `SetStinger1`-`SetStinger4` (preserving that slot's
 configured preload, cut point, audio policy, and missing-media fallback),
+routing an input's audio to Master or aux buses A-G with
+`AudioBusOn`/`AudioBusOff`,
 setting still images, input playback state/position/duration and mute/volume
 in the XML and XPath state, and
 playlist start/stop/next/previous in addition to the switcher, title,
