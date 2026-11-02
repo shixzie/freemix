@@ -149,6 +149,10 @@ pub enum Fmp4Integrity {
     /// The file ends exactly at a fragment boundary (or right after the init
     /// segment). It is playable as is.
     Complete,
+    /// The `moov` is a valid non-fragmented movie (`mvex` absent), so the
+    /// scanner validates only its container and track headers and leaves the
+    /// sample data untouched.
+    Progressive,
     /// Bytes from `offset` to the end are incomplete or invalid. Truncating
     /// to `offset` leaves a complete file.
     Torn { reason: &'static str, offset: u64 },
@@ -173,6 +177,8 @@ pub struct Fmp4Scan {
     pub spans: Vec<Fmp4TrackSpan>,
     /// Length of the longest playable prefix.
     pub valid_length: u64,
+    /// Movie duration from `mvhd`, when the header names a bounded one.
+    pub duration_nanos: Option<u64>,
     pub integrity: Fmp4Integrity,
     /// The torn fragment, when its `moof` was complete and consistent but its
     /// `mdat` was cut short, so the lost media span is known exactly.
@@ -196,6 +202,7 @@ impl Fmp4Scan {
             sequence_gaps: 0,
             spans: Vec::new(),
             valid_length: 0,
+            duration_nanos: None,
             integrity: Fmp4Integrity::Complete,
             lost_fragment: None,
             index_fragments: Vec::new(),
@@ -580,20 +587,35 @@ pub fn scan_fmp4<R: Read + Seek>(reader: &mut R, length: u64) -> io::Result<Fmp4
                 }
                 let payload = read_payload(reader, offset, header)?;
                 match parse_moov(&payload) {
-                    Ok(movie) => {
+                    Ok(parsed) if parsed.fragmented => {
+                        scan.duration_nanos = parsed.duration_nanos;
                         offset = end;
-                        break movie;
+                        break parsed.movie;
+                    }
+                    // A non-fragmented movie may sit after its media (a
+                    // `moov` at the end is the common progressive layout).
+                    // The scanner validates its headers and preserves every
+                    // byte; sample tables are outside this bounded scanner.
+                    Ok(parsed) => {
+                        scan.init_length = end;
+                        scan.valid_length = length;
+                        scan.movie = Some(parsed.movie);
+                        scan.duration_nanos = parsed.duration_nanos;
+                        scan.integrity = Fmp4Integrity::Progressive;
+                        return Ok(scan);
                     }
                     Err(reason) => return Ok(unrecoverable(scan, reason, offset)),
                 }
             }
-            b"moof" | b"mdat" | b"mfra" | b"ftyp" => {
+            b"moof" | b"mfra" | b"ftyp" => {
                 return Ok(unrecoverable(
                     scan,
                     "media precedes a fragmented moov",
                     offset,
                 ));
             }
+            // `mdat`, `free`, and `wide` may precede a progressive `moov`,
+            // so those fall through and are skipped.
             _ => {}
         }
         offset = end;
@@ -929,10 +951,13 @@ impl Fmp4Splitter {
                     }
                     b"moov" if self.movie.is_none() => {
                         let payload = &self.buffer[at + header.header_len_usize()..end];
-                        let movie =
+                        let parsed =
                             parse_moov(payload).map_err(|reason| self.invalid(reason, at))?;
-                        self.next_decode = vec![0; movie.tracks.len()];
-                        self.movie = Some(movie);
+                        if !parsed.fragmented {
+                            return Err(self.invalid("moov lacks mvex; not a fragmented MP4", at));
+                        }
+                        self.next_decode = vec![0; parsed.movie.tracks.len()];
+                        self.movie = Some(parsed.movie);
                     }
                     b"moov" | b"ftyp" | b"mdat" | b"mfra" => {
                         return Err(self.invalid("unexpected box in the init segment", at));
@@ -1206,13 +1231,38 @@ fn full_box_version_flags(cursor: &mut Cursor<'_>) -> Result<(u8, u32), &'static
     Ok(((word >> 24) as u8, word & 0x00ff_ffff))
 }
 
-fn parse_moov(payload: &[u8]) -> Result<Fmp4Movie, &'static str> {
+/// A parsed `moov`, whose shape decides whether the file is fragmented.
+struct ParsedMoov {
+    movie: Fmp4Movie,
+    fragmented: bool,
+    duration_nanos: Option<u64>,
+}
+
+fn parse_moov(payload: &[u8]) -> Result<ParsedMoov, &'static str> {
     let mut tracks = Vec::new();
     let mut trex = Vec::new();
     let mut fragmented = false;
+    let mut duration_nanos = None;
     for child in children(payload) {
         let (kind, body) = child?;
         match &kind {
+            b"mvhd" => {
+                let mut cursor = Cursor::new(body);
+                let (version, _) = full_box_version_flags(&mut cursor)?;
+                cursor.skip(if version == 1 { 16 } else { 8 })?;
+                let timescale = cursor.u32()?;
+                if timescale != 0 {
+                    let duration = if version == 1 {
+                        cursor.u64()?
+                    } else {
+                        u64::from(cursor.u32()?)
+                    };
+                    // `0xFFFFFFFF` (v0) and `u64::MAX` (v1) mean unknown.
+                    if duration != u64::from(u32::MAX) && duration != u64::MAX {
+                        duration_nanos = Some(ticks_to_nanos(duration, timescale));
+                    }
+                }
+            }
             b"trak" => {
                 if tracks.len() == MAX_FMP4_TRACKS {
                     return Err("moov declares too many tracks");
@@ -1234,9 +1284,6 @@ fn parse_moov(payload: &[u8]) -> Result<Fmp4Movie, &'static str> {
             _ => {}
         }
     }
-    if !fragmented {
-        return Err("moov lacks mvex; not a fragmented MP4");
-    }
     if tracks.is_empty() {
         return Err("moov declares no tracks");
     }
@@ -1257,7 +1304,11 @@ fn parse_moov(payload: &[u8]) -> Result<Fmp4Movie, &'static str> {
                 .unwrap_or_default()
         })
         .collect();
-    Ok(Fmp4Movie { tracks, defaults })
+    Ok(ParsedMoov {
+        movie: Fmp4Movie { tracks, defaults },
+        fragmented,
+        duration_nanos,
+    })
 }
 
 fn parse_trak(payload: &[u8]) -> Result<Fmp4Track, &'static str> {

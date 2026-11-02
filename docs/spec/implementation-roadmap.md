@@ -4038,8 +4038,13 @@ Studio's recording row. A two-daemon test starts two `freemixd` processes
 recording into one directory: the second daemon's startup recovery reports
 the first's live session as `status=locked` and leaves its manifest in the
 `Recording` state, so the lock is proven through the daemon and not only in
-`fm-record`. Remaining gaps: only fragmented MP4 is handled. `OR-003`
-remains planned.
+`fm-record`. A valid non-fragmented MP4 is classified as `Progressive`:
+the scanner validates its `moov` and track headers (and reads `mvhd`'s
+bounded duration), accepts a `moov` at the end after `mdat`, preserves every
+byte, reports it as `SegmentOutcome::Progressive` instead of repairing it, and
+counts it as `progressive=` in `FREEMIXD_RECORDING_RECOVERY`. Remaining gaps:
+progressive sample tables are not validated, so truncation inside a
+progressive `mdat` is not detected. `OR-003` remains planned.
 
 
 Exit: a remote-controlled headless production can stream and record

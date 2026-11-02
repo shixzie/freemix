@@ -1599,6 +1599,11 @@ pub enum SegmentOutcome {
     Intact {
         scan: Fmp4Scan,
     },
+    /// A valid non-fragmented MP4; its media is preserved but not validated
+    /// by the fragmented scanner.
+    Progressive {
+        scan: Fmp4Scan,
+    },
     /// A torn tail was truncated to the last complete fragment.
     Repaired {
         scan: Fmp4Scan,
@@ -1638,6 +1643,7 @@ impl RecoveredSessionSegment {
     fn scan(&self) -> Option<&Fmp4Scan> {
         match &self.outcome {
             SegmentOutcome::Intact { scan }
+            | SegmentOutcome::Progressive { scan }
             | SegmentOutcome::Repaired { scan, .. }
             | SegmentOutcome::Unrecoverable { scan } => Some(scan),
             _ => None,
@@ -1677,9 +1683,9 @@ impl RecoveredSessionSegment {
     #[must_use]
     pub fn has_unknown_loss(&self) -> bool {
         match &self.outcome {
-            SegmentOutcome::Intact { .. } | SegmentOutcome::NeverCreated => {
-                self.shortfall_bytes() > 0
-            }
+            SegmentOutcome::Intact { .. }
+            | SegmentOutcome::Progressive { .. }
+            | SegmentOutcome::NeverCreated => self.shortfall_bytes() > 0,
             SegmentOutcome::Repaired { scan, .. } => {
                 scan.lost_fragment.is_none() || self.shortfall_bytes() > 0
             }
@@ -2042,6 +2048,8 @@ fn repair_segment(path: &Path) -> SegmentOutcome {
         Ok(repair) => {
             if matches!(repair.scan.integrity, Fmp4Integrity::Unrecoverable { .. }) {
                 SegmentOutcome::Unrecoverable { scan: repair.scan }
+            } else if matches!(repair.scan.integrity, Fmp4Integrity::Progressive) {
+                SegmentOutcome::Progressive { scan: repair.scan }
             } else if repair.truncated_bytes > 0 || repair.salvaged_fragments > 0 {
                 // The repaired file scans as complete or finalized, but the
                 // original lost bytes: a truncated tail or a corrupt middle

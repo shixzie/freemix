@@ -1106,6 +1106,7 @@ pub(crate) fn wav_recovery_record(
 pub(crate) fn recovery_record(slot: usize, name: &str, recovery: &SessionRecovery) -> String {
     let mut intact = 0;
     let mut repaired = 0;
+    let mut progressive = 0;
     let mut unrecoverable = 0;
     let mut missing = 0;
     let mut indexed = 0;
@@ -1114,6 +1115,7 @@ pub(crate) fn recovery_record(slot: usize, name: &str, recovery: &SessionRecover
     for segment in &recovery.segments {
         match segment.outcome {
             SegmentOutcome::Intact { .. } => intact += 1,
+            SegmentOutcome::Progressive { .. } => progressive += 1,
             SegmentOutcome::Repaired {
                 appended_bytes,
                 salvaged_fragments,
@@ -1132,7 +1134,7 @@ pub(crate) fn recovery_record(slot: usize, name: &str, recovery: &SessionRecover
         }
     }
     format!(
-        "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot={slot}\tsession={}\tstatus=recovered\tprevious_state={}\tsegments={}\tintact={intact}\trepaired={repaired}\tunrecoverable={unrecoverable}\tmissing={missing}\tkept_bytes={}\tdiscarded_bytes={}\trecovered_ms={}\tknown_lost_ms={}\tunknown_loss_segments={}\tindexed={indexed}\tindexed_bytes={indexed_bytes}\tsalvaged_fragments={salvaged}\tmanifest_generation={}",
+        "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot={slot}\tsession={}\tstatus=recovered\tprevious_state={}\tsegments={}\tintact={intact}\tprogressive={progressive}\trepaired={repaired}\tunrecoverable={unrecoverable}\tmissing={missing}\tkept_bytes={}\tdiscarded_bytes={}\trecovered_ms={}\tknown_lost_ms={}\tunknown_loss_segments={}\tindexed={indexed}\tindexed_bytes={indexed_bytes}\tsalvaged_fragments={salvaged}\tmanifest_generation={}",
         field(name),
         recovery
             .previous_state()
@@ -1343,6 +1345,7 @@ mod tests {
             sequence_gaps: 0,
             spans: Vec::new(),
             valid_length,
+            duration_nanos: None,
             integrity: fm_record::Fmp4Integrity::Finalized,
             lost_fragment: None,
             index_fragments: Vec::new(),
@@ -1359,14 +1362,38 @@ mod tests {
                 salvaged_fragments: if appended_bytes > 0 { 2 } else { 0 },
             },
         };
+        let progressive = fm_record::RecoveredSessionSegment {
+            index: 3,
+            root: 0,
+            path: None,
+            recorded: None,
+            outcome: fm_record::SegmentOutcome::Progressive {
+                scan: fm_record::Fmp4Scan {
+                    file_length: 100,
+                    init_length: 100,
+                    movie: None,
+                    fragments: 0,
+                    first_sequence: None,
+                    last_sequence: None,
+                    sequence_gaps: 0,
+                    spans: Vec::new(),
+                    valid_length: 100,
+                    duration_nanos: None,
+                    integrity: fm_record::Fmp4Integrity::Progressive,
+                    lost_fragment: None,
+                    index_fragments: Vec::new(),
+                },
+            },
+        };
         let recovery = fm_record::SessionRecovery {
             manifests: Vec::new(),
             manifest: None,
-            segments: vec![repaired(1, 128), repaired(2, 0)],
+            segments: vec![repaired(1, 128), repaired(2, 0), progressive],
             rewritten_generation: Some(2),
             rewritten_roots: vec![0],
         };
         let record = recovery_record(1, "program", &recovery);
+        assert!(record.contains("\tprogressive=1\t"), "{record}");
         assert!(record.contains("\trepaired=2\t"), "{record}");
         assert!(
             record.contains("\tindexed=1\tindexed_bytes=128\tsalvaged_fragments=2\t"),
@@ -1424,7 +1451,7 @@ mod tests {
         assert_eq!(records.len(), 1, "{records:?}");
         assert!(
             records[0].starts_with(
-                "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot=1\tsession=program\tstatus=recovered\tprevious_state=Recording\tsegments=1\tintact=0\trepaired=0\tunrecoverable=1\tmissing=0\tkept_bytes=0\t"
+                "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot=1\tsession=program\tstatus=recovered\tprevious_state=Recording\tsegments=1\tintact=0\tprogressive=0\trepaired=0\tunrecoverable=1\tmissing=0\tkept_bytes=0\t"
             ),
             "{records:?}"
         );

@@ -565,14 +565,87 @@ fn an_inconsistent_fragment_ends_the_playable_prefix() {
 }
 
 #[test]
+fn a_progressive_file_is_classified_and_preserved() {
+    let temp = TempDirectory::new();
+    let mut bytes = init_segment(&TRACKS, false);
+    bytes.extend(fragment(1));
+    let path = temp.join("progressive.mp4");
+    fs::write(&path, &bytes).unwrap();
+
+    let scan = scan_fmp4_file(&path).unwrap();
+    assert_eq!(scan.integrity, Fmp4Integrity::Progressive);
+    assert_eq!(scan.fragments, 0);
+    assert_eq!(scan.movie.as_ref().unwrap().tracks().len(), 2);
+    assert_eq!(scan.valid_length, bytes.len() as u64);
+    assert_eq!(scan.unusable_bytes(), 0);
+
+    let repair = repair_fmp4_file(&path).unwrap();
+    assert_eq!(repair.truncated_bytes, 0);
+    assert_eq!(repair.appended_bytes, 0);
+    assert_eq!(repair.salvaged_fragments, 0);
+    assert_eq!(fs::read(&path).unwrap(), bytes, "the file was modified");
+}
+
+#[test]
+fn a_progressive_moov_at_the_end_is_detected_and_preserved() {
+    let temp = TempDirectory::new();
+    let init = init_segment(&TRACKS, false);
+    let ftyp_len = usize::try_from(u32::from_be_bytes(init[0..4].try_into().unwrap())).unwrap();
+    let (ftyp, moov) = init.split_at(ftyp_len);
+    let mut bytes = Vec::from(ftyp);
+    bytes.extend(mp4_box(*b"mdat", &[7_u8; 64]));
+    bytes.extend_from_slice(moov);
+    let path = temp.join("moov-at-end.mp4");
+    fs::write(&path, &bytes).unwrap();
+
+    let scan = scan_fmp4_file(&path).unwrap();
+    assert_eq!(scan.integrity, Fmp4Integrity::Progressive);
+    assert_eq!(scan.init_length, bytes.len() as u64);
+    assert_eq!(scan.valid_length, bytes.len() as u64);
+    assert_eq!(scan.movie.as_ref().unwrap().tracks().len(), 2);
+    let repair = repair_fmp4_file(&path).unwrap();
+    assert_eq!(repair.truncated_bytes, 0);
+    assert_eq!(fs::read(&path).unwrap(), bytes, "the file was modified");
+}
+
+#[test]
+fn session_recovery_preserves_a_progressive_segment() {
+    let temp = TempDirectory::new();
+    let primary = temp.join("primary");
+    fs::create_dir(&primary).unwrap();
+    let config = SessionConfig::new("program", &primary)
+        .unwrap()
+        .with_bare_first_segment();
+    let mut session =
+        RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
+    let opened = session.open_segment().unwrap();
+    let mut bytes = init_segment(&TRACKS, false);
+    bytes.extend(fragment(1));
+    let mut sink = opened.sink;
+    Write::write_all(&mut sink, &bytes).unwrap();
+    drop(sink);
+    drop(session);
+
+    let recovery = recover_session(&config).unwrap();
+    let segment = &recovery.segments[0];
+    assert!(
+        matches!(segment.outcome, SegmentOutcome::Progressive { .. }),
+        "{:?}",
+        segment.outcome
+    );
+    assert_eq!(segment.kept_bytes(), bytes.len() as u64);
+    assert_eq!(segment.discarded_bytes(), 0);
+    assert_eq!(recovery.segments_with_unknown_loss(), 0);
+    assert_eq!(
+        read_manifest(&primary.join("program.fmsession")).state,
+        SessionState::Recovered
+    );
+}
+
+#[test]
 fn files_without_a_fragmented_init_segment_are_unrecoverable_and_untouched() {
     let temp = TempDirectory::new();
-    let cases: [(&str, Vec<u8>, &str); 3] = [
-        (
-            "progressive.mp4",
-            cat(&[&init_segment(&TRACKS, false), &fragment(1)]),
-            "moov lacks mvex; not a fragmented MP4",
-        ),
+    let cases: [(&str, Vec<u8>, &str); 2] = [
         ("no-ftyp.mp4", fragment(1), "file does not start with ftyp"),
         (
             "media-first.mp4",
