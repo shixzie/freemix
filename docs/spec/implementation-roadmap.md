@@ -6536,6 +6536,7 @@ stinger slots with `SetStinger1`-`SetStinger4` (preserving that slot's
 configured preload, cut point, audio policy, and missing-media fallback),
 routing an input's audio to Master or aux buses A-G with
 `AudioBusOn`/`AudioBusOff`,
+setting playback speed with `SetRate` (0.25x through 4x),
 setting still images, input playback state/position/duration and mute/volume
 in the XML and XPath state, and
 playlist start/stop/next/previous in addition to the switcher, title,

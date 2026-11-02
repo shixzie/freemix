@@ -1033,6 +1033,46 @@ fn audio_bus_functions_route_master_and_aux_buses() {
 }
 
 #[test]
+fn set_rate_translates_playback_speed_into_basis_points() {
+    let state = state();
+    for (value, basis_points) in [
+        ("0.25", 2_500),
+        ("0.5", 5_000),
+        ("1", 10_000),
+        ("1.5", 15_000),
+        ("2", 20_000),
+        ("4", 40_000),
+    ] {
+        assert_eq!(
+            parse_http_query(&format!("Function=SetRate&Input=2&Value={value}"), &state),
+            Ok(Translation::Protocol(CommandPayload::Media {
+                input: id(2),
+                operation: fm_protocol::MediaOperation::Rate {
+                    speed_basis_points: basis_points,
+                },
+            })),
+            "{value}"
+        );
+    }
+    for query in [
+        "Function=SetRate&Input=2",
+        "Function=SetRate&Input=2&Value=0.1",
+        "Function=SetRate&Input=2&Value=0.2499",
+        "Function=SetRate&Input=2&Value=4.1",
+        "Function=SetRate&Input=2&Value=0",
+        "Function=SetRate&Input=2&Value=1.",
+        "Function=SetRate&Input=2&Value=1.00001",
+        "Function=SetRate&Input=2&Value=abc",
+        "Function=SetRate&Input=2&Value=1&Extra=1",
+    ] {
+        assert!(
+            parse_http_query(query, &state).is_err(),
+            "accepted {query:?}"
+        );
+    }
+}
+
+#[test]
 fn stinger_functions_pick_the_slot_and_resolve_the_input() {
     let state = state();
     for slot in 1..=4 {

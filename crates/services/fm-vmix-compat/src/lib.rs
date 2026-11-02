@@ -842,6 +842,19 @@ fn translate(
                 operation,
             }))
         }
+        "SetRate" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let speed_basis_points =
+                parse_rate(required(parameters, "Value")?).ok_or(ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "rate is 0.25 through 4 with at most four decimals",
+                })?;
+            Ok(Translation::Protocol(CommandPayload::Media {
+                input,
+                operation: fm_protocol::MediaOperation::Rate { speed_basis_points },
+            }))
+        }
         "SetPosition" => {
             allowed(parameters, &["Function", "Input", "Value"])?;
             let input = state.resolve_input(required(parameters, "Input")?)?;
@@ -1370,6 +1383,28 @@ fn parse_u32(
             parameter,
             reason: "integer is outside the accepted range",
         })
+}
+
+/// vMix's `0.25` through `4` playback rate as basis points.
+fn parse_rate(value: &str) -> Option<u32> {
+    let (whole, fraction, dotted) = match value.split_once('.') {
+        Some((whole, fraction)) => (whole, fraction, true),
+        None => (value, "", false),
+    };
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || (dotted && fraction.is_empty())
+        || fraction.len() > 4
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut scaled = whole.parse::<u32>().ok()?.checked_mul(10_000)?;
+    for (index, digit) in fraction.bytes().enumerate() {
+        let place = 10_u32.checked_pow(u32::try_from(3 - index).ok()?)?;
+        scaled = scaled.checked_add(u32::from(digit - b'0').checked_mul(place)?)?;
+    }
+    (2_500..=40_000).contains(&scaled).then_some(scaled)
 }
 
 /// vMix's `-1` through `1` balance as basis points.
