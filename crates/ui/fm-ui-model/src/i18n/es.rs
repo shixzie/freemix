@@ -9065,6 +9065,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::RecorderTracksLayoutHover,
         t("Elegir un archivo entrelazado o un WAV por pista"),
     ),
+    (
+        Msg::RecorderTracksLayoutInterleavedHover,
+        t("Cada segmento de grabación escribe un archivo con los canales de todas las pistas"),
+    ),
+    (
+        Msg::RecorderTracksLayoutSplitHover,
+        t("Cada segmento de grabación escribe un WAV por pista"),
+    ),
+    (
+        Msg::RecorderTracksBusEntryHover,
+        t("Grabar este canal desde ese bus"),
+    ),
     (Msg::RecorderTracksAddTrack, t("Añadir pista")),
     (
         Msg::RecorderTracksAddTrackHover,

@@ -479,12 +479,14 @@ fn draw_editor(
                         &mut draft.layout,
                         RecorderTrackLayout::Interleaved,
                         l.text(Msg::RecorderTracksLayoutInterleaved),
-                    );
+                    )
+                    .on_hover_text(l.text(Msg::RecorderTracksLayoutInterleavedHover));
                     ui.selectable_value(
                         &mut draft.layout,
                         RecorderTrackLayout::SplitPerTrack,
                         l.text(Msg::RecorderTracksLayoutSplit),
-                    );
+                    )
+                    .on_hover_text(l.text(Msg::RecorderTracksLayoutSplitHover));
                 })
                 .response
                 .on_hover_text(l.text(Msg::RecorderTracksLayoutHover));
@@ -552,13 +554,15 @@ fn draw_editor(
                                     &mut source.bus,
                                     RecorderTrackBus::Master,
                                     "Master",
-                                );
+                                )
+                                .on_hover_text(l.text(Msg::RecorderTracksBusEntryHover));
                                 for number in 1..=7 {
                                     ui.selectable_value(
                                         &mut source.bus,
                                         RecorderTrackBus::Aux(number),
                                         bus_label(RecorderTrackBus::Aux(number)),
-                                    );
+                                    )
+                                    .on_hover_text(l.text(Msg::RecorderTracksBusEntryHover));
                                 }
                             })
                             .response
