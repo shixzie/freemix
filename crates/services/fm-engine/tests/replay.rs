@@ -11,9 +11,9 @@ use fm_clock::ClockDomainId;
 use fm_command::{CommandEnvelope, IdempotencyKey, RefusalReason, Rejection, RejectionCode};
 use fm_engine::{
     Engine, EngineCommand, EngineCommandKind, EngineCommandOutcome, EngineEvent, EngineInputSource,
-    EngineReplayFeed, EngineReplayOperation, EngineReplayPlaylistEntry, FrameResult, ShowState,
+    EngineReplayFeed, EngineReplayListEntry, EngineReplayOperation, EngineReplayPlaylistEntry,
+    FrameResult, ShowState,
 };
-use fm_replay::{EventId, EventList, ListId};
 use fm_types::replay::{ReplaySettings, ReplaySpeed};
 use fm_types::{FrameRate, InputId};
 
@@ -876,24 +876,38 @@ fn a_playlist_from_an_event_list_applies_its_overrides() {
     settle(&mut engine);
     let first = engine.replay_status().events[0].clone();
     let list = 1;
-    engine.replay_set_list(EventList {
-        id: ListId::new(NonZeroU128::new(u128::from(list)).unwrap()),
-        name: "Highlights".into(),
-        events: vec![
-            EventId::new(NonZeroU128::new(1).unwrap()),
-            EventId::new(NonZeroU128::new(2).unwrap()),
-        ],
-    });
     let mark_in = first.in_frame + FPS;
     let mark_out = first.out_frame - FPS;
-    engine.replay_set_list_override(
-        list,
-        1,
-        Some(input(2)),
-        Some((mark_in, mark_out)),
-        Some(ReplaySpeed::Half),
+    replay(
+        &mut engine,
+        "list",
+        EngineReplayOperation::ListSet {
+            list,
+            name: "Highlights".into(),
+            entries: vec![
+                EngineReplayListEntry {
+                    event: 1,
+                    angle: Some(input(2)),
+                    marks: Some((mark_in, mark_out)),
+                    speed: Some(ReplaySpeed::Half),
+                },
+                EngineReplayListEntry {
+                    event: 2,
+                    angle: None,
+                    marks: None,
+                    speed: None,
+                },
+            ],
+        },
     );
-    assert!(engine.replay_set_playlist_from_list(input(9), list));
+    replay(
+        &mut engine,
+        "playlist",
+        EngineReplayOperation::PlaylistFromList {
+            input: input(9),
+            list,
+        },
+    );
     settle(&mut engine);
     let status = engine.replay_status();
     let playlist = &status.players[0].playlist;

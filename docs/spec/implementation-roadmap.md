@@ -6288,9 +6288,12 @@ event and its angles, and clears them when the event leaves the list.
 advances it. The engine now stores event lists and their overrides and builds
 a Replay input's playlist from a list, applying each entry's angle, marks, and
 speed; its player honors per-entry marks for cueing, jogging, frame
-reporting, and end-of-entry. Remaining gaps: no protocol or UI exposes list
-creation or playlist-from-list yet, no eight-camera storage profile is
-certified, and the end-to-end slice below wires part of this to a server.
+reporting, and end-of-entry. Protocol 2.154 exposes both steps:
+`replay_list_set` installs or replaces an event list with each entry's angle,
+marks, and speed, and `replay_playlist_from_list` builds a Replay input's
+playlist from it. Remaining gaps: no UI exposes either yet, no eight-camera
+storage profile is certified, and the end-to-end slice below wires part of
+this to a server.
 `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a

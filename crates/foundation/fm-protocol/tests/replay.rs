@@ -7,10 +7,10 @@ use core::num::NonZeroU128;
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EngineIdentity,
     EventCursor, EventMessage, EventPayload, MAX_REPLAY_PLAYLIST_ENTRIES, ReplayEventStatus,
-    ReplayFeed, ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySettings,
-    ReplaySmartHealth, ReplaySmartStatus, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage,
-    ReplayStatusRequest, ReplayStorageLevel, ReplayStorageStatus, ServerIdentity, WireInputId,
-    WireMessage, decode_line, encode_line,
+    ReplayFeed, ReplayListEntry, ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry,
+    ReplaySettings, ReplaySmartHealth, ReplaySmartStatus, ReplaySourceStatus, ReplaySpeed,
+    ReplayStatusMessage, ReplayStatusRequest, ReplayStorageLevel, ReplayStorageStatus,
+    ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::InputId;
 use fm_types::replay::ReplayTransition;
@@ -200,6 +200,35 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
             "replay_playlist_set\tinput=9\tentries=",
         ),
         (
+            ReplayOperation::ListSet {
+                list: 2,
+                name: "Highlights".to_owned(),
+                entries: vec![
+                    ReplayListEntry {
+                        event: 1,
+                        angle: Some(wire(2)),
+                        marks: Some((10, 20)),
+                        speed: Some(ReplaySpeed::Half),
+                    },
+                    ReplayListEntry {
+                        event: 3,
+                        angle: None,
+                        marks: None,
+                        speed: None,
+                    },
+                ],
+            },
+            "replay_list_set\tlist=2\tname=Highlights\t\
+             entries=1%2F2%2F10-20%2F50%7C3%2F%2F%2F",
+        ),
+        (
+            ReplayOperation::PlaylistFromList {
+                input: wire(9),
+                list: 2,
+            },
+            "replay_playlist_from_list\tinput=9\tlist=2",
+        ),
+        (
             ReplayOperation::PlaylistNext { input: wire(9) },
             "replay_playlist_next\tinput=9",
         ),
@@ -289,6 +318,16 @@ fn commands_are_strict() {
         "replay_playlist_set\tinput=9\tentries=03%2F%2F100",
         "replay_playlist_set\tinput=9\tentries=3%2F%2F100%2F4",
         "replay_playlist_set\tinput=9\tentries=1%2F%2F100%7Cx",
+        // Event lists: canonical entries of at most 16, each
+        // `event/angle/marks/speed`.
+        "replay_list_set\tlist=2\tname=Highlights",
+        "replay_list_set\tlist=2\tname=\tentries=",
+        "replay_list_set\tlist=2\tname=Highlights\tentries=1",
+        "replay_list_set\tlist=2\tname=Highlights\tentries=1%2F2%2F20-10%2F50",
+        "replay_list_set\tlist=2\tname=Highlights\tentries=1%2F2%2F10-20%2F99",
+        "replay_list_set\tlist=2\tname=Highlights\tentries=1%2F2%2F10-20%2F50%2F5",
+        "replay_playlist_from_list\tinput=9",
+        "replay_playlist_from_list\tlist=2",
         "replay_link\tinput=9",
         "replay_link\tlinked=10",
         "replay_link\tinput=9\tlinked=0",

@@ -24,6 +24,8 @@
 //! | [`ReplayOperation::Step`] | `replay_step` | `input`, `frames` (a canonical signed decimal, nonzero, at most 600 either way) | transition |
 //! | [`ReplayOperation::Link`] | `replay_link` | `input`, `linked` (a Replay input; empty unlinks) | transition |
 //! | [`ReplayOperation::PlaylistSet`] | `replay_playlist_set` | `input`, `entries` (`event/angle/speed` entries joined by `\|`, empty clears it; at most 16) | transition |
+//! | [`ReplayOperation::ListSet`] | `replay_list_set` | `list`, `name`, `entries` (`event/angle/marks/speed` entries joined by `\|`; marks `start-end` or empty; at most 16) | transition |
+//! | [`ReplayOperation::PlaylistFromList`] | `replay_playlist_from_list` | `input`, `list` | transition |
 //! | [`ReplayOperation::PlaylistNext`] | `replay_playlist_next` | `input` | transition |
 //! | [`ReplayOperation::PlaylistPrev`] | `replay_playlist_prev` | `input` | transition |
 //! | [`ReplayOperation::Return`] | `replay_return` | `input`, `to` | announced only: the server's auto return; a client's is refused |
@@ -76,6 +78,17 @@ pub struct ReplayPlaylistEntry {
     pub angle: Option<WireInputId>,
     /// The speed the entry plays at.
     pub speed: ReplaySpeed,
+}
+
+/// One entry when a client installs an event list (Protocol 2.154): an
+/// event and its optional angle, marks, and speed overrides.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ReplayListEntry {
+    pub event: u32,
+    pub angle: Option<WireInputId>,
+    /// Inclusive first and exclusive last engine frame.
+    pub marks: Option<(u64, u64)>,
+    pub speed: Option<ReplaySpeed>,
 }
 
 /// One replay command.
@@ -134,6 +147,15 @@ pub enum ReplayOperation {
         input: WireInputId,
         entries: Vec<ReplayPlaylistEntry>,
     },
+    /// Adds or replaces event list `list` with `entries` (Protocol 2.154).
+    ListSet {
+        list: u32,
+        name: String,
+        entries: Vec<ReplayListEntry>,
+    },
+    /// Replaces Replay input `input`'s playlist from event list `list`,
+    /// applying each entry's overrides (Protocol 2.154).
+    PlaylistFromList { input: WireInputId, list: u32 },
     /// Cues the next playlist entry that still exists, at its first frame,
     /// keeping the player playing or paused as it was.
     PlaylistNext { input: WireInputId },
@@ -148,7 +170,7 @@ pub enum ReplayOperation {
 
 impl ReplayOperation {
     /// Every payload token, in table order.
-    pub const TOKENS: [&'static str; 19] = [
+    pub const TOKENS: [&'static str; 21] = [
         "replay_configure",
         "replay_mark_in",
         "replay_mark_out",
@@ -165,6 +187,8 @@ impl ReplayOperation {
         "replay_step",
         "replay_link",
         "replay_playlist_set",
+        "replay_list_set",
+        "replay_playlist_from_list",
         "replay_playlist_next",
         "replay_playlist_prev",
         "replay_return",
@@ -190,6 +214,8 @@ impl ReplayOperation {
             Self::Step { .. } => "replay_step",
             Self::Link { .. } => "replay_link",
             Self::PlaylistSet { .. } => "replay_playlist_set",
+            Self::ListSet { .. } => "replay_list_set",
+            Self::PlaylistFromList { .. } => "replay_playlist_from_list",
             Self::PlaylistNext { .. } => "replay_playlist_next",
             Self::PlaylistPrev { .. } => "replay_playlist_prev",
             Self::Return { .. } => "replay_return",

@@ -92,6 +92,80 @@ fn encode_playlist(entries: &[ReplayPlaylistEntry]) -> Result<String, CodecError
         .join("|"))
 }
 
+fn check_list_name(name: &str) -> Result<(), CodecError> {
+    if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+        Err(invalid("name", name))
+    } else {
+        Ok(())
+    }
+}
+
+/// Encodes list entries as `event/angle/marks/speed`, joined by `|`.
+fn encode_list_entries(entries: &[crate::ReplayListEntry]) -> Result<String, CodecError> {
+    if entries.len() > MAX_REPLAY_PLAYLIST_ENTRIES {
+        return Err(CodecError::TooManyItems("entries"));
+    }
+    Ok(entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}/{}/{}/{}",
+                entry.event,
+                optional_text(entry.angle),
+                entry
+                    .marks
+                    .map_or_else(String::new, |(start, end)| format!("{start}-{end}")),
+                entry
+                    .speed
+                    .map_or_else(String::new, |speed| speed.percent().to_string())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|"))
+}
+
+fn decode_list_entries(value: &str) -> Result<Vec<crate::ReplayListEntry>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<&str> = value.split('|').collect();
+    if entries.len() > MAX_REPLAY_PLAYLIST_ENTRIES {
+        return Err(CodecError::TooManyItems("entries"));
+    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            let [event, angle, marks, speed] = entry.split('/').collect::<Vec<_>>()[..] else {
+                return Err(invalid("entries", entry));
+            };
+            let marks = if marks.is_empty() {
+                None
+            } else {
+                let Some((start, end)) = marks.split_once('-') else {
+                    return Err(invalid("entries", entry));
+                };
+                let start = parse_number("entries", start)?;
+                let end = parse_number("entries", end)?;
+                if start >= end {
+                    return Err(invalid("entries", entry));
+                }
+                Some((start, end))
+            };
+            let speed = if speed.is_empty() {
+                None
+            } else {
+                Some(parse_speed("entries", speed)?)
+            };
+            Ok(crate::ReplayListEntry {
+                event: parse_number("entries", event)?,
+                angle: parse_optional(angle, |value| parse_input("entries", value))?,
+                marks,
+                speed,
+            })
+        })
+        .collect()
+}
+
 fn decode_playlist(value: &str) -> Result<Vec<ReplayPlaylistEntry>, CodecError> {
     if value.is_empty() {
         return Ok(Vec::new());
@@ -265,6 +339,20 @@ pub(super) fn encode_operation(
             push("input", input.to_string())?;
             push("entries", encode_playlist(entries)?)
         }
+        ReplayOperation::ListSet {
+            list,
+            name,
+            entries,
+        } => {
+            check_list_name(name)?;
+            push("list", list.to_string())?;
+            push("name", name.clone())?;
+            push("entries", encode_list_entries(entries)?)
+        }
+        ReplayOperation::PlaylistFromList { input, list } => {
+            push("input", input.to_string())?;
+            push("list", list.to_string())
+        }
         ReplayOperation::Return { input, to } => {
             push("input", input.to_string())?;
             push("to", to.to_string())
@@ -273,6 +361,7 @@ pub(super) fn encode_operation(
 }
 
 /// Decodes the operation named `token`, or `None` when `token` names none.
+#[allow(clippy::too_many_lines)] // one arm per operation token
 pub(super) fn decode_operation(
     token: &str,
     fields: &mut dyn FieldSource,
@@ -354,6 +443,20 @@ pub(super) fn decode_operation(
         "replay_playlist_set" => ReplayOperation::PlaylistSet {
             input: input(fields)?,
             entries: decode_playlist(&fields.required("entries")?)?,
+        },
+        "replay_list_set" => {
+            let list = parse_number("list", &fields.required("list")?)?;
+            let name = fields.required("name")?;
+            check_list_name(&name)?;
+            ReplayOperation::ListSet {
+                list,
+                name,
+                entries: decode_list_entries(&fields.required("entries")?)?,
+            }
+        }
+        "replay_playlist_from_list" => ReplayOperation::PlaylistFromList {
+            input: input(fields)?,
+            list: parse_number("list", &fields.required("list")?)?,
         },
         "replay_playlist_next" => ReplayOperation::PlaylistNext {
             input: input(fields)?,

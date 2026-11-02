@@ -95,6 +95,16 @@ pub struct EngineReplayPlaylistEntry {
     pub marks: Option<(u64, u64)>,
 }
 
+/// One entry in a client-installed event list (Protocol 2.154).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EngineReplayListEntry {
+    pub event: u32,
+    pub angle: Option<InputId>,
+    /// Inclusive first and exclusive last engine frame.
+    pub marks: Option<(u64, u64)>,
+    pub speed: Option<ReplaySpeed>,
+}
+
 /// One replay command (OR-012).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum EngineReplayOperation {
@@ -153,6 +163,15 @@ pub enum EngineReplayOperation {
         input: InputId,
         entries: Vec<EngineReplayPlaylistEntry>,
     },
+    /// Adds or replaces event list `list` and its entry overrides.
+    ListSet {
+        list: u32,
+        name: String,
+        entries: Vec<EngineReplayListEntry>,
+    },
+    /// Replaces Replay input `input`'s playlist from event list `list`,
+    /// applying each entry's angle, marks, and speed overrides.
+    PlaylistFromList { input: InputId, list: u32 },
     /// Cues the next playlist entry that still exists, at its first frame,
     /// keeping the player playing or paused as it was.
     PlaylistNext { input: InputId },
@@ -190,6 +209,7 @@ impl EngineReplayOperation {
             | Self::Step { input, .. }
             | Self::Link { input, .. }
             | Self::PlaylistSet { input, .. }
+            | Self::PlaylistFromList { input, .. }
             | Self::PlaylistNext { input }
             | Self::PlaylistPrev { input }
             | Self::Return { input, .. } => Some(*input),
@@ -1533,6 +1553,54 @@ impl ReplayRuntime {
                     .and_then(|index| player.playlist.get(index).and_then(|entry| entry.marks));
                 self.touch();
             }
+            EngineReplayOperation::ListSet {
+                list,
+                name,
+                entries,
+            } => {
+                let list_id =
+                    ListId::new(NonZeroU128::new(u128::from(*list)).unwrap_or(NonZeroU128::MIN));
+                let event_list = fm_replay::EventList {
+                    id: list_id,
+                    name: name.clone(),
+                    events: entries
+                        .iter()
+                        .map(|entry| {
+                            EventId::new(
+                                NonZeroU128::new(u128::from(entry.event))
+                                    .unwrap_or(NonZeroU128::MIN),
+                            )
+                        })
+                        .collect(),
+                };
+                self.store_mut().events.remove_list(list_id);
+                if self.store_mut().events.add_list(event_list).is_ok() {
+                    for entry in entries {
+                        let event_id = EventId::new(
+                            NonZeroU128::new(u128::from(entry.event)).unwrap_or(NonZeroU128::MIN),
+                        );
+                        let marks = entry
+                            .marks
+                            .and_then(|(start, end)| range_of(self.frame_rate, start, end));
+                        let speed = entry.speed.and_then(|speed| {
+                            PlaybackRate::from_milli(i32::from(speed.percent()) * 10).ok()
+                        });
+                        let _ = self.store_mut().events.set_list_override(
+                            list_id,
+                            event_id,
+                            fm_replay::EventListOverride {
+                                angle: entry.angle.map(camera),
+                                marks,
+                                speed,
+                            },
+                        );
+                    }
+                }
+                self.touch();
+            }
+            EngineReplayOperation::PlaylistFromList { input, list } => {
+                let _ = self.playlist_from_list(*input, *list);
+            }
             EngineReplayOperation::PlaylistNext { input } => {
                 let events = &self.store.event_frames;
                 if let Some(player) = self.players.get_mut(input) {
@@ -1558,6 +1626,7 @@ impl ReplayRuntime {
         | EngineReplayOperation::Shuttle { input, .. }
         | EngineReplayOperation::CueIn { input }
         | EngineReplayOperation::Step { input, .. }
+        | EngineReplayOperation::PlaylistFromList { input, .. }
         | EngineReplayOperation::PlaylistNext { input }
         | EngineReplayOperation::PlaylistPrev { input } = operation
             && let Some(player) = self.players.get_mut(input)
@@ -2638,7 +2707,7 @@ pub(crate) fn accept(
             }
         }
         EngineReplayOperation::RenameEvent { name, .. } => check_name(name),
-        EngineReplayOperation::DeleteEvent { .. } => Ok(()),
+        EngineReplayOperation::DeleteEvent { .. } | EngineReplayOperation::ListSet { .. } => Ok(()),
         EngineReplayOperation::Cue { input, angle, .. } => {
             check_player(state, *input)?;
             match angle {
@@ -2665,6 +2734,7 @@ pub(crate) fn accept(
         EngineReplayOperation::Play { input, .. }
         | EngineReplayOperation::Pause { input }
         | EngineReplayOperation::CueIn { input }
+        | EngineReplayOperation::PlaylistFromList { input, .. }
         | EngineReplayOperation::PlaylistNext { input }
         | EngineReplayOperation::PlaylistPrev { input } => check_player(state, *input),
         EngineReplayOperation::Return { .. } => Err(Rejection::new(

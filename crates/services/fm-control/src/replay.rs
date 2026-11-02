@@ -1,11 +1,12 @@
 //! Instant replay between the engine and the wire (OR-012).
 
 use fm_engine::{
-    EngineCommand, EngineEvent, EngineReplayFeed, EngineReplayOperation, EngineReplayPlaylistEntry,
-    EngineReplaySmartHealth, EngineReplayStatus, EngineReplayStorageLevel,
+    EngineCommand, EngineEvent, EngineReplayFeed, EngineReplayListEntry, EngineReplayOperation,
+    EngineReplayPlaylistEntry, EngineReplaySmartHealth, EngineReplayStatus,
+    EngineReplayStorageLevel,
 };
 use fm_protocol::{
-    CommandPayload, EventPayload, ReplayEventStatus, ReplayFeed, ReplayOperation,
+    CommandPayload, EventPayload, ReplayEventStatus, ReplayFeed, ReplayListEntry, ReplayOperation,
     ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySmartHealth, ReplaySmartStatus,
     ReplaySourceStatus, ReplayStatusMessage, ServerIdentity, WireInputId,
 };
@@ -76,6 +77,29 @@ pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOpera
                 })
                 .collect(),
         },
+        ReplayOperation::ListSet {
+            list,
+            name,
+            entries,
+        } => EngineReplayOperation::ListSet {
+            list: *list,
+            name: name.clone(),
+            entries: entries
+                .iter()
+                .map(|entry| EngineReplayListEntry {
+                    event: entry.event,
+                    angle: entry.angle.map(WireInputId::to_domain),
+                    marks: entry.marks,
+                    speed: entry.speed,
+                })
+                .collect(),
+        },
+        ReplayOperation::PlaylistFromList { input, list } => {
+            EngineReplayOperation::PlaylistFromList {
+                input: input.to_domain(),
+                list: *list,
+            }
+        }
         ReplayOperation::PlaylistNext { input } => EngineReplayOperation::PlaylistNext {
             input: input.to_domain(),
         },
@@ -154,6 +178,29 @@ pub(super) fn wire_operation(operation: &EngineReplayOperation) -> ReplayOperati
                 })
                 .collect(),
         },
+        EngineReplayOperation::ListSet {
+            list,
+            name,
+            entries,
+        } => ReplayOperation::ListSet {
+            list: *list,
+            name: name.clone(),
+            entries: entries
+                .iter()
+                .map(|entry| ReplayListEntry {
+                    event: entry.event,
+                    angle: entry.angle.map(WireInputId::from_domain),
+                    marks: entry.marks,
+                    speed: entry.speed,
+                })
+                .collect(),
+        },
+        EngineReplayOperation::PlaylistFromList { input, list } => {
+            ReplayOperation::PlaylistFromList {
+                input: WireInputId::from_domain(*input),
+                list: *list,
+            }
+        }
         EngineReplayOperation::PlaylistNext { input } => ReplayOperation::PlaylistNext {
             input: WireInputId::from_domain(*input),
         },
