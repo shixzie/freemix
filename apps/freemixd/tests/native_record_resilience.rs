@@ -15,7 +15,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc,
+    sync::mpsc::{self, TryRecvError},
     thread,
     time::{Duration, Instant},
 };
@@ -192,6 +192,34 @@ impl DaemonProcess {
                 panic!("daemon did not stop: {stderr}");
             }
             thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Waits for `needle` in the running daemon's stderr and returns every
+    /// chunk read so far.
+    fn wait_for_stderr(&mut self, needle: &str) -> String {
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        let mut seen = String::new();
+        loop {
+            loop {
+                match self.stderr.try_recv() {
+                    Ok(chunk) => {
+                        seen.push_str(&chunk);
+                        if seen.contains(needle) {
+                            return seen;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        panic!("daemon exited while waiting for {needle:?}: {seen}");
+                    }
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {needle:?} in daemon stderr: {seen}"
+            );
+            thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -978,4 +1006,52 @@ fn a_split_track_map_writes_one_file_per_track_beside_the_segment() {
             .any(|line| line.contains("\tslot=1\tstatus=finalized\tmode=split\tfiles=2")),
         "{stderr}"
     );
+}
+
+/// OR-003: two daemons record into one directory. The second daemon's startup
+/// recovery reports the session the first still holds as locked, leaves every
+/// file untouched, and records its own segment beside it.
+#[test]
+fn a_second_daemon_reports_a_locked_session_and_leaves_it_alone() {
+    let directory = tempfile::tempdir().unwrap();
+    let recordings = directory.path().join("recordings");
+    fs::create_dir(&recordings).unwrap();
+    // Separate bundles: the lock is on the recording directory, not the show.
+    let first_bundle = directory.path().join("first.freemix");
+    let second_bundle = directory.path().join("second.freemix");
+    save_recording_project(&first_bundle);
+    save_recording_project(&second_bundle);
+
+    let output = recordings.join("program.mp4");
+    let mut arguments = os(&["--record-program"]);
+    arguments.push(output.clone().into());
+    let Some(first) = DaemonProcess::start(&first_bundle, &arguments) else {
+        return;
+    };
+    let manifest_path = recordings.join("program.fmsession");
+    wait_until("the first recorder's session", || manifest_path.is_file());
+    let manifest = SessionManifest::parse(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest.state, SessionState::Recording);
+
+    let Some(mut second) = DaemonProcess::start(&second_bundle, &arguments) else {
+        let _ = first.crash();
+        return;
+    };
+    let locked = second.wait_for_stderr("status=locked");
+    assert!(
+        locked.contains("FREEMIXD_RECORDING_RECOVERY")
+            && locked.contains("\tsession=program\tstatus=locked"),
+        "{locked}"
+    );
+
+    // Recovery changed nothing: the manifest still records a live session
+    // rather than a recovered one, so no file was rewritten or truncated
+    // under the first daemon.
+    let manifest = SessionManifest::parse(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest.state, SessionState::Recording);
+
+    // The test is about the lock, not graceful finalization, so both daemons
+    // are killed rather than waiting on a stop.
+    let _ = second.crash();
+    let _ = first.crash();
 }

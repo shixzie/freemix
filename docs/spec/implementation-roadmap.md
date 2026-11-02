@@ -4028,10 +4028,12 @@ thresholds are configurable with
 1 to 1440 whole minutes).
 `recorder_status` now carries each slot's free bytes and estimated seconds
 of recording left at its configured bitrate (Protocol 2.141), shown in
-Studio's recording row. Remaining gaps: no
-daemon test runs two `freemixd` processes against one directory (the lock is
-proven across processes in `fm-record`); corrupt mid-file fragments end
-recovery; and only fragmented MP4 is handled. `OR-003` remains planned.
+Studio's recording row. A two-daemon test starts two `freemixd` processes
+recording into one directory: the second daemon's startup recovery reports
+the first's live session as `status=locked` and leaves its manifest in the
+`Recording` state, so the lock is proven through the daemon and not only in
+`fm-record`. Remaining gaps: corrupt mid-file fragments end recovery; and
+only fragmented MP4 is handled. `OR-003` remains planned.
 
 
 Exit: a remote-controlled headless production can stream and record
