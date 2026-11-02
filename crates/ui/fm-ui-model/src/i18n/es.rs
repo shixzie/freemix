@@ -9109,6 +9109,49 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::RecorderTracksSaveLimitsHover,
         t("Escribir los límites de rotación de archivos de pista del proyecto en el paquete"),
     ),
+    (
+        Msg::RecorderTracksLoudnessTitle,
+        t("Metadatos de sonoridad"),
+    ),
+    (Msg::RecorderTracksLoudnessPublish, t("Publicar sonoridad")),
+    (
+        Msg::RecorderTracksLoudnessPublishHover,
+        t("Escribir estas cifras en cada WAV de pista como campos de sonoridad bext versión 2"),
+    ),
+    (Msg::RecorderTracksLoudnessIntegrated, t("Integrada")),
+    (
+        Msg::RecorderTracksLoudnessIntegratedHover,
+        t("Sonoridad integrada del programa en LUFS"),
+    ),
+    (Msg::RecorderTracksLoudnessRange, t("Rango")),
+    (
+        Msg::RecorderTracksLoudnessRangeHover,
+        t("Rango de sonoridad en LU"),
+    ),
+    (Msg::RecorderTracksLoudnessTruePeak, t("Pico real")),
+    (
+        Msg::RecorderTracksLoudnessTruePeakHover,
+        t("Pico real máximo en dBTP"),
+    ),
+    (Msg::RecorderTracksLoudnessMomentary, t("Momentánea")),
+    (
+        Msg::RecorderTracksLoudnessMomentaryHover,
+        t("Sonoridad momentánea máxima en LUFS"),
+    ),
+    (Msg::RecorderTracksLoudnessShortTerm, t("Corto plazo")),
+    (
+        Msg::RecorderTracksLoudnessShortTermHover,
+        t("Sonoridad de corto plazo máxima en LUFS"),
+    ),
+    (Msg::RecorderTracksSaveLoudness, t("Guardar sonoridad")),
+    (
+        Msg::RecorderTracksSaveLoudnessHover,
+        t("Escribir el documento de sonoridad del proyecto, o quitarlo cuando no se publica"),
+    ),
+    (
+        Msg::RecorderTracksLoudnessOff,
+        t("los metadatos de sonoridad están desactivados"),
+    ),
     (Msg::RecorderTracksAddTrack, t("Añadir pista")),
     (
         Msg::RecorderTracksAddTrackHover,

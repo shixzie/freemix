@@ -3889,9 +3889,11 @@ flag. Loudness metadata is authored as the canonical
 `recorders/loudness.trackloudness` (integrated, range, true peak, momentary,
 and short-term in hundredths); the daemon loads it strictly and promotes the
 `bext` chunk to version 2 so the five fields land at their standard offsets.
-Remaining gaps: loudness values must be measured upstream and authored in
-that document (no Studio editor or internal measurement), and WAV output is
-separate from the crash-safe packet spool. `AU-010` remains planned.
+Studio's Recorder tracks window edits the five figures with a publish/off key
+and saves or removes the document atomically. Remaining gaps: loudness values
+must be measured upstream (the daemon does not measure loudness itself), and
+WAV output is separate from the crash-safe packet spool. `AU-010` remains
+planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):
 `fm-observability` provides a deterministic, clock-free statistics layer: a

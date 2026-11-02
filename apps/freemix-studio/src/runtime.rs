@@ -14,10 +14,10 @@ use fm_protocol::{
     AudioPluginStatusRequest, CommandMessage, CommandPayload, HeartbeatMessage,
     ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
 };
-use fm_record::{RecordBus, RecorderTrackMap, TrackLimits};
+use fm_record::{BextLoudness, RecordBus, RecorderTrackMap, TrackLimits};
 use fm_ui_egui::{
     DisplayOutputAnswer, RecorderTrackBus, RecorderTrackFileState, RecorderTrackFileView,
-    RecorderTrackLayout, RecorderTrackLimitsView, RecorderTrackMapView,
+    RecorderTrackLayout, RecorderTrackLimitsView, RecorderTrackLoudnessView, RecorderTrackMapView,
     RecorderTrackRecordingState, RecorderTrackSource, RecorderTrackStatusView, RecorderTrackView,
     TitleAnimationRefusal, TitleUpdate,
 };
@@ -167,6 +167,8 @@ pub struct StudioRuntime {
     record_track_status: [Option<RecorderTrackStatusView>; 2],
     /// The project's authored track-file rollover limits.
     record_track_limits: RecorderTrackLimitsView,
+    /// The project's authored track loudness metadata, when published.
+    record_track_loudness: Option<RecorderTrackLoudnessView>,
     /// Why the bundle's track maps could not be read, if they could not.
     record_track_error: Option<String>,
     /// The file stamps the published track views were read at, so an
@@ -179,6 +181,7 @@ pub struct StudioRuntime {
 struct RecordTrackStamp {
     maps: [Option<(SystemTime, u64)>; 2],
     limits: Option<(SystemTime, u64)>,
+    loudness: Option<(SystemTime, u64)>,
 }
 
 impl StudioRuntime {
@@ -207,13 +210,13 @@ impl StudioRuntime {
             ConnectionConfig::Existing(_) => None,
         };
         let record_track_stamp = record_track_stamp(project_bundle.as_deref());
-        let (
-            record_track_maps,
-            record_track_documents,
-            record_track_status,
-            record_track_limits,
-            record_track_error,
-        ) = load_record_track_views(project_bundle.as_deref());
+        let loaded = load_record_track_views(project_bundle.as_deref());
+        let record_track_maps = loaded.maps;
+        let record_track_documents = loaded.documents;
+        let record_track_status = loaded.statuses;
+        let record_track_limits = loaded.limits;
+        let record_track_loudness = loaded.loudness;
+        let record_track_error = loaded.error;
         let (supervisor, address, project_id) = match config.connection {
             ConnectionConfig::Supervised(supervised) => {
                 let supervisor = DaemonSupervisor::launch_cancellable(
@@ -255,6 +258,7 @@ impl StudioRuntime {
             record_track_documents,
             record_track_status,
             record_track_limits,
+            record_track_loudness,
             record_track_error,
             record_track_stamp,
         })
@@ -573,6 +577,51 @@ impl StudioRuntime {
         }
     }
 
+    /// The project's authored track loudness metadata, when published.
+    #[must_use]
+    pub(crate) const fn record_track_loudness(&self) -> Option<RecorderTrackLoudnessView> {
+        self.record_track_loudness
+    }
+
+    /// Publishes or removes the project's track loudness document. Returns
+    /// whether the bundle was written.
+    pub(crate) fn save_recorder_track_loudness(
+        &mut self,
+        loudness: Option<RecorderTrackLoudnessView>,
+    ) -> bool {
+        let Some(bundle) = &self.project_bundle else {
+            self.record_track_error = Some(
+                "track loudness can be saved only into a supervised project bundle".to_owned(),
+            );
+            return false;
+        };
+        let result = match loudness {
+            Some(view) => write_recorder_track_loudness(
+                bundle,
+                BextLoudness {
+                    integrated_lufs: view.integrated_lufs,
+                    range_lu: view.range_lu,
+                    max_true_peak_dbtp: view.max_true_peak_dbtp,
+                    max_momentary_lufs: view.max_momentary_lufs,
+                    max_short_term_lufs: view.max_short_term_lufs,
+                },
+            ),
+            None => remove_recorder_track_loudness(bundle),
+        };
+        match result {
+            Ok(()) => {
+                self.record_track_loudness = loudness;
+                self.record_track_stamp = record_track_stamp(Some(bundle));
+                self.record_track_error = None;
+                true
+            }
+            Err(error) => {
+                self.record_track_error = Some(error);
+                false
+            }
+        }
+    }
+
     /// Why the supervised bundle's track maps could not be read, if they
     /// could not.
     #[must_use]
@@ -590,29 +639,30 @@ impl StudioRuntime {
     /// disk since the last read, so an external edit (another Studio, the
     /// CLI, or an operator) reaches the console without a manual refresh.
     pub(crate) fn refresh_record_track_views_if_changed(&mut self) -> bool {
-        let Some((maps, documents, statuses, limits, error)) = reload_changed_record_track_views(
+        let Some(loaded) = reload_changed_record_track_views(
             self.project_bundle.as_deref(),
             &mut self.record_track_stamp,
         ) else {
             return false;
         };
-        self.record_track_maps = maps;
-        self.record_track_documents = documents;
-        self.record_track_status = statuses;
-        self.record_track_limits = limits;
-        self.record_track_error = error;
+        self.record_track_maps = loaded.maps;
+        self.record_track_documents = loaded.documents;
+        self.record_track_status = loaded.statuses;
+        self.record_track_limits = loaded.limits;
+        self.record_track_loudness = loaded.loudness;
+        self.record_track_error = loaded.error;
         true
     }
 
     /// Re-reads the supervised bundle's recorder track maps (AU-010).
     pub(crate) fn reload_record_track_views(&mut self) {
-        let (maps, documents, statuses, limits, error) =
-            load_record_track_views(self.project_bundle.as_deref());
-        self.record_track_maps = maps;
-        self.record_track_documents = documents;
-        self.record_track_status = statuses;
-        self.record_track_limits = limits;
-        self.record_track_error = error;
+        let loaded = load_record_track_views(self.project_bundle.as_deref());
+        self.record_track_maps = loaded.maps;
+        self.record_track_documents = loaded.documents;
+        self.record_track_status = loaded.statuses;
+        self.record_track_limits = loaded.limits;
+        self.record_track_loudness = loaded.loudness;
+        self.record_track_error = loaded.error;
         self.record_track_stamp = record_track_stamp(self.project_bundle.as_deref());
     }
 
@@ -1281,23 +1331,19 @@ impl StudioRuntime {
 
 /// Reads both recorder slots' track maps from a supervised project bundle
 /// (AU-010). The bundle stores them as `recorders/<slot>.trackmap`.
-type LoadedRecorderTracks = (
-    [Option<RecorderTrackMapView>; 2],
-    [Option<String>; 2],
-    [Option<RecorderTrackStatusView>; 2],
-    RecorderTrackLimitsView,
-    Option<String>,
-);
+#[derive(Default)]
+struct LoadedRecorderTracks {
+    maps: [Option<RecorderTrackMapView>; 2],
+    documents: [Option<String>; 2],
+    statuses: [Option<RecorderTrackStatusView>; 2],
+    limits: RecorderTrackLimitsView,
+    loudness: Option<RecorderTrackLoudnessView>,
+    error: Option<String>,
+}
 
 fn load_record_track_views(bundle: Option<&std::path::Path>) -> LoadedRecorderTracks {
     let Some(bundle) = bundle else {
-        return (
-            [None, None],
-            [None, None],
-            [None, None],
-            RecorderTrackLimitsView::default(),
-            None,
-        );
+        return LoadedRecorderTracks::default();
     };
     let mut views: [Option<RecorderTrackMapView>; 2] = [None, None];
     let mut documents: [Option<String>; 2] = [None, None];
@@ -1345,7 +1391,69 @@ fn load_record_track_views(bundle: Option<&std::path::Path>) -> LoadedRecorderTr
         },
         Err(_) => RecorderTrackLimitsView::default(),
     };
-    (views, documents, statuses, limits, error)
+    let loudness = match std::fs::read_to_string(
+        bundle
+            .join("recorders")
+            .join(fm_record::TRACK_LOUDNESS_FILE_NAME),
+    ) {
+        Ok(text) => match fm_record::decode_track_loudness(&text) {
+            Ok(loudness) => Some(loudness_view(loudness)),
+            Err(read) => {
+                error.get_or_insert_with(|| format!("recorder track loudness: {read}"));
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    LoadedRecorderTracks {
+        maps: views,
+        documents,
+        statuses,
+        limits,
+        loudness,
+        error,
+    }
+}
+
+fn loudness_view(loudness: BextLoudness) -> RecorderTrackLoudnessView {
+    RecorderTrackLoudnessView {
+        integrated_lufs: loudness.integrated_lufs,
+        range_lu: loudness.range_lu,
+        max_true_peak_dbtp: loudness.max_true_peak_dbtp,
+        max_momentary_lufs: loudness.max_momentary_lufs,
+        max_short_term_lufs: loudness.max_short_term_lufs,
+    }
+}
+
+/// Validates and atomically writes the bundle's track loudness document.
+fn write_recorder_track_loudness(
+    bundle: &std::path::Path,
+    loudness: BextLoudness,
+) -> Result<(), String> {
+    let directory = bundle.join("recorders");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("recorder track loudness: {error}"))?;
+    let temporary = directory.join(".loudness.trackloudness.tmp");
+    std::fs::write(&temporary, fm_record::encode_track_loudness(loudness))
+        .map_err(|error| format!("recorder track loudness: {error}"))?;
+    std::fs::rename(
+        &temporary,
+        directory.join(fm_record::TRACK_LOUDNESS_FILE_NAME),
+    )
+    .map_err(|error| format!("recorder track loudness: {error}"))
+}
+
+/// Removes the bundle's track loudness document, if it has one.
+fn remove_recorder_track_loudness(bundle: &std::path::Path) -> Result<(), String> {
+    match std::fs::remove_file(
+        bundle
+            .join("recorders")
+            .join(fm_record::TRACK_LOUDNESS_FILE_NAME),
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("recorder track loudness: {error}")),
+    }
 }
 
 fn limits_view(limits: TrackLimits) -> RecorderTrackLimitsView {
@@ -1480,6 +1588,7 @@ fn record_track_stamp(bundle: Option<&Path>) -> RecordTrackStamp {
     RecordTrackStamp {
         maps: [stamp("1.trackmap"), stamp("2.trackmap")],
         limits: stamp(fm_record::TRACK_LIMITS_FILE_NAME),
+        loudness: stamp(fm_record::TRACK_LOUDNESS_FILE_NAME),
     }
 }
 
@@ -1544,12 +1653,56 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "freemix-record-track-limits 1\nmax-seconds=600\n"
         );
-        let (_, _, _, limits, error) = load_record_track_views(Some(&bundle));
-        assert!(error.is_none(), "{error:?}");
-        assert_eq!(limits.max_seconds, Some(600));
-        assert_eq!(limits.max_bytes, None);
+        let loaded = load_record_track_views(Some(&bundle));
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(loaded.limits.max_seconds, Some(600));
+        assert_eq!(loaded.limits.max_bytes, None);
         assert!(TrackLimits::new(Some(0), None).is_err());
         assert!(!bundle.join("recorders/.limits.tracklimits.tmp").exists());
+    }
+
+    #[test]
+    fn saving_track_loudness_publishes_and_removes_the_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("show.freemix");
+        let loudness = BextLoudness {
+            integrated_lufs: -2300,
+            range_lu: 750,
+            max_true_peak_dbtp: -120,
+            max_momentary_lufs: -2250,
+            max_short_term_lufs: -2310,
+        };
+        write_recorder_track_loudness(&bundle, loudness).unwrap();
+        let path = bundle.join("recorders/loudness.trackloudness");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "freemix-record-track-loudness 1\n\
+             integrated=-23.00\n\
+             range=7.50\n\
+             true-peak=-1.20\n\
+             momentary=-22.50\n\
+             short-term=-23.10\n"
+        );
+        assert_eq!(
+            load_record_track_views(Some(&bundle)).loudness,
+            Some(loudness_view(loudness))
+        );
+
+        std::fs::write(&path, "not loudness").unwrap();
+        let loaded = load_record_track_views(Some(&bundle));
+        assert!(loaded.loudness.is_none());
+        assert!(
+            loaded
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("loudness")),
+            "{:?}",
+            loaded.error
+        );
+
+        remove_recorder_track_loudness(&bundle).unwrap();
+        assert!(!path.exists());
+        remove_recorder_track_loudness(&bundle).unwrap();
     }
 
     #[test]
@@ -1562,7 +1715,7 @@ mod tests {
         write_recorder_track_map(&bundle, 0, &RecorderTrackMap::master_stereo().to_document())
             .unwrap();
         let first = reload_changed_record_track_views(Some(&bundle), &mut stamp).unwrap();
-        assert_eq!(first.0[0].as_ref().unwrap().tracks[0].name, "Master");
+        assert_eq!(first.maps[0].as_ref().unwrap().tracks[0].name, "Master");
         assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
 
         let edited = RecorderTrackMap::new(
@@ -1575,19 +1728,31 @@ mod tests {
         .unwrap();
         std::fs::write(bundle.join("recorders/1.trackmap"), edited.to_document()).unwrap();
         let second = reload_changed_record_track_views(Some(&bundle), &mut stamp).unwrap();
-        assert_eq!(second.0[0].as_ref().unwrap().tracks[0].name, "Host");
+        assert_eq!(second.maps[0].as_ref().unwrap().tracks[0].name, "Host");
         assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
 
         write_recorder_track_limits(&bundle, TrackLimits::new(Some(30), Some(1 << 20)).unwrap())
             .unwrap();
         let third = reload_changed_record_track_views(Some(&bundle), &mut stamp).unwrap();
         assert_eq!(
-            third.3,
+            third.limits,
             RecorderTrackLimitsView {
                 max_seconds: Some(30),
                 max_bytes: Some(1 << 20),
             }
         );
+        assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
+
+        let loudness = BextLoudness {
+            integrated_lufs: -2300,
+            range_lu: 750,
+            max_true_peak_dbtp: -120,
+            max_momentary_lufs: -2250,
+            max_short_term_lufs: -2310,
+        };
+        write_recorder_track_loudness(&bundle, loudness).unwrap();
+        let fourth = reload_changed_record_track_views(Some(&bundle), &mut stamp).unwrap();
+        assert_eq!(fourth.loudness, Some(loudness_view(loudness)));
         assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
     }
 
@@ -1644,24 +1809,28 @@ mod tests {
              file\t2f746d702f73686f772e747261636b732e776176\t4096\topen\n",
         )
         .unwrap();
-        let (views, documents, statuses, limits, error) = load_record_track_views(Some(&bundle));
-        assert!(error.is_none(), "{error:?}");
-        let view = views[0].as_ref().unwrap();
+        let loaded = load_record_track_views(Some(&bundle));
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        let view = loaded.maps[0].as_ref().unwrap();
         assert_eq!(view.slot, 1);
         assert_eq!(view.layout, RecorderTrackLayout::SplitPerTrack);
         assert_eq!(view.channels, 3);
         assert_eq!(view.tracks[0].name, "Program");
         assert_eq!(view.tracks[0].sources, ["master 0", "master 1"]);
         assert_eq!(view.tracks[1].sources, ["aux A 2"]);
-        assert!(views[1].is_none());
-        assert_eq!(documents[0].as_deref(), Some(map.to_document().as_str()));
-        assert!(documents[1].is_none());
-        let status = statuses[0].as_ref().unwrap();
+        assert!(loaded.maps[1].is_none());
+        assert_eq!(
+            loaded.documents[0].as_deref(),
+            Some(map.to_document().as_str())
+        );
+        assert!(loaded.documents[1].is_none());
+        let status = loaded.statuses[0].as_ref().unwrap();
         assert_eq!(status.state, RecorderTrackRecordingState::Recording);
         assert_eq!(status.files[0].path, "/tmp/show.tracks.wav");
         assert_eq!(status.files[0].bytes, 4_096);
-        assert!(statuses[1].is_none());
-        assert_eq!(limits, RecorderTrackLimitsView::default());
-        assert!(load_record_track_views(None).4.is_none());
+        assert!(loaded.statuses[1].is_none());
+        assert_eq!(loaded.limits, RecorderTrackLimitsView::default());
+        assert!(loaded.loudness.is_none());
+        assert!(load_record_track_views(None).error.is_none());
     }
 }

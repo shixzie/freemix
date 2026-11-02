@@ -1505,6 +1505,7 @@ fn run_worker(
                 | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::SaveRecorderTrackMap { .. }
                 | StudioIntent::SaveRecorderTrackLimits { .. }
+                | StudioIntent::SaveRecorderTrackLoudness { .. }
                 | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
@@ -1627,6 +1628,7 @@ fn run_worker(
                 | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::SaveRecorderTrackMap { .. }
                 | StudioIntent::SaveRecorderTrackLimits { .. }
+                | StudioIntent::SaveRecorderTrackLoudness { .. }
                 | StudioIntent::ClockControl { .. }
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::HealthAlert { .. }
@@ -1801,6 +1803,12 @@ fn handle_preview_request(
         }
         return publish_recovery_runtime(runtime, publisher, recovery);
     }
+    if let StudioIntent::SaveRecorderTrackLoudness { loudness } = &request {
+        if !recovery.active() {
+            runtime.save_recorder_track_loudness(*loudness);
+        }
+        return publish_recovery_runtime(runtime, publisher, recovery);
+    }
     if let StudioIntent::ClockControl { name, operation } = &request {
         if !recovery.active() {
             runtime.request_clock_control(name, *operation);
@@ -1853,6 +1861,7 @@ fn handle_preview_request(
     true
 }
 
+#[allow(clippy::too_many_lines)] // one branch per request kind, kept together
 fn handle_worker_intent(
     runtime: &mut StudioRuntime,
     intent: StudioIntent,
@@ -1875,6 +1884,7 @@ fn handle_worker_intent(
         | StudioIntent::RefreshRecorderTracks
         | StudioIntent::SaveRecorderTrackMap { .. }
         | StudioIntent::SaveRecorderTrackLimits { .. }
+        | StudioIntent::SaveRecorderTrackLoudness { .. }
         | StudioIntent::ClockControl { .. }
         | StudioIntent::WebAccess(_)
         | StudioIntent::HealthAlert { .. }
@@ -3293,6 +3303,9 @@ fn intent_payload(
         StudioIntent::SaveRecorderTrackLimits { .. } => {
             return Err("A recorder track limit save is not a command".to_owned());
         }
+        StudioIntent::SaveRecorderTrackLoudness { .. } => {
+            return Err("A recorder track loudness save is not a command".to_owned());
+        }
         StudioIntent::ClockControl { .. } => {
             return Err("A clock control is not a command".to_owned());
         }
@@ -3670,6 +3683,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                 .recorder_track_status
                 .clone_from(runtime.record_track_status());
             state.recorder_track_limits = runtime.record_track_limits();
+            state.recorder_track_loudness = runtime.record_track_loudness();
             state.recorder_tracks_local = runtime.record_tracks_local();
             state.recorder_track_error = runtime.record_track_error().map(str::to_owned);
             state.source_sync = runtime.session().latest_source_sync_status().cloned();
@@ -7173,6 +7187,21 @@ mod tests {
                 StudioIntent::SaveRecorderTrackLimits {
                     max_seconds: Some(600),
                     max_bytes: None,
+                },
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            intent_payload(
+                StudioIntent::SaveRecorderTrackLoudness {
+                    loudness: Some(fm_ui_egui::RecorderTrackLoudnessView {
+                        integrated_lufs: -2300,
+                        range_lu: 750,
+                        max_true_peak_dbtp: -120,
+                        max_momentary_lufs: -2250,
+                        max_short_term_lufs: -2310,
+                    }),
                 },
                 None,
             )

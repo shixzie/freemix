@@ -23,8 +23,8 @@ use crate::l10n::{Arg, Msg};
 use crate::theme::{Tone, card, muted_color, status_chip};
 use crate::{
     RecorderTrackBus, RecorderTrackFileState, RecorderTrackLayout, RecorderTrackLimitsView,
-    RecorderTrackMapView, RecorderTrackRecordingState, RecorderTrackSource, StudioIntent,
-    StudioShell, StudioUiState,
+    RecorderTrackLoudnessView, RecorderTrackMapView, RecorderTrackRecordingState,
+    RecorderTrackSource, StudioIntent, StudioShell, StudioUiState,
 };
 
 const DIALOG_WIDTH: f32 = 680.0;
@@ -281,9 +281,64 @@ impl LimitsDraft {
     }
 }
 
+/// The project's track loudness metadata as an editable draft (hundredths).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LoudnessDraft {
+    on: bool,
+    integrated: i32,
+    range_lu: i32,
+    true_peak: i32,
+    momentary: i32,
+    short_term: i32,
+}
+
+impl Default for LoudnessDraft {
+    fn default() -> Self {
+        Self {
+            on: false,
+            integrated: -2300,
+            range_lu: 750,
+            true_peak: -120,
+            momentary: -2250,
+            short_term: -2310,
+        }
+    }
+}
+
+impl LoudnessDraft {
+    fn from_view(view: Option<RecorderTrackLoudnessView>) -> Self {
+        let Some(view) = view else {
+            return Self::default();
+        };
+        Self {
+            on: true,
+            integrated: i32::from(view.integrated_lufs),
+            range_lu: i32::from(view.range_lu),
+            true_peak: i32::from(view.max_true_peak_dbtp),
+            momentary: i32::from(view.max_momentary_lufs),
+            short_term: i32::from(view.max_short_term_lufs),
+        }
+    }
+
+    /// The published view, or `None` when the document is off.
+    fn view(self) -> Option<RecorderTrackLoudnessView> {
+        self.on.then(|| RecorderTrackLoudnessView {
+            integrated_lufs: clamp_i16(self.integrated),
+            range_lu: clamp_i16(self.range_lu),
+            max_true_peak_dbtp: clamp_i16(self.true_peak),
+            max_momentary_lufs: clamp_i16(self.momentary),
+            max_short_term_lufs: clamp_i16(self.short_term),
+        })
+    }
+}
+
+fn clamp_i16(value: i32) -> i16 {
+    i16::try_from(value.clamp(i32::from(i16::MIN), i32::from(i16::MAX))).unwrap_or(0)
+}
+
 /// The window's own state: whether it is open, one structured draft per
-/// slot, the project's rollover limits, and when live status was last asked
-/// for.
+/// slot, the project's rollover limits and loudness metadata, and when live
+/// status was last asked for.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RecorderTracksWindow {
     pub(crate) open: bool,
@@ -291,6 +346,8 @@ pub(crate) struct RecorderTracksWindow {
     drafts: [MapDraft; 2],
     /// The project's rollover limits, seeded when the window opens.
     limits: LimitsDraft,
+    /// The project's loudness metadata, seeded when the window opens.
+    loudness: LoudnessDraft,
     loaded: bool,
     last_refresh: Option<Instant>,
 }
@@ -321,6 +378,7 @@ impl StudioShell {
                 *draft = MapDraft::from_view(state.recorder_track_maps[slot].as_ref());
             }
             self.recorder_tracks.limits = LimitsDraft::from_view(state.recorder_track_limits);
+            self.recorder_tracks.loudness = LoudnessDraft::from_view(state.recorder_track_loudness);
             self.recorder_tracks.loaded = true;
         }
         let l = self.locale;
@@ -363,6 +421,8 @@ fn draw_contents(
     }
     if state.recorder_tracks_local {
         draw_limits(ui, window, intents);
+        ui.add_space(6.0);
+        draw_loudness(ui, window, intents);
         ui.add_space(6.0);
         egui::ScrollArea::vertical()
             .id_salt("studio-recorder-tracks-scroll")
@@ -446,6 +506,79 @@ fn draw_limits(ui: &mut Ui, window: &mut RecorderTracksWindow, intents: &mut Vec
             intents.push(StudioIntent::SaveRecorderTrackLimits {
                 max_seconds,
                 max_bytes,
+            });
+        }
+    });
+}
+
+/// The project-wide track loudness metadata editor.
+fn draw_loudness(ui: &mut Ui, window: &mut RecorderTracksWindow, intents: &mut Vec<StudioIntent>) {
+    let l = crate::l10n::locale(ui.ctx());
+    card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            RichText::new(l.text(Msg::RecorderTracksLoudnessTitle))
+                .size(crate::theme::legible(12.0))
+                .strong(),
+        );
+        ui.checkbox(
+            &mut window.loudness.on,
+            l.text(Msg::RecorderTracksLoudnessPublish),
+        )
+        .on_hover_text(l.text(Msg::RecorderTracksLoudnessPublishHover));
+        let reason = l.text(Msg::RecorderTracksLoudnessOff);
+        for (label, hover, value) in [
+            (
+                Msg::RecorderTracksLoudnessIntegrated,
+                Msg::RecorderTracksLoudnessIntegratedHover,
+                &mut window.loudness.integrated,
+            ),
+            (
+                Msg::RecorderTracksLoudnessRange,
+                Msg::RecorderTracksLoudnessRangeHover,
+                &mut window.loudness.range_lu,
+            ),
+            (
+                Msg::RecorderTracksLoudnessTruePeak,
+                Msg::RecorderTracksLoudnessTruePeakHover,
+                &mut window.loudness.true_peak,
+            ),
+            (
+                Msg::RecorderTracksLoudnessMomentary,
+                Msg::RecorderTracksLoudnessMomentaryHover,
+                &mut window.loudness.momentary,
+            ),
+            (
+                Msg::RecorderTracksLoudnessShortTerm,
+                Msg::RecorderTracksLoudnessShortTermHover,
+                &mut window.loudness.short_term,
+            ),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(l.text(label))
+                        .size(crate::theme::legible(11.0))
+                        .strong(),
+                );
+                let action = l.text(hover);
+                ui.add_enabled(
+                    window.loudness.on,
+                    DragValue::new(value)
+                        .range(i32::from(i16::MIN)..=i32::from(i16::MAX))
+                        .speed(1.0)
+                        .custom_formatter(|value, _| format!("{:.2}", value / 100.0))
+                        .custom_parser(|text| text.parse::<f64>().ok().map(|value| value * 100.0)),
+                )
+                .hint(action, if window.loudness.on { "" } else { reason });
+            });
+        }
+        if ui
+            .button(l.text(Msg::RecorderTracksSaveLoudness))
+            .on_hover_text(l.text(Msg::RecorderTracksSaveLoudnessHover))
+            .clicked()
+        {
+            intents.push(StudioIntent::SaveRecorderTrackLoudness {
+                loudness: window.loudness.view(),
             });
         }
     });
@@ -931,6 +1064,23 @@ mod tests {
         assert_eq!(off.values(), (None, None));
         assert!(!off.seconds_on);
         assert!(!off.bytes_on);
+    }
+
+    #[test]
+    fn loudness_drafts_round_trip() {
+        let view = RecorderTrackLoudnessView {
+            integrated_lufs: -2300,
+            range_lu: 750,
+            max_true_peak_dbtp: -120,
+            max_momentary_lufs: -2250,
+            max_short_term_lufs: -2310,
+        };
+        let draft = LoudnessDraft::from_view(Some(view));
+        assert!(draft.on);
+        assert_eq!(draft.view(), Some(view));
+        let off = LoudnessDraft::from_view(None);
+        assert!(!off.on);
+        assert_eq!(off.view(), None);
     }
 
     #[test]

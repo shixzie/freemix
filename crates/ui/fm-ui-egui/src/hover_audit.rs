@@ -3784,6 +3784,13 @@ fn scenes(language: Language) -> Vec<Scene> {
                 max_seconds: Some(600),
                 max_bytes: None,
             };
+            state.recorder_track_loudness = Some(crate::RecorderTrackLoudnessView {
+                integrated_lufs: -2300,
+                range_lu: 750,
+                max_true_peak_dbtp: -120,
+                max_momentary_lufs: -2250,
+                max_short_term_lufs: -2310,
+            });
             state.recorder_track_status[0] = Some(crate::RecorderTrackStatusView {
                 state: crate::RecorderTrackRecordingState::Recording,
                 files: vec![crate::RecorderTrackFileView {

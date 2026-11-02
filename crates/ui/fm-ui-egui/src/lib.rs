@@ -289,6 +289,11 @@ pub enum StudioIntent {
         max_seconds: Option<u32>,
         max_bytes: Option<u64>,
     },
+    /// Saves the project's track loudness metadata (AU-010); `None` removes
+    /// the published document.
+    SaveRecorderTrackLoudness {
+        loudness: Option<RecorderTrackLoudnessView>,
+    },
     /// Operates one project production clock (SW-013, Protocol 2.150); the
     /// answer carries the reading afterwards or the daemon's refusal.
     ClockControl {
@@ -729,6 +734,17 @@ pub struct RecorderTrackLimitsView {
     pub max_bytes: Option<u64>,
 }
 
+/// The project's authored track loudness metadata (AU-010), in hundredths of
+/// LUFS, LU, and dBTP.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecorderTrackLoudnessView {
+    pub integrated_lufs: i16,
+    pub range_lu: i16,
+    pub max_true_peak_dbtp: i16,
+    pub max_momentary_lufs: i16,
+    pub max_short_term_lufs: i16,
+}
+
 /// One recorded track in a recorder track map.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecorderTrackView {
@@ -791,6 +807,8 @@ pub struct StudioUiState {
     pub recorder_track_status: [Option<RecorderTrackStatusView>; RECORDER_SLOT_COUNT],
     /// The project's authored track-file rollover limits (AU-010).
     pub recorder_track_limits: RecorderTrackLimitsView,
+    /// The project's authored track loudness metadata, when it publishes any.
+    pub recorder_track_loudness: Option<RecorderTrackLoudnessView>,
     /// Whether this Studio has the supervised project bundle locally, so its
     /// recorder track maps can be read.
     pub recorder_tracks_local: bool,
@@ -929,6 +947,7 @@ impl StudioUiState {
                 max_seconds: None,
                 max_bytes: None,
             },
+            recorder_track_loudness: None,
             recorder_tracks_local: false,
             recorder_track_error: None,
             source_sync: None,
