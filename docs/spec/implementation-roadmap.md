@@ -462,8 +462,8 @@ per week of work; items 1 and 2 land before any new feature breadth.
    thread is being introduced in stages; the first stage must keep every
    existing native test (`native_pacing`, `native_sessions`,
    `native_transitions`, recorders, streams, displays) green.
-2. **Break `freemixd` into library crates.** `apps/freemixd/src` is 157k
-   lines, `main.rs` 30k and `native_media.rs` 16k, with 1,178
+2. ~~**Break `freemixd` into library crates.**~~ Landed. `apps/freemixd/src`
+   was 157k lines, `main.rs` 30k and `native_media.rs` 16k, with 1,178
    `unwrap`/`expect`/`panic` sites in `main.rs` alone; any daemon change
    rebuilds the whole daemon. Extract `fm-daemon-sessions` (pass loop,
    peers, web gateway), `fm-daemon-native` (native runtime),
@@ -485,12 +485,17 @@ per week of work; items 1 and 2 land before any new feature breadth.
    resolution, telemetry, monitor taps, audio meters, recovery, restore and
    sync, command window, serve loop, client path, lifecycle, native
    startup, and transport each have their own module, and the scheduler's
-   I/O is `sessions/io.rs`. `main.rs` is now 1.0k lines (from 30k) and no
-   file but the 12.7k-line `tests.rs` is over 5k. `xtask deps check`
-   allows a service crate to depend on the simulation composition root,
-   which the extracted daemon libraries need. What remains in `main.rs` is
-   the composition root: the argument-to-run wiring, capabilities, and the
-   control-plane handle.
+   I/O is `sessions/io.rs`. `main.rs` is now 1.0k lines (from 30k). `xtask
+   deps check` allows a service crate to depend on the simulation
+   composition root, which the extracted daemon libraries need. What
+   remains in `main.rs` is the composition root: the argument-to-run
+   wiring, capabilities, and the control-plane handle.
+
+   **Tests split (2026-11-04).** `tests.rs` is now a 564-line module whose
+   four `include!` files (`tests/arguments.rs`, `tests/runtime.rs`,
+   `tests/sessions.rs`, and `tests/native.rs`) hold the 204 tests in groups
+   of about 3.2k lines each. No file under `apps/freemixd/src` is over 5k
+   lines, and the 224 binary unit tests pass unchanged.
 3. **Burn down panics on the frame path.** `fm-daemon-render`,
    `fm-daemon-native`, and the `freemixd` binary deny
    `clippy::unwrap_used` and `clippy::expect_used` outside tests. The
