@@ -25,8 +25,8 @@ use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProjec
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     EditLockScope, EditLockStatus, EventMessage, EventPayload, HandshakeOutcome, HandshakeRequest,
-    HeartbeatMessage, Role, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, WireInputId,
-    WireMessage, decode_line, encode_line,
+    HeartbeatMessage, Role, RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity,
+    SnapshotMessage, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
@@ -435,6 +435,47 @@ fn next_event(socket: &mut Browser) -> EventMessage {
     }
 }
 
+/// The next command result, skipping the events and lossy telemetry
+/// around it.
+fn next_result(socket: &mut Browser) -> CommandResult {
+    loop {
+        match receive(socket) {
+            WireMessage::CommandResult(result) => return result,
+            WireMessage::Event(_)
+            | WireMessage::RuntimeEvent(_)
+            | WireMessage::HealthStatus(_)
+            | WireMessage::AudioMeters(_)
+            | WireMessage::MonitorFrame(_)
+            | WireMessage::TitlePhases(_)
+            | WireMessage::RecorderStatus(_)
+            | WireMessage::SourceSyncStatus(_)
+            | WireMessage::StreamStatus(_)
+            | WireMessage::ReplayStatus(_) => {}
+            other => panic!("expected a command result, got {other:?}"),
+        }
+    }
+}
+
+/// The next runtime realization, skipping durable events and lossy
+/// telemetry around it.
+fn next_runtime(socket: &mut Browser) -> RuntimeEventMessage {
+    loop {
+        match receive(socket) {
+            WireMessage::RuntimeEvent(runtime) => return runtime,
+            WireMessage::Event(_)
+            | WireMessage::HealthStatus(_)
+            | WireMessage::AudioMeters(_)
+            | WireMessage::MonitorFrame(_)
+            | WireMessage::TitlePhases(_)
+            | WireMessage::RecorderStatus(_)
+            | WireMessage::SourceSyncStatus(_)
+            | WireMessage::StreamStatus(_)
+            | WireMessage::ReplayStatus(_) => {}
+            other => panic!("expected a runtime event, got {other:?}"),
+        }
+    }
+}
+
 fn hello(role: Role) -> WireMessage {
     WireMessage::HandshakeRequest(HandshakeRequest {
         protocol: CURRENT_PROTOCOL_VERSION,
@@ -760,8 +801,8 @@ fn browser_tally_follows_realized_cuts_with_role_limits_and_reconnects() {
         &command("tally-viewer-cut", CommandPayload::Cut),
     );
     assert!(matches!(
-        receive(&mut tally),
-        WireMessage::CommandResult(CommandResult::Rejected { id, .. }) if id == "tally-viewer-cut"
+        next_result(&mut tally),
+        CommandResult::Rejected { id, .. } if id == "tally-viewer-cut"
     ));
 
     // An operator cuts on another client; the tally sees intent, then air.
@@ -771,18 +812,14 @@ fn browser_tally_follows_realized_cuts_with_role_limits_and_reconnects() {
         operator.receive(),
         WireMessage::CommandResult(CommandResult::Accepted { revision: 1, .. })
     ));
-    let WireMessage::Event(event) = receive(&mut tally) else {
-        panic!("expected the durable switcher event");
-    };
+    let event = next_event(&mut tally);
     assert_eq!(event.cursor.revision, 1);
     assert!(matches!(
         event.payload,
         EventPayload::DesiredSwitcher { program, preview, .. }
             if program == input(2) && preview == input(1)
     ));
-    let WireMessage::RuntimeEvent(runtime) = receive(&mut tally) else {
-        panic!("expected the switcher realization");
-    };
+    let runtime = next_runtime(&mut tally);
     assert_eq!(runtime.revision, 1);
     assert_eq!(runtime.server, server);
     assert!(matches!(
@@ -1713,8 +1750,8 @@ fn several_web_clients_hold_their_own_sessions_at_once() {
     );
     send(&mut tally, &command("tally-cut", CommandPayload::Cut));
     assert!(matches!(
-        receive(&mut tally),
-        WireMessage::CommandResult(CommandResult::Rejected { id, .. }) if id == "tally-cut"
+        next_result(&mut tally),
+        CommandResult::Rejected { id, .. } if id == "tally-cut"
     ));
     let (revision, _) = page_command(&mut operator, "op-cut-1", None, "payload=cut").unwrap();
     assert_eq!(revision, 1);
@@ -2127,6 +2164,33 @@ fn page_scripts_parse_with_node_when_available() {
             output.status.success(),
             "{name}: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// SW-004: the operator page exposes a T-bar for every timed transition
+/// kind and sends the manual start, position, commit, and cancel records.
+#[test]
+fn operator_page_has_a_tbar_for_every_timed_transition() {
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
+    for marker in [
+        "id=\"tbar\"",
+        "id=\"tbar-position\"",
+        "function parseManual",
+        "\"manual_start\"",
+        "\"manual_position\"",
+        "\"manual_commit\"",
+        "\"manual_cancel\"",
+        "[\"transition\", choice.kind]",
+        "position_basis_points",
+    ] {
+        assert!(page.contains(marker), "operator page lacks {marker}");
+    }
+    for kind in fm_protocol::AutoTransitionKind::ALL {
+        assert!(
+            page.contains(&format!("[\"{}\", \"transition", kind.token())),
+            "operator page lacks transition kind {}",
+            kind.token()
         );
     }
 }

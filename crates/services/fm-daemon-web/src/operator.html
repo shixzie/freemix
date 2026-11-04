@@ -56,6 +56,7 @@
   [data-offline="1"] { text-decoration: line-through; }
   .take { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
   .take button { min-height: 72px; font-size: 1.35rem; letter-spacing: .06em; }
+  #tbar { flex: 1 1 8rem; min-height: 44px; accent-color: #f0f0f0; }
   #cut { background: #3a0d12; border-color: #ff6b7a; }
   #auto { background: #10301a; border-color: #6fe08d; }
   fieldset { border: 0; padding: 0; margin: .6rem 0 0; }
@@ -278,6 +279,11 @@
       <div class="choices" id="duration-choices"></div>
     </fieldset>
     <div class="row" style="margin-top:.6rem">
+      <span class="name"><span data-i18n="tbar">T-bar</span> <span id="tbar-position" class="badge" role="status">0%</span></span>
+      <input type="range" id="tbar" min="0" max="10000" step="1" value="0"
+        aria-describedby="why-transition" data-i18n-label="tbarLabel">
+    </div>
+    <div class="row" style="margin-top:.6rem">
       <span class="name"><span data-i18n="fadeToBlack">Fade to Black</span> <span id="ftb-state" class="badge" role="status">LIVE</span></span>
       <button type="button" id="ftb" aria-describedby="why-transition" aria-pressed="false" aria-keyshortcuts="B">FTB</button>
     </div>
@@ -364,7 +370,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.147";
+  const PROTOCOL = "2.155";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -379,8 +385,12 @@
   const FTB_BLACK = 65535;
   // Mirrors freemix-web's OperatorTransition: wire kind and label key.
   const TRANSITIONS = [
-    ["fade", "transitionFade"], ["alpha_fade", "transitionAlphaFade"], ["slide", "transitionSlide"],
-    ["zoom", "transitionZoom"], ["wipe", "transitionWipe"],
+    ["fade", "transitionFade"], ["alpha_fade", "transitionAlphaFade"], ["wipe", "transitionWipe"],
+    ["vertical_wipe", "transitionVerticalWipe"], ["slide", "transitionSlide"],
+    ["vertical_slide", "transitionVerticalSlide"], ["zoom", "transitionZoom"],
+    ["fly", "transitionFly"], ["fly_rotate", "transitionFlyRotate"], ["cube", "transitionCube"],
+    ["cube_zoom", "transitionCubeZoom"], ["cross_zoom", "transitionCrossZoom"],
+    ["merge", "transitionMerge"],
   ];
   const DURATIONS_MS = [500, 1000, 1500, 2000, 3000];
   // Realized recorder states (`recorder_status`, Protocol 2.66) and label keys.
@@ -636,9 +646,24 @@
       durationLegend: "Duration for AUTO and Fade to Black",
       transitionFade: "Fade",
       transitionAlphaFade: "Alpha fade",
-      transitionSlide: "Slide",
-      transitionZoom: "Zoom",
       transitionWipe: "Wipe",
+      transitionVerticalWipe: "Vertical wipe",
+      transitionSlide: "Slide",
+      transitionVerticalSlide: "Vertical slide",
+      transitionZoom: "Zoom",
+      transitionFly: "Fly",
+      transitionFlyRotate: "Fly and rotate",
+      transitionCube: "Cube",
+      transitionCubeZoom: "Cube zoom",
+      transitionCrossZoom: "Cross zoom",
+      transitionMerge: "Merge",
+      tbar: "T-bar",
+      tbarLabel: "Scrub the selected transition",
+      tbarPosition: "{percent}%",
+      commandManualStart: "Start manual {kind}",
+      commandManualPosition: "Manual transition {percent}%",
+      commandManualCommit: "Take manual transition",
+      commandManualCancel: "Cancel manual transition",
       seconds: "{seconds} s",
       autoKind: "{kind}, {seconds} seconds",
       autoLabel: "AUTO: {kind} Preview to Program over {seconds} s",
@@ -1026,9 +1051,24 @@
       durationLegend: "Duración de AUTO y del fundido a negro",
       transitionFade: "Fundido",
       transitionAlphaFade: "Fundido alfa",
-      transitionSlide: "Deslizar",
-      transitionZoom: "Zoom",
       transitionWipe: "Cortina",
+      transitionVerticalWipe: "Cortina vertical",
+      transitionSlide: "Deslizar",
+      transitionVerticalSlide: "Deslizar vertical",
+      transitionZoom: "Zoom",
+      transitionFly: "Volar",
+      transitionFlyRotate: "Volar y girar",
+      transitionCube: "Cubo",
+      transitionCubeZoom: "Zoom de cubo",
+      transitionCrossZoom: "Zoom cruzado",
+      transitionMerge: "Fusionar",
+      tbar: "T-bar",
+      tbarLabel: "Arrastrar la transición seleccionada",
+      tbarPosition: "{percent} %",
+      commandManualStart: "Iniciar {kind} manual",
+      commandManualPosition: "Transición manual {percent} %",
+      commandManualCommit: "Tomar la transición manual",
+      commandManualCancel: "Cancelar la transición manual",
       seconds: "{seconds} s",
       autoKind: "{kind}, {seconds} segundos",
       autoLabel: "AUTO: {kind} de Previo a Programa en {seconds} s",
@@ -1371,6 +1411,7 @@
     pairSubmit: $("pair-submit"), pairError: $("pair-error"), tokenOption: $("token-option"),
     programBus: $("program-bus"), previewBus: $("preview-bus"),
     cut: $("cut"), auto: $("auto"), autoKind: $("auto-kind"), ftb: $("ftb"), ftbState: $("ftb-state"),
+    tbar: $("tbar"), tbarPosition: $("tbar-position"),
     kindChoices: $("kind-choices"), durationChoices: $("duration-choices"),
     recorders: $("recorders"), streams: $("streams"), noStreams: $("no-streams"), strips: $("strips"),
     auxBuses: $("aux-buses"),
@@ -1457,6 +1498,7 @@
   const show = {
     name: "", inputs: [], frameRate: [30, 1],
     desired: { program: "", preview: "" },
+    manual: { active: false, kind: "", position: 0 },
     realized: { program: "", preview: "", manualFrom: "", manualTo: "" },
     desiredByRevision: new Map(),
     ftb: { target: false, position: 0 }, realizedFtb: { target: false, position: 0 },
@@ -1495,6 +1537,9 @@
     kind: store.getItem("freemix.operator.kind") || "fade",
     durationMs: Number(store.getItem("freemix.operator.duration")) || 1000,
   };
+  let tbarDragging = false;
+  let tbarLastSent = 0;
+  let tbarPendingStart = false;
   if (!TRANSITIONS.some(([token]) => token === choice.kind)) choice.kind = "fade";
   if (!DURATIONS_MS.includes(choice.durationMs)) choice.durationMs = 1000;
   // Commands this page sent and has not seen resolve: id -> label.
@@ -1755,6 +1800,19 @@
     return {
       target: required(record, prefix + "ftb_target_active") === "1",
       position: Number(required(record, prefix + "ftb_position_numerator")),
+    };
+  }
+
+  // The desired manual (T-bar) transition, from a snapshot's `desired_`
+  // fields or an event's unprefixed ones.
+  function parseManual(record, prefix) {
+    if (record.fields.get(prefix + "manual_active") !== "1") {
+      return { active: false, kind: "", position: 0 };
+    }
+    return {
+      active: true,
+      kind: required(record, prefix + "manual_kind"),
+      position: Number(required(record, prefix + "manual_position_basis_points")),
     };
   }
 
@@ -2098,6 +2156,7 @@
         show.frameRate = rate.length === 2 && rate[0] > 0 && rate[1] > 0 ? rate : [30, 1];
         link.revision = Number(required(record, "revision"));
         show.desired = { program: required(record, "desired_program"), preview: required(record, "desired_preview") };
+        show.manual = parseManual(record, "desired_");
         show.realized = {
           program: required(record, "realized_program"), preview: required(record, "realized_preview"),
           manualFrom: "", manualTo: "",
@@ -2282,6 +2341,7 @@
   function applyEvent(name, record) {
     if (SWITCHER_EVENTS.has(name)) {
       show.desired = { program: required(record, "program"), preview: required(record, "preview") };
+      show.manual = parseManual(record, "");
       show.ftb = parseFtb(record, "");
       show.strips = parseStrips(required(record, "input_audio_strips"));
       if (name === "cue_run_changed" || name === "script_ran" || name === "shortcut_fired") {
@@ -2610,6 +2670,14 @@
     ui.ftb.textContent = tr(live && show.ftb.target ? "ftbFromBlackKey" : "ftbKey");
     ui.ftb.setAttribute("aria-label", tr(live && show.ftb.target ? "ftbFromBlackLabel" : "ftbToBlackLabel"));
     setDisabled(ui.ftb, transitionReason);
+    if (show.manual.active) tbarPendingStart = false;
+    const tbarValue = tbarDragging
+      ? Number(ui.tbar.value)
+      : (live && show.manual.active ? show.manual.position : 0);
+    ui.tbar.value = String(tbarValue);
+    ui.tbar.dataset.active = show.manual.active ? "1" : "0";
+    ui.tbarPosition.textContent = tr("tbarPosition", { percent: Math.round(tbarValue / 100) });
+    setDisabled(ui.tbar, transitionReason);
     ui.whyTransition.textContent = transitionReason;
 
     renderOutputs();
@@ -4021,6 +4089,37 @@
     const kind = tr((TRANSITIONS.find(([token]) => token === choice.kind) || TRANSITIONS[0])[1]);
     sendCommand(tr("commandAuto", { kind }), [["payload", choice.kind], ["duration_frames", String(durationFrames())]]);
   }
+  // The T-bar starts the transition with the kind AUTO would use, sends
+  // its position while dragged, and takes it on release. Releasing at the
+  // start cancels instead.
+  function tbarKindLabel() {
+    return tr((TRANSITIONS.find(([token]) => token === choice.kind) || TRANSITIONS[0])[1]);
+  }
+  function tbarStart() {
+    if (gate("transition")) return false;
+    if (show.manual.active || tbarPendingStart) return true;
+    tbarPendingStart = true;
+    sendCommand(tr("commandManualStart", { kind: tbarKindLabel() }),
+      [["payload", "manual_start"], ["transition", choice.kind]]);
+    return true;
+  }
+  function tbarMove(value) {
+    if (!tbarStart()) return;
+    const now = performance.now();
+    if (now - tbarLastSent < 33 && value !== 0 && value !== 10000) return;
+    tbarLastSent = now;
+    sendCommand(tr("commandManualPosition", { percent: Math.round(value / 100) }),
+      [["payload", "manual_position"], ["position_basis_points", String(value)]]);
+  }
+  function tbarRelease() {
+    const value = Number(ui.tbar.value);
+    if (!tbarStart()) return;
+    tbarLastSent = 0;
+    tbarMove(value);
+    sendCommand(tr(value === 0 ? "commandManualCancel" : "commandManualCommit"),
+      [["payload", value === 0 ? "manual_cancel" : "manual_commit"]]);
+    tbarPendingStart = false;
+  }
   function fadeToBlack() {
     if (gate("transition")) return;
     const active = !show.ftb.target;
@@ -4138,6 +4237,9 @@
   ui.cut.addEventListener("click", cut);
   ui.auto.addEventListener("click", auto);
   ui.ftb.addEventListener("click", fadeToBlack);
+  ui.tbar.addEventListener("pointerdown", () => { tbarDragging = true; tbarStart(); });
+  ui.tbar.addEventListener("input", () => { tbarDragging = true; tbarMove(Number(ui.tbar.value)); });
+  ui.tbar.addEventListener("change", () => { tbarDragging = false; tbarRelease(); });
   ui.language.addEventListener("click", toggleLanguage);
   ui.reconnect.addEventListener("click", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
   ui.signout.addEventListener("click", signOut);

@@ -4814,8 +4814,10 @@ renders identical frame sequences through the lever, keyboard, controller,
 and API for every mix. The Fade-to-Black outputs popover adds an own
 duration per output and the curve keys, all with English and Spanish hover
 help. `freemix-cli` adds `ftb-output-duration`, `ftb-curve`, their
-`remote-` forms, and every kind on `tbar-start`. Remaining gaps: the
-web control surface still starts only its fixed manual kinds, no hardware
+`remote-` forms, and every kind on `tbar-start`. The daemon's `/operator`
+page now has a T-bar for every timed transition kind: AUTO's thirteen kinds
+start it, dragging sends the position, and releasing takes it at the shown
+position (releasing at the start cancels it). Remaining gaps: no hardware
 T-bar controller profile ships beyond OSC, and `SW-004` remains planned
 until its capability profiles are certified.
 
