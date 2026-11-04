@@ -1755,6 +1755,14 @@ fn action_led(state: &StudioUiState, action: ConsoleAction) -> Option<bool> {
             .map(|player| player.shuttling && player.rate_milli < 0),
         ConsoleAction::ReplayShuttleForwardB => replay_ui::transport_player_for(state, true)
             .map(|player| player.shuttling && player.rate_milli > 0),
+        ConsoleAction::ReplayAngle(slot) => replay_ui::angle_active(state, false, slot),
+        ConsoleAction::ReplayAngleB(slot) => replay_ui::angle_active(state, true, slot),
+        ConsoleAction::ReplayPlaySpeed(percent) => {
+            replay_ui::play_speed_active(state, false, percent)
+        }
+        ConsoleAction::ReplayPlaySpeedB(percent) => {
+            replay_ui::play_speed_active(state, true, percent)
+        }
         _ => None,
     }
 }

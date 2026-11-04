@@ -414,6 +414,25 @@ pub(crate) fn play_speed_intent(
     )
 }
 
+/// Whether the console's player (or the second profile's player) shows
+/// recorded angle `slot`, for an angle key's lamp.
+pub(crate) fn angle_active(state: &StudioUiState, second: bool, slot: u8) -> Option<bool> {
+    let player = transport_player_for(state, second)?;
+    let status = state.replay.as_deref()?;
+    let angle = *status
+        .settings
+        .sources
+        .get(usize::from(slot).checked_sub(1)?)?;
+    Some(player.angle.map(WireInputId::to_domain) == Some(angle))
+}
+
+/// Whether the console's player (or the second profile's player) is
+/// playing at `percent`, for a play-speed key's lamp.
+pub(crate) fn play_speed_active(state: &StudioUiState, second: bool, percent: u8) -> Option<bool> {
+    let player = transport_player_for(state, second)?;
+    Some(player.playing && player.speed == ReplaySpeed::from_percent(percent)?)
+}
+
 /// How long repeated jog steps accelerate, and the largest step.
 const JOG_ACCELERATION_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
 const JOG_MAX_FRAMES: i32 = 30;
@@ -3295,6 +3314,12 @@ mod tests {
         );
         // Only the four product speeds are console actions.
         assert_eq!(play_speed_intent(&state, false, 30), None);
+
+        // The same status lights an angle or play-speed key.
+        assert_eq!(angle_active(&state, false, 1), Some(false));
+        assert_eq!(angle_active(&state, false, 2), Some(true));
+        assert_eq!(play_speed_active(&state, false, 50), Some(true));
+        assert_eq!(play_speed_active(&state, false, 100), Some(false));
     }
 
     #[test]
