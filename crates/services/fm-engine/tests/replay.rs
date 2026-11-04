@@ -1626,3 +1626,102 @@ fn a_multiview_lists_all_eight_recorded_angles() {
         assert!(tile.location.is_some(), "angle {} has media", tile.angle);
     }
 }
+
+/// Protocol 2.156: a Replay input toggles between its live angle and the
+/// cued event; recorded transport leaves live.
+#[test]
+fn a_replay_input_toggles_live_and_returns_to_its_event() {
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1, 2], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    replay(
+        &mut engine,
+        "cue",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: None,
+        },
+    );
+    settle(&mut engine);
+
+    replay(
+        &mut engine,
+        "live",
+        EngineReplayOperation::Live {
+            input: input(9),
+            live: true,
+        },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 1);
+    let status = engine.replay_status();
+    let player = &status.players[0];
+    assert!(player.live);
+    assert!(!player.playing);
+    assert_eq!(player.angle, Some(input(1)));
+    assert_eq!(player.frame, status.sources[0].last_frame);
+
+    // The live angle can change while live.
+    replay(
+        &mut engine,
+        "angle",
+        EngineReplayOperation::Angle {
+            input: input(9),
+            angle: input(2),
+        },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 1);
+    let status = engine.replay_status();
+    let player = &status.players[0];
+    assert!(player.live);
+    assert_eq!(player.angle, Some(input(2)));
+    assert_eq!(player.frame, status.sources[1].last_frame);
+
+    // Recorded transport leaves live mode.
+    replay(
+        &mut engine,
+        "play",
+        EngineReplayOperation::Play {
+            input: input(9),
+            speed: ReplaySpeed::Full,
+        },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 1);
+    assert!(!engine.replay_status().players[0].live);
+
+    replay(
+        &mut engine,
+        "live-again",
+        EngineReplayOperation::Live {
+            input: input(9),
+            live: true,
+        },
+    );
+    settle(&mut engine);
+    replay(
+        &mut engine,
+        "cue-again",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: None,
+        },
+    );
+    settle(&mut engine);
+    assert!(!engine.replay_status().players[0].live);
+}

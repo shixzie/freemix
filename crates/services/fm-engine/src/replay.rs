@@ -157,6 +157,9 @@ pub enum EngineReplayOperation {
         input: InputId,
         linked: Option<InputId>,
     },
+    /// Shows Replay input `input`'s live angle (`live`), or returns it to
+    /// its cued event (Protocol 2.156).
+    Live { input: InputId, live: bool },
     /// Replaces Replay input `input`'s playlist (Protocol 2.119); an empty
     /// list clears it.
     PlaylistSet {
@@ -208,6 +211,7 @@ impl EngineReplayOperation {
             | Self::CueIn { input }
             | Self::Step { input, .. }
             | Self::Link { input, .. }
+            | Self::Live { input, .. }
             | Self::PlaylistSet { input, .. }
             | Self::PlaylistFromList { input, .. }
             | Self::PlaylistNext { input }
@@ -286,6 +290,8 @@ pub struct EngineReplayPlayerStatus {
     pub playlist_index: Option<u32>,
     /// The Replay input this player plays in step with, if any (2.124).
     pub linked: Option<InputId>,
+    /// Whether the player shows its live angle (2.156).
+    pub live: bool,
 }
 
 /// The replay runtime as clients see it.
@@ -407,6 +413,9 @@ pub struct EngineReplayFrame {
     pub rate_milli: i32,
     pub shuttling: bool,
     pub playing: bool,
+    /// Whether the player shows its live angle instead of the cued event
+    /// (2.156).
+    pub live: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -415,6 +424,9 @@ struct Player {
     angle: Option<InputId>,
     speed: ReplaySpeed,
     playing: bool,
+    /// Whether the player shows its angle's live picture instead of the
+    /// recorded event (2.156).
+    live: bool,
     /// The shuttle rate in thousandths of real time while shuttling.
     rate_milli: i32,
     /// Whether the player advances at `rate_milli` instead of `speed`.
@@ -444,6 +456,7 @@ impl Player {
     fn cue_entry(&mut self, index: usize, entry: EngineReplayPlaylistEntry, event: &Event) {
         self.playlist_index = Some(index);
         self.event = Some(entry.event);
+        self.live = false;
         self.angle = entry
             .angle
             .filter(|angle| event.angles.contains(angle))
@@ -1476,6 +1489,7 @@ impl ReplayRuntime {
                         player.shuttling = false;
                         player.rate_milli = 0;
                         player.shuttle_remainder = 0;
+                        player.live = false;
                         player.position = 0;
                         player.playlist_index = player
                             .playlist
@@ -1489,13 +1503,19 @@ impl ReplayRuntime {
                 }
             }
             EngineReplayOperation::Angle { input, angle } => {
-                if let Some(player) = self.players.get_mut(input)
-                    && let Some(event) =
-                        player.event.and_then(|id| self.store.event_frames.get(&id))
-                    && event.angles.contains(angle)
-                {
-                    player.angle = Some(*angle);
-                    self.generation = self.generation.wrapping_add(1);
+                if let Some(player) = self.players.get_mut(input) {
+                    let allowed = if player.live {
+                        self.settings.sources.contains(angle)
+                    } else {
+                        player
+                            .event
+                            .and_then(|id| self.store.event_frames.get(&id))
+                            .is_some_and(|event| event.angles.contains(angle))
+                    };
+                    if allowed {
+                        player.angle = Some(*angle);
+                        self.generation = self.generation.wrapping_add(1);
+                    }
                 }
             }
             EngineReplayOperation::Play { input, speed } => {
@@ -1505,6 +1525,7 @@ impl ReplayRuntime {
                     player.rate_milli = 0;
                     player.shuttling = false;
                     player.shuttle_remainder = 0;
+                    player.live = false;
                     if player.event.is_some() {
                         player.playing = true;
                     }
@@ -1517,6 +1538,7 @@ impl ReplayRuntime {
                     player.rate_milli = *rate_milli;
                     player.shuttling = true;
                     player.shuttle_remainder = 0;
+                    player.live = false;
                     player.playing = player.event.is_some() && *rate_milli != 0;
                 }
                 self.touch();
@@ -1539,6 +1561,7 @@ impl ReplayRuntime {
                         player.shuttling = false;
                         player.rate_milli = 0;
                         player.shuttle_remainder = 0;
+                        player.live = false;
                         player.position = 0;
                     }
                 }
@@ -1546,10 +1569,28 @@ impl ReplayRuntime {
             }
             EngineReplayOperation::Step { input, frames } => {
                 for target in self.ganged(*input) {
+                    if let Some(player) = self.players.get_mut(&target) {
+                        player.live = false;
+                    }
                     self.jog(target, *frames);
                 }
             }
             EngineReplayOperation::Link { input, linked } => self.link(*input, *linked),
+            EngineReplayOperation::Live { input, live } => {
+                let first_source = self.settings.sources.first().copied();
+                for target in self.ganged(*input) {
+                    let player = self.players.entry(target).or_default();
+                    player.live = *live;
+                    if *live {
+                        player.playing = false;
+                        player.shuttling = false;
+                        player.rate_milli = 0;
+                        player.shuttle_remainder = 0;
+                        player.angle = player.angle.or(first_source);
+                    }
+                }
+                self.touch();
+            }
             EngineReplayOperation::PlaylistSet { input, entries } => {
                 let player = self.players.entry(*input).or_default();
                 player.playlist.clone_from(entries);
@@ -1610,11 +1651,17 @@ impl ReplayRuntime {
                 self.touch();
             }
             EngineReplayOperation::PlaylistFromList { input, list } => {
+                for target in self.ganged(*input) {
+                    if let Some(player) = self.players.get_mut(&target) {
+                        player.live = false;
+                    }
+                }
                 let _ = self.playlist_from_list(*input, *list);
             }
             EngineReplayOperation::PlaylistNext { input } => {
                 let events = &self.store.event_frames;
                 if let Some(player) = self.players.get_mut(input) {
+                    player.live = false;
                     player.move_playlist(events, true);
                 }
                 self.generation = self.generation.wrapping_add(1);
@@ -1622,6 +1669,7 @@ impl ReplayRuntime {
             EngineReplayOperation::PlaylistPrev { input } => {
                 let events = &self.store.event_frames;
                 if let Some(player) = self.players.get_mut(input) {
+                    player.live = false;
                     player.move_playlist(events, false);
                 }
                 self.generation = self.generation.wrapping_add(1);
@@ -1637,6 +1685,7 @@ impl ReplayRuntime {
         | EngineReplayOperation::Shuttle { input, .. }
         | EngineReplayOperation::CueIn { input }
         | EngineReplayOperation::Step { input, .. }
+        | EngineReplayOperation::Live { input, .. }
         | EngineReplayOperation::PlaylistFromList { input, .. }
         | EngineReplayOperation::PlaylistNext { input }
         | EngineReplayOperation::PlaylistPrev { input } = operation
@@ -1813,14 +1862,24 @@ impl ReplayRuntime {
             }
             let player = self.players.entry(input).or_default().clone();
             let event = player.event.and_then(|id| self.store.event_frames.get(&id));
-            let source_frame = event.map(|event| {
-                let (start, end) = player.bounds(event);
-                (start + player.position / 4).min(end.saturating_sub(1))
-            });
-            let location = player
-                .angle
-                .zip(source_frame)
-                .and_then(|(angle, source)| self.locate(angle, source));
+            let source_frame = if player.live {
+                player
+                    .angle
+                    .and_then(|angle| self.store.last_frames.get(&angle).copied())
+            } else {
+                event.map(|event| {
+                    let (start, end) = player.bounds(event);
+                    (start + player.position / 4).min(end.saturating_sub(1))
+                })
+            };
+            let location = if player.live {
+                None
+            } else {
+                player
+                    .angle
+                    .zip(source_frame)
+                    .and_then(|(angle, source)| self.locate(angle, source))
+            };
             frames.push(EngineReplayFrame {
                 input,
                 event: player.event,
@@ -1831,6 +1890,7 @@ impl ReplayRuntime {
                 rate_milli: player.rate_milli,
                 shuttling: player.shuttling,
                 playing: player.playing,
+                live: player.live,
             });
             if player.playing
                 && let Some(event) = event
@@ -2601,13 +2661,19 @@ impl ReplayRuntime {
             .replay_inputs()
             .map(|input| {
                 let player = self.players.get(&input).cloned().unwrap_or_default();
-                let frame = player
-                    .event
-                    .and_then(|id| self.store.event_frames.get(&id))
-                    .map(|event| {
-                        let (start, end) = player.bounds(event);
-                        (start + player.position / 4).min(end.saturating_sub(1))
-                    });
+                let frame = if player.live {
+                    player
+                        .angle
+                        .and_then(|angle| self.store.last_frames.get(&angle).copied())
+                } else {
+                    player
+                        .event
+                        .and_then(|id| self.store.event_frames.get(&id))
+                        .map(|event| {
+                            let (start, end) = player.bounds(event);
+                            (start + player.position / 4).min(end.saturating_sub(1))
+                        })
+                };
                 EngineReplayPlayerStatus {
                     input,
                     event: player.event,
@@ -2622,6 +2688,7 @@ impl ReplayRuntime {
                         .playlist_index
                         .and_then(|index| u32::try_from(index).ok()),
                     linked: player.linked,
+                    live: player.live,
                 }
             })
             .collect();
@@ -2787,6 +2854,7 @@ pub(crate) fn accept(
         EngineReplayOperation::Play { input, .. }
         | EngineReplayOperation::Pause { input }
         | EngineReplayOperation::CueIn { input }
+        | EngineReplayOperation::Live { input, .. }
         | EngineReplayOperation::PlaylistFromList { input, .. }
         | EngineReplayOperation::PlaylistNext { input }
         | EngineReplayOperation::PlaylistPrev { input } => check_player(state, *input),

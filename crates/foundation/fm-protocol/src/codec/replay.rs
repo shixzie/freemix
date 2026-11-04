@@ -336,6 +336,10 @@ pub(super) fn encode_operation(
                 linked.map(|linked| linked.to_string()).unwrap_or_default(),
             )
         }
+        ReplayOperation::Live { input, live } => {
+            push("input", input.to_string())?;
+            push("live", u8::from(*live).to_string())
+        }
         ReplayOperation::PlaylistSet { input, entries } => {
             push("input", input.to_string())?;
             push("entries", encode_playlist(entries)?)
@@ -440,6 +444,10 @@ pub(super) fn decode_operation(
                 value if value.is_empty() => None,
                 value => Some(parse_input("linked", &value)?),
             },
+        },
+        "replay_live" => ReplayOperation::Live {
+            input: input(fields)?,
+            live: parse_flag("live", &fields.required("live")?)?,
         },
         "replay_playlist_set" => ReplayOperation::PlaylistSet {
             input: input(fields)?,
@@ -741,7 +749,7 @@ fn encode_players(players: &[ReplayPlayerStatus]) -> Result<String, CodecError> 
         .iter()
         .map(|player| {
             Ok(format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 player.input,
                 optional_text(player.event),
                 optional_text(player.angle),
@@ -752,7 +760,8 @@ fn encode_players(players: &[ReplayPlayerStatus]) -> Result<String, CodecError> 
                 encode_playlist(&player.playlist)?,
                 optional_text(player.linked),
                 player.rate_milli,
-                u8::from(player.shuttling)
+                u8::from(player.shuttling),
+                u8::from(player.live)
             ))
         })
         .collect::<Result<Vec<_>, _>>()
@@ -782,6 +791,7 @@ fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
                 linked,
                 rate_milli,
                 shuttling,
+                live,
             ] = entry.split(':').collect::<Vec<_>>()[..]
             else {
                 return Err(invalid("players", entry));
@@ -809,6 +819,7 @@ fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
                 playlist,
                 playlist_index: index,
                 linked: parse_optional(linked, |value| parse_input("players", value))?,
+                live: parse_flag("players", live)?,
             })
         })
         .collect()

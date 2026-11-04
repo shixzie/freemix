@@ -906,7 +906,7 @@ pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
     }
     for player in &status.players {
         println!(
-            "ReplayPlayer(input={}, event={}, angle={}, speed={}, playing={}, frame={}, linked={})",
+            "ReplayPlayer(input={}, event={}, angle={}, speed={}, playing={}, frame={}, linked={}, live={})",
             player.input,
             player
                 .event
@@ -920,6 +920,7 @@ pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
             player
                 .linked
                 .map_or_else(|| "none".to_owned(), |linked| linked.to_string()),
+            player.live,
         );
     }
 }

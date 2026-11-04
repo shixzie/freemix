@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.155 / schema 106 (2026-11-04).
+(2026-10-19); items refreshed through protocol 2.156 / schema 106 (2026-11-04).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -178,14 +178,16 @@ there come before any new breadth below.
     A Replay input's playlist can also be built from a named event list whose
     entries carry their own angle, marks, and speed (Protocol 2.154), with
     Studio's Replay panel creating, editing, and applying the lists and
-    `replay_status` reporting them (Protocol 2.155).
+    `replay_status` reporting them (Protocol 2.155). A Replay input toggles
+    between its cued event and its angle's live picture (Protocol 2.156),
+    from the panel, console keys, or `remote-replay-do live`.
     Remaining: the
     recorder takes a source's last
     decoded picture rather than a genlocked one, the typed controller
-    surface's channel and live selection (the console covers the marks,
-    play/pause, play speeds, stepping, shuttling, angles, and a second
-    profile for the second Replay input), and certification are absent;
-    Studio's
+    surface's explicit channel-selection profile (the console covers the
+    marks, play/pause, play speeds, stepping, shuttling, angles, live/recorded,
+    and a second profile for the second Replay input), and certification are
+    absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
     in an adaptive grid (Protocol 2.127), now led by the input and its linked
     A/B partner as channel tiles; storage health reaches Studio and the CLI (Protocol 2.125,
@@ -6333,9 +6335,12 @@ requested Replay input and its linked A/B partner as channel tiles; controller
 bindings are MIDI (real device input) and persist with the key profile, and a
 second transport profile drives the second Replay input from channel 2, and
 repeated jog keys accelerate from one frame to thirty, and console actions
-now play at 25, 50, 75, or 100 percent and select any of the eight recorded
-angles on either player, though the typed surface's channel and live
-selection remain; the native daemon samples
+now play at 25, 50, 75, or 100 percent, select any of the eight recorded
+angles on either player, and toggle live/recorded; a Replay input shows its
+angle's live picture from the native daemon's latest source frame while live,
+and any recorded transport returns it to the cued event (Protocol 2.156);
+live audio is not yet routed through the Replay input. The typed surface's
+explicit channel-selection profile remains; the native daemon samples
 its replay root's free space and reports the predicted recording time at the
 observed write rate (Protocol 2.125, shown in Studio and the CLI), and a
 root below the recorder's 512 MiB floor pauses recording (`storage:low_space`)

@@ -34,6 +34,7 @@ fn tokens_round_trip_and_profiles_are_unambiguous() {
             + 8
             + 5
             + 2
+            + 2
             + 2 * usize::from(REPLAY_ANGLES)
             + 2 * REPLAY_PLAY_SPEEDS.len()
     );

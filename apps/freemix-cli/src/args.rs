@@ -7453,6 +7453,10 @@ fn parse_remote_replay_do(
             input: replay_input(input)?,
             linked: Some(replay_input(linked)?),
         },
+        ("live", [input, live]) => ReplayOperation::Live {
+            input: replay_input(input)?,
+            live: on_off(live.clone(), "live (on or off)")?,
+        },
         ("playlist", [input, entries @ ..]) => ReplayOperation::PlaylistSet {
             input: replay_input(input)?,
             entries: entries
@@ -13347,6 +13351,28 @@ mod tests {
             &["link", "7", "x"][..],
             &["link", "7", "0"][..],
             &["link"][..],
+        ] {
+            assert!(remote(words).is_err(), "{words:?}");
+        }
+        // Protocol 2.156: show the live angle or return to the cued event.
+        assert_eq!(
+            remote(&["live", "7", "on"]),
+            Ok(ReplayOperation::Live {
+                input: input(7),
+                live: true,
+            })
+        );
+        assert_eq!(
+            remote(&["live", "7", "off"]),
+            Ok(ReplayOperation::Live {
+                input: input(7),
+                live: false,
+            })
+        );
+        for words in [
+            &["live", "7"][..],
+            &["live", "7", "maybe"][..],
+            &["live"][..],
         ] {
             assert!(remote(words).is_err(), "{words:?}");
         }

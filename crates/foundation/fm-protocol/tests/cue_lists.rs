@@ -22,7 +22,7 @@ use fm_protocol::{
     WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.155\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.156\tid=a\tidempotency_key=k";
 
 /// Lowercase hex of `text`'s UTF-8 bytes.
 fn hex(text: &str) -> String {
@@ -212,7 +212,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 155));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 156));
 }
 
 #[test]
@@ -909,7 +909,7 @@ fn the_hidden_title_value_marker_round_trips_exactly() {
     }
 }
 
-/// Protocol 2.155 (SW-013): a production clock action round-trips through
+/// Protocol 2.156 (SW-013): a production clock action round-trips through
 /// its token and refuses a value on an operation that takes none, a missing
 /// value, a non-canonical value, and an unknown operation.
 #[test]

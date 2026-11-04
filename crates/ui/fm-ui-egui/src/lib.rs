@@ -1755,6 +1755,10 @@ fn action_led(state: &StudioUiState, action: ConsoleAction) -> Option<bool> {
             .map(|player| player.shuttling && player.rate_milli < 0),
         ConsoleAction::ReplayShuttleForwardB => replay_ui::transport_player_for(state, true)
             .map(|player| player.shuttling && player.rate_milli > 0),
+        ConsoleAction::ReplayLive => replay_ui::transport_player(state).map(|player| player.live),
+        ConsoleAction::ReplayLiveB => {
+            replay_ui::transport_player_for(state, true).map(|player| player.live)
+        }
         ConsoleAction::ReplayAngle(slot) => replay_ui::angle_active(state, false, slot),
         ConsoleAction::ReplayAngleB(slot) => replay_ui::angle_active(state, true, slot),
         ConsoleAction::ReplayPlaySpeed(percent) => {
@@ -1829,6 +1833,8 @@ fn console_action_intents(
         | ConsoleAction::ReplayStepForwardB
         | ConsoleAction::ReplayShuttleBackB
         | ConsoleAction::ReplayShuttleForwardB
+        | ConsoleAction::ReplayLive
+        | ConsoleAction::ReplayLiveB
         | ConsoleAction::ReplayAngle(_)
         | ConsoleAction::ReplayAngleB(_)
         | ConsoleAction::ReplayPlaySpeed(_)
@@ -1974,6 +1980,27 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                     },
                 )
             }),
+        ConsoleAction::ReplayLive => replay_ui::transport_player(state).and_then(|player| {
+            replay_ui::transport_intent(
+                state,
+                fm_protocol::ReplayOperation::Live {
+                    input: player.input,
+                    live: !player.live,
+                },
+            )
+        }),
+        ConsoleAction::ReplayLiveB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
+                    fm_protocol::ReplayOperation::Live {
+                        input: player.input,
+                        live: !player.live,
+                    },
+                )
+            })
+        }
         ConsoleAction::ReplayAngle(slot) => replay_ui::angle_intent(state, false, slot),
         ConsoleAction::ReplayAngleB(slot) => replay_ui::angle_intent(state, true, slot),
         ConsoleAction::ReplayPlaySpeed(percent) => {

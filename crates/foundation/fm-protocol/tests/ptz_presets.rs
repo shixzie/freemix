@@ -1,5 +1,5 @@
 //! IN-028: PTZ preset requests and answers round-trip exactly and strictly
-//! (Protocol 2.155).
+//! (Protocol 2.156).
 
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, PtzPresetStatus, PtzPresetsRequest, PtzPresetsResponse, WireMessage,
@@ -37,7 +37,7 @@ fn ptz_preset_requests_and_answers_round_trip_exactly() {
     let line = encode_line(&request()).unwrap();
     assert_eq!(
         line,
-        "ptz_presets_request\tprotocol=2.155\trequest_id=ptz-1\n"
+        "ptz_presets_request\tprotocol=2.156\trequest_id=ptz-1\n"
     );
     assert_eq!(encode_line(&decode_line(&line).unwrap()).unwrap(), line);
 
@@ -49,7 +49,7 @@ fn ptz_preset_requests_and_answers_round_trip_exactly() {
     let line = encode_line(&response).unwrap();
     assert!(
         line.starts_with(
-            "ptz_presets_response\tprotocol=2.155\trequest_id=ptz-1\tpresets=63616d2d61%2C3%2C1%2C"
+            "ptz_presets_response\tprotocol=2.156\trequest_id=ptz-1\tpresets=63616d2d61%2C3%2C1%2C"
         ),
         "{line}"
     );
@@ -63,7 +63,7 @@ fn ptz_preset_requests_and_answers_round_trip_exactly() {
     let line = encode_line(&empty).unwrap();
     assert_eq!(
         line,
-        "ptz_presets_response\tprotocol=2.155\trequest_id=ptz-2\tpresets=\n"
+        "ptz_presets_response\tprotocol=2.156\trequest_id=ptz-2\tpresets=\n"
     );
     assert_eq!(encode_line(&decode_line(&line).unwrap()).unwrap(), line);
 }
@@ -72,14 +72,14 @@ fn ptz_preset_requests_and_answers_round_trip_exactly() {
 fn ptz_preset_messages_are_strict() {
     for line in [
         "ptz_presets_request\trequest_id=ptz-1",
-        "ptz_presets_request\tprotocol=2.155\trequest_id=",
-        "ptz_presets_request\tprotocol=2.155\trequest_id=ptz-1\textra=1",
+        "ptz_presets_request\tprotocol=2.156\trequest_id=",
+        "ptz_presets_request\tprotocol=2.156\trequest_id=ptz-1\textra=1",
         "ptz_presets_request\tprotocol=3\trequest_id=ptz-1",
-        "ptz_presets_response\tprotocol=2.155\trequest_id=ptz-1",
-        "ptz_presets_response\tprotocol=2.155\trequest_id=ptz-1\tpresets=zz",
-        "ptz_presets_response\tprotocol=2.155\trequest_id=ptz-1\tpresets=63616d%2C1%2C1%2C-%2C",
-        "ptz_presets_response\tprotocol=2.155\trequest_id=ptz-1\tpresets=63616d%2C1%2C1%2C-%2C6e6",
-        "ptz_presets_response\tprotocol=2.155\trequest_id=ptz-1\t\
+        "ptz_presets_response\tprotocol=2.156\trequest_id=ptz-1",
+        "ptz_presets_response\tprotocol=2.156\trequest_id=ptz-1\tpresets=zz",
+        "ptz_presets_response\tprotocol=2.156\trequest_id=ptz-1\tpresets=63616d%2C1%2C1%2C-%2C",
+        "ptz_presets_response\tprotocol=2.156\trequest_id=ptz-1\tpresets=63616d%2C1%2C1%2C-%2C6e6",
+        "ptz_presets_response\tprotocol=2.156\trequest_id=ptz-1\t\
          presets=63616d%2C1%2C1%2C-%2C6e616d65%2Cextra",
     ] {
         assert!(

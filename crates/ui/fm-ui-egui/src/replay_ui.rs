@@ -1621,6 +1621,17 @@ fn draw_player(
     let reason = cued_reason.unwrap_or(Msg::ReplayReasonNothingCued.en());
     ui.horizontal(|ui| {
         ui.label(RichText::new(name_of(state, l, input)).strong());
+        status_chip(
+            ui,
+            l.text(if player.live {
+                Msg::Live
+            } else {
+                Msg::BadgeRec
+            }),
+            if player.live { Tone::Ready } else { Tone::Idle },
+            48.0,
+        )
+        .on_hover_text(l.text(Msg::ReplayLiveHover));
         let cued = event.map_or_else(
             || l.text(Msg::ReplayNothingCued).to_owned(),
             |event| event.name.clone(),
@@ -1633,14 +1644,24 @@ fn draw_player(
     });
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        if let Some(event) = event
-            && let Some(shown) = player.angle.or(event.angles.first().copied())
-        {
+        let angles: Vec<WireInputId> = event.map_or_else(
+            || {
+                status
+                    .settings
+                    .sources
+                    .iter()
+                    .copied()
+                    .map(WireInputId::from_domain)
+                    .collect()
+            },
+            |event| event.angles.clone(),
+        );
+        if let Some(shown) = player.angle.or_else(|| angles.first().copied()) {
             ComboBox::from_id_salt(("studio-replay-angle", input))
                 .selected_text(name_of(state, l, shown.to_domain()))
                 .width(110.0)
                 .show_ui(ui, |ui| {
-                    for angle in &event.angles {
+                    for angle in &angles {
                         if ui
                             .add_enabled(
                                 block.is_none(),
@@ -1783,6 +1804,19 @@ fn draw_player(
                     rate_milli: rate,
                 }));
             }
+        }
+        if ui
+            .add_enabled(
+                block.is_none(),
+                key_button(l.text(Msg::Live), player.live.then_some(PROGRAM), 48.0),
+            )
+            .hint(l.text(Msg::ReplayLiveHover), reason)
+            .clicked()
+        {
+            intents.push(StudioIntent::Replay(ReplayOperation::Live {
+                input: player.input,
+                live: !player.live,
+            }));
         }
         if ui
             .add_enabled(

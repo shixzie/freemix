@@ -175,6 +175,20 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
             "replay_link\tinput=9\tlinked=",
         ),
         (
+            ReplayOperation::Live {
+                input: wire(9),
+                live: true,
+            },
+            "replay_live\tinput=9\tlive=1",
+        ),
+        (
+            ReplayOperation::Live {
+                input: wire(9),
+                live: false,
+            },
+            "replay_live\tinput=9\tlive=0",
+        ),
+        (
             ReplayOperation::PlaylistSet {
                 input: wire(9),
                 entries: vec![
@@ -332,6 +346,10 @@ fn commands_are_strict() {
         "replay_link\tlinked=10",
         "replay_link\tinput=9\tlinked=0",
         "replay_link\tinput=9\tlinked=x",
+        "replay_live\tinput=9",
+        "replay_live\tlive=1",
+        "replay_live\tinput=9\tlive=2",
+        "replay_live\tinput=x\tlive=1",
         "replay_playlist_next\tinput=x",
         "replay_playlist_prev",
         "replay_return\tinput=9",
@@ -481,6 +499,7 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 ],
                 playlist_index: Some(1),
                 linked: Some(wire(10)),
+                live: false,
             },
             ReplayPlayerStatus {
                 input: wire(10),
@@ -494,6 +513,7 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 playlist: Vec::new(),
                 playlist_index: None,
                 linked: Some(wire(9)),
+                live: true,
             },
         ],
         storage: Some(ReplayStorageStatus {
@@ -525,8 +545,8 @@ fn status_and_its_request_have_an_exact_wire_form() {
     assert!(
         line.contains(
             "\tlists=2%3ABest%253A%2520goals%3A1%2F2%2F2500-2700%2F50%7C3%2F%2F%2F\t\
-             players=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3A0%3A0%3B\
-             10%3A%3A%3A100%3A0%3A%3A%3A%3A9%3A0%3A0\t\
+             players=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3A0%3A0%3A0%3B\
+             10%3A%3A%3A100%3A0%3A%3A%3A%3A9%3A0%3A0%3A1\t\
              storage=7200000000%3A24000000%3A300%3Awarning%3Awarning%3A41%3A12\n"
         ),
         "{line}"

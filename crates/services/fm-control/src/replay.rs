@@ -65,6 +65,10 @@ pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOpera
             input: input.to_domain(),
             linked: linked.map(WireInputId::to_domain),
         },
+        ReplayOperation::Live { input, live } => EngineReplayOperation::Live {
+            input: input.to_domain(),
+            live: *live,
+        },
         ReplayOperation::PlaylistSet { input, entries } => EngineReplayOperation::PlaylistSet {
             input: input.to_domain(),
             entries: entries
@@ -166,6 +170,10 @@ pub(super) fn wire_operation(operation: &EngineReplayOperation) -> ReplayOperati
         EngineReplayOperation::Link { input, linked } => ReplayOperation::Link {
             input: WireInputId::from_domain(*input),
             linked: linked.map(WireInputId::from_domain),
+        },
+        EngineReplayOperation::Live { input, live } => ReplayOperation::Live {
+            input: WireInputId::from_domain(*input),
+            live: *live,
         },
         EngineReplayOperation::PlaylistSet { input, entries } => ReplayOperation::PlaylistSet {
             input: WireInputId::from_domain(*input),
@@ -344,6 +352,7 @@ pub(super) fn status_message(
                     .collect(),
                 playlist_index: player.playlist_index,
                 linked: player.linked.map(WireInputId::from_domain),
+                live: player.live,
             })
             .collect(),
     }

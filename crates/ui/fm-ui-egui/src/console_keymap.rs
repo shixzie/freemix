@@ -127,6 +127,11 @@ pub enum ConsoleAction {
     ReplayShuttleBackB,
     /// Shuttle the second Replay input's player forwards at 2x.
     ReplayShuttleForwardB,
+    /// Toggle the console's Replay player between its live angle and the
+    /// cued event.
+    ReplayLive,
+    /// Toggle the second Replay input's player between live and recorded.
+    ReplayLiveB,
     /// Show recorded angle `n` (1 to [`REPLAY_ANGLES`]) on the console's
     /// Replay player.
     ReplayAngle(u8),
@@ -168,6 +173,7 @@ impl ConsoleAction {
                 Self::ReplayShuttleBackB,
                 Self::ReplayShuttleForwardB,
             ])
+            .chain([Self::ReplayLive, Self::ReplayLiveB])
             .chain((1..=REPLAY_ANGLES).map(Self::ReplayAngle))
             .chain((1..=REPLAY_ANGLES).map(Self::ReplayAngleB))
             .chain(REPLAY_PLAY_SPEEDS.into_iter().map(Self::ReplayPlaySpeed))
@@ -203,6 +209,8 @@ impl ConsoleAction {
             Self::ReplayStepForwardB => "replay_step_forward_b".to_owned(),
             Self::ReplayShuttleBackB => "replay_shuttle_back_b".to_owned(),
             Self::ReplayShuttleForwardB => "replay_shuttle_forward_b".to_owned(),
+            Self::ReplayLive => "replay_live".to_owned(),
+            Self::ReplayLiveB => "replay_live_b".to_owned(),
             Self::ReplayAngle(n) => format!("replay_angle.{n}"),
             Self::ReplayAngleB(n) => format!("replay_angle_b.{n}"),
             Self::ReplayPlaySpeed(n) => format!("replay_play_speed.{n}"),
@@ -244,6 +252,8 @@ impl ConsoleAction {
             | Self::ReplayStepForwardB
             | Self::ReplayShuttleBackB
             | Self::ReplayShuttleForwardB
+            | Self::ReplayLive
+            | Self::ReplayLiveB
             | Self::ReplayAngle(_)
             | Self::ReplayAngleB(_)
             | Self::ReplayPlaySpeed(_)
@@ -282,6 +292,8 @@ impl ConsoleAction {
             Self::ReplayShuttleForwardB => {
                 l.text(Msg::ConsoleActionReplayShuttleForwardB).to_owned()
             }
+            Self::ReplayLive => l.text(Msg::ConsoleActionReplayLive).to_owned(),
+            Self::ReplayLiveB => l.text(Msg::ConsoleActionReplayLiveB).to_owned(),
             Self::ReplayAngle(n) => numbered(Msg::ConsoleActionReplayAngle, n),
             Self::ReplayAngleB(n) => numbered(Msg::ConsoleActionReplayAngleB, n),
             Self::ReplayPlaySpeed(n) => numbered(Msg::ConsoleActionReplayPlaySpeed, n),

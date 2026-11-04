@@ -48,7 +48,9 @@
 //!
 //! Limitations: the recorded picture is each source's newest decoded
 //! picture when the frame is realized (for a media file that can be a few
-//! frames ahead of what aired).
+//! frames ahead of what aired). A Replay input in live mode (Protocol 2.156)
+//! shows its angle's newest decoded picture; the source's live audio is not
+//! yet routed through the Replay input.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -370,7 +372,9 @@ impl ReplayPlayers {
             if let Some(decoded) = player.take_decoded() {
                 player.decoded = Some(decoded);
             }
-            if !playback.registry().contains(replay.input) || player.shown == wanted {
+            if !playback.registry().contains(replay.input)
+                || (!replay.live && player.shown == wanted)
+            {
                 continue;
             }
             let picture = match &wanted {
@@ -413,6 +417,10 @@ impl ReplayPlayers {
                         continue;
                     }
                 },
+                Shown::Live(source) => playback
+                    .latest_frames()
+                    .get(*source)
+                    .and_then(|picture| retimed(picture.as_ref(), frame, self.format)),
             };
             player.shown = wanted;
             // A picture the source refuses is reported, never fatal: the
@@ -1322,10 +1330,15 @@ enum Shown {
     /// The cued frame is not in a finished segment yet: the picture holds.
     Hold,
     Frame(PathBuf, u64),
+    /// The live picture of `input` (Protocol 2.156).
+    Live(InputId),
 }
 
 impl Shown {
     fn of(replay: &EngineReplayFrame) -> Self {
+        if replay.live {
+            return replay.angle.map_or(Self::Blank, Self::Live);
+        }
         match (&replay.event, &replay.location) {
             (None, _) => Self::Blank,
             (Some(_), None) => Self::Hold,
@@ -1637,6 +1650,28 @@ mod tests {
 
     fn input(value: u128) -> InputId {
         InputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    #[test]
+    fn live_mode_shows_the_angle_rather_than_a_recorded_frame() {
+        let replay = EngineReplayFrame {
+            input: input(9),
+            event: Some(1),
+            angle: Some(input(2)),
+            source_frame: Some(10),
+            location: None,
+            speed: ReplaySpeed::Full,
+            rate_milli: 0,
+            shuttling: false,
+            playing: false,
+            live: true,
+        };
+        assert_eq!(Shown::of(&replay), Shown::Live(input(2)));
+        let no_angle = EngineReplayFrame {
+            angle: None,
+            ..replay
+        };
+        assert_eq!(Shown::of(&no_angle), Shown::Blank);
     }
 
     fn ffmpeg_available() -> bool {

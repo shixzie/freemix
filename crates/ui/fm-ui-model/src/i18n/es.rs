@@ -11053,6 +11053,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayLinkReasonNoPartner,
         t("no hay otra entrada de repetición a la que vincular"),
     ),
+    (
+        Msg::ReplayLiveHover,
+        t("Mostrar el ángulo directo de esta entrada de repetición, o volver al evento cargado"),
+    ),
     (Msg::ReplayPlaylist, t("Lista de repetición")),
     (
         Msg::ReplayPlaylistCount,
@@ -11392,6 +11396,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ConsoleActionReplayShuttleForwardB,
         t("Repetición B rápida hacia adelante"),
+    ),
+    (
+        Msg::ConsoleActionReplayLive,
+        t("Repetición directo/grabado"),
+    ),
+    (
+        Msg::ConsoleActionReplayLiveB,
+        t("Repetición B directo/grabado"),
     ),
     (Msg::ConsoleActionReplayAngle, t("Ángulo de repetición {n}")),
     (

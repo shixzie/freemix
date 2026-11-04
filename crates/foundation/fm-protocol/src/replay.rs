@@ -23,6 +23,7 @@
 //! | [`ReplayOperation::CueIn`] | `replay_cue_in` | `input` | transition |
 //! | [`ReplayOperation::Step`] | `replay_step` | `input`, `frames` (a canonical signed decimal, nonzero, at most 600 either way) | transition |
 //! | [`ReplayOperation::Link`] | `replay_link` | `input`, `linked` (a Replay input; empty unlinks) | transition |
+//! | [`ReplayOperation::Live`] | `replay_live` | `input`, `live` (`0\|1`) | transition |
 //! | [`ReplayOperation::PlaylistSet`] | `replay_playlist_set` | `input`, `entries` (`event/angle/speed` entries joined by `\|`, empty clears it; at most 16) | transition |
 //! | [`ReplayOperation::ListSet`] | `replay_list_set` | `list`, `name`, `entries` (`event/angle/marks/speed` entries joined by `\|`; marks `start-end` or empty; at most 16) | transition |
 //! | [`ReplayOperation::PlaylistFromList`] | `replay_playlist_from_list` | `input`, `list` | transition |
@@ -46,6 +47,12 @@
 //! move both. The link is symmetric and clears any previous partner on both
 //! sides; a linked player that reaches its event's end advances its playlist
 //! only when its partner can too, and otherwise both stop together.
+//!
+//! A Replay input can show its live angle instead of the cued event
+//! (Protocol 2.156): `replay_live` with `live=1` shows the current angle's
+//! live picture, the angle may still be changed, and cueing, playing,
+//! shuttling, cue-in, stepping, or advancing a playlist returns it to
+//! recorded mode.
 //!
 //! Only `replay_configure` is padlocked and undoable. Every accepted
 //! operation is announced by the durable `event=replay_changed` carrying
@@ -152,6 +159,9 @@ pub enum ReplayOperation {
         input: WireInputId,
         linked: Option<WireInputId>,
     },
+    /// Shows Replay input `input`'s live angle (`live`), or returns it to its
+    /// cued event (Protocol 2.156).
+    Live { input: WireInputId, live: bool },
     /// Replaces Replay input `input`'s playlist (Protocol 2.119); an empty
     /// list clears it.
     PlaylistSet {
@@ -181,7 +191,7 @@ pub enum ReplayOperation {
 
 impl ReplayOperation {
     /// Every payload token, in table order.
-    pub const TOKENS: [&'static str; 21] = [
+    pub const TOKENS: [&'static str; 22] = [
         "replay_configure",
         "replay_mark_in",
         "replay_mark_out",
@@ -197,6 +207,7 @@ impl ReplayOperation {
         "replay_cue_in",
         "replay_step",
         "replay_link",
+        "replay_live",
         "replay_playlist_set",
         "replay_list_set",
         "replay_playlist_from_list",
@@ -224,6 +235,7 @@ impl ReplayOperation {
             Self::CueIn { .. } => "replay_cue_in",
             Self::Step { .. } => "replay_step",
             Self::Link { .. } => "replay_link",
+            Self::Live { .. } => "replay_live",
             Self::PlaylistSet { .. } => "replay_playlist_set",
             Self::ListSet { .. } => "replay_list_set",
             Self::PlaylistFromList { .. } => "replay_playlist_from_list",
@@ -316,6 +328,9 @@ pub struct ReplayPlayerStatus {
     pub playlist_index: Option<u32>,
     /// The Replay input this player plays in step with, if any (2.124).
     pub linked: Option<WireInputId>,
+    /// Whether the player shows its live angle instead of the cued event
+    /// (2.156).
+    pub live: bool,
 }
 
 /// How close the replay storage root is to full (2.125, OR-014).
@@ -429,12 +444,13 @@ pub struct ReplayStorageStatus {
 ///   the name percent-escaped;
 /// * `lists`: `<id>:<name>:<entries>` per event list (2.155), the name
 ///   percent-escaped and the entries encoded like `replay_list_set`;
-/// * `players`: `<input>:<event>:<angle>:<speed>:<playing 0|1>:<frame>:<playlist index>:<playlist>:<linked>`,
+/// * `players`: `<input>:<event>:<angle>:<speed>:<playing 0|1>:<frame>:<playlist index>:<playlist>:<linked>:<rate>:<shuttling 0|1>:<live 0|1>`,
 ///   `event`, `angle`, and `frame` empty while nothing is cued, the index
 ///   empty while the player is on no playlist entry, the playlist a
 ///   `|`-joined list of `<event>/<angle>/<speed>` entries (the angle empty
-///   for the event's preferred one), and `linked` the Replay input the
-///   player is linked to (empty when none);
+///   for the event's preferred one), `linked` the Replay input the player
+///   is linked to (empty when none), and `live` whether it shows its live
+///   angle (2.156);
 /// * `storage`: `-` when the daemon does not sample the root, else
 ///   `<free bytes>:<bytes per second>:<remaining seconds or ->:<level>`
 ///   (2.125).
