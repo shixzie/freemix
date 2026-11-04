@@ -956,8 +956,8 @@ position, Commit, and Cancel commands; its local path restores and saves the
 current engine state. Studio exposes permission-gated manual Fade/Wipe/AlphaFade/Slide
 controls while Ready. Web now has only a current-contract transport-free semantic
 manual-control model; it still has no browser renderer or network runtime
-(the gateway's `/operator` page, `RC-014`, offers automatic transitions and FTB
-but no manual T-bar).
+(the gateway's `/operator` page, `RC-014`, offers automatic transitions, FTB,
+and a manual T-bar for every timed kind).
 Missing local audio, stills, scene silence, and
 configured simulated silence produce silence; unsupported simulated sine audio
 is rejected. At decoded EOS, the daemon synthesizes continuing silence for
@@ -5874,8 +5874,8 @@ badges that the page mirrors. The tally page now reads only the label of an
 input's `id~name~lifecycle` entry (it showed the lifecycle suffix).
 Remaining operator gaps: no monitor video or per-input meters for Web peers
 (Protocol 2.66 below adds Master meters and realized recorder and
-destination status), no T-bar,
-stinger, overlay, or title keys, no Cut confirmation, and the pages are
+destination status), no stinger, overlay, or title keys, no Cut confirmation,
+and the pages are
 verified by page-source and wire tests plus headless-Chromium screenshots
 (`docs/progress/web-operator-*.png`, `docs/progress/web-tally-*.png`), not by
 an automated browser test. `RC-014` remains planned.
