@@ -1579,6 +1579,12 @@ impl ReplayRuntime {
             EngineReplayOperation::Live { input, live } => {
                 let first_source = self.settings.sources.first().copied();
                 for target in self.ganged(*input) {
+                    let event_angles = self
+                        .players
+                        .get(&target)
+                        .and_then(|player| player.event)
+                        .and_then(|id| self.store.event_frames.get(&id))
+                        .map(|event| event.angles.clone());
                     let player = self.players.entry(target).or_default();
                     player.live = *live;
                     if *live {
@@ -1587,6 +1593,12 @@ impl ReplayRuntime {
                         player.rate_milli = 0;
                         player.shuttle_remainder = 0;
                         player.angle = player.angle.or(first_source);
+                    } else if let Some(angles) = event_angles
+                        && player.angle.is_none_or(|angle| !angles.contains(&angle))
+                    {
+                        // A live angle may not be in the recall event; fall
+                        // back to the event's preferred angle.
+                        player.angle = angles.first().copied();
                     }
                 }
                 self.touch();
