@@ -879,6 +879,31 @@ pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
             event.complete,
         );
     }
+    for list in &status.lists {
+        println!(
+            "ReplayList(id={}, name={:?}, entries={})",
+            list.id,
+            list.name,
+            list.entries.len(),
+        );
+        for entry in &list.entries {
+            println!(
+                "ReplayListEntry(list={}, event={}, angle={}, marks={}, speed={})",
+                list.id,
+                entry.event,
+                entry
+                    .angle
+                    .map_or_else(|| "none".to_owned(), |angle| angle.to_string()),
+                entry.marks.map_or_else(
+                    || "none".to_owned(),
+                    |(first, end)| format!("{first}-{end}")
+                ),
+                entry
+                    .speed
+                    .map_or_else(|| "none".to_owned(), |speed| speed.percent().to_string()),
+            );
+        }
+    }
     for player in &status.players {
         println!(
             "ReplayPlayer(input={}, event={}, angle={}, speed={}, playing={}, frame={}, linked={})",

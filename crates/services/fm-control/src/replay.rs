@@ -6,8 +6,8 @@ use fm_engine::{
     EngineReplayStorageLevel,
 };
 use fm_protocol::{
-    CommandPayload, EventPayload, ReplayEventStatus, ReplayFeed, ReplayListEntry, ReplayOperation,
-    ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySmartHealth, ReplaySmartStatus,
+    CommandPayload, EventPayload, ReplayEventStatus, ReplayFeed, ReplayListEntry, ReplayListStatus,
+    ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySmartHealth, ReplaySmartStatus,
     ReplaySourceStatus, ReplayStatusMessage, ServerIdentity, WireInputId,
 };
 
@@ -278,6 +278,24 @@ pub(super) fn status_message(
                     .map(WireInputId::from_domain)
                     .collect(),
                 complete: event.complete,
+            })
+            .collect(),
+        lists: status
+            .lists
+            .into_iter()
+            .map(|list| ReplayListStatus {
+                id: list.id,
+                name: list.name,
+                entries: list
+                    .entries
+                    .into_iter()
+                    .map(|entry| ReplayListEntry {
+                        event: entry.event,
+                        angle: entry.angle.map(WireInputId::from_domain),
+                        marks: entry.marks,
+                        speed: entry.speed,
+                    })
+                    .collect(),
             })
             .collect(),
         storage: status

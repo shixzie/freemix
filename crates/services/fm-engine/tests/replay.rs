@@ -910,6 +910,21 @@ fn a_playlist_from_an_event_list_applies_its_overrides() {
     );
     settle(&mut engine);
     let status = engine.replay_status();
+    let stored_list = status
+        .lists
+        .iter()
+        .find(|candidate| candidate.id == list)
+        .expect("the list is reported");
+    assert_eq!(stored_list.name, "Highlights");
+    assert_eq!(stored_list.entries.len(), 2);
+    assert_eq!(stored_list.entries[0].event, 1);
+    assert_eq!(stored_list.entries[0].angle, Some(input(2)));
+    assert_eq!(stored_list.entries[0].marks, Some((mark_in, mark_out)));
+    assert_eq!(stored_list.entries[0].speed, Some(ReplaySpeed::Half));
+    assert_eq!(stored_list.entries[1].event, 2);
+    assert_eq!(stored_list.entries[1].angle, None);
+    assert_eq!(stored_list.entries[1].marks, None);
+    assert_eq!(stored_list.entries[1].speed, None);
     let playlist = &status.players[0].playlist;
     assert_eq!(playlist.len(), 2);
     assert_eq!(playlist[0].event, 1);

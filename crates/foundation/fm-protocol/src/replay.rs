@@ -63,10 +63,12 @@ use crate::{ServerIdentity, WireInputId};
 
 pub use fm_types::replay::{
     DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_AUTO_RETURN_FRAMES, MAX_REPLAY_EVENT_NAME_BYTES,
-    MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_PLAYLIST_ENTRIES, MAX_REPLAY_RECORD_SOURCES,
-    MAX_REPLAY_RETENTION_SECONDS, MAX_REPLAY_STEP_FRAMES, MAX_REPLAY_STORAGE_ROOT_BYTES,
-    MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReplaySettings, ReplaySettingsError,
-    ReplaySpeed, replay_event_name_is_valid, replay_step_is_valid, replay_storage_root_is_valid,
+    MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_LIST_NAME_BYTES, MAX_REPLAY_LISTS,
+    MAX_REPLAY_PLAYLIST_ENTRIES, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
+    MAX_REPLAY_STEP_FRAMES, MAX_REPLAY_STORAGE_ROOT_BYTES, MIN_REPLAY_RETENTION_SECONDS,
+    REPLAY_LAST_SECONDS, ReplaySettings, ReplaySettingsError, ReplaySpeed,
+    replay_event_name_is_valid, replay_list_name_is_valid, replay_step_is_valid,
+    replay_storage_root_is_valid,
 };
 
 /// One entry in a Replay input's playlist (Protocol 2.119).
@@ -89,6 +91,15 @@ pub struct ReplayListEntry {
     /// Inclusive first and exclusive last engine frame.
     pub marks: Option<(u64, u64)>,
     pub speed: Option<ReplaySpeed>,
+}
+
+/// One server event list as clients see it (Protocol 2.155).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplayListStatus {
+    pub id: u32,
+    pub name: String,
+    /// The list's entries in order, each with its optional overrides.
+    pub entries: Vec<ReplayListEntry>,
 }
 
 /// One replay command.
@@ -410,12 +421,14 @@ pub struct ReplayStorageStatus {
 /// [`ReplayStatusRequest`]), `feed` (`synthetic|recorded`), `sources`,
 /// `retention_seconds`, optional `storage_root` (the settings), `root`
 /// (the directory in use), optional `live_frame`, optional `mark_in` and
-/// `mark_out` (one past the marked frame), and three `;`-separated lists:
+/// `mark_out` (one past the marked frame), and four `;`-separated lists:
 ///
 /// * `recorded`: `<input>:<segments>:<bytes>:<first>:<last>` per source,
 ///   `first` and `last` empty while nothing is retained;
 /// * `events`: `<id>:<in>:<out>:<complete 0|1>:<angles '/'-joined>:<name>`,
 ///   the name percent-escaped;
+/// * `lists`: `<id>:<name>:<entries>` per event list (2.155), the name
+///   percent-escaped and the entries encoded like `replay_list_set`;
 /// * `players`: `<input>:<event>:<angle>:<speed>:<playing 0|1>:<frame>:<playlist index>:<playlist>:<linked>`,
 ///   `event`, `angle`, and `frame` empty while nothing is cued, the index
 ///   empty while the player is on no playlist entry, the playlist a
@@ -438,6 +451,8 @@ pub struct ReplayStatusMessage {
     pub mark_out: Option<u64>,
     pub recorded: Vec<ReplaySourceStatus>,
     pub events: Vec<ReplayEventStatus>,
+    /// The server's event lists, in ascending id order (2.155).
+    pub lists: Vec<ReplayListStatus>,
     pub players: Vec<ReplayPlayerStatus>,
     pub storage: Option<ReplayStorageStatus>,
 }

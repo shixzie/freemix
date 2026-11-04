@@ -5,8 +5,8 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.152 / schema 106 (2026-10-31,
-at `7e139b72`). Every parity row is still `planned` (or `blocked`); these are
+(2026-10-19); items refreshed through protocol 2.155 / schema 106 (2026-11-04).
+Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
 frame loop) is ranked separately in [Structural work before more
@@ -172,6 +172,10 @@ there come before any new breadth below.
     play/pause, stepping, and shuttling in one click. A Replay take now uses
     the show's configured transition — a cut or a fade of its own length
     (Protocol 2.137, schema 97), set in Studio's Replay panel and the CLI.
+    A Replay input's playlist can also be built from a named event list whose
+    entries carry their own angle, marks, and speed (Protocol 2.154), with
+    Studio's Replay panel creating, editing, and applying the lists and
+    `replay_status` reporting them (Protocol 2.155).
     Remaining: the
     recorder takes a source's last
     decoded picture rather than a genlocked one, the
@@ -6292,10 +6296,13 @@ reporting, and end-of-entry. Protocol 2.154 exposes both steps:
 `replay_list_set` installs or replaces an event list with each entry's angle,
 marks, and speed, and `replay_playlist_from_list` builds a Replay input's
 playlist from it; `freemix-cli remote-replay-do` exposes `list-set` and
-`playlist-from-list`, with list entries accepting `#IN-OUT` marks. Remaining
-gaps: no UI exposes either yet, no eight-camera storage profile is certified,
-and the end-to-end slice below wires part of this to a server.
-`OR-012` and `OR-013` remain planned.
+`playlist-from-list`, with list entries accepting `#IN-OUT` marks. Protocol
+2.155 reports the server's event lists and their per-entry overrides in
+`replay_status`, and Studio's Replay panel creates a list from the selected
+event, edits its name and each entry's angle, marks, and speed, deletes it,
+and applies it to either Replay input. Remaining gaps: no eight-camera storage
+profile is certified, and the end-to-end slice below wires part of this to a
+server. `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a
 synchronized Quad View or a multiview of up to eight distinct angles plus A/B

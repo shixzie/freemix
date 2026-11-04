@@ -31,12 +31,13 @@ use egui::{Checkbox, ComboBox, DragValue, Id, RichText, TextEdit, Ui};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS,
     MAX_REEL_MUSIC_PERCENT, MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_AUTO_RETURN_FRAMES,
-    MAX_REPLAY_PLAYLIST_ENTRIES, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
-    MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus,
-    ReelMusic, ReelOperation, ReelSpec, ReelStatus, ReplayEventStatus, ReplayOperation,
-    ReplayPlayerStatus, ReplayPlaylistEntry, ReplayPreviewRequest, ReplaySettings, ReplaySpeed,
-    ReplayStatusMessage, ReplayStorageLevel, ReplayStorageStatus, reel_export_path_is_valid,
-    reel_name_is_valid, replay_event_name_is_valid,
+    MAX_REPLAY_LISTS, MAX_REPLAY_PLAYLIST_ENTRIES, MAX_REPLAY_RECORD_SOURCES,
+    MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip,
+    ReelExportState, ReelExportStatus, ReelMusic, ReelOperation, ReelSpec, ReelStatus,
+    ReplayEventStatus, ReplayListEntry, ReplayListStatus, ReplayOperation, ReplayPlayerStatus,
+    ReplayPlaylistEntry, ReplayPreviewRequest, ReplaySettings, ReplaySpeed, ReplayStatusMessage,
+    ReplayStorageLevel, ReplayStorageStatus, reel_export_path_is_valid, reel_name_is_valid,
+    replay_event_name_is_valid, replay_list_name_is_valid,
 };
 use fm_types::replay::{MAX_REPLAY_TRANSITION_FRAMES, ReplayTransition, ReplayTransitionKind};
 use fm_types::{FrameRate, InputId};
@@ -707,6 +708,8 @@ pub(crate) fn draw_replay(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<
         ui.add_space(4.0);
     }
     ui.add_space(6.0);
+    draw_lists(ui, l, state, status, intents);
+    ui.add_space(6.0);
     ui.label(crate::theme::section_label(l.text(Msg::ReplayPlayers)));
     if status.players.is_empty() {
         ui.label(caption(l.text(Msg::ReplayNoPlayers)));
@@ -1134,6 +1137,408 @@ fn draw_event(
             }
         }
     });
+}
+
+/// The next event-list id no server list uses, when one is free.
+fn next_list_id(status: &ReplayStatusMessage) -> Option<u32> {
+    (1..=u32::try_from(MAX_REPLAY_LISTS).ok()?)
+        .find(|id| !status.lists.iter().any(|list| list.id == *id))
+}
+
+/// One new list entry for `event`, with every override reset to the event's
+/// own angle, marks, and speed.
+const fn new_list_entry(event: &ReplayEventStatus) -> ReplayListEntry {
+    ReplayListEntry {
+        event: event.id,
+        angle: None,
+        marks: None,
+        speed: None,
+    }
+}
+
+/// The EVENT LISTS section (Protocol 2.155): named lists of captured events
+/// with per-entry angle, marks, and speed overrides, built from the event
+/// selected in EVENTS and applied to a Replay input's playlist.
+fn draw_lists(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    status: &ReplayStatusMessage,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let block = live_block(state);
+    ui.label(crate::theme::section_label(l.text(Msg::ReplayLists)));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(caption(l.format(
+            Msg::ReplayListsCount,
+            &[(
+                "count",
+                Arg::Count(u64::try_from(status.lists.len()).unwrap_or(u64::MAX)),
+            )],
+        )));
+        let selected = selected_event(status, selected_event_id(ui));
+        let full = status.lists.len() >= MAX_REPLAY_LISTS;
+        let new_reason = block.unwrap_or(if selected.is_none() {
+            Msg::ReelReasonNoEvent.en()
+        } else {
+            Msg::ReplayListReasonFull.en()
+        });
+        if ui
+            .add_enabled(
+                block.is_none() && selected.is_some() && !full,
+                small_button(l.text(Msg::ReplayListNew)),
+            )
+            .hint(l.text(Msg::ReplayListNewHover), new_reason)
+            .clicked()
+            && let (Some(event), Some(list)) = (selected, next_list_id(status))
+        {
+            let name = l.format(
+                Msg::ReplayListDefaultName,
+                &[("number", Arg::Plain(u64::from(list)))],
+            );
+            intents.push(StudioIntent::Replay(ReplayOperation::ListSet {
+                list,
+                name,
+                entries: vec![new_list_entry(event)],
+            }));
+        }
+    });
+    if status.lists.is_empty() {
+        ui.label(caption(l.text(Msg::ReplayListsEmpty)));
+    }
+    for list in &status.lists {
+        card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            draw_list(ui, l, state, status, list, intents);
+        });
+        ui.add_space(4.0);
+    }
+}
+
+#[allow(clippy::too_many_lines)] // the header, entry rows, and their keys
+fn draw_list(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    status: &ReplayStatusMessage,
+    list: &ReplayListStatus,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let block = live_block(state);
+    let reason = block.unwrap_or(Msg::ReplayReasonNotRecording.en());
+    let selected = selected_event(status, selected_event_id(ui));
+    let full = list.entries.len() >= MAX_REPLAY_PLAYLIST_ENTRIES;
+    let duplicate =
+        selected.is_some_and(|event| list.entries.iter().any(|entry| entry.event == event.id));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        status_chip(ui, &format!("#{}", list.id), Tone::Idle, 44.0)
+            .on_hover_text(l.text(Msg::ReplayListIdHover));
+        let id = Id::new(("studio-replay-list-name", list.id));
+        let mut name = ui
+            .data(|data| data.get_temp::<String>(id))
+            .unwrap_or_else(|| list.name.clone());
+        let response = ui
+            .add_enabled(
+                block.is_none(),
+                TextEdit::singleline(&mut name).desired_width(140.0),
+            )
+            .hint(l.text(Msg::ReplayListNameHover), reason);
+        if response.has_focus() {
+            ui.data_mut(|data| data.insert_temp(id, name.clone()));
+        } else {
+            ui.data_mut(|data| data.remove::<String>(id));
+        }
+        if response.lost_focus() && name != list.name && replay_list_name_is_valid(&name) {
+            intents.push(StudioIntent::Replay(ReplayOperation::ListSet {
+                list: list.id,
+                name,
+                entries: list.entries.clone(),
+            }));
+        }
+        ui.label(caption(l.format(
+            Msg::ReplayPlaylistCount,
+            &[(
+                "count",
+                Arg::Count(u64::try_from(list.entries.len()).unwrap_or(u64::MAX)),
+            )],
+        )));
+        let add_reason = block.unwrap_or(if selected.is_none() {
+            Msg::ReelReasonNoEvent.en()
+        } else if duplicate {
+            Msg::ReplayListReasonDuplicate.en()
+        } else {
+            Msg::ReplayListReasonFullEntries.en()
+        });
+        if ui
+            .add_enabled(
+                block.is_none() && selected.is_some() && !duplicate && !full,
+                small_button(l.text(Msg::ReplayListAdd)),
+            )
+            .hint(l.text(Msg::ReplayListAddHover), add_reason)
+            .clicked()
+            && let Some(event) = selected
+        {
+            let mut entries = list.entries.clone();
+            entries.push(new_list_entry(event));
+            intents.push(StudioIntent::Replay(ReplayOperation::ListSet {
+                list: list.id,
+                name: list.name.clone(),
+                entries,
+            }));
+        }
+        for player in &status.players {
+            let name = name_of(state, l, player.input.to_domain());
+            if ui
+                .add_enabled(
+                    block.is_none(),
+                    small_button(&l.format(Msg::ReplayListApplyOn, &[("name", Arg::Str(&name))])),
+                )
+                .hint(l.text(Msg::ReplayListApplyHover), reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::Replay(ReplayOperation::PlaylistFromList {
+                    input: player.input,
+                    list: list.id,
+                }));
+            }
+        }
+        if ui
+            .add_enabled(block.is_none(), small_button(l.text(Msg::ReplayListClear)))
+            .hint(l.text(Msg::ReplayListClearHover), reason)
+            .clicked()
+        {
+            intents.push(StudioIntent::Replay(ReplayOperation::ListSet {
+                list: list.id,
+                name: list.name.clone(),
+                entries: Vec::new(),
+            }));
+        }
+    });
+    let count = list.entries.len();
+    for (index, entry) in list.entries.iter().enumerate() {
+        let event = status.events.iter().find(|event| event.id == entry.event);
+        let name = event.map_or_else(
+            || {
+                l.format(
+                    Msg::ReplayPlaylistMissingEvent,
+                    &[("event", Arg::Plain(u64::from(entry.event)))],
+                )
+            },
+            |event| event.name.clone(),
+        );
+        let hover = l.format(
+            Msg::ReplayListEntryHover,
+            &[
+                (
+                    "position",
+                    Arg::Plain(u64::try_from(index + 1).unwrap_or(u64::MAX)),
+                ),
+                (
+                    "count",
+                    Arg::Plain(u64::try_from(count).unwrap_or(u64::MAX)),
+                ),
+                ("name", Arg::Str(&name)),
+            ],
+        );
+        let mut replace: Option<Vec<ReplayListEntry>> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (icon, enabled, hover, reason, target) in [
+                (
+                    crate::theme::KeyIcon::Up,
+                    index > 0,
+                    Msg::ReplayListUpHover,
+                    Msg::ReplayPlaylistReasonFirst.en(),
+                    index.wrapping_sub(1),
+                ),
+                (
+                    crate::theme::KeyIcon::Down,
+                    index + 1 < count,
+                    Msg::ReplayListDownHover,
+                    Msg::ReplayPlaylistReasonLast.en(),
+                    index + 1,
+                ),
+            ] {
+                let response = add_icon_button(
+                    ui,
+                    block.is_none() && enabled,
+                    key_button("", None, 20.0),
+                    icon,
+                    l.text(hover),
+                )
+                .hint(l.text(hover), block.unwrap_or(reason));
+                if response.clicked() && target < count {
+                    let mut entries = list.entries.clone();
+                    entries.swap(index, target);
+                    replace = Some(entries);
+                }
+            }
+            ui.label(format!("{}. {name}", index + 1))
+                .on_hover_text(hover);
+            let angle = entry.angle.map_or_else(
+                || l.text(Msg::ReplayListDefault).to_owned(),
+                |angle| name_of(state, l, angle.to_domain()),
+            );
+            ComboBox::from_id_salt(("studio-replay-list-angle", list.id, index))
+                .selected_text(angle)
+                .width(88.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .add_enabled(
+                            block.is_none(),
+                            egui::Button::selectable(
+                                entry.angle.is_none(),
+                                l.text(Msg::ReplayListDefault),
+                            ),
+                        )
+                        .hint(l.text(Msg::ReplayListAngleHover), block.unwrap_or(""))
+                        .clicked()
+                        && entry.angle.is_some()
+                    {
+                        let mut entries = list.entries.clone();
+                        entries[index].angle = None;
+                        replace = Some(entries);
+                    }
+                    if let Some(event) = event {
+                        for candidate in &event.angles {
+                            if ui
+                                .add_enabled(
+                                    block.is_none(),
+                                    egui::Button::selectable(
+                                        entry.angle == Some(*candidate),
+                                        name_of(state, l, candidate.to_domain()),
+                                    ),
+                                )
+                                .hint(l.text(Msg::ReplayListAngleHover), block.unwrap_or(""))
+                                .clicked()
+                                && entry.angle != Some(*candidate)
+                            {
+                                let mut entries = list.entries.clone();
+                                entries[index].angle = Some(*candidate);
+                                replace = Some(entries);
+                            }
+                        }
+                    }
+                })
+                .response
+                .hint(l.text(Msg::ReplayListAngleHover), block.unwrap_or(""));
+            ComboBox::from_id_salt(("studio-replay-list-speed", list.id, index))
+                .selected_text(entry.speed.map_or_else(
+                    || l.text(Msg::ReplayListDefault).to_owned(),
+                    |speed| l.percent(i64::from(speed.percent())),
+                ))
+                .width(64.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .add_enabled(
+                            block.is_none(),
+                            egui::Button::selectable(
+                                entry.speed.is_none(),
+                                l.text(Msg::ReplayListDefault),
+                            ),
+                        )
+                        .hint(l.text(Msg::ReplayListSpeedHover), block.unwrap_or(""))
+                        .clicked()
+                        && entry.speed.is_some()
+                    {
+                        let mut entries = list.entries.clone();
+                        entries[index].speed = None;
+                        replace = Some(entries);
+                    }
+                    for speed in SPEEDS {
+                        if ui
+                            .add_enabled(
+                                block.is_none(),
+                                egui::Button::selectable(
+                                    entry.speed == Some(speed),
+                                    l.percent(i64::from(speed.percent())),
+                                ),
+                            )
+                            .hint(l.text(Msg::ReplayListSpeedHover), block.unwrap_or(""))
+                            .clicked()
+                            && entry.speed != Some(speed)
+                        {
+                            let mut entries = list.entries.clone();
+                            entries[index].speed = Some(speed);
+                            replace = Some(entries);
+                        }
+                    }
+                })
+                .response
+                .hint(l.text(Msg::ReplayListSpeedHover), block.unwrap_or(""));
+            if let Some(event) = event {
+                let (mut first, mut end) = entry.marks.unwrap_or((event.in_frame, event.out_frame));
+                let in_response = ui
+                    .add_enabled(
+                        block.is_none(),
+                        DragValue::new(&mut first)
+                            .range(0..=end.saturating_sub(1))
+                            .speed(1.0),
+                    )
+                    .hint(l.text(Msg::ReplayListMarksHover), reason);
+                ui.label(caption(l.text(Msg::MediaTrimIn)));
+                let out_response = ui
+                    .add_enabled(
+                        block.is_none(),
+                        DragValue::new(&mut end)
+                            .range(first.saturating_add(1)..=event.out_frame)
+                            .speed(1.0),
+                    )
+                    .hint(l.text(Msg::ReplayListMarksHover), reason);
+                ui.label(caption(l.text(Msg::MediaTrimOut)));
+                let committed = |response: &egui::Response| {
+                    response.drag_stopped()
+                        || response.lost_focus()
+                        || (response.changed() && !response.dragged() && !response.has_focus())
+                };
+                if (committed(&in_response) || committed(&out_response))
+                    && (first, end) != entry.marks.unwrap_or((event.in_frame, event.out_frame))
+                {
+                    let mut entries = list.entries.clone();
+                    entries[index].marks = Some((first, end));
+                    replace = Some(entries);
+                }
+                if entry.marks.is_some()
+                    && ui
+                        .add_enabled(
+                            block.is_none(),
+                            small_button(l.text(Msg::ReplayListMarksReset)),
+                        )
+                        .hint(l.text(Msg::ReplayListMarksResetHover), reason)
+                        .clicked()
+                {
+                    let mut entries = list.entries.clone();
+                    entries[index].marks = None;
+                    replace = Some(entries);
+                }
+            } else {
+                ui.label(caption(l.text(Msg::ReplayListMissingEventMarks)));
+            }
+            if add_icon_button(
+                ui,
+                block.is_none(),
+                key_button("", None, 24.0),
+                crate::theme::KeyIcon::Remove,
+                l.text(Msg::ReplayListRemoveHover),
+            )
+            .hint(l.text(Msg::ReplayListRemoveHover), block.unwrap_or(""))
+            .clicked()
+            {
+                let mut entries = list.entries.clone();
+                entries.remove(index);
+                replace = Some(entries);
+            }
+        });
+        if let Some(entries) = replace {
+            intents.push(StudioIntent::Replay(ReplayOperation::ListSet {
+                list: list.id,
+                name: list.name.clone(),
+                entries,
+            }));
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]

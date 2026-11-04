@@ -27,8 +27,12 @@ pub const MAX_REPLAY_STORAGE_ROOT_BYTES: usize = 1_024;
 pub const MAX_REPLAY_INPUTS: usize = 2;
 /// Most replay events kept at once.
 pub const MAX_REPLAY_EVENTS: usize = 64;
+/// Most named replay event lists kept at once.
+pub const MAX_REPLAY_LISTS: usize = 64;
 /// Longest replay event name, in UTF-8 bytes.
 pub const MAX_REPLAY_EVENT_NAME_BYTES: usize = 64;
+/// Longest replay event list name, in UTF-8 bytes.
+pub const MAX_REPLAY_LIST_NAME_BYTES: usize = 128;
 /// The last-N capture lengths an operator can take, in seconds.
 pub const REPLAY_LAST_SECONDS: [u8; 3] = [5, 10, 20];
 /// Most frames one replay step (jog) moves a player, either way (ten
@@ -316,6 +320,15 @@ pub fn replay_storage_root_is_valid(root: &str) -> bool {
 pub fn replay_event_name_is_valid(name: &str) -> bool {
     !name.trim().is_empty()
         && name.len() <= MAX_REPLAY_EVENT_NAME_BYTES
+        && !name.chars().any(char::is_control)
+}
+
+/// Whether `name` is a usable event-list name: non-empty, at most
+/// [`MAX_REPLAY_LIST_NAME_BYTES`] UTF-8 bytes, and no control characters.
+#[must_use]
+pub fn replay_list_name_is_valid(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.len() <= MAX_REPLAY_LIST_NAME_BYTES
         && !name.chars().any(char::is_control)
 }
 

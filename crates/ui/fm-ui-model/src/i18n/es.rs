@@ -11131,6 +11131,92 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayPlaylistReasonLast,
         t("la entrada ya es la última"),
     ),
+    (Msg::ReplayLists, t("Listas de eventos")),
+    (
+        Msg::ReplayListsCount,
+        plural("{count} lista", "{count} listas"),
+    ),
+    (
+        Msg::ReplayListsEmpty,
+        t("No hay listas de eventos: selecciona un evento en Eventos y crea una"),
+    ),
+    (Msg::ReplayListDefaultName, t("Lista {number}")),
+    (Msg::ReplayListNew, t("NUEVA LISTA")),
+    (
+        Msg::ReplayListNewHover,
+        t("Crear una lista de eventos con el evento seleccionado en Eventos"),
+    ),
+    (Msg::ReplayListReasonFull, t("ya hay 64 listas")),
+    (
+        Msg::ReplayListReasonFullEntries,
+        t("esta lista admite 16 entradas"),
+    ),
+    (
+        Msg::ReplayListReasonDuplicate,
+        t("ese evento ya está en esta lista"),
+    ),
+    (
+        Msg::ReplayListIdHover,
+        t("El identificador de la lista en el servidor"),
+    ),
+    (
+        Msg::ReplayListNameHover,
+        t("El nombre de la lista: escribe uno nuevo y haz clic fuera para renombrarla"),
+    ),
+    (Msg::ReplayListApplyOn, t("USAR EN {name}")),
+    (
+        Msg::ReplayListApplyHover,
+        t(
+            "Reemplazar la lista de repetición de esta entrada por esta lista, aplicando el ángulo, las marcas y la velocidad de cada entrada",
+        ),
+    ),
+    (Msg::ReplayListClear, t("BORRAR LISTA")),
+    (
+        Msg::ReplayListClearHover,
+        t(
+            "Borrar esta lista de eventos; una entrada de repetición ya creada a partir de ella conserva su lista",
+        ),
+    ),
+    (Msg::ReplayListAdd, t("AÑADIR SELECCIÓN")),
+    (
+        Msg::ReplayListAddHover,
+        t("Añadir a esta lista el evento seleccionado en Eventos"),
+    ),
+    (
+        Msg::ReplayListEntryHover,
+        t("Entrada {position} de {count}: {name}"),
+    ),
+    (Msg::ReplayListDefault, t("EVENTO")),
+    (
+        Msg::ReplayListAngleHover,
+        t("El ángulo que reproduce esta entrada, o el ángulo preferido del evento"),
+    ),
+    (
+        Msg::ReplayListSpeedHover,
+        t("La velocidad de esta entrada, o la velocidad propia del evento"),
+    ),
+    (
+        Msg::ReplayListMarksHover,
+        t("El intervalo de fotogramas que reproduce esta entrada, o las marcas propias del evento"),
+    ),
+    (Msg::ReplayListMarksReset, t("MARCAS DEL EVENTO")),
+    (
+        Msg::ReplayListMarksResetHover,
+        t("Volver a usar las marcas propias del evento"),
+    ),
+    (Msg::ReplayListMissingEventMarks, t("marcas no disponibles")),
+    (
+        Msg::ReplayListRemoveHover,
+        t("Quitar esta entrada de la lista"),
+    ),
+    (
+        Msg::ReplayListUpHover,
+        t("Mover esta entrada antes en la lista"),
+    ),
+    (
+        Msg::ReplayListDownHover,
+        t("Mover esta entrada después en la lista"),
+    ),
     (Msg::ReelSection, t("Reels destacados")),
     (
         Msg::ReelNoReels,

@@ -7,9 +7,9 @@ use core::num::NonZeroU128;
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EngineIdentity,
     EventCursor, EventMessage, EventPayload, MAX_REPLAY_PLAYLIST_ENTRIES, ReplayEventStatus,
-    ReplayFeed, ReplayListEntry, ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry,
-    ReplaySettings, ReplaySmartHealth, ReplaySmartStatus, ReplaySourceStatus, ReplaySpeed,
-    ReplayStatusMessage, ReplayStatusRequest, ReplayStorageLevel, ReplayStorageStatus,
+    ReplayFeed, ReplayListEntry, ReplayListStatus, ReplayOperation, ReplayPlayerStatus,
+    ReplayPlaylistEntry, ReplaySettings, ReplaySmartHealth, ReplaySmartStatus, ReplaySourceStatus,
+    ReplaySpeed, ReplayStatusMessage, ReplayStatusRequest, ReplayStorageLevel, ReplayStorageStatus,
     ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::InputId;
@@ -439,6 +439,24 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 complete: false,
             },
         ],
+        lists: vec![ReplayListStatus {
+            id: 2,
+            name: "Best: goals".to_owned(),
+            entries: vec![
+                ReplayListEntry {
+                    event: 1,
+                    angle: Some(wire(2)),
+                    marks: Some((2_500, 2_700)),
+                    speed: Some(ReplaySpeed::Half),
+                },
+                ReplayListEntry {
+                    event: 3,
+                    angle: None,
+                    marks: None,
+                    speed: None,
+                },
+            ],
+        }],
         players: vec![
             ReplayPlayerStatus {
                 input: wire(9),
@@ -506,7 +524,8 @@ fn status_and_its_request_have_an_exact_wire_form() {
     );
     assert!(
         line.contains(
-            "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3A0%3A0%3B\
+            "\tlists=2%3ABest%253A%2520goals%3A1%2F2%2F2500-2700%2F50%7C3%2F%2F%2F\t\
+             players=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3A0%3A0%3B\
              10%3A%3A%3A100%3A0%3A%3A%3A%3A9%3A0%3A0\t\
              storage=7200000000%3A24000000%3A300%3Awarning%3Awarning%3A41%3A12\n"
         ),
@@ -516,6 +535,7 @@ fn status_and_its_request_have_an_exact_wire_form() {
     let empty = ReplayStatusMessage {
         recorded: Vec::new(),
         events: Vec::new(),
+        lists: Vec::new(),
         players: Vec::new(),
         live_frame: None,
         mark_in: None,
@@ -543,6 +563,9 @@ fn status_and_its_request_have_an_exact_wire_form() {
         ("%3A2510%3A1%3A3", "%3A2510%3A2%3A3"),
         ("%2F100%7C4%2F%2F50", "%2F100%7C4%2F50"),
         ("recorded=1%3A60", "recorded=1%3A-1"),
+        ("lists=2%3A", "lists=2"),
+        ("2500-2700", "2700-2500"),
+        ("2%2F2500-2700%2F50", "2%2F2500-2700%2F50%2F1"),
         ("live_frame=3000", "live_frame=03000"),
         // A storage sample has four canonical parts and a known level.
         (

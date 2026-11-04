@@ -3,10 +3,11 @@
 use fm_types::replay::{ReplaySourceCheck, ReplayTransition, ReplayTransitionKind};
 
 use crate::{
-    CodecError, MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_PLAYLIST_ENTRIES,
-    MAX_REPLAY_RECORD_SOURCES, ReplayEventStatus, ReplayFeed, ReplayOperation, ReplayPlayerStatus,
-    ReplayPlaylistEntry, ReplaySettings, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage,
-    WireInputId, replay_event_name_is_valid,
+    CodecError, MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_LISTS,
+    MAX_REPLAY_PLAYLIST_ENTRIES, MAX_REPLAY_RECORD_SOURCES, ReplayEventStatus, ReplayFeed,
+    ReplayListEntry, ReplayListStatus, ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry,
+    ReplaySettings, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage, WireInputId,
+    replay_event_name_is_valid, replay_list_name_is_valid,
 };
 
 use super::media::{FieldSource, Push};
@@ -93,15 +94,15 @@ fn encode_playlist(entries: &[ReplayPlaylistEntry]) -> Result<String, CodecError
 }
 
 fn check_list_name(name: &str) -> Result<(), CodecError> {
-    if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
-        Err(invalid("name", name))
-    } else {
+    if replay_list_name_is_valid(name) {
         Ok(())
+    } else {
+        Err(invalid("name", name))
     }
 }
 
 /// Encodes list entries as `event/angle/marks/speed`, joined by `|`.
-fn encode_list_entries(entries: &[crate::ReplayListEntry]) -> Result<String, CodecError> {
+fn encode_list_entries(entries: &[ReplayListEntry]) -> Result<String, CodecError> {
     if entries.len() > MAX_REPLAY_PLAYLIST_ENTRIES {
         return Err(CodecError::TooManyItems("entries"));
     }
@@ -124,7 +125,7 @@ fn encode_list_entries(entries: &[crate::ReplayListEntry]) -> Result<String, Cod
         .join("|"))
 }
 
-fn decode_list_entries(value: &str) -> Result<Vec<crate::ReplayListEntry>, CodecError> {
+fn decode_list_entries(value: &str) -> Result<Vec<ReplayListEntry>, CodecError> {
     if value.is_empty() {
         return Ok(Vec::new());
     }
@@ -156,7 +157,7 @@ fn decode_list_entries(value: &str) -> Result<Vec<crate::ReplayListEntry>, Codec
             } else {
                 Some(parse_speed("entries", speed)?)
             };
-            Ok(crate::ReplayListEntry {
+            Ok(ReplayListEntry {
                 event: parse_number("entries", event)?,
                 angle: parse_optional(angle, |value| parse_input("entries", value))?,
                 marks,
@@ -589,6 +590,52 @@ fn decode_events(value: &str) -> Result<Vec<ReplayEventStatus>, CodecError> {
         .collect()
 }
 
+/// `lists`: `<id>:<name>:<entries>` per event list, joined by `;`, the name
+/// percent-escaped and the entries encoded like `replay_list_set` (2.155).
+fn encode_lists(lists: &[ReplayListStatus]) -> Result<String, CodecError> {
+    if lists.len() > MAX_REPLAY_LISTS {
+        return Err(CodecError::TooManyItems("lists"));
+    }
+    lists
+        .iter()
+        .map(|list| {
+            check_list_name(&list.name)?;
+            Ok(format!(
+                "{}:{}:{}",
+                list.id,
+                escape_bounded(&list.name)?,
+                encode_list_entries(&list.entries)?
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|entries| entries.join(";"))
+}
+
+fn decode_lists(value: &str) -> Result<Vec<ReplayListStatus>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<&str> = value.split(';').collect();
+    if entries.len() > MAX_REPLAY_LISTS {
+        return Err(CodecError::TooManyItems("lists"));
+    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            let [id, name, list_entries] = entry.split(':').collect::<Vec<_>>()[..] else {
+                return Err(invalid("lists", entry));
+            };
+            let name = unescape(name)?;
+            check_list_name(&name)?;
+            Ok(ReplayListStatus {
+                id: parse_number("lists", id)?,
+                name,
+                entries: decode_list_entries(list_entries)?,
+            })
+        })
+        .collect()
+}
+
 /// `storage`: `-`, or `<free>:<rate>:<remaining or ->:<level>`, with the
 /// drive's SMART status appended as `:<health>:<temperature or ->:<used or ->`
 /// when it is known (2.139).
@@ -790,6 +837,7 @@ pub(super) fn encode_status(
     }
     push("recorded", encode_recorded(&message.recorded)?)?;
     push("events", encode_events(&message.events)?)?;
+    push("lists", encode_lists(&message.lists)?)?;
     push("players", encode_players(&message.players)?)?;
     push("storage", encode_storage(message.storage.as_ref()))
 }
@@ -821,6 +869,7 @@ pub(super) fn decode_status(
         mark_out: optional_frame(fields, "mark_out")?,
         recorded: decode_recorded(&fields.required("recorded")?)?,
         events: decode_events(&fields.required("events")?)?,
+        lists: decode_lists(&fields.required("lists")?)?,
         players: decode_players(&fields.required("players")?)?,
         storage: decode_storage(&fields.required("storage")?)?,
     })

@@ -258,6 +258,15 @@ pub struct EngineReplayEventStatus {
     pub complete: bool,
 }
 
+/// One event list as clients see it (Protocol 2.155).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineReplayListStatus {
+    pub id: u32,
+    pub name: String,
+    /// The list's entries in order, each with its optional overrides.
+    pub entries: Vec<EngineReplayListEntry>,
+}
+
 /// One Replay input's player.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineReplayPlayerStatus {
@@ -292,6 +301,8 @@ pub struct EngineReplayStatus {
     pub mark_in: Option<u64>,
     pub mark_out: Option<u64>,
     pub events: Vec<EngineReplayEventStatus>,
+    /// The event lists, in ascending id order (Protocol 2.155).
+    pub lists: Vec<EngineReplayListStatus>,
     pub players: Vec<EngineReplayPlayerStatus>,
     /// Free space and the predicted recording time at the observed write
     /// rate, while the daemon samples the storage root (OR-014).
@@ -2545,6 +2556,47 @@ impl ReplayRuntime {
                 })
             })
             .collect();
+        let lists = self
+            .store
+            .events
+            .lists()
+            .filter_map(|list| {
+                let id = u32::try_from(list.id.get().get()).ok()?;
+                let entries = list
+                    .events
+                    .iter()
+                    .map(|event| {
+                        let event_id = u32::try_from(event.get().get()).ok()?;
+                        let overrides = self
+                            .store
+                            .events
+                            .list_override(list.id, *event)
+                            .unwrap_or_default();
+                        let marks = overrides.marks.and_then(|range| {
+                            let first = frame_of(self.frame_rate, range.start);
+                            let end = frame_of(self.frame_rate, range.end);
+                            (first < end).then_some((first, end))
+                        });
+                        let speed = overrides.speed.and_then(|rate| {
+                            u8::try_from(rate.as_milli() / 10)
+                                .ok()
+                                .and_then(ReplaySpeed::from_percent)
+                        });
+                        Some(EngineReplayListEntry {
+                            event: event_id,
+                            angle: overrides.angle.map(|angle| InputId::new(angle.get())),
+                            marks,
+                            speed,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(EngineReplayListStatus {
+                    id,
+                    name: list.name.clone(),
+                    entries,
+                })
+            })
+            .collect();
         let players = show
             .replay_inputs()
             .map(|input| {
@@ -2582,6 +2634,7 @@ impl ReplayRuntime {
             mark_in: self.mark_in,
             mark_out: self.mark_out,
             events,
+            lists,
             players,
             storage: self.storage_status(),
         }

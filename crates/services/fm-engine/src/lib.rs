@@ -79,9 +79,9 @@ pub use reel::{
 };
 pub use replay::{
     DEFAULT_REPLAY_ROOT, EngineReplayEventStatus, EngineReplayFeed, EngineReplayFrame,
-    EngineReplayListEntry, EngineReplayLocation, EngineReplayMultiview, EngineReplayOperation,
-    EngineReplayPlayerStatus, EngineReplayPlaylistEntry, EngineReplaySmartHealth,
-    EngineReplaySmartStatus, EngineReplaySourceStatus, EngineReplayStatus,
+    EngineReplayListEntry, EngineReplayListStatus, EngineReplayLocation, EngineReplayMultiview,
+    EngineReplayOperation, EngineReplayPlayerStatus, EngineReplayPlaylistEntry,
+    EngineReplaySmartHealth, EngineReplaySmartStatus, EngineReplaySourceStatus, EngineReplayStatus,
     EngineReplayStorageLevel, EngineReplayStorageStatus, EngineReplayTile, REPLAY_RETURN_LIST,
     REPLAY_STORAGE_CRITICAL_SECONDS, REPLAY_STORAGE_WARNING_SECONDS, SYNTHETIC_REPLAY_FRAME_BYTES,
     SYNTHETIC_REPLAY_SEGMENT_SECONDS,

@@ -2665,6 +2665,24 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 complete: false,
             },
         ],
+        lists: vec![fm_protocol::ReplayListStatus {
+            id: 1,
+            name: "Highlights".into(),
+            entries: vec![
+                fm_protocol::ReplayListEntry {
+                    event: 1,
+                    angle: Some(wire(2)),
+                    marks: Some((2_500, 2_700)),
+                    speed: Some(ReplaySpeed::Half),
+                },
+                fm_protocol::ReplayListEntry {
+                    event: 2,
+                    angle: None,
+                    marks: None,
+                    speed: None,
+                },
+            ],
+        }],
         players: vec![
             ReplayPlayerStatus {
                 input: wire(4),

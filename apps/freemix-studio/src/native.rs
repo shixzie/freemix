@@ -4296,6 +4296,7 @@ mod tests {
             mark_out: None,
             recorded: Vec::new(),
             events: Vec::new(),
+            lists: Vec::new(),
             players: Vec::new(),
             storage: None,
         }
