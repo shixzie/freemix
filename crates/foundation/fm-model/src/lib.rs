@@ -7,6 +7,7 @@ mod display_output;
 mod grade;
 mod input_lifecycle;
 mod layer_key;
+mod logical_output;
 mod media_list;
 mod media_playback;
 mod playlist;
@@ -72,6 +73,12 @@ pub use input_lifecycle::{
 pub use layer_key::{
     ChromaLayerKey, FillLayerKey, KeyChannel, KeyDespill, KeyRefinement, LayerKey, LayerKeyError,
     LumaLayerKey, MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS, MAX_KEY_LIGHT_WRAP_WIDTH,
+};
+pub use logical_output::{
+    LOGICAL_OVERLAY_CHANNELS, LogicalAudioMap, LogicalMultiViewCell, LogicalOutputConfig,
+    LogicalOutputError, LogicalOutputSlot, LogicalOutputSource, LogicalOverlayChannels,
+    LogicalOverlayPolicy, MAX_LOGICAL_MIX_NUMBER, MAX_LOGICAL_OUTPUT_MULTIVIEW_CELLS,
+    MAX_LOGICAL_OUTPUTS, validate_logical_outputs,
 };
 pub use media_list::{
     DEFAULT_MEDIA_LIST_TRANSITION_FRAMES, M3uEntry, MAX_M3U_BYTES, MAX_MEDIA_LIST_ITEM_ID,

@@ -667,6 +667,7 @@ pub(crate) fn restore_display_outputs(
     for (&slot, config) in project.display_outputs() {
         show.set_display_output(slot, Some(config.clone()))?;
     }
+    show.restore_logical_outputs(project.logical_outputs().iter().cloned())?;
     show.set_live_lan(project.live_lan().clone())?;
     for setting in project.alert_rules() {
         show.set_alert_rule(*setting)?;
@@ -717,6 +718,22 @@ pub(crate) fn sync_project_display_outputs(
                 ))
             })?;
     }
+    Ok(())
+}
+
+/// Folds the show's logical output routing (SW-012) into the stored project.
+pub(crate) fn sync_project_logical_outputs(
+    project: &mut fm_model::Project,
+    show: &ShowState,
+) -> AppResult<()> {
+    let configs = show.logical_outputs().cloned().collect::<Vec<_>>();
+    if project.logical_outputs() == configs.as_slice() {
+        return Ok(());
+    }
+    project.restore_logical_outputs(configs);
+    project
+        .validate_logical_outputs()
+        .map_err(|error| AppFailure(format!("project cannot take logical outputs: {error}")))?;
     Ok(())
 }
 

@@ -394,6 +394,11 @@ pub enum RemoveOutputError {
     LiveLanReference {
         output: OutputId,
     },
+    /// A logical output routes the output (SW-012).
+    LogicalOutputReference {
+        output: OutputId,
+        slot: crate::LogicalOutputSlot,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -905,6 +910,10 @@ impl std::fmt::Display for RemoveOutputError {
             Self::LiveLanReference { output } => {
                 write!(formatter, "output {output} is streamed by LiveLAN")
             }
+            Self::LogicalOutputReference { output, slot } => write!(
+                formatter,
+                "output {output} is routed by logical output {slot}"
+            ),
         }
     }
 }
@@ -1034,7 +1043,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(106);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(107);
 
 /// Maximum stored scoreboard documents on one project (GX-003).
 pub const MAX_SCOREBOARDS: usize = 256;
@@ -1087,6 +1096,7 @@ pub struct Project {
     scenes: Vec<Scene>,
     audio_buses: Vec<AudioBus>,
     outputs: Vec<Output>,
+    logical_outputs: Vec<crate::LogicalOutputConfig>,
     stream_targets: Vec<StreamTarget>,
     main_mix: Option<MainMix>,
     recording_desired: [bool; RECORDER_SLOT_COUNT],
@@ -1164,6 +1174,7 @@ impl Project {
             scenes: Vec::new(),
             audio_buses: Vec::new(),
             outputs: Vec::new(),
+            logical_outputs: Vec::new(),
             stream_targets: Vec::new(),
             main_mix: None,
             recording_desired: [false; RECORDER_SLOT_COUNT],
@@ -1981,6 +1992,81 @@ impl Project {
     #[must_use]
     pub fn outputs(&self) -> &[Output] {
         &self.outputs
+    }
+
+    /// The logical output routing, in ascending slot order (SW-012).
+    #[must_use]
+    pub fn logical_outputs(&self) -> &[crate::LogicalOutputConfig] {
+        &self.logical_outputs
+    }
+
+    /// One logical output slot's routing.
+    #[must_use]
+    pub fn logical_output(
+        &self,
+        slot: crate::LogicalOutputSlot,
+    ) -> Option<&crate::LogicalOutputConfig> {
+        self.logical_outputs
+            .iter()
+            .find(|config| config.slot == slot)
+    }
+
+    /// Configures one logical output slot, or clears it with `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`crate::LogicalOutputError`] for an unknown project output,
+    /// input, or audio bus, a duplicate output, an empty or duplicate
+    /// multiview, a missing or recursive output reference, or a mix outside
+    /// `1..=16`. Nothing changes on error.
+    pub fn set_logical_output(
+        &mut self,
+        slot: crate::LogicalOutputSlot,
+        config: Option<crate::LogicalOutputConfig>,
+    ) -> Result<(), crate::LogicalOutputError> {
+        let previous = self.logical_outputs.clone();
+        self.logical_outputs
+            .retain(|candidate| candidate.slot != slot);
+        if let Some(config) = config {
+            if config.slot != slot {
+                self.logical_outputs = previous;
+                return Err(crate::LogicalOutputError::OutOfOrder);
+            }
+            self.logical_outputs.push(config);
+            self.logical_outputs.sort_by_key(|config| config.slot);
+        }
+        if let Err(error) = self.validate_logical_outputs() {
+            self.logical_outputs = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Restores persisted logical-output routing without checking it;
+    /// problems are reported by [`Self::validate`].
+    pub fn restore_logical_outputs(&mut self, configs: Vec<crate::LogicalOutputConfig>) {
+        self.logical_outputs = configs;
+    }
+
+    /// Checks the logical-output routing against the project's outputs,
+    /// inputs, and audio buses.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`crate::LogicalOutputError`].
+    pub fn validate_logical_outputs(&self) -> Result<(), crate::LogicalOutputError> {
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.id)
+            .collect::<Vec<_>>();
+        let inputs = self.inputs.iter().map(|input| input.id).collect::<Vec<_>>();
+        let buses = self
+            .audio_buses
+            .iter()
+            .map(|bus| bus.id)
+            .collect::<Vec<_>>();
+        crate::validate_logical_outputs(&self.logical_outputs, &outputs, &inputs, Some(&buses))
     }
 
     #[must_use]
@@ -4666,6 +4752,16 @@ impl Project {
         }
         if self.live_lan.source == fm_types::live_lan::LiveLanSource::Output(output) {
             return Err(RemoveOutputError::LiveLanReference { output });
+        }
+        if let Some(config) = self
+            .logical_outputs
+            .iter()
+            .find(|config| config.output == output)
+        {
+            return Err(RemoveOutputError::LogicalOutputReference {
+                output,
+                slot: config.slot,
+            });
         }
         self.outputs.retain(|candidate| candidate.id != output);
         self.fade_to_black_excluded_outputs.remove(&output);

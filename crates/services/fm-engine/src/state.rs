@@ -194,6 +194,8 @@ pub struct ShowState {
     inputs: Vec<InputId>,
     input_names: Vec<String>,
     outputs: Vec<(OutputId, String)>,
+    /// Logical output routing (SW-012), ascending by slot.
+    logical_outputs: BTreeMap<fm_model::LogicalOutputSlot, fm_model::LogicalOutputConfig>,
     input_audio_strips: BTreeMap<InputId, EngineInputAudioStripState>,
     desired_switcher: SwitcherState,
     project_locked: bool,
@@ -337,6 +339,7 @@ impl ShowState {
             inputs: input_ids,
             input_names: inputs.into_iter().map(|(_, name)| name).collect(),
             outputs: Vec::new(),
+            logical_outputs: BTreeMap::new(),
             desired_switcher,
             project_locked: false,
             locked_inputs: BTreeSet::new(),
@@ -454,6 +457,78 @@ impl ShowState {
     #[must_use]
     pub fn outputs(&self) -> &[(OutputId, String)] {
         &self.outputs
+    }
+
+    /// The logical output routing, ascending by slot (SW-012).
+    pub fn logical_outputs(&self) -> impl Iterator<Item = &fm_model::LogicalOutputConfig> {
+        self.logical_outputs.values()
+    }
+
+    /// One logical output slot's routing.
+    #[must_use]
+    pub fn logical_output(
+        &self,
+        slot: fm_model::LogicalOutputSlot,
+    ) -> Option<&fm_model::LogicalOutputConfig> {
+        self.logical_outputs.get(&slot)
+    }
+
+    /// Configures one logical output slot, or clears it with `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidLogicalOutput`] for an unknown output or
+    /// input, an empty or duplicate multiview, a missing or recursive output
+    /// reference, or a mix outside its range. Nothing changes on error.
+    pub fn set_logical_output(
+        &mut self,
+        slot: fm_model::LogicalOutputSlot,
+        config: Option<fm_model::LogicalOutputConfig>,
+    ) -> Result<(), ShowError> {
+        let previous = self.logical_outputs.clone();
+        self.logical_outputs.remove(&slot);
+        if let Some(config) = config {
+            if config.slot != slot {
+                self.logical_outputs = previous;
+                return Err(ShowError::InvalidLogicalOutput(
+                    fm_model::LogicalOutputError::OutOfOrder,
+                ));
+            }
+            self.logical_outputs.insert(slot, config);
+        }
+        if let Err(error) = self.validate_logical_outputs() {
+            self.logical_outputs = previous;
+            return Err(ShowError::InvalidLogicalOutput(error));
+        }
+        Ok(())
+    }
+
+    /// Restores persisted logical-output routing; problems are reported by
+    /// the caller as a [`ShowError::InvalidLogicalOutput`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidLogicalOutput`] for invalid routing.
+    pub fn restore_logical_outputs(
+        &mut self,
+        configs: impl IntoIterator<Item = fm_model::LogicalOutputConfig>,
+    ) -> Result<(), ShowError> {
+        self.logical_outputs.clear();
+        for config in configs {
+            self.logical_outputs.insert(config.slot, config);
+        }
+        self.validate_logical_outputs()
+            .map_err(ShowError::InvalidLogicalOutput)
+    }
+
+    fn validate_logical_outputs(&self) -> Result<(), fm_model::LogicalOutputError> {
+        let configs = self.logical_outputs.values().cloned().collect::<Vec<_>>();
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|(output, _)| *output)
+            .collect::<Vec<_>>();
+        fm_model::validate_logical_outputs(&configs, &outputs, &self.inputs, None)
     }
 
     /// Replaces the stream destinations (OR-006): their authored

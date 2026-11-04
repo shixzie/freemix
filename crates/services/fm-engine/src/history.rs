@@ -160,6 +160,7 @@ impl EngineCommand {
             | Self::SetFadeToBlackOutputDuration { .. }
             | Self::SetFadeToBlackCurve { .. }
             | Self::SetDisplayOutput { .. }
+            | Self::SetLogicalOutput { .. }
             | Self::SetLiveLan(_)
             | Self::SetAlertRule(_)
             | Self::SetNetworkStream { .. }
@@ -1150,6 +1151,10 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::SetDisplayOutput { slot, .. } => Some(EngineCommand::SetDisplayOutput {
             slot: *slot,
             config: state.display_output(*slot).cloned().map(Box::new),
+        }),
+        EngineCommand::SetLogicalOutput { slot, .. } => Some(EngineCommand::SetLogicalOutput {
+            slot: *slot,
+            config: state.logical_output(*slot).cloned().map(Box::new),
         }),
         EngineCommand::SetCaptureSettings { input, .. } => {
             state

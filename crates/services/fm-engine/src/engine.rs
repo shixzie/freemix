@@ -499,6 +499,13 @@ pub enum EngineCommand {
         slot: fm_types::display::DisplayOutputSlot,
         config: Option<Box<fm_types::display::DisplayOutputConfig>>,
     },
+    /// Configures (`Some`) or clears (`None`) one logical output slot
+    /// (SW-012). A project edit, undone by restoring the slot's previous
+    /// routing.
+    SetLogicalOutput {
+        slot: fm_model::LogicalOutputSlot,
+        config: Option<Box<fm_model::LogicalOutputConfig>>,
+    },
     /// Replaces the `LiveLAN` viewer stream's configuration (OR-017), its PIN
     /// already resolved to the exact one it will hold. A project edit,
     /// undone by restoring the previous configuration; the daemon realizes
@@ -4362,6 +4369,16 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetLogicalOutput { slot, config } = &self.command {
+            state
+                .set_logical_output(*slot, config.as_deref().cloned())
+                .map_err(|error| {
+                    Rejection::new(RejectionCode::InvalidCommand, error.to_string())
+                })?;
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetAlertRule(setting) = self.command {
             state.set_alert_rule(setting).map_err(|error| {
                 Rejection::new(RejectionCode::InvalidCommand, error.to_string()).with_field(
@@ -4874,6 +4891,7 @@ impl EngineMutation {
             | EngineCommand::SetFadeToBlackOutputDuration { .. }
             | EngineCommand::SetFadeToBlackCurve { .. }
             | EngineCommand::SetDisplayOutput { .. }
+            | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -5526,6 +5544,7 @@ fn apply_runtime(
             | EngineCommand::SceneLayer(_)
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetDisplayOutput { .. }
+            | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -5725,6 +5744,7 @@ fn apply_runtime(
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -5927,6 +5947,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -5970,6 +5991,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetFadeToBlackOutputDuration { .. })
         && !matches!(command, EngineCommand::SetFadeToBlackCurve { .. })
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
+        && !matches!(command, EngineCommand::SetLogicalOutput { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
         && !matches!(command, EngineCommand::SetAlertRule(_))
         && !matches!(command, EngineCommand::Replay(_))

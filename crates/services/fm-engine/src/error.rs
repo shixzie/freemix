@@ -48,6 +48,8 @@ pub enum ShowError {
     /// A display output slot's configuration is refused (OR-011); carries
     /// the [`fm_model::SetDisplayOutputError::code`].
     InvalidDisplayOutput(fm_types::display::DisplayOutputSlot, &'static str),
+    /// Logical output routing is invalid (SW-012).
+    InvalidLogicalOutput(fm_model::LogicalOutputError),
     /// An output is not part of the show's output roster.
     UnknownOutput(OutputId),
     /// A Fade-to-Black output duration is outside 1 through 3600 frames
@@ -106,6 +108,9 @@ impl fmt::Display for ShowError {
             Self::InvalidAudioMixer(error) => error.fmt(formatter),
             Self::InvalidDisplayOutput(slot, code) => {
                 write!(formatter, "display output {slot} is refused: {code}")
+            }
+            Self::InvalidLogicalOutput(error) => {
+                write!(formatter, "logical output routing is refused: {error}")
             }
             Self::InvalidAudioGroupGain(gain) => {
                 write!(formatter, "audio group gain {gain} millidB is out of range")

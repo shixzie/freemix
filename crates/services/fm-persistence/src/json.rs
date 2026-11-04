@@ -12,6 +12,7 @@ mod encoder;
 mod grade;
 mod input_lifecycle;
 mod live_lan;
+mod logical_output;
 mod media_list;
 mod media_playback;
 mod network_stream;

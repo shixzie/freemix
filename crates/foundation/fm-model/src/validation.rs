@@ -78,6 +78,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_scenes(project, &mut errors);
     validate_buses(project, &mut errors);
     validate_outputs(project, &mut errors);
+    validate_logical_outputs(project, &mut errors);
     validate_stream_targets(project, &mut errors);
     mark_scene_cycles(project, &mut errors);
     mark_alias_cycles(project, &mut errors);
@@ -1828,6 +1829,67 @@ fn validate_outputs(project: &Project, errors: &mut Vec<ValidationError>) {
             output.required_capabilities.iter().map(String::as_str),
         );
     }
+}
+
+fn validate_logical_outputs(project: &Project, errors: &mut Vec<ValidationError>) {
+    let Err(error) = project.validate_logical_outputs() else {
+        return;
+    };
+    let (entity, field, kind) = match &error {
+        crate::LogicalOutputError::DuplicateSlot(_) => (
+            None,
+            "logical_outputs.slot",
+            ValidationErrorKind::DuplicateId,
+        ),
+        crate::LogicalOutputError::DuplicateOutput(output) => (
+            Some(EntityRef::Output(*output)),
+            "logical_outputs.output",
+            ValidationErrorKind::DuplicateId,
+        ),
+        crate::LogicalOutputError::UnknownOutput(output) => (
+            Some(EntityRef::Output(*output)),
+            "logical_outputs.output",
+            ValidationErrorKind::MissingReference(EntityRef::Output(*output)),
+        ),
+        crate::LogicalOutputError::UnknownInput(input) => (
+            None,
+            "logical_outputs.source",
+            ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+        ),
+        crate::LogicalOutputError::UnknownAudioBus(bus) => (
+            None,
+            "logical_outputs.audio",
+            ValidationErrorKind::MissingReference(EntityRef::AudioBus(*bus)),
+        ),
+        crate::LogicalOutputError::UnknownOutputSlot(_) => (
+            None,
+            "logical_outputs.source",
+            ValidationErrorKind::OutOfRange,
+        ),
+        crate::LogicalOutputError::SelfReference(_) => (
+            None,
+            "logical_outputs.source",
+            ValidationErrorKind::SelfReference,
+        ),
+        crate::LogicalOutputError::Cycle => {
+            (None, "logical_outputs.source", ValidationErrorKind::Cycle)
+        }
+        crate::LogicalOutputError::TooManyOutputs { .. }
+        | crate::LogicalOutputError::OutOfOrder
+        | crate::LogicalOutputError::InvalidMix(_)
+        | crate::LogicalOutputError::EmptyMultiView
+        | crate::LogicalOutputError::MultiViewCellLimit { .. }
+        | crate::LogicalOutputError::DuplicateMultiViewCell(_)
+        | crate::LogicalOutputError::InvalidOverlayChannel(_)
+        | crate::LogicalOutputError::DuplicateOverlayChannel(_) => {
+            (None, "logical_outputs", ValidationErrorKind::OutOfRange)
+        }
+    };
+    errors.push(ValidationError {
+        entity,
+        field,
+        kind,
+    });
 }
 
 /// Re-checks what only the project knows about a streaming destination.

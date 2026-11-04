@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.156 / schema 106 (2026-11-04).
+(2026-10-19); items refreshed through protocol 2.156 / schema 107 (2026-11-04).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -2617,11 +2617,17 @@ all-or-nothing and reject duplicate project outputs, disabled dependencies, and
 direct or chained MultiView recursion; resolution isolates live failures per
 output, follows timed/T-bar transitions and FTB only on Program feeds, follows
 secondary mixes through `MixBank` frames, and emits a render order that places
-every output before the MultiViews showing it. Remaining gaps: the routing is
-not persisted in `fm-model`/`fm-persistence`, has no switcher command,
-protocol, engine, compositor, or delivery wiring, does not drive `MixBank` Main
-from the bank itself, has no MultiView grid geometry for mixes or outputs, and
-switches follow-video audio only at take completion. `SW-012` remains planned.
+every output before the MultiViews showing it. The project model now owns the
+same four slots (schema 107): `project.json` round-trips each slot's output,
+source, overlay policy, and audio map with exact canonical tokens, and
+validation rejects duplicate outputs, unknown inputs or buses, empty or
+duplicate multiviews, out-of-order slots, missing output references, and
+self or chained recursion. `EngineCommand::SetLogicalOutput` changes one slot
+as an undoable project edit, and the daemon folds the show's routing back into
+the project on save. Remaining gaps: no protocol, compositor, or delivery
+wiring, no `MixBank` Main drive from the bank, no MultiView grid geometry for
+mixes or outputs, and follow-video audio still switches only at take
+completion. `SW-012` remains planned.
 
 
 Current implementation boundary for layer flattening (`SW-018`):
