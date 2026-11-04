@@ -3,7 +3,7 @@ use egui::{Key, Modifiers};
 use super::{
     BuiltinProfile, ConsoleAction, ConsoleKeyProfiles, ConsoleKeymap, ConsoleStroke, CustomProfile,
     KeyFileError, KeyRefusal, MAX_CUSTOM_PROFILES, MAX_KEY_FILE_BYTES, NUMBERED_INPUTS,
-    ProfileChoice,
+    ProfileChoice, REPLAY_ANGLES, REPLAY_PLAY_SPEEDS,
 };
 use crate::l10n::Locale;
 
@@ -26,7 +26,16 @@ fn tokens_round_trip_and_profiles_are_unambiguous() {
     let all = ConsoleAction::all();
     assert_eq!(
         all.len(),
-        3 * usize::from(NUMBERED_INPUTS) + 3 + 4 + 4 + 1 + 8 + 5 + 2
+        3 * usize::from(NUMBERED_INPUTS)
+            + 3
+            + 4
+            + 4
+            + 1
+            + 8
+            + 5
+            + 2
+            + 2 * usize::from(REPLAY_ANGLES)
+            + 2 * REPLAY_PLAY_SPEEDS.len()
     );
     for action in &all {
         assert_eq!(ConsoleAction::from_token(&action.token()), Some(*action));

@@ -64,6 +64,10 @@ pub const NUMBERED_INPUTS: u8 = 9;
 pub const FAVORITE_KEYS: u8 = 4;
 /// Overlay channels a key may turn on or off.
 pub const OVERLAY_KEYS: u8 = 4;
+/// Recorded replay angles a key may select (the eight-source maximum).
+pub const REPLAY_ANGLES: u8 = fm_protocol::MAX_REPLAY_RECORD_SOURCES as u8;
+/// The replay speeds a play key may request, in percent.
+pub const REPLAY_PLAY_SPEEDS: [u8; 4] = [25, 50, 75, 100];
 
 const PREFIX: &str = "keymap.";
 const PROFILE_KEY: &str = "keymap.profile";
@@ -123,6 +127,16 @@ pub enum ConsoleAction {
     ReplayShuttleBackB,
     /// Shuttle the second Replay input's player forwards at 2x.
     ReplayShuttleForwardB,
+    /// Show recorded angle `n` (1 to [`REPLAY_ANGLES`]) on the console's
+    /// Replay player.
+    ReplayAngle(u8),
+    /// Show recorded angle `n` on the second Replay input's player.
+    ReplayAngleB(u8),
+    /// Play the console's Replay player at `n` percent
+    /// ([`REPLAY_PLAY_SPEEDS`]).
+    ReplayPlaySpeed(u8),
+    /// Play the second Replay input's player at `n` percent.
+    ReplayPlaySpeedB(u8),
 }
 
 impl ConsoleAction {
@@ -154,6 +168,10 @@ impl ConsoleAction {
                 Self::ReplayShuttleBackB,
                 Self::ReplayShuttleForwardB,
             ])
+            .chain((1..=REPLAY_ANGLES).map(Self::ReplayAngle))
+            .chain((1..=REPLAY_ANGLES).map(Self::ReplayAngleB))
+            .chain(REPLAY_PLAY_SPEEDS.into_iter().map(Self::ReplayPlaySpeed))
+            .chain(REPLAY_PLAY_SPEEDS.into_iter().map(Self::ReplayPlaySpeedB))
             .collect()
     }
 
@@ -185,6 +203,10 @@ impl ConsoleAction {
             Self::ReplayStepForwardB => "replay_step_forward_b".to_owned(),
             Self::ReplayShuttleBackB => "replay_shuttle_back_b".to_owned(),
             Self::ReplayShuttleForwardB => "replay_shuttle_forward_b".to_owned(),
+            Self::ReplayAngle(n) => format!("replay_angle.{n}"),
+            Self::ReplayAngleB(n) => format!("replay_angle_b.{n}"),
+            Self::ReplayPlaySpeed(n) => format!("replay_play_speed.{n}"),
+            Self::ReplayPlaySpeedB(n) => format!("replay_play_speed_b.{n}"),
         }
     }
 
@@ -221,7 +243,11 @@ impl ConsoleAction {
             | Self::ReplayStepBackB
             | Self::ReplayStepForwardB
             | Self::ReplayShuttleBackB
-            | Self::ReplayShuttleForwardB => crate::ShortcutGroup::Output,
+            | Self::ReplayShuttleForwardB
+            | Self::ReplayAngle(_)
+            | Self::ReplayAngleB(_)
+            | Self::ReplayPlaySpeed(_)
+            | Self::ReplayPlaySpeedB(_) => crate::ShortcutGroup::Output,
         }
     }
 
@@ -256,6 +282,10 @@ impl ConsoleAction {
             Self::ReplayShuttleForwardB => {
                 l.text(Msg::ConsoleActionReplayShuttleForwardB).to_owned()
             }
+            Self::ReplayAngle(n) => numbered(Msg::ConsoleActionReplayAngle, n),
+            Self::ReplayAngleB(n) => numbered(Msg::ConsoleActionReplayAngleB, n),
+            Self::ReplayPlaySpeed(n) => numbered(Msg::ConsoleActionReplayPlaySpeed, n),
+            Self::ReplayPlaySpeedB(n) => numbered(Msg::ConsoleActionReplayPlaySpeedB, n),
         }
     }
 }

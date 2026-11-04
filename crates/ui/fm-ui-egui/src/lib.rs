@@ -1821,6 +1821,10 @@ fn console_action_intents(
         | ConsoleAction::ReplayStepForwardB
         | ConsoleAction::ReplayShuttleBackB
         | ConsoleAction::ReplayShuttleForwardB
+        | ConsoleAction::ReplayAngle(_)
+        | ConsoleAction::ReplayAngleB(_)
+        | ConsoleAction::ReplayPlaySpeed(_)
+        | ConsoleAction::ReplayPlaySpeedB(_)
             if transition_available =>
         {
             live_key(action)
@@ -1962,6 +1966,14 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                     },
                 )
             }),
+        ConsoleAction::ReplayAngle(slot) => replay_ui::angle_intent(state, false, slot),
+        ConsoleAction::ReplayAngleB(slot) => replay_ui::angle_intent(state, true, slot),
+        ConsoleAction::ReplayPlaySpeed(percent) => {
+            replay_ui::play_speed_intent(state, false, percent)
+        }
+        ConsoleAction::ReplayPlaySpeedB(percent) => {
+            replay_ui::play_speed_intent(state, true, percent)
+        }
         ConsoleAction::SlideNext => slideshow_step(state, fm_protocol::PagedNavigation::Next),
         ConsoleAction::SlidePrevious => {
             slideshow_step(state, fm_protocol::PagedNavigation::Previous)

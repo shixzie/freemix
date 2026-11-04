@@ -11393,6 +11393,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ConsoleActionReplayShuttleForwardB,
         t("Repetición B rápida hacia adelante"),
     ),
+    (Msg::ConsoleActionReplayAngle, t("Ángulo de repetición {n}")),
+    (
+        Msg::ConsoleActionReplayAngleB,
+        t("Ángulo de repetición B {n}"),
+    ),
+    (
+        Msg::ConsoleActionReplayPlaySpeed,
+        t("Reproducir repetición al {n} %"),
+    ),
+    (
+        Msg::ConsoleActionReplayPlaySpeedB,
+        t("Reproducir repetición B al {n} %"),
+    ),
     (
         Msg::ConsoleActionPreviewRun,
         t("Poner la entrada con ese número en Previo"),

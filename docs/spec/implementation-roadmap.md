@@ -169,7 +169,10 @@ there come before any new breadth below.
     step it a frame each way, and shuttle it at 2x each way, next to the
     marks and capture keys, and the Key profiles window binds a controller's
     transport (channel 1 notes 36–43) to the replay marks, capture,
-    play/pause, stepping, and shuttling in one click. A Replay take now uses
+    play/pause, stepping, and shuttling in one click. Console keys can also
+    play at 25, 50, 75, or 100 percent and select any of the eight recorded
+    angles, with a second copy of each on the other Replay input. A Replay
+    take now uses
     the show's configured transition — a cut or a fade of its own length
     (Protocol 2.137, schema 97), set in Studio's Replay panel and the CLI.
     A Replay input's playlist can also be built from a named event list whose
@@ -178,10 +181,11 @@ there come before any new breadth below.
     `replay_status` reporting them (Protocol 2.155).
     Remaining: the
     recorder takes a source's last
-    decoded picture rather than a genlocked one, the
-    full typed two-profile replay controller surface (the console's MIDI
-    transport now has a second profile for the second Replay input), and
-    certification are absent; Studio's
+    decoded picture rather than a genlocked one, the typed controller
+    surface's channel and live selection (the console covers the marks,
+    play/pause, play speeds, stepping, shuttling, angles, and a second
+    profile for the second Replay input), and certification are absent;
+    Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
     in an adaptive grid (Protocol 2.127), now led by the input and its linked
     A/B partner as channel tiles; storage health reaches Studio and the CLI (Protocol 2.125,
@@ -6326,8 +6330,10 @@ grid (Protocol 2.127, decoded and composed by the native daemon), led by the
 requested Replay input and its linked A/B partner as channel tiles; controller
 bindings are MIDI (real device input) and persist with the key profile, and a
 second transport profile drives the second Replay input from channel 2, and
-repeated jog keys accelerate from one frame to thirty, though the full typed
-controller surface remains; the native daemon samples
+repeated jog keys accelerate from one frame to thirty, and console actions
+now play at 25, 50, 75, or 100 percent and select any of the eight recorded
+angles on either player, though the typed surface's channel and live
+selection remain; the native daemon samples
 its replay root's free space and reports the predicted recording time at the
 observed write rate (Protocol 2.125, shown in Studio and the CLI), and a
 root below the recorder's 512 MiB floor pauses recording (`storage:low_space`)

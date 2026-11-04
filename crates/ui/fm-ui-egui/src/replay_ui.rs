@@ -36,8 +36,8 @@ use fm_protocol::{
     ReelExportState, ReelExportStatus, ReelMusic, ReelOperation, ReelSpec, ReelStatus,
     ReplayEventStatus, ReplayListEntry, ReplayListStatus, ReplayOperation, ReplayPlayerStatus,
     ReplayPlaylistEntry, ReplayPreviewRequest, ReplaySettings, ReplaySpeed, ReplayStatusMessage,
-    ReplayStorageLevel, ReplayStorageStatus, reel_export_path_is_valid, reel_name_is_valid,
-    replay_event_name_is_valid, replay_list_name_is_valid,
+    ReplayStorageLevel, ReplayStorageStatus, WireInputId, reel_export_path_is_valid,
+    reel_name_is_valid, replay_event_name_is_valid, replay_list_name_is_valid,
 };
 use fm_types::replay::{MAX_REPLAY_TRANSITION_FRAMES, ReplayTransition, ReplayTransitionKind};
 use fm_types::{FrameRate, InputId};
@@ -371,6 +371,47 @@ pub(crate) fn transport_intent_for(
     live_block(state)
         .is_none()
         .then_some(StudioIntent::Replay(operation))
+}
+
+/// A console angle key: show recorded angle `slot` (1-based) of the cued
+/// event on the console's Replay player or, for the second controller
+/// profile, the other Replay input's player.
+pub(crate) fn angle_intent(state: &StudioUiState, second: bool, slot: u8) -> Option<StudioIntent> {
+    let player = transport_player_for(state, second)?;
+    player.event?;
+    let status = state.replay.as_deref()?;
+    let angle = *status
+        .settings
+        .sources
+        .get(usize::from(slot).checked_sub(1)?)?;
+    transport_intent_for(
+        state,
+        second,
+        ReplayOperation::Angle {
+            input: player.input,
+            angle: WireInputId::from_domain(angle),
+        },
+    )
+}
+
+/// A console play-speed key: play the console's Replay player (or the
+/// other Replay input's, for the second controller profile) at `percent`.
+pub(crate) fn play_speed_intent(
+    state: &StudioUiState,
+    second: bool,
+    percent: u8,
+) -> Option<StudioIntent> {
+    let player = transport_player_for(state, second)?;
+    player.event?;
+    let speed = ReplaySpeed::from_percent(percent)?;
+    transport_intent_for(
+        state,
+        second,
+        ReplayOperation::Play {
+            input: player.input,
+            speed,
+        },
+    )
 }
 
 /// How long repeated jog steps accelerate, and the largest step.
@@ -3208,6 +3249,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn console_angle_and_play_speed_keys_drive_the_selected_player() {
+        let mut state = crate::hover_audit::bank_fixture();
+        let mut status = crate::hover_audit::replay_status();
+        // Both Replay inputs are cued, so either controller profile can
+        // drive its own player.
+        status.players[1].event = Some(2);
+        let first = status.players[0].input;
+        let second = status.players[1].input;
+        let sources = status.settings.sources.clone();
+        state.replay = Some(Box::new(status));
+
+        assert_eq!(
+            angle_intent(&state, false, 1),
+            Some(StudioIntent::Replay(ReplayOperation::Angle {
+                input: first,
+                angle: WireInputId::from_domain(sources[0]),
+            }))
+        );
+        assert_eq!(
+            angle_intent(&state, true, 2),
+            Some(StudioIntent::Replay(ReplayOperation::Angle {
+                input: second,
+                angle: WireInputId::from_domain(sources[1]),
+            }))
+        );
+        // A slot past the recorded sources names no angle.
+        assert_eq!(angle_intent(&state, false, 3), None);
+        assert_eq!(
+            play_speed_intent(&state, false, 50),
+            Some(StudioIntent::Replay(ReplayOperation::Play {
+                input: first,
+                speed: ReplaySpeed::Half,
+            }))
+        );
+        assert_eq!(
+            play_speed_intent(&state, true, 100),
+            Some(StudioIntent::Replay(ReplayOperation::Play {
+                input: second,
+                speed: ReplaySpeed::Full,
+            }))
+        );
+        // Only the four product speeds are console actions.
+        assert_eq!(play_speed_intent(&state, false, 30), None);
     }
 
     #[test]
