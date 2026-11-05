@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
 
 use fm_model::{
-    InputKind, MixFeed, Playlist, PlaylistLoop, PlaylistRunState, PlaylistTransitionKind,
-    RestartPolicy, Rgba8, Rotation, SimulatedAudio, SimulatedVideo, SourceRef, StartupPolicy,
-    TitleFieldValue, TitleInput,
+    InputKind, LayerEffect, MixFeed, Playlist, PlaylistLoop, PlaylistRunState,
+    PlaylistTransitionKind, RestartPolicy, Rgba8, Rotation, SimulatedAudio, SimulatedVideo,
+    SourceRef, StartupPolicy, TitleFieldValue, TitleInput,
 };
 use fm_types::{
     Channel, ChromaLocation, ColorPrimaries, DiscreteChannel, MatrixCoefficients, PixelFormat,
