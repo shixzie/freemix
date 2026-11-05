@@ -393,6 +393,7 @@ mod tests {
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"a\":1}")
                 .unwrap();
+            stream.conn.send_close_notify();
             let _ = stream.flush();
         });
 
