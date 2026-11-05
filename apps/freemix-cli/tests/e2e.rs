@@ -12907,6 +12907,118 @@ fn local_scene_render_maps_project_coordinates_onto_the_output_size() {
 }
 
 #[test]
+fn local_scene_layers_resolve_alias_and_feed_inputs() {
+    let context = ContractContext::new();
+    let path = context.project_path();
+    assert_success(&invoke(&["new", path]));
+
+    // A scene layer naming an alias draws the alias's target (IN-024).
+    assert_success(&invoke(&["alias-input-add", path, "4", "Alias", "2"]));
+    assert_success(&invoke(&[
+        "scene-input-add",
+        path,
+        "10",
+        "20",
+        "Alias scene",
+    ]));
+    assert_success(&invoke(&[
+        "scene-layer-add",
+        path,
+        "20",
+        "4",
+        "0",
+        "Alias layer",
+    ]));
+    assert_success(&invoke(&["preview", path, "10"]));
+    assert_success(&invoke(&["cut", path]));
+    let alias_image = context.root.join("scene-alias.ppm");
+    assert_success(&invoke_bounded(&[
+        "render",
+        path,
+        alias_image.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "3",
+    ]));
+    assert_solid_ppm(&alias_image, 4, 3, [146, 46, 142]);
+
+    // A scene layer naming a feed draws black before its first commit
+    // (IN-025).
+    assert_success(&invoke(&[
+        "mix-feed-input-add",
+        path,
+        "5",
+        "Feed",
+        "program",
+    ]));
+    assert_success(&invoke(&[
+        "scene-input-add",
+        path,
+        "11",
+        "21",
+        "Feed scene",
+    ]));
+    assert_success(&invoke(&[
+        "scene-layer-add",
+        path,
+        "21",
+        "5",
+        "0",
+        "Feed layer",
+    ]));
+    assert_success(&invoke(&["preview", path, "11"]));
+    assert_success(&invoke(&["cut", path]));
+    let feed_image = context.root.join("scene-feed.ppm");
+    assert_success(&invoke_bounded(&[
+        "render",
+        path,
+        feed_image.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "3",
+    ]));
+    assert_solid_ppm(&feed_image, 4, 3, [0, 0, 0]);
+
+    // An alias crop is not composable into a scene layer yet; the refusal
+    // names the input instead of drawing the wrong picture.
+    assert_success(&invoke(&[
+        "alias-input-add",
+        path,
+        "6",
+        "Cropped",
+        "1",
+        "--crop",
+        "0,0,1,1",
+    ]));
+    assert_success(&invoke(&[
+        "scene-layer-add",
+        path,
+        "20",
+        "6",
+        "1",
+        "Cropped layer",
+    ]));
+    assert_success(&invoke(&["preview", path, "10"]));
+    assert_success(&invoke(&["cut", path]));
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "render",
+            path,
+            context.root.join("refused.ppm").to_str().unwrap(),
+            "--width",
+            "4",
+            "--height",
+            "3",
+        ]),
+        "alias input 6 has a crop",
+    );
+
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+#[test]
 fn local_stream_update_preserves_desired_running() {
     let context = ContractContext::new();
     author_stream_destination(&context);
