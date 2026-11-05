@@ -971,23 +971,28 @@ impl NativeProjectPlan {
             next_source = next_source
                 .checked_add(1)
                 .ok_or(NativeProjectPlanError::SourceTokenExhausted)?;
-            scenes.push(NativeScenePlan {
-                id: black_scene,
-                output,
-                composition,
-                model: Arc::new(model.clone()),
-                followed: Arc::new(model),
-                layer_tokens: Vec::new(),
-                key_tokens: Vec::new(),
-                inputs: video_routes
-                    .iter()
-                    .filter(|(_, route)| **route == NativeVideoRoute::Scene(black_scene))
-                    .map(|(input, _)| *input)
-                    .collect(),
-                sources: Vec::new(),
-                black_scene: None,
-                rejected: None,
-            });
+            // Feed layers fall back to this scene, so it must render before
+            // the scenes that read it.
+            scenes.insert(
+                0,
+                NativeScenePlan {
+                    id: black_scene,
+                    output,
+                    composition,
+                    model: Arc::new(model.clone()),
+                    followed: Arc::new(model),
+                    layer_tokens: Vec::new(),
+                    key_tokens: Vec::new(),
+                    inputs: video_routes
+                        .iter()
+                        .filter(|(_, route)| **route == NativeVideoRoute::Scene(black_scene))
+                        .map(|(input, _)| *input)
+                        .collect(),
+                    sources: Vec::new(),
+                    black_scene: None,
+                    rejected: None,
+                },
+            );
         }
 
         let stinger_routes = project
