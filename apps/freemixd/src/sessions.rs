@@ -2437,13 +2437,10 @@ impl Runtime<'_> {
                 .desired_switcher()
                 .on_air_usage(source.input)
                 .is_some()
-                || control
-                    .realized_switcher()
-                    .on_air_usage(source.input)
-                    .is_some();
+
             drop(control);
             let sequence = source.applied_rows.saturating_add(1);
-            let command = CommandMessage {
+            let command = fm_protocol::CommandMessage {
                 protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
                 id: format!("title-row-source-{}-{sequence}", source.input.get().get()),
                 idempotency_key: format!(
@@ -2469,7 +2466,7 @@ impl Runtime<'_> {
                 self.control,
                 self.store,
                 durable,
-                &development_principal()?,
+                &crate::development_principal()?,
                 self.authority,
                 &command,
                 now_millis()?,
