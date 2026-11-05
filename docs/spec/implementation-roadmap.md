@@ -3171,8 +3171,9 @@ and remote `input-freeze` commands. The native realizer latches the
 presented frame (delay-aware) and holds a live input by ignoring newly
 ingested pictures until it resumes; scene, overlay, key/fill, and logical
 output paths read the same latched picture. Studio's input-bank menu offers
-Freeze or Unfreeze, marks a frozen tile in its hover text, and sends the
-2.161 command, and the replicated view carries the frozen set. Protocol 2.164
+Freeze or Unfreeze, every tile also has a dedicated Freeze/Unfreeze button,
+a frozen tile paints an always-visible FROZEN badge and marks itself in its
+hover text, and the 2.161 command updates the replicated frozen set. Protocol 2.164
 exports the latched picture: `frozen_still_request` names one frozen input,
 the daemon writes a lossless PNG into the project bundle's `assets/` as
 `frozen-<input>.png` (a later capture of the same input replaces it), and
@@ -3183,8 +3184,7 @@ back through the sRGB output transform, so the still matches the Program
 picture; a simulated daemon renders the input's current simulated picture.
 Studio's input-bank menu offers Capture still on a frozen tile, sends the
 2.164 request through the session, and shows the returned asset URI (or the
-daemon's refusal) under the action. Remaining gaps: there is no dedicated
-freeze button or always-visible badge beyond the menu and hover note, no
+daemon's refusal) under the action. Remaining gaps: there is no
 audio freeze/alignment, timestamps are still bare ticks rather than
 `fm-frame` timing types, and stills carry no color metadata or compression.
 `SW-016` remains planned.
