@@ -380,6 +380,7 @@ impl StudioShell {
             thumbnail,
             enabled,
             cut_enabled,
+            frozen,
             ..
         } = tile;
         let l = self.locale;
