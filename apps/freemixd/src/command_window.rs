@@ -1734,6 +1734,7 @@ pub(crate) fn command_base_ticks(
         CommandPayload::TitleOffAir { input } => prepared.title_off_air_ticks(input.to_domain()),
         CommandPayload::RenameInput { .. }
         | CommandPayload::SetTitleFields { .. }
+        | CommandPayload::SetTitleRow { .. }
         | CommandPayload::ReorderInputs { .. }
         | CommandPayload::SetInputAudioStrip { .. }
         | CommandPayload::SelectPreview { .. }

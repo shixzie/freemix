@@ -2141,6 +2141,7 @@ impl Client {
             | CommandPayload::Redo { .. }
             | CommandPayload::SetEditLock { .. }
             | CommandPayload::SetTitleFields { .. }
+            | CommandPayload::SetTitleRow { .. }
             | CommandPayload::TakeTitle { .. }
             | CommandPayload::TitleOffAir { .. }
             | CommandPayload::SetTitleFieldExposure { .. }
