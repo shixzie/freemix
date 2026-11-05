@@ -239,10 +239,11 @@ mod pacing_trace;
 // the parser and validation compile (and are unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod display_outputs;
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+mod http_fetch;
 mod playlist_clock;
 mod sessions;
 mod sim_audio;
-#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod smart;
 mod vmix;
 use fm_daemon_web::{web_feed, web_titles};
