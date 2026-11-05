@@ -3232,13 +3232,16 @@ their last use, a feed input's own compiled input grade colours its committed
 picture on Program, Preview, and scene layers, and a feed scene layer keeps
 the layer's own crop, mask, effects, and layer grade because it composes
 through the same scene plan as a leaf. A Preview feed keeps the Preview
-composite running even when no display asks for it. A cropped alias is refused
-natively instead of drawing the uncropped source. Remaining gaps: cropped
-aliases and cropped alias layers are refused, monitor taps do not paint their
-own alias/feed resolution, there is no protocol or Studio authoring, feedback
-ignores the second input of an active transition, and aliases do not yet carry
-independent effects, shortcuts, or layer state. `IN-024` and `IN-025` remain
-planned.
+composite running even when no display asks for it. A cropped alias's own crop
+is composed in project pixels for Program, Preview, overlays, key/fill, and
+scene layers, whether its target is a leaf, a scene, or a feed; only the
+requested alias's crop applies, as in the model resolver, and scene ordering
+follows a cropped alias of a scene. Remaining gaps: the CLI's scene renderer
+still refuses a cropped alias inside a scene layer, monitor taps do not paint
+their own alias/feed resolution, there is no protocol or Studio authoring,
+feedback ignores the second input of an active transition, and aliases do not
+yet carry independent effects, shortcuts, or layer state. `IN-024` and
+`IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
