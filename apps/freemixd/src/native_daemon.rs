@@ -2774,8 +2774,12 @@ impl NativeDaemon {
         // revision; the realizer gets the new map before it services the
         // frame (IN-022).
         {
-            let delays = control.show().input_video_delays();
-            if self.applied_video_delays.as_ref() != Some(delays) {
+            let delays = control
+                .show()
+                .input_video_delays()
+                .map(|(&input, &frames)| (input, frames))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if self.applied_video_delays.as_ref() != Some(&delays) {
                 self.video
                     .set_input_video_delays(
                         self.pacer.frame_rate(),
@@ -2785,7 +2789,7 @@ impl NativeDaemon {
                             .collect(),
                     )
                     .map_err(|error| AppFailure(format!("native playback: {error}")))?;
-                self.applied_video_delays = Some(delays.clone());
+                self.applied_video_delays = Some(delays);
             }
         }
         let deadline = control.next_frame_deadline()?;
