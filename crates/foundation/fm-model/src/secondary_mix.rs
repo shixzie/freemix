@@ -149,8 +149,8 @@ impl SecondaryMixError {
     #[must_use]
     pub const fn mix(&self) -> Option<MixNumber> {
         match self {
-            Self::DuplicateNumber(number) => Some(*number),
-            Self::PreviewRequired(number)
+            Self::DuplicateNumber(number)
+            | Self::PreviewRequired(number)
             | Self::PreviewNotAllowed(number)
             | Self::PreviewEqualsProgram(number)
             | Self::SelfReference(number) => Some(*number),

@@ -296,12 +296,13 @@ fn validate_source(
     inputs: &[InputId],
 ) -> Result<(), LogicalOutputError> {
     let check_cell = |cell: &LogicalMultiViewCell| match cell {
-        LogicalMultiViewCell::Program | LogicalMultiViewCell::Preview => Ok(()),
+        LogicalMultiViewCell::Program
+        | LogicalMultiViewCell::Preview
+        | LogicalMultiViewCell::Output(_) => Ok(()),
         LogicalMultiViewCell::Input(input) if inputs.contains(input) => Ok(()),
         LogicalMultiViewCell::Input(input) => Err(LogicalOutputError::UnknownInput(*input)),
         LogicalMultiViewCell::Mix(mix) if (1..=MAX_LOGICAL_MIX_NUMBER).contains(mix) => Ok(()),
         LogicalMultiViewCell::Mix(mix) => Err(LogicalOutputError::InvalidMix(*mix)),
-        LogicalMultiViewCell::Output(_) => Ok(()),
     };
     match source {
         LogicalOutputSource::Program | LogicalOutputSource::Preview => Ok(()),
