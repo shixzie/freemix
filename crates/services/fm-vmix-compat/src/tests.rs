@@ -570,6 +570,7 @@ fn xpath_unions_pick_the_first_node_in_document_order() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one case per numeric comparison form
 fn xpath_numeric_comparisons_select_nodes() {
     let state = state();
     assert_eq!(
