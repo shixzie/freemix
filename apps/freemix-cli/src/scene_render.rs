@@ -241,6 +241,13 @@ pub(crate) fn render_scene(
                 draw_layer.crop = Some(translated);
             }
         }
+        // The alias's own effects apply after its crop and before the
+        // layer's effects (IN-024).
+        if let InputKind::Alias { effects, .. } = &input.kind {
+            let mut merged = effects.clone();
+            merged.append(&mut draw_layer.effects);
+            draw_layer.effects = merged;
+        }
         let token = scene_source_token(&mut sources, source_input, rendered_input, alias_crop);
         // A key/fill key's input (SW-008) renders like a layer source; a
         // cropped alias key is refused because its sampling space would move.

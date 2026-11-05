@@ -482,9 +482,21 @@ impl<'a> Composer<'a> {
             ) {
                 return None;
             }
-            let Placement::Draw(placed) = (self.place)(layer)? else {
+            let Placement::Draw(mut placed) = (self.place)(layer)? else {
                 continue;
             };
+            // An alias's own effects apply after its crop and before the
+            // effects of a layer that draws it (IN-024).
+            if let SourceRef::Input(input) = layer.source
+                && let Some(Input {
+                    kind: InputKind::Alias { effects, .. },
+                    ..
+                }) = self.input(input)
+            {
+                let mut merged = effects.clone();
+                merged.append(&mut placed.effects);
+                placed.effects = merged;
+            }
             // A key/fill layer (SW-008) also binds its key input's picture;
             // without a drawable picture input the layer is not drawn.
             let key_feed = match layer.key.and_then(fm_model::LayerKey::key_input) {
