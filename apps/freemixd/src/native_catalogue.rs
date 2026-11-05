@@ -1028,6 +1028,7 @@ mod tests {
             InputKind::Alias {
                 target: id(1),
                 crop: None,
+                effects: Vec::new(),
             },
         ] {
             let candidate = project(&[(1, generator(SimulatedAudio::Silence)), (2, added.clone())]);

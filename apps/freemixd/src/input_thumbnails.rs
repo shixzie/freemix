@@ -1527,6 +1527,7 @@ mod tests {
             InputKind::Alias {
                 target: input_id(1),
                 crop: None,
+                effects: Vec::new(),
             },
         ));
         let work = work(project, 1);

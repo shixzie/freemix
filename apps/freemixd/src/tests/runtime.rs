@@ -2984,6 +2984,7 @@ fn live_input_catalogue_changes_sync_the_project_and_refuse_alias_targets() {
         kind: InputKind::Alias {
             target: test_input_id(3),
             crop: None,
+            effects: Vec::new(),
         },
         required_capabilities: Vec::new(),
     });
