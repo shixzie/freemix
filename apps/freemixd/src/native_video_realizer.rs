@@ -30,7 +30,7 @@ use fm_gpu::NativeTexture;
 use fm_protocol::{MonitorTap, ServerIdentity};
 use fm_types::{InputId, OutputScaling};
 use freemixd::native_media::{
-    NativeMediaError, NativeMediaRuntime, NativeOutputFrame, NativeProjectGrades,
+    NativeFeedFrames, NativeMediaError, NativeMediaRuntime, NativeOutputFrame, NativeProjectGrades,
     NativeProjectPlan, NativeSourceLimits, NativeSourcePlayback, NativeSourceRenderError,
 };
 
@@ -227,6 +227,8 @@ impl NativeVideoHandle {
                     monitor,
                     monitor_counters: [NativeTapCounters::default(); 2],
                     grades: PreparedGrades(None),
+                    feed_program: None,
+                    feed_preview: None,
                 };
                 realizer.run(&receiver);
             })?;
@@ -567,6 +569,10 @@ struct VideoRealizer {
     monitor: NativeMonitorTap,
     monitor_counters: [NativeTapCounters; 2],
     grades: PreparedGrades,
+    /// The Program and Preview pictures a mix-feed input shows on the next
+    /// tick (IN-025).
+    feed_program: Option<NativeTexture>,
+    feed_preview: Option<NativeTexture>,
 }
 
 impl VideoRealizer {
@@ -602,14 +608,19 @@ impl VideoRealizer {
                                     )
                                     .map_err(VideoError::Render)?;
                             }
+                            let feeds = NativeFeedFrames {
+                                program: self.feed_program.as_ref(),
+                                preview: self.feed_preview.as_ref(),
+                            };
                             if job.plan.output_ids().is_empty() {
                                 let output = self
                                     .runtime
-                                    .render_project_frame_result_with_stingers_blocking(
+                                    .render_project_frame_result_with_stingers_and_feeds_blocking(
                                         self.playback.registry(),
                                         self.stingers.registry(),
                                         &job.plan,
                                         &job.frame,
+                                        feeds,
                                     )
                                     .map_err(VideoError::Render)?;
                                 if let Some((frame, input)) = job.monitor.program_frame {
@@ -626,11 +637,12 @@ impl VideoRealizer {
                             } else {
                                 let outputs = self
                                     .runtime
-                                    .render_project_outputs_with_stingers_blocking(
+                                    .render_project_outputs_with_stingers_and_feeds_blocking(
                                         self.playback.registry(),
                                         self.stingers.registry(),
                                         &job.plan,
                                         &job.frame,
+                                        feeds,
                                     )
                                     .map_err(VideoError::Render)?;
                                 // Program is the first realized project output.
@@ -646,6 +658,30 @@ impl VideoRealizer {
                                 }
                                 Ok(NativeVideoFrame::Outputs(outputs))
                             }
+                            .and_then(|frame| {
+                                if job.plan.has_feed(fm_model::MixFeed::Program) {
+                                    let texture = match &frame {
+                                        NativeVideoFrame::Program(texture) => texture,
+                                        NativeVideoFrame::Outputs(outputs) => outputs
+                                            .first()
+                                            .map(NativeOutputFrame::texture)
+                                            .ok_or_else(|| {
+                                                VideoError::Render(
+                                                    NativeSourceRenderError::ResourceBounds,
+                                                )
+                                            })?,
+                                    };
+                                    self.feed_program = Some(
+                                        self.runtime
+                                            .copy_feed_texture_blocking(
+                                                job.plan.dimensions(),
+                                                texture,
+                                            )
+                                            .map_err(VideoError::Render)?,
+                                    );
+                                }
+                                Ok(frame)
+                            })
                         });
                     let _ = reply.send(VideoRenderOutcome {
                         result,
@@ -661,7 +697,7 @@ impl VideoRealizer {
                         &job.monitor.server,
                         &mut self.monitor_counters,
                     );
-                    let result = self
+                    let mut result = self
                         .grades
                         .apply(
                             &self.runtime,
@@ -671,15 +707,31 @@ impl VideoRealizer {
                         )
                         .map_err(VideoError::Grades)
                         .and_then(|()| {
+                            let feeds = NativeFeedFrames {
+                                program: self.feed_program.as_ref(),
+                                preview: self.feed_preview.as_ref(),
+                            };
                             self.runtime
-                                .render_project_frame_result_with_stingers_blocking(
+                                .render_project_frame_result_with_stingers_and_feeds_blocking(
                                     self.playback.registry(),
                                     self.stingers.registry(),
                                     &job.plan,
                                     &job.frame,
+                                    feeds,
                                 )
                                 .map_err(VideoError::Render)
                         });
+                    if let Ok(texture) = &result
+                        && job.plan.has_feed(fm_model::MixFeed::Preview)
+                    {
+                        match self
+                            .runtime
+                            .copy_feed_texture_blocking(job.plan.dimensions(), texture)
+                        {
+                            Ok(copy) => self.feed_preview = Some(copy),
+                            Err(error) => result = Err(VideoError::Render(error)),
+                        }
+                    }
                     if let Ok(texture) = &result
                         && let Some(tap_frame) = job.monitor.preview_tap_frame
                     {

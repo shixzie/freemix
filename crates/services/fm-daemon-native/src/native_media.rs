@@ -1142,6 +1142,12 @@ impl NativeProjectPlan {
         !self.feeds.is_empty()
     }
 
+    /// Whether any input re-enters `feed`'s committed bus.
+    #[must_use]
+    pub fn has_feed(&self, feed: fm_model::MixFeed) -> bool {
+        self.feeds.values().any(|candidate| *candidate == feed)
+    }
+
     /// The project video dimensions the plan composes at.
     #[must_use]
     pub const fn dimensions(&self) -> VideoDimensions {
