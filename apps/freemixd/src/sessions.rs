@@ -2315,13 +2315,13 @@ impl TitleRowSources {
     /// Writes the current source specs into the bundle atomically enough for
     /// a daemon restart to resume them.
     fn save(&self, bundle_root: &std::path::Path) -> std::io::Result<()> {
+        use std::fmt::Write as _;
         let mut text = format!("version={TITLE_ROW_SOURCES_VERSION}\n");
         for source in self.sources.values() {
             let interval_ms = u32::try_from(source.interval.as_millis()).unwrap_or(u32::MAX);
-            use std::fmt::Write as _;
-            let _ = write!(
+            let _ = writeln!(
                 text,
-                "{}\t{interval_ms}\t{}\t{}\n",
+                "{}\t{interval_ms}\t{}\t{}",
                 source.input.get().get(),
                 u8::from(source.keep_live),
                 source.path
