@@ -3176,10 +3176,9 @@ impl Remote {
                         }
                         // A slideshow step answers `page_navigated`, a
                         // document step `paged_changed` (IN-014).
-                        EventPayload::PageNavigated { .. } | EventPayload::PagedChanged { .. } => {
-                            completion == CommandCompletion::Switcher
-                        }
-                        EventPayload::InputFreezeChanged { .. } => {
+                        EventPayload::PageNavigated { .. }
+                        | EventPayload::PagedChanged { .. }
+                        | EventPayload::InputFreezeChanged { .. } => {
                             completion == CommandCompletion::Switcher
                         }
                         EventPayload::MediaListChanged { operation, .. } => {
