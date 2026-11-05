@@ -170,6 +170,12 @@ enum VideoCommand {
         frame_rate: fm_types::FrameRate,
         delays: Vec<(InputId, u32)>,
     },
+    SetInputFreeze {
+        input: InputId,
+        frozen: bool,
+        deadline: ClockTime,
+        reply: SyncSender<()>,
+    },
     SetRetainedByteLimit {
         limit: u64,
     },
@@ -343,6 +349,31 @@ impl NativeVideoHandle {
     pub(crate) fn remove_source(&mut self, input: InputId) -> Result<(), String> {
         self.commands
             .send(VideoCommand::RemoveSource { input })
+            .map_err(|_| "the video thread stopped".to_owned())
+    }
+
+    /// Freezes or resumes one input (SW-016).
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn set_input_freeze(
+        &mut self,
+        input: InputId,
+        frozen: bool,
+        deadline: ClockTime,
+    ) -> Result<(), String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::SetInputFreeze {
+                input,
+                frozen,
+                deadline,
+                reply,
+            })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
             .map_err(|_| "the video thread stopped".to_owned())
     }
 
@@ -814,6 +845,15 @@ impl VideoRealizer {
                 }
                 VideoCommand::SetInputVideoDelays { frame_rate, delays } => {
                     self.playback.set_input_video_delays(frame_rate, delays);
+                }
+                VideoCommand::SetInputFreeze {
+                    input,
+                    frozen,
+                    deadline,
+                    reply,
+                } => {
+                    self.playback.set_input_freeze(input, frozen, deadline);
+                    let _ = reply.send(());
                 }
                 VideoCommand::SetRetainedByteLimit { limit } => {
                     self.playback.set_retained_byte_limit(limit);

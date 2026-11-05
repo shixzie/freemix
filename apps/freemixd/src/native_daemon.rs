@@ -48,6 +48,8 @@ pub(crate) struct NativeDaemon {
     /// The per-input video delays the video realizer currently applies
     /// (IN-022); the frame loop sends changes only.
     pub(crate) applied_video_delays: Option<std::collections::BTreeMap<InputId, u32>>,
+    /// Every input the video realizer currently holds frozen (SW-016).
+    pub(crate) applied_frozen_inputs: std::collections::BTreeSet<InputId>,
     /// A frame submitted to the audio and video realizers, waiting for the
     /// pass's peer work to finish before its consumers run.
     pub(crate) pending_frame: Option<PendingFrame>,
@@ -490,6 +492,7 @@ impl NativeDaemon {
             video,
             latest_frames,
             applied_video_delays: Some(applied_video_delays),
+            applied_frozen_inputs: std::collections::BTreeSet::new(),
             pending_frame: None,
             pending_preview_render: false,
             projected_frame: None,
@@ -2797,6 +2800,25 @@ impl NativeDaemon {
             .video
             .service_playback(deadline)
             .map_err(|error| AppFailure(format!("native playback: {error}")))?;
+        // A freeze latches the picture the source just presented, so it is
+        // applied after servicing the frame's sources (SW-016).
+        let frozen = control
+            .show()
+            .frozen_inputs()
+            .collect::<std::collections::BTreeSet<_>>();
+        if self.applied_frozen_inputs != frozen {
+            for input in frozen.difference(&self.applied_frozen_inputs) {
+                self.video
+                    .set_input_freeze(*input, true, deadline)
+                    .map_err(|error| AppFailure(format!("native playback: {error}")))?;
+            }
+            for input in self.applied_frozen_inputs.difference(&frozen) {
+                self.video
+                    .set_input_freeze(*input, false, deadline)
+                    .map_err(|error| AppFailure(format!("native playback: {error}")))?;
+            }
+            self.applied_frozen_inputs = frozen;
+        }
         let replay_deadline = self.next_deadline()?;
         let Some(projected) = self.projected_frame.as_ref() else {
             return Err(AppFailure("next frame projection was initialized".into()).into());
