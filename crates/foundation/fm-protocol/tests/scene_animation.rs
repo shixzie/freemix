@@ -107,7 +107,7 @@ fn clip_bytes() -> Vec<u8> {
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 157));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 158));
 }
 
 #[test]

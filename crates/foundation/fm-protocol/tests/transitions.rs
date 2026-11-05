@@ -32,7 +32,7 @@ fn round_trip(message: &WireMessage) -> String {
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 157));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 158));
 }
 
 #[test]
