@@ -3601,6 +3601,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::RemoveInput { .. }
         | EngineCommand::SetEditLock { .. }
         | EngineCommand::SetTitleFields { .. }
+        | EngineCommand::SetTitleRow { .. }
         | EngineCommand::SetPlaylist { .. }
         | EngineCommand::SetCueList { .. }
         | EngineCommand::SetScript { .. }
@@ -3723,6 +3724,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. }
         | CommandPayload::SetTitleFields { .. }
+        | CommandPayload::SetTitleRow { .. }
         | CommandPayload::SetTitleFieldExposure { .. }
         | CommandPayload::SetShortcut { .. }
         | CommandPayload::RemoveShortcut { .. }
@@ -4003,6 +4005,7 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. }) => edit_engine_command(payload),
         payload @ (CommandPayload::SetTitleFields { .. }
+        | CommandPayload::SetTitleRow { .. }
         | CommandPayload::TakeTitle { .. }
         | CommandPayload::TitleOffAir { .. }) => title_engine_command(payload),
         payload @ CommandPayload::SetTitleFieldExposure { .. } => {
@@ -4079,6 +4082,25 @@ fn title_engine_command(payload: &CommandPayload) -> EngineCommand {
                 TitleAirRequirement::OnAir => EngineTitleAirRequirement::OnAir,
             },
             fields: domain_title_fields(fields),
+        },
+        CommandPayload::SetTitleRow {
+            input,
+            base_revision,
+            require,
+            values,
+            keep_live,
+        } => EngineCommand::SetTitleRow {
+            input: input.to_domain(),
+            base_revision: *base_revision,
+            require: match require {
+                TitleAirRequirement::OffAir => EngineTitleAirRequirement::OffAir,
+                TitleAirRequirement::OnAir => EngineTitleAirRequirement::OnAir,
+            },
+            values: values
+                .iter()
+                .map(|value| (value.field.clone(), value.value.clone()))
+                .collect(),
+            keep_live: *keep_live,
         },
         CommandPayload::TakeTitle {
             input,
