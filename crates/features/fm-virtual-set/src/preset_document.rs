@@ -130,7 +130,8 @@ impl PresetStore {
             let count = parts[4]
                 .parse::<usize>()
                 .map_err(|_| PresetDocumentError::Preset)?;
-            if count < 2 || count > MAX_EASING_POINTS || parts.len() != 5 + count.saturating_mul(2)
+            if !(2..=MAX_EASING_POINTS).contains(&count)
+                || parts.len() != 5 + count.saturating_mul(2)
             {
                 return Err(PresetDocumentError::Preset);
             }
@@ -172,7 +173,7 @@ fn hex_text(text: &str) -> String {
 }
 
 fn unhex_text(text: &str) -> Option<String> {
-    if text.is_empty() || text.len() % 2 != 0 {
+    if text.is_empty() || !text.len().is_multiple_of(2) {
         return None;
     }
     let digit = |byte: u8| match byte {
