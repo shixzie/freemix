@@ -1359,9 +1359,10 @@ pub struct FrozenStillRequest {
 }
 
 /// The answer to a [`FrozenStillRequest`]: the lossless PNG the daemon wrote
-/// into its own project bundle. `asset_uri` is its `asset://` URI and
-/// `path` its bundle-relative path, so a client with filesystem access can
-/// copy or inspect it.
+/// into its own project bundle as `frozen-<input>.png`. `asset_uri` is its
+/// `asset://` URI and `path` its bundle-relative path, so a client with
+/// filesystem access can copy or inspect it. A later capture of the same
+/// input replaces the file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrozenStillResponse {
     pub protocol: crate::ProtocolVersion,

@@ -3174,7 +3174,8 @@ output paths read the same latched picture. Studio's input-bank menu offers
 Freeze or Unfreeze, marks a frozen tile in its hover text, and sends the
 2.161 command, and the replicated view carries the frozen set. Protocol 2.164
 exports the latched picture: `frozen_still_request` names one frozen input,
-the daemon writes a lossless PNG into the project bundle's `assets/`, and
+the daemon writes a lossless PNG into the project bundle's `assets/` as
+`frozen-<input>.png` (a later capture of the same input replaces it), and
 `frozen_still_response` returns its dimensions, `asset://` URI, and
 bundle-relative path; `remote-frozen-still <address> <input>` sends the
 request and prints them. A native daemon reads the GPU-latched source texture

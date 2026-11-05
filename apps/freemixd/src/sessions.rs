@@ -2527,11 +2527,8 @@ impl Runtime<'_> {
                     self.frozen_still(request.input.to_domain(), durable, native.as_deref_mut());
                 match answer {
                     Ok((width, height, png)) => {
-                        let (asset_uri, path) = self.write_still_asset(
-                            request.input.to_domain(),
-                            durable.position().frames_rendered,
-                            &png,
-                        )?;
+                        let (asset_uri, path) =
+                            self.write_still_asset(request.input.to_domain(), &png)?;
                         peer.reply(WireMessage::FrozenStillResponse(
                             fm_protocol::FrozenStillResponse {
                                 protocol: request.protocol,
@@ -2990,34 +2987,19 @@ impl Runtime<'_> {
             .sync_templates(&self.control.borrow().title_templates());
     }
 
-    /// Writes `png` into the bundle's assets under a fresh name and returns
-    /// its `asset://` URI and bundle-relative path (SW-016).
+    /// Writes `png` into the bundle's assets as `frozen-<input>.png`,
+    /// replacing the previous export for the same input so repeated captures
+    /// stay bounded, and returns its `asset://` URI and bundle-relative path
+    /// (SW-016).
     fn write_still_asset(
         &self,
         input: fm_types::InputId,
-        frame: u64,
         png: &[u8],
     ) -> Result<(String, String), DispatchError> {
         let assets = self.bundle_root.join("assets");
         std::fs::create_dir_all(&assets).map_err(|_| DispatchError::Peer)?;
-        let stem = format!("frozen-{}-{frame}", input.get().get());
-        let mut suffix = 1_u32;
-        let (name, path) = loop {
-            let name = if suffix == 1 {
-                format!("{stem}.png")
-            } else {
-                format!("{stem}-{suffix}.png")
-            };
-            let path = assets.join(&name);
-            if !path.exists() {
-                break (name, path);
-            }
-            suffix = suffix.saturating_add(1);
-            if suffix == u32::MAX {
-                return Err(DispatchError::Peer);
-            }
-        };
-        std::fs::write(&path, png).map_err(|_| DispatchError::Peer)?;
+        let name = format!("frozen-{}.png", input.get().get());
+        std::fs::write(assets.join(&name), png).map_err(|_| DispatchError::Peer)?;
         Ok((format!("asset://{name}"), format!("assets/{name}")))
     }
 
