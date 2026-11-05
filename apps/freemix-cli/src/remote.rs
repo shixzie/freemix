@@ -1299,12 +1299,7 @@ pub fn frozen_still(address: SocketAddr, input: InputId, output: &Path) -> Remot
                 remote.client.intake(WireMessage::RuntimeEvent(event))?;
             }
             WireMessage::Error(error) => {
-                return Err(RemoteFailure(refusal_text(
-                    &error.error.code,
-                    &error.error.message,
-                    &error.error.fields,
-                ))
-                .into());
+                return Err(protocol_error(&error.error).into());
             }
             _ => {
                 return Err(
