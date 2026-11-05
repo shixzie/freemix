@@ -1335,12 +1335,13 @@ mod tests {
     use std::num::NonZeroU128;
 
     use fm_model::{
-        Input, ProjectSettings, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
+        Input, Layer, LayerGeometry, ProjectSettings, Rgba8, Rotation, Scene, SimulatedAudio,
+        SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
     };
     use fm_protocol::{LineDecoder, decode_input_thumbnail};
     use fm_types::{
         AudioFormat, ChannelLayout, ColorMetadata, FrameRate, PixelFormat, ProjectId, SampleFormat,
-        SampleRate, ScanMode, VideoDimensions, VideoFormat,
+        SampleRate, ScanMode, SceneId, VideoDimensions, VideoFormat,
     };
 
     use super::*;
@@ -1474,6 +1475,55 @@ mod tests {
             .find(|(input, _)| *input == input_id(2))
             .expect("the alias gets a thumbnail");
         let image = decode_input_thumbnail(&alias.1).unwrap();
+        assert_eq!(&image.rgba[..4], &[200, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_scene_thumbnail_draws_an_alias_layer() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
+        let scene = SceneId::new(NonZeroU128::new(10).unwrap());
+        let mut project = project(vec![solid(1, 200)]);
+        project.add_input(input(
+            2,
+            InputKind::Alias {
+                target: input_id(1),
+                crop: None,
+            },
+        ));
+        project.add_scene(Scene {
+            id: scene,
+            name: "Alias scene".into(),
+            background: Rgba8::OPAQUE_BLACK,
+            layers: vec![Layer {
+                id: fm_model::LayerId::new(NonZeroU128::new(1).unwrap()).unwrap(),
+                name: "Alias".into(),
+                source: SourceRef::Input(input_id(2)),
+                enabled: true,
+                geometry: LayerGeometry::new(0, 0, 1920, 1080, Rotation::Deg0),
+                crop: None,
+                mask: None,
+                key: None,
+                effects: Vec::new(),
+                opacity: u8::MAX,
+                z_order: 0,
+            }],
+            animation: fm_model::SceneAnimation::default(),
+        });
+        project.add_input(input(
+            3,
+            InputKind::Scene {
+                scene_id: scene,
+                audio_source: None,
+            },
+        ));
+        let work = work(project, 1);
+        let thumbnails = step(&mut renderer, &work, start, false);
+        let scene_thumbnail = thumbnails
+            .iter()
+            .find(|(input, _)| *input == input_id(3))
+            .expect("the scene gets a thumbnail");
+        let image = decode_input_thumbnail(&scene_thumbnail.1).unwrap();
         assert_eq!(&image.rgba[..4], &[200, 0, 0, 255]);
     }
 
