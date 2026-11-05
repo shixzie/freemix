@@ -27,7 +27,7 @@ use crate::playlist::{
 };
 use crate::{
     EditHistoryEntry, EditLockScope, EngineError, EngineGradeEdit, EngineInputAudioStripState,
-    EngineInputSource, InputCatalogueError, ShowState, SnapshotError, TitleRejection,
+    EngineInputSource, EngineTitle, InputCatalogueError, ShowState, SnapshotError, TitleRejection,
 };
 
 type RuntimeScheduler = FrameScheduler<(), (), EngineCommand, ()>;
@@ -5149,6 +5149,7 @@ impl EngineMutation {
                 unreachable!("history and lock mutations return before switcher command mapping")
             }
             EngineCommand::SetTitleFields { .. }
+            | EngineCommand::SetTitleRow { .. }
             | EngineCommand::TakeTitle { .. }
             | EngineCommand::TitleOffAir { .. }
             | EngineCommand::RealizeTitle(_) => {
@@ -5862,6 +5863,7 @@ fn apply_runtime(
             | EngineCommand::SetShortcut { .. }
             | EngineCommand::SetEditLock { .. }
             | EngineCommand::SetTitleFields { .. }
+            | EngineCommand::SetTitleRow { .. }
             | EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::TitleExposure(_)
@@ -6045,6 +6047,7 @@ fn apply_runtime(
             unreachable!("edit-lock commands return before switcher command mapping")
         }
         EngineCommand::SetTitleFields { .. }
+        | EngineCommand::SetTitleRow { .. }
         | EngineCommand::TakeTitle { .. }
         | EngineCommand::TitleOffAir { .. }
         | EngineCommand::RealizeTitle(_) => {
@@ -6267,6 +6270,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::Redo { .. }
         | EngineCommand::SetEditLock { .. }
         | EngineCommand::SetTitleFields { .. }
+        | EngineCommand::SetTitleRow { .. }
         | EngineCommand::TakeTitle { .. }
         | EngineCommand::TitleOffAir { .. }
         | EngineCommand::SetPlaylist { .. }
@@ -6411,6 +6415,7 @@ const fn is_title_command(command: &EngineCommand) -> bool {
     matches!(
         command,
         EngineCommand::SetTitleFields { .. }
+            | EngineCommand::SetTitleRow { .. }
             | EngineCommand::TakeTitle { .. }
             | EngineCommand::TitleOffAir { .. }
     )

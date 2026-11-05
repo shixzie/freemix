@@ -237,6 +237,7 @@ impl EngineCommand {
             | Self::RecordStart { .. }
             | Self::RecordStop { .. }
             | Self::SetTitleFields { .. }
+            | Self::SetTitleRow { .. }
             | Self::TakeTitle { .. }
             | Self::TitleOffAir { .. }
             | Self::SecondaryMixCut { .. }
