@@ -11553,7 +11553,7 @@ impl NativeMediaRuntime {
             readback.rgba,
         )
         .map_err(|error| error.to_string())?;
-        let png = fm_video::encode_png_rgba8(&frame).map_err(|error| error.to_string())?;
+        let png = fm_video::encode_png_rgba8_srgb(&frame).map_err(|error| error.to_string())?;
         Ok(Some(CapturedStill {
             width: readback.width,
             height: readback.height,

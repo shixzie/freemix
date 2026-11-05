@@ -100,6 +100,33 @@ pub fn encode_png_rgba8(frame: &ImageFrame) -> Result<Vec<u8>, PngEncodeError> {
         frame.height(),
         PngBitDepth::Eight,
         &raw,
+        None,
+    ))
+}
+
+/// Encodes an RGBA8 frame with an explicit sRGB chunk (perceptual rendering
+/// intent), so consumers do not have to guess the colour space.
+///
+/// # Errors
+///
+/// Returns the same errors as [`encode_png_rgba8`].
+pub fn encode_png_rgba8_srgb(frame: &ImageFrame) -> Result<Vec<u8>, PngEncodeError> {
+    let (row_bytes, raw_len) = raw_layout(frame.width(), frame.height(), PngBitDepth::Eight)?;
+    let mut raw = Vec::with_capacity(raw_len);
+    for row in frame
+        .pixels()
+        .chunks(frame.stride())
+        .take(height_usize(frame.height())?)
+    {
+        raw.push(0);
+        raw.extend_from_slice(&row[..row_bytes]);
+    }
+    Ok(assemble(
+        frame.width(),
+        frame.height(),
+        PngBitDepth::Eight,
+        &raw,
+        Some(0),
     ))
 }
 
@@ -133,7 +160,7 @@ pub fn encode_png_rgba16(
             raw.extend_from_slice(&sample.to_be_bytes());
         }
     }
-    Ok(assemble(width, height, PngBitDepth::Sixteen, &raw))
+    Ok(assemble(width, height, PngBitDepth::Sixteen, &raw, None))
 }
 
 /// CRC-32 (ISO-HDLC / PNG polynomial `0xEDB88320`, reflected).
@@ -231,7 +258,13 @@ fn raw_layout(
     Ok((row_bytes, required))
 }
 
-fn assemble(width: u32, height: u32, depth: PngBitDepth, raw: &[u8]) -> Vec<u8> {
+fn assemble(
+    width: u32,
+    height: u32,
+    depth: PngBitDepth,
+    raw: &[u8],
+    srgb_intent: Option<u8>,
+) -> Vec<u8> {
     let zlib = zlib_stored(raw);
     let mut out = Vec::with_capacity(PNG_SIGNATURE.len() + 25 + 12 + zlib.len() + 12);
     out.extend_from_slice(&PNG_SIGNATURE);
@@ -243,6 +276,9 @@ fn assemble(width: u32, height: u32, depth: PngBitDepth, raw: &[u8]) -> Vec<u8> 
     header[9] = 6; // truecolor with alpha
     // compression 0, filter method 0, interlace 0 remain zero.
     write_chunk(&mut out, *b"IHDR", &header);
+    if let Some(intent) = srgb_intent {
+        write_chunk(&mut out, *b"sRGB", &[intent]);
+    }
     write_chunk(&mut out, *b"IDAT", &zlib);
     write_chunk(&mut out, *b"IEND", &[]);
     out

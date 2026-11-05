@@ -496,3 +496,23 @@ fn frozen_snapshot_of_latched_payload_is_lossless() {
     let decoded = decode_stored_png(&encode_png_rgba8(&out.payload).unwrap());
     assert_eq!(decoded.pixels, frames[2].pixels());
 }
+
+#[test]
+fn srgb_stills_carry_the_colour_chunk() {
+    use fm_video::encode_png_rgba8_srgb;
+
+    let frame = solid_color(2, 1, Rgba8::new(1, 2, 3, 255)).unwrap();
+    let png = encode_png_rgba8_srgb(&frame).unwrap();
+    assert_eq!(&png[..8], &PNG_SIGNATURE);
+    let mut cursor = 8;
+    let mut srgb = None;
+    while cursor < png.len() {
+        let length = usize::try_from(be32(&png[cursor..cursor + 4])).unwrap();
+        let kind: [u8; 4] = png[cursor + 4..cursor + 8].try_into().unwrap();
+        if &kind == b"sRGB" {
+            srgb = Some(png[cursor + 8..cursor + 9].to_vec());
+        }
+        cursor += 12 + length;
+    }
+    assert_eq!(srgb.as_deref(), Some(&[0_u8][..]), "perceptual sRGB intent");
+}

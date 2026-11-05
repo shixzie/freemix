@@ -7128,7 +7128,7 @@ pub(crate) fn write_title_frame(output: &Path, frame: &ImageFrame) -> io::Result
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
     {
-        let png = fm_video::encode_png_rgba8(frame)
+        let png = fm_video::encode_png_rgba8_srgb(frame)
             .map_err(|error| io::Error::other(error.to_string()))?;
         write_ppm_atomic(output, |file| file.write_all(&png))
     } else {
