@@ -79,7 +79,7 @@ fn wire_config(config: &fm_model::LogicalOutputConfig) -> WireLogicalOutputConfi
         slot: wire_slot(config.slot),
         output: fm_protocol::WireOutputId::from_domain(config.output),
         source: wire_source(&config.source),
-        overlays: wire_overlays(&config.overlays),
+        overlays: wire_overlays(config.overlays),
         audio: wire_audio(config.audio),
     }
 }
@@ -154,7 +154,7 @@ fn model_overlays(overlays: &WireLogicalOutputOverlays) -> fm_model::LogicalOver
     }
 }
 
-fn wire_overlays(overlays: &fm_model::LogicalOverlayPolicy) -> WireLogicalOutputOverlays {
+fn wire_overlays(overlays: fm_model::LogicalOverlayPolicy) -> WireLogicalOutputOverlays {
     match overlays {
         fm_model::LogicalOverlayPolicy::All => WireLogicalOutputOverlays::All,
         fm_model::LogicalOverlayPolicy::Clean => WireLogicalOutputOverlays::Clean,

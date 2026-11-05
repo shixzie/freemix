@@ -5219,6 +5219,7 @@ fn project_engine(engine: &Engine, ticks: u64) -> Result<EngineSnapshot, EngineE
 }
 
 #[allow(clippy::too_many_arguments)] // the engine plus each runtime status the snapshot shows
+#[allow(clippy::too_many_lines)] // one arm per protocol field
 fn snapshot_record(
     engine: &Engine,
     identity: &EngineIdentity,

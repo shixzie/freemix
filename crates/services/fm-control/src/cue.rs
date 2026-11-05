@@ -70,6 +70,7 @@ fn hidden_action(
 
 /// The project form of a wire action.
 #[must_use]
+#[allow(clippy::too_many_lines)] // one arm per protocol field
 pub fn domain_action(action: &WireCueAction) -> CueAction {
     match action {
         WireCueAction::Preview { input } => CueAction::Preview {
@@ -185,6 +186,7 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
 
 /// The wire form of a project action.
 #[must_use]
+#[allow(clippy::too_many_lines)] // one arm per protocol field
 pub fn wire_action(action: &CueAction) -> WireCueAction {
     match action {
         CueAction::Preview { input } => WireCueAction::Preview {

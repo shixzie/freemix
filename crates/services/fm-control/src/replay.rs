@@ -12,6 +12,7 @@ use fm_protocol::{
 };
 
 /// The engine operation of a wire replay command.
+#[allow(clippy::too_many_lines)] // one arm per protocol field
 pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOperation {
     match operation {
         ReplayOperation::Configure(settings) => EngineReplayOperation::Configure(settings.clone()),
@@ -118,6 +119,7 @@ pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOpera
 }
 
 /// The wire form of an engine replay operation.
+#[allow(clippy::too_many_lines)] // one arm per protocol field
 pub(super) fn wire_operation(operation: &EngineReplayOperation) -> ReplayOperation {
     match operation {
         EngineReplayOperation::Configure(settings) => ReplayOperation::Configure(settings.clone()),
@@ -242,6 +244,7 @@ pub(super) fn changed(event: &EngineEvent) -> Option<EventPayload> {
 }
 
 /// The replay status as clients see it.
+#[allow(clippy::too_many_lines)] // one arm per protocol field
 pub(super) fn status_message(
     status: EngineReplayStatus,
     server: &ServerIdentity,
