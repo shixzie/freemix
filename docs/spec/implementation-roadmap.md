@@ -3067,7 +3067,9 @@ daemon folds the routing back into the project on save. Protocol 2.158 carries
 the list in every snapshot, sets or clears one with `secondary_mix_set` /
 `secondary_mix_clear`, and announces an edit (or its undo or redo) with
 `secondary_mix_changed`; the client model replicates it, and Protocol 2.159
-adds the live `secondary_mix_cut` and `secondary_mix_transition` commands.
+adds the live `secondary_mix_cut` and `secondary_mix_transition` commands and
+carries each mix's live Program/Preview and transition progress in the
+snapshot's `secondary_mix_states`.
 The engine owns a
 live `MixBank` for Main plus the configured mixes, advances it once per frame
 (so a mix-to-mix read sees the previous frame), follows the realized Main
@@ -3078,7 +3080,7 @@ logical output's secondary-mix background: a single input, black, a nested
 mix, or a running transition, followed by the mix's full-frame overlay
 channels; a Program background still reads the shared Program transition.
 Remaining gaps: no Studio or CLI surface for live cuts and transitions and no
-live mix status in snapshots yet, and no audio path; stinger effects still do
+audio path; stinger effects still do
 not check slot readiness or fallback, and overlay fades, mix-sourced overlays,
 T-bar, and Fade-to-Black inside a mix are absent. `IN-023` remains planned.
 
