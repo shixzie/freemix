@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.161 / schema 109 (2026-11-04).
+(2026-10-19); items refreshed through protocol 2.162 / schema 109 (2026-11-04).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -3259,9 +3259,17 @@ way: the alias crop is applied to the rendered source, a layer crop inside that 
 layer crop reaching outside the alias crop is refused by layer number rather
 than drawing a wrong picture. Input and scene thumbnails follow alias chains
 (and a scene thumbnail draws alias layers), but a feed input's own thumbnail
-has no composed CPU picture and still shows no source image; there is no
-protocol or Studio authoring, and aliases do not yet carry independent
-effects, shortcuts, or layer state. `IN-024` and `IN-025` remain planned.
+has no composed CPU picture and still shows no source image. Protocol 2.162
+adds live authoring: `input_add` carries `kind=alias` (with `target` and an
+optional project-pixel crop) or `kind=program_feed`/`kind=preview_feed`, the
+engine adds the virtual input while keeping it out of the replaceable-source
+set, the daemon folds it into the stored project, and the CLI has
+`remote-alias-input-add` and `remote-mix-feed-input-add`. Studio's Add input
+dialog offers Alias (with an input picker) and Feed (Program or Preview); the
+alias form does not author a crop yet. Remaining gaps: the Studio alias form
+has no crop editor, aliases do not yet carry independent effects, shortcuts,
+or layer state, and no data source drives a mapped row through the protocol.
+`IN-024` and `IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
