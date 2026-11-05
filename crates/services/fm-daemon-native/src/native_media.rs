@@ -11785,6 +11785,87 @@ mod tests {
     }
 
     #[test]
+    fn native_program_feeds_show_the_previous_committed_picture() {
+        let Some(runtime) = runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(81).unwrap());
+        let program = input(1);
+        let feed = input(2);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: program,
+                    frame: colored_retained_frame(clock_domain, [255, 0, 0, 255]),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(2, 2);
+        add_leaf(&mut project, program);
+        project.add_input(Input {
+            id: feed,
+            name: "program feed".into(),
+            kind: InputKind::MixFeed(fm_model::MixFeed::Program),
+            required_capabilities: Vec::new(),
+        });
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+
+        let first = runtime
+            .render_project_frame_result_blocking(
+                playback.registry(),
+                &plan,
+                &frame_result(0, program, None),
+            )
+            .unwrap();
+        let first_pixels =
+            rgba16f_components(&block_on(runtime.diagnostic_readback(&first)).unwrap().bytes);
+        assert!(
+            first_pixels[0] > 0.5 && first_pixels[1] < 0.05,
+            "tick one shows the red leaf"
+        );
+        let committed = runtime
+            .copy_feed_texture_blocking(plan.dimensions(), &first)
+            .unwrap();
+
+        let fed = runtime
+            .render_project_frame_result_with_stingers_and_feeds_blocking(
+                playback.registry(),
+                playback.registry(),
+                &plan,
+                &frame_result(1, feed, None),
+                NativeFeedFrames {
+                    program: Some(&committed),
+                    preview: None,
+                },
+            )
+            .unwrap();
+        let fed_pixels =
+            rgba16f_components(&block_on(runtime.diagnostic_readback(&fed)).unwrap().bytes);
+        assert!(
+            fed_pixels[0] > 0.5 && fed_pixels[1] < 0.05,
+            "the Program feed repeats the committed red picture"
+        );
+
+        let black = runtime
+            .render_project_frame_result_blocking(
+                playback.registry(),
+                &plan,
+                &frame_result(1, feed, None),
+            )
+            .unwrap();
+        let black_pixels =
+            rgba16f_components(&block_on(runtime.diagnostic_readback(&black)).unwrap().bytes);
+        assert!(
+            black_pixels.iter().take(3).all(|channel| *channel < 0.05),
+            "a feed with no committed picture is black"
+        );
+    }
+
+    #[test]
     fn native_project_plan_routes_aliases_and_draws_feeds_black() {
         let mut project = native_plan_project(4, 2);
         add_leaf(&mut project, input(1));
