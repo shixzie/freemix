@@ -11115,6 +11115,27 @@ mod tests {
         InputId::new(NonZeroU128::new(value).unwrap())
     }
 
+    /// A native runtime, or `None` (skipping) where no adapter exists.
+    fn native_test_runtime() -> Option<NativeMediaRuntime> {
+        #[cfg(target_os = "macos")]
+        const BACKEND: NativeBackend = NativeBackend::Metal;
+        #[cfg(target_os = "windows")]
+        const BACKEND: NativeBackend = NativeBackend::Dx12;
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        const BACKEND: NativeBackend = NativeBackend::Vulkan;
+        match NativeMediaRuntime::new_blocking([BACKEND]) {
+            Ok(runtime) => Some(runtime),
+            Err(error) => {
+                assert!(
+                    std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                    "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+                );
+                eprintln!("skipping: no native adapter ({error})");
+                None
+            }
+        }
+    }
+
     #[test]
     fn overlay_position_and_border_presets_have_deterministic_geometry() {
         let dimensions = VideoDimensions::new(1_920, 1_080).unwrap();
@@ -11786,7 +11807,7 @@ mod tests {
 
     #[test]
     fn native_program_feeds_show_the_previous_committed_picture() {
-        let Some(runtime) = runtime() else {
+        let Some(runtime) = native_test_runtime() else {
             return;
         };
         let clock_domain = ClockDomainId::new(NonZeroU128::new(81).unwrap());
