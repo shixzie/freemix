@@ -8398,6 +8398,79 @@ fn remote_input_freeze_sends_the_exact_edit() {
     server.finish();
 }
 
+/// GX-005, Protocol 2.165: the daemon maps a raw data row against its own
+/// title template.
+#[test]
+fn remote_title_row_sends_raw_values_for_daemon_mapping() {
+    let context = ContractContext::new();
+    let row = context.root.join("row.json");
+    fs::write(&row, r##"{"Score": "12", "Bar color": "#ABCDEF"}"##).unwrap();
+    let server = FakeRemoteServer::start_title_row(
+        RemoteEdit {
+            role: Role::Graphics,
+            key: "remote-title-row",
+            payload: CommandPayload::SetTitleRow {
+                input: input(9),
+                base_revision: 7,
+                require: fm_protocol::TitleAirRequirement::OffAir,
+                values: vec![
+                    fm_protocol::TitleRowValue {
+                        field: "Bar color".into(),
+                        value: "#ABCDEF".into(),
+                    },
+                    fm_protocol::TitleRowValue {
+                        field: "Score".into(),
+                        value: "12".into(),
+                    },
+                ],
+                keep_live: false,
+            },
+            event: EventPayload::TitleChanged {
+                input: input(9),
+                field_revision: 8,
+                fields: vec![
+                    fm_protocol::TitleFieldUpdate {
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                        value: fm_protocol::TitleFieldValue::Number(12),
+                    },
+                    fm_protocol::TitleFieldUpdate {
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                        value: fm_protocol::TitleFieldValue::Color {
+                            red: 0xab,
+                            green: 0xcd,
+                            blue: 0xef,
+                            alpha: 0xff,
+                        },
+                    },
+                ],
+                overlays: OverlayStatus::empty_channels(),
+            },
+            domain: "project",
+        },
+        vec![title_row_state(fm_protocol::TitlePhase::Idle)],
+        vec![title_row_input()],
+        None,
+    );
+    let output = invoke(&[
+        "remote-title-row",
+        &server.address(),
+        "9",
+        row.to_str().unwrap(),
+        "--key",
+        "remote-title-row",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("require=off_air"),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 /// SW-016, Protocol 2.164: the CLI reports the still the daemon wrote.
 #[test]
 fn remote_frozen_still_reports_the_written_asset() {
