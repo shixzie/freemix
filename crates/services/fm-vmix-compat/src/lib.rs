@@ -84,7 +84,7 @@ pub struct CompatInput {
     /// Title text fields, in deterministic `SelectedIndex` order.
     pub text_fields: Vec<CompatTextField>,
     /// vMix playback state (`Running`, `Paused`, or `Stopped`), when known;
-    /// omitted from the XML and XPath state when `None`.
+    /// omitted from the XML and `XPath` state when `None`.
     pub state: Option<String>,
     /// Source position in milliseconds, when known.
     pub position_ms: Option<u64>,
