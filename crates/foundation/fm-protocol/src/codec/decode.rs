@@ -1730,29 +1730,24 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
             let crop_height = fields.optional("crop_height");
             let crop = match (crop_x, crop_y, crop_width, crop_height) {
                 (None, None, None, None) => None,
-                (Some(x), Some(y), Some(width), Some(height)) => Some(crate::WireLayerCrop {
-                    x: u32::try_from(x).map_err(|_| CodecError::InvalidField {
-                        field: "crop_x",
-                        value: x.to_string(),
-                    })?,
-                    y: u32::try_from(y).map_err(|_| CodecError::InvalidField {
-                        field: "crop_y",
-                        value: y.to_string(),
-                    })?,
-                    width: u32::try_from(width).ok().filter(|width| *width > 0).ok_or(
-                        CodecError::InvalidField {
+                (Some(x), Some(y), Some(width), Some(height)) => {
+                    let x = crop_dimension("crop_x", x)?;
+                    let y = crop_dimension("crop_y", y)?;
+                    let width = crop_dimension("crop_width", width)?;
+                    let height = crop_dimension("crop_height", height)?;
+                    if width == 0 || height == 0 {
+                        return Err(CodecError::InvalidField {
                             field: "crop_width",
-                            value: width.to_string(),
-                        },
-                    )?,
-                    height: u32::try_from(height)
-                        .ok()
-                        .filter(|height| *height > 0)
-                        .ok_or(CodecError::InvalidField {
-                            field: "crop_height",
-                            value: height.to_string(),
-                        })?,
-                }),
+                            value: format!("{width}x{height}"),
+                        });
+                    }
+                    Some(crate::WireLayerCrop {
+                        x,
+                        y,
+                        width,
+                        height,
+                    })
+                }
                 _ => {
                     return Err(CodecError::InvalidField {
                         field: "crop_x",
@@ -1767,6 +1762,12 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
             value: kind,
         }),
     }
+}
+
+fn crop_dimension(field: &'static str, value: String) -> Result<u32, CodecError> {
+    value
+        .parse::<u32>()
+        .map_err(|_| CodecError::InvalidField { field, value })
 }
 
 fn decode_edit_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {

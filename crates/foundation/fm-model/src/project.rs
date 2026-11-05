@@ -6167,7 +6167,7 @@ pub enum Rotation {
     Deg270,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct CropRect {
     pub x: u32,
     pub y: u32,
