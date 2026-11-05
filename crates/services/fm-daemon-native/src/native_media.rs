@@ -9786,6 +9786,7 @@ impl NativeMediaRuntime {
                 frame,
                 plan,
                 &mut execution,
+                feeds,
             )
             .await?;
         // Render every logical output in dependency order so a MultiView can
@@ -9806,6 +9807,7 @@ impl NativeMediaRuntime {
                     plan,
                     &program,
                     &logical_outputs,
+                    feeds,
                 )
                 .await?;
             logical_outputs.insert(plan.output, texture);
@@ -9834,6 +9836,7 @@ impl NativeMediaRuntime {
                     }),
                     &program,
                     &overlays,
+                    feeds,
                 )
                 .await?
             };
@@ -9871,6 +9874,7 @@ impl NativeMediaRuntime {
                         program,
                         logical_outputs,
                         cells,
+                        feeds,
                     )
                     .await?;
                 self.finish_project_output(
@@ -9882,6 +9886,7 @@ impl NativeMediaRuntime {
                     logical_output_fade_to_black(plan, frame),
                     &base,
                     &overlays,
+                    feeds,
                 )
                 .await
             }
@@ -9908,6 +9913,7 @@ impl NativeMediaRuntime {
                             frame,
                             background,
                             program,
+                            feeds,
                         )
                         .await?,
                     )
@@ -9921,6 +9927,7 @@ impl NativeMediaRuntime {
                     logical_output_fade_to_black(plan, frame),
                     base.as_ref(),
                     &overlays,
+                    feeds,
                 )
                 .await
             }
@@ -9964,6 +9971,7 @@ impl NativeMediaRuntime {
                     graded,
                     project,
                     scene_outputs,
+                    feeds,
                 )
                 .await?,
             );
@@ -10121,6 +10129,7 @@ impl NativeMediaRuntime {
                 frame.deadline,
                 base,
                 overlays,
+                feeds,
             )
             .await?;
         // The program grade colours each composed output before FTB.
@@ -10165,6 +10174,7 @@ impl NativeMediaRuntime {
                 program,
                 background.primary,
                 &mut seen,
+                feeds,
             )
             .await?;
         let (Some(secondary), Some(kind)) = (background.secondary, background.transition_kind)
@@ -10181,6 +10191,7 @@ impl NativeMediaRuntime {
                 program,
                 secondary,
                 &mut seen,
+                feeds,
             )
             .await?;
         let kind = compositor_transition_kind(kind)
@@ -10226,6 +10237,7 @@ impl NativeMediaRuntime {
                     scene_outputs,
                     frame.deadline,
                     texture,
+                    feeds,
                 )
                 .await
             }
@@ -10250,6 +10262,7 @@ impl NativeMediaRuntime {
                     program,
                     mix,
                     seen,
+                    feeds,
                 ))
                 .await
             }
@@ -10279,6 +10292,7 @@ impl NativeMediaRuntime {
                     scene_outputs,
                     frame.deadline,
                     program,
+                    feeds,
                 )
                 .await;
         }
@@ -10300,6 +10314,7 @@ impl NativeMediaRuntime {
                 program,
                 mix_feed_layer(mix_frame.primary),
                 seen,
+                feeds,
             )
             .await?;
         let base = match (mix_frame.secondary, mix_frame.transition_kind) {
@@ -10314,6 +10329,7 @@ impl NativeMediaRuntime {
                         program,
                         mix_feed_layer(secondary),
                         seen,
+                        feeds,
                     )
                     .await?;
                 let kind = compositor_transition_kind(kind)
@@ -10352,6 +10368,7 @@ impl NativeMediaRuntime {
                 frame.deadline,
                 &base,
                 &overlays,
+                feeds,
             )
             .await?;
         seen.pop();
@@ -10377,6 +10394,7 @@ impl NativeMediaRuntime {
             deadline,
             texture,
             &[],
+            feeds,
         )
         .await
     }
