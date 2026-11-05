@@ -11566,10 +11566,11 @@ mod tests {
 
         // Scene layers naming the alias and the feed compile to the concrete
         // leaf and the black scene.
-        add_scene_input(&mut project, input(5), scene(10), None);
+        let layered_scene = scene(10);
+        add_scene_input(&mut project, input(5), layered_scene, None);
         add_scene(
             &mut project,
-            scene(10),
+            layered_scene,
             vec![
                 layer(SourceRef::Input(input(3)), 0),
                 layer(SourceRef::Input(input(4)), 1),
@@ -11579,7 +11580,7 @@ mod tests {
         let scene_plan = plan
             .scenes
             .iter()
-            .find(|scene| scene.id == scene(10))
+            .find(|candidate| candidate.id == layered_scene)
             .unwrap();
         assert!(
             scene_plan
