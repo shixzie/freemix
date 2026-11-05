@@ -7912,10 +7912,13 @@ fn project_texture<'a>(
     input: InputId,
     deadline: ClockTime,
 ) -> Result<&'a NativeTexture, NativeSourceRenderError> {
-    if let Some(feed) = project.feed(input)
-        && let Some(texture) = feeds.get(feed)
-    {
-        return Ok(texture);
+    if let Some(feed) = project.feed(input) {
+        if let Some(texture) = graded.get(&input) {
+            return Ok(texture);
+        }
+        if let Some(texture) = feeds.get(feed) {
+            return Ok(texture);
+        }
     }
     match project.video_route(input) {
         Some(NativeVideoRoute::Leaf(leaf)) => leaf_texture(registry, graded, leaf, deadline),
@@ -8177,6 +8180,38 @@ impl NativeMediaRuntime {
             graded.insert(leaf, texture);
         }
         Ok(graded)
+    }
+
+    /// Grades each feed input's committed picture before Program, Preview,
+    /// overlays, or a scene layer draws it (IN-025).
+    async fn grade_feed_inputs(
+        &self,
+        project: &NativeProjectPlan,
+        inputs: &[InputId],
+        feeds: NativeFeedFrames<'_>,
+        graded: &mut BTreeMap<InputId, NativeTexture>,
+    ) -> Result<(), NativeSourceRenderError> {
+        for input in inputs {
+            if graded.contains_key(input) {
+                continue;
+            }
+            let Some(feed) = project.feed(*input) else {
+                continue;
+            };
+            let Some(lut) = project.grades.inputs.get(input) else {
+                continue;
+            };
+            let Some(texture) = feeds.get(feed) else {
+                continue;
+            };
+            let texture = self
+                .grade_renderer
+                .apply(&self.context, lut, texture)
+                .await
+                .map_err(NativeSourceRenderError::Grade)?;
+            graded.insert(*input, texture);
+        }
+        Ok(())
     }
 
     /// Grades the composed scene of each Scene input among `inputs` that
@@ -9584,7 +9619,9 @@ impl NativeMediaRuntime {
                                 .1
                         }
                         NativeSceneSource::Feed { input, feed } => {
-                            if let Some(texture) = feeds.get(*feed) {
+                            if let Some(texture) = graded.get(input) {
+                                texture
+                            } else if let Some(texture) = feeds.get(*feed) {
                                 texture
                             } else {
                                 let black = scene.black_scene.ok_or(
@@ -9858,6 +9895,8 @@ impl NativeMediaRuntime {
         let _frame_slot = self.begin_project_frame()?;
         let mut graded = self
             .grade_project_leaves(registry, project, &leaf_inputs, &execution, frame.deadline)
+            .await?;
+        self.grade_feed_inputs(project, &leaf_inputs, feeds, &mut graded)
             .await?;
         let (program, scene_outputs) = self
             .render_project_base_with_stingers(
