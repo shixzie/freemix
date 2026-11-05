@@ -36,6 +36,7 @@ mod system_audio;
 mod title;
 mod transition;
 mod value;
+mod video_delay;
 mod web_access;
 
 pub use animation::{motion_wire_bytes, scene_clip_wire_bytes, title_clip_wire_bytes};

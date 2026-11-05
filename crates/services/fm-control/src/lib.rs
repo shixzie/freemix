@@ -24,6 +24,7 @@ mod cue;
 mod display_output;
 mod grade;
 mod input_lifecycle;
+mod input_video_delay;
 mod live_lan;
 mod logical_output;
 mod media;
@@ -3609,6 +3610,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
+        | EngineCommand::SetInputVideoDelay { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::SetNetworkStream { .. }
@@ -3729,6 +3731,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::ClearLogicalOutput { .. }
         | CommandPayload::SetSecondaryMix { .. }
         | CommandPayload::ClearSecondaryMix { .. }
+        | CommandPayload::SetInputVideoDelay { .. }
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::SetStreamTarget { .. }
@@ -3921,6 +3924,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::SecondaryMixCut { .. }
         | CommandPayload::SecondaryMixTransition { .. }) => {
             secondary_mix::engine_command(payload).expect("a secondary-mix payload")
+        }
+        payload @ CommandPayload::SetInputVideoDelay { .. } => {
+            input_video_delay::engine_command(payload).expect("an input-video-delay payload")
         }
         CommandPayload::SetNetworkStream { .. } => {
             unreachable!("network stream edits resolve their URL against the show")
@@ -4439,6 +4445,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetSecondaryMix { .. } => {
             return secondary_mix::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetInputVideoDelay { .. } => {
+            return input_video_delay::wire_edit_payload(command);
+        }
         command @ EngineCommand::SetLiveLan(_) => {
             return live_lan::wire_edit_payload(command);
         }
@@ -4953,6 +4962,13 @@ fn accepted_event_payload(
     if let Some(payload) = outcome
         .events
         .iter()
+        .find_map(|event| input_video_delay::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
         .find_map(|event| live_lan::changed(&event.payload))
     {
         return payload;
@@ -5297,6 +5313,7 @@ fn snapshot_record(
         fade_to_black_curve: engine.show().desired_switcher().fade_to_black_curve(),
         logical_outputs: logical_output::wire_entries(engine.show()),
         secondary_mixes: secondary_mix::wire_entries(engine.show()),
+        input_video_delays: input_video_delay::wire_entries(engine.show()),
         secondary_mix_states: secondary_mix::wire_states(engine.secondary_mix_frame()),
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),

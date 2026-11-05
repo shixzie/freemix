@@ -4134,6 +4134,7 @@ mod tests {
             logical_outputs: Vec::new(),
             secondary_mixes: Vec::new(),
             secondary_mix_states: Vec::new(),
+            input_video_delays: Vec::new(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             display_inventory: None,

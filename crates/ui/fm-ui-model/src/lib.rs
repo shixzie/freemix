@@ -514,6 +514,8 @@ pub struct ProjectSnapshot {
     /// Every configured mix's live Program/Preview and transition progress
     /// (Protocol 2.159).
     pub secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
+    /// Every input's video delay in frames, ascending (Protocol 2.160).
+    pub input_video_delays: Vec<fm_protocol::WireInputVideoDelay>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -654,6 +656,11 @@ impl ProjectSnapshot {
             logical_outputs: message.logical_outputs,
             secondary_mixes: message.secondary_mixes,
             secondary_mix_states: message.secondary_mix_states,
+            input_video_delays: message
+                .input_video_delays
+                .into_iter()
+                .map(|entry| (entry.input.to_domain(), entry.frames))
+                .collect(),
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
@@ -846,6 +853,8 @@ pub enum DurableChange {
         number: fm_protocol::WireMixNumber,
         config: Option<Box<fm_protocol::WireSecondaryMixConfig>>,
     },
+    /// One input's video delay changed (Protocol 2.160).
+    InputVideoDelayChanged { input: InputId, frames: u32 },
     /// The `LiveLAN` configuration changed (Protocol 2.57); never the PIN.
     LiveLanChanged(fm_protocol::LiveLanEntry),
     /// The show's health alert rule settings changed (Protocol 2.112).
@@ -1187,6 +1196,12 @@ impl DurableProjectEvent {
             EventPayload::SecondaryMixChanged { number, config } => {
                 DurableChange::SecondaryMixChanged { number, config }
             }
+            EventPayload::InputVideoDelayChanged { input, frames } => {
+                DurableChange::InputVideoDelayChanged {
+                    input: input.to_domain(),
+                    frames,
+                }
+            }
             EventPayload::LiveLanChanged(entry) => DurableChange::LiveLanChanged(entry),
             EventPayload::AlertRulesChanged(settings) => DurableChange::AlertRulesChanged(settings),
             EventPayload::ReplayChanged { frame, operation } => {
@@ -1372,6 +1387,7 @@ pub struct ProjectState {
     secondary_mixes: Vec<fm_protocol::WireSecondaryMixConfig>,
     /// Every configured mix's live Program/Preview and transition progress.
     secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
+    input_video_delays: BTreeMap<InputId, u32>,
     /// Every configured display-output slot (Protocol 2.42).
     display_outputs: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::DisplayOutputConfig>,
     /// Each slot's runtime state as last reported (Protocol 2.42); kept for
@@ -2016,6 +2032,8 @@ pub struct ClientView {
     /// Every configured mix's live Program/Preview and transition progress
     /// (Protocol 2.159).
     pub secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
+    /// Every input's video delay in frames, ascending (Protocol 2.160).
+    pub input_video_delays: Vec<fm_protocol::WireInputVideoDelay>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -3204,6 +3222,14 @@ impl ClientModel {
             logical_outputs: state.logical_outputs.clone(),
             secondary_mixes: state.secondary_mixes.clone(),
             secondary_mix_states: state.secondary_mix_states.clone(),
+            input_video_delays: state
+                .input_video_delays
+                .iter()
+                .map(|(&input, &frames)| fm_protocol::WireInputVideoDelay {
+                    input: fm_protocol::WireInputId::from_domain(input),
+                    frames,
+                })
+                .collect(),
             display_outputs: state
                 .display_outputs
                 .iter()
@@ -3512,6 +3538,11 @@ impl ClientModel {
             logical_outputs: snapshot.logical_outputs,
             secondary_mixes: snapshot.secondary_mixes,
             secondary_mix_states: snapshot.secondary_mix_states,
+            input_video_delays: snapshot
+                .input_video_delays
+                .into_iter()
+                .map(|entry| (entry.input.to_domain(), entry.frames))
+                .collect(),
             display_outputs: snapshot
                 .display_outputs
                 .into_iter()
@@ -5312,6 +5343,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         | DurableChange::ReelRemoved { .. }
         | DurableChange::FadeToBlackCurveChanged { .. }
         | DurableChange::SecondaryMixChanged { .. }
+        | DurableChange::InputVideoDelayChanged { .. }
         | DurableChange::EditLockChanged {
             target: EditLockTarget::Project,
             ..
@@ -5826,6 +5858,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             if let Some(config) = config {
                 state.secondary_mixes.push(*config);
                 state.secondary_mixes.sort_by_key(|config| config.number);
+            }
+        }
+        DurableChange::InputVideoDelayChanged { input, frames } => {
+            if frames == 0 {
+                state.input_video_delays.remove(&input);
+            } else {
+                state.input_video_delays.insert(input, frames);
             }
         }
         DurableChange::AlertRulesChanged(settings) => state.alert_rules = settings,

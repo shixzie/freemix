@@ -15,7 +15,7 @@ use fm_protocol::{
 };
 use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
 
-const PREFIX: &str = "command\tprotocol=2.159\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.160\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -147,6 +147,7 @@ fn snapshot(audio_mixer: AudioMixerStatus, excluded: Vec<WireOutputId>) -> WireM
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
         secondary_mix_states: Vec::new(),
+        input_video_delays: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
@@ -186,7 +187,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 159));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 160));
 }
 
 #[test]
@@ -513,7 +514,7 @@ fn fade_to_black_durations_and_curve_round_trip_strictly() {
     }
     let line = round_trip(&message);
     assert!(
-        line.contains("\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=7%3A45%2C8%3A3600\tfade_to_black_curve=ease\tlogical_outputs=\tsecondary_mixes=\tsecondary_mix_states=\tdisplay_outputs="),
+        line.contains("\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=7%3A45%2C8%3A3600\tfade_to_black_curve=ease\tlogical_outputs=\tsecondary_mixes=\tsecondary_mix_states=\tinput_video_delays=\tdisplay_outputs="),
         "{line}"
     );
     let valid = encode_line(&message).unwrap();
@@ -542,7 +543,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     assert!(
         line.ends_with(&format!(
-            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\taudio_monitor=%7E0%7E0\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\taudio_master_dsp={}\taudio_strip_dsp_states=0\taudio_strip_send_states=0\taudio_aux_buses=Bus%2520A%7E0%7E0%2CBus%2520B%7E0%7E0%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\taudio_aux_bus_devices=\taudio_aux_bus_omt=\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tlogical_outputs=\tsecondary_mixes=\tsecondary_mix_states=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n",
+            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\taudio_monitor=%7E0%7E0\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\taudio_master_dsp={}\taudio_strip_dsp_states=0\taudio_strip_send_states=0\taudio_aux_buses=Bus%2520A%7E0%7E0%2CBus%2520B%7E0%7E0%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\taudio_aux_bus_devices=\taudio_aux_bus_omt=\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tlogical_outputs=\tsecondary_mixes=\tsecondary_mix_states=\tinput_video_delays=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n",
             fm_types::strip_dsp::StripDsp::DEFAULT.code()
         )),
         "{line}"
@@ -554,13 +555,13 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
         vec![output(8), output(wide)],
     ));
     assert!(
-        line.ends_with(&format!("\tfade_to_black_excluded_outputs=8%2C{wide}\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tlogical_outputs=\tsecondary_mixes=\tsecondary_mix_states=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n"
+        line.ends_with(&format!("\tfade_to_black_excluded_outputs=8%2C{wide}\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tlogical_outputs=\tsecondary_mixes=\tsecondary_mix_states=\tinput_video_delays=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n"
         )),
         "{line}"
     );
     let line = round_trip(&snapshot(AudioMixerStatus::default(), Vec::new()));
     assert!(
-        line.ends_with(&format!("\tinput_audio_labels=\taudio_master_dsp={}\taudio_strip_dsp_states=0\taudio_strip_send_states=0\taudio_aux_buses=Bus%2520A%7E0%7E0%2CBus%2520B%7E0%7E0%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\taudio_aux_bus_devices=\taudio_aux_bus_omt=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tlogical_outputs=\tsecondary_mixes=\tsecondary_mix_states=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n", fm_types::strip_dsp::StripDsp::DEFAULT.code())),
+        line.ends_with(&format!("\tinput_audio_labels=\taudio_master_dsp={}\taudio_strip_dsp_states=0\taudio_strip_send_states=0\taudio_aux_buses=Bus%2520A%7E0%7E0%2CBus%2520B%7E0%7E0%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\taudio_aux_bus_devices=\taudio_aux_bus_omt=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tlogical_outputs=\tsecondary_mixes=\tsecondary_mix_states=\tinput_video_delays=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n", fm_types::strip_dsp::StripDsp::DEFAULT.code())),
         "{line}"
     );
 

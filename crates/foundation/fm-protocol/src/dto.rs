@@ -2174,6 +2174,12 @@ pub enum CommandPayload {
         kind: AutoTransitionKind,
         duration_frames: u32,
     },
+    /// Sets one input's video delay in frames (Protocol 2.160, IN-022). A
+    /// padlocked, undoable project edit.
+    SetInputVideoDelay {
+        input: WireInputId,
+        frames: u32,
+    },
     /// Reconfigures network stream input `input` (Protocol 2.46, IN-015;
     /// 2.49, IN-016/IN-017): a new URL (`None` keeps the current one),
     /// settings, the SRT stream ID, and edits of the RTMP stream key and SRT
@@ -2694,6 +2700,9 @@ pub struct SnapshotMessage {
     /// Every configured secondary mix's live Program/Preview and transition
     /// progress, ascending by number (Protocol 2.159).
     pub secondary_mix_states: Vec<crate::WireSecondaryMixState>,
+    /// Every input's video delay in frames, ascending by input (Protocol
+    /// 2.160).
+    pub input_video_delays: Vec<crate::WireInputVideoDelay>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<crate::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -2955,6 +2964,11 @@ pub enum EventPayload {
     SecondaryMixChanged {
         number: crate::WireMixNumber,
         config: Option<Box<crate::WireSecondaryMixConfig>>,
+    },
+    /// One input's video delay changed (Protocol 2.160, IN-022).
+    InputVideoDelayChanged {
+        input: WireInputId,
+        frames: u32,
     },
     /// The `LiveLAN` configuration changed, or that edit was undone or redone
     /// (Protocol 2.57). It carries whether a PIN is stored, never the PIN.

@@ -33,6 +33,7 @@ mod still;
 mod stream_target;
 mod system_audio;
 mod version;
+mod video_delay;
 mod web_access;
 
 pub use fm_types::{
@@ -322,6 +323,7 @@ pub use system_audio::{
     validate_system_audio_device,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
+pub use video_delay::{MAX_WIRE_INPUT_VIDEO_DELAY_FRAMES, WireInputVideoDelay};
 pub use web_access::{
     MAX_WEB_DEVICE_ID_BYTES, MAX_WEB_DEVICE_NAME_BYTES, MAX_WEB_DEVICES, MAX_WEB_LINK_CODE_BYTES,
     MAX_WEB_URL_BYTES, MAX_WEB_URLS, MIN_WEB_LINK_CODE_BYTES, WEB_CA_PATH, WEB_PAIRING_CODE_DIGITS,

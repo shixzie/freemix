@@ -582,6 +582,7 @@ fn snapshot(screen_capture_inputs: Vec<ScreenCaptureEntry>) -> WireMessage {
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
         secondary_mix_states: Vec::new(),
+        input_video_delays: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),

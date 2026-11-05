@@ -815,6 +815,16 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("kind", kind.token())?;
             record.field("duration_frames", duration_frames)?;
         }
+        CommandPayload::SetInputVideoDelay { input, frames } => {
+            record.field("payload", "set_input_video_delay")?;
+            super::video_delay::encode_entry(
+                crate::WireInputVideoDelay {
+                    input: *input,
+                    frames: *frames,
+                },
+                &mut |name, value| record.field_string(name, value),
+            )?;
+        }
         CommandPayload::Replay(operation) => {
             record.field("payload", operation.token())?;
             super::replay::encode_operation(operation, &mut |name, value| {
@@ -2092,6 +2102,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         super::secondary_mix::encode_states(&message.secondary_mix_states)?,
     )?;
     record.field_string(
+        "input_video_delays",
+        super::video_delay::encode_entries(&message.input_video_delays)?,
+    )?;
+    record.field_string(
         "display_outputs",
         super::display_output::encode_entries(&message.display_outputs)?,
     )?;
@@ -2994,6 +3008,11 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                 config.as_deref(),
                 &mut |name, value| record.field_string(name, value),
             )?;
+        }
+        EventPayload::InputVideoDelayChanged { input, frames } => {
+            record.field("event", "input_video_delay_changed")?;
+            record.field("input", input)?;
+            record.field("frames", frames)?;
         }
         EventPayload::CaptureSettingsChanged { input, settings } => {
             record.field("event", "capture_settings_changed")?;

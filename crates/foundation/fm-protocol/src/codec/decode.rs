@@ -835,6 +835,13 @@ fn decode_command_payload(
             kind: super::transition::decode_auto_transition_kind(fields.required("kind")?, "kind")?,
             duration_frames: fields.parse_required("duration_frames")?,
         },
+        "set_input_video_delay" => {
+            let entry = super::video_delay::decode_entry(fields)?;
+            CommandPayload::SetInputVideoDelay {
+                input: entry.input,
+                frames: entry.frames,
+            }
+        }
         replay if replay.starts_with("replay_") => {
             CommandPayload::Replay(super::replay::decode_operation(replay, fields)?.ok_or_else(
                 || CodecError::InvalidField {
@@ -2142,6 +2149,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         secondary_mix_states: super::secondary_mix::decode_states(
             &fields.required("secondary_mix_states")?,
         )?,
+        input_video_delays: super::video_delay::decode_entries(
+            &fields.required("input_video_delays")?,
+        )?,
         display_outputs: super::display_output::decode_entries(
             &fields.required("display_outputs")?,
         )?,
@@ -2981,6 +2991,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
                 config: config.map(Box::new),
             }
         }
+        "input_video_delay_changed" => EventPayload::InputVideoDelayChanged {
+            input: fields.input("input")?,
+            frames: fields.parse_required("frames")?,
+        },
         "scene_layout_changed" => {
             let operation = fields.required("operation")?;
             let edit = super::scene_layer::decode_scene_layer_edit(&operation, fields)?.ok_or(
