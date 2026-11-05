@@ -2769,7 +2769,7 @@ fn dependency_tree_contains_only_client_side_freemix_crates() {
         "fm-video",
         "fm-audio",
         "fm-playback",
-        "fm-record-doc",
+        "fm-record",
         "fm-replay",
         "fm-scheduler",
         "fm-sim",
