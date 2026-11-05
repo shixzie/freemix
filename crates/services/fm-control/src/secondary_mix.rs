@@ -72,6 +72,7 @@ pub(super) fn wire_states(frame: &fm_switcher::MixBankFrame) -> Vec<WireSecondar
     frame
         .mixes
         .iter()
+        .filter(|mix| !mix.mix.is_main())
         .map(|mix| WireSecondaryMixState {
             number: wire_mix_id(mix.mix),
             program: wire_layer(mix.primary),
