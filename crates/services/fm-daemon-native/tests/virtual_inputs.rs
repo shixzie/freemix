@@ -135,19 +135,17 @@ fn aliases_follow_their_chain_and_feeds_use_a_black_scene() {
 }
 
 #[test]
-fn a_cropped_alias_is_refused_instead_of_drawing_the_uncropped_source() {
+fn a_cropped_alias_routes_to_its_concrete_source_and_carries_its_crop() {
     let mut project = project();
     add_leaf(&mut project, 1);
-    add_alias(
-        &mut project,
-        3,
-        1,
-        Some(fm_model::CropRect::new(0, 0, 8, 8)),
-    );
+    let crop = fm_model::CropRect::new(0, 0, 8, 8);
+    add_alias(&mut project, 3, 1, Some(crop));
+    let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
     assert_eq!(
-        NativeProjectPlan::compile(&project, NativeProjectLimits::default()),
-        Err(NativeProjectPlanError::AliasCropUnsupported { input: input(3) })
+        plan.video_route(input(3)),
+        Some(NativeVideoRoute::Leaf(input(1)))
     );
+    assert_eq!(plan.alias_crop_rect(input(3)), Some(crop));
 }
 
 #[test]

@@ -1199,6 +1199,14 @@ impl NativeProjectPlan {
         self.alias_crops.get(&input).copied()
     }
 
+    /// The crop a cropped alias applies, in project pixels (IN-024).
+    #[must_use]
+    pub fn alias_crop_rect(&self, input: InputId) -> Option<fm_model::CropRect> {
+        self.alias_crops.get(&input).map(|alias| {
+            fm_model::CropRect::new(alias.crop[0], alias.crop[1], alias.crop[2], alias.crop[3])
+        })
+    }
+
     /// The project video dimensions the plan composes at.
     #[must_use]
     pub const fn dimensions(&self) -> VideoDimensions {
@@ -12673,7 +12681,7 @@ mod tests {
         }));
         assert_eq!(scene_plan.black_scene, Some(black));
 
-        // A cropped alias is refused instead of drawing the uncropped source.
+        // A cropped alias keeps its concrete route and carries its crop.
         let mut cropped = native_plan_project(4, 2);
         add_leaf(&mut cropped, input(1));
         cropped.add_input(Input {
@@ -12685,9 +12693,14 @@ mod tests {
             },
             required_capabilities: Vec::new(),
         });
+        let plan = NativeProjectPlan::compile(&cropped, NativeProjectLimits::default()).unwrap();
         assert_eq!(
-            NativeProjectPlan::compile(&cropped, NativeProjectLimits::default()),
-            Err(NativeProjectPlanError::AliasCropUnsupported { input: input(3) })
+            plan.video_route(input(3)),
+            Some(NativeVideoRoute::Leaf(input(1)))
+        );
+        assert_eq!(
+            plan.alias_crop_rect(input(3)),
+            Some(fm_model::CropRect::new(0, 0, 2, 1))
         );
 
         // An alias cycle is refused rather than followed forever.
