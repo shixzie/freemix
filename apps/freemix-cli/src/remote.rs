@@ -3094,6 +3094,7 @@ impl Remote {
                         | EventPayload::SceneLayoutChanged { .. }
                         | EventPayload::DisplayOutputChanged { .. }
                         | EventPayload::LogicalOutputChanged { .. }
+                        | EventPayload::SecondaryMixChanged { .. }
                         | EventPayload::LiveLanChanged(_)
                         | EventPayload::AlertRulesChanged(_)
                         | EventPayload::NetworkStreamChanged { .. }
