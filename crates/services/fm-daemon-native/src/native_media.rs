@@ -49,9 +49,9 @@ use fm_compositor::{
     NativeGradeRenderer, NativeSourceFrame, NativeStingerError, NativeStingerRenderer,
     NativeTransitionError, NativeTransitionRenderer, OutputTarget, PlanError,
     RectMask as CompositorRectMask, Rgba8 as CompositorRgba8, Rotation as CompositorRotation,
-    Scene as CompositorScene, SourceId, SourceLayer, StingerFramePlan, StingerPlanError,
-    Transform, TransitionError, TransitionKind, TransitionPlan, compile_grid_scene_fitted,
-    compile_scene, plan_grid,
+    Scene as CompositorScene, SourceId, SourceLayer, StingerFramePlan, StingerPlanError, Transform,
+    TransitionError, TransitionKind, TransitionPlan, compile_grid_scene_fitted, compile_scene,
+    plan_grid,
 };
 use fm_engine::{CompiledProjectGrades, FrameResult};
 use fm_frame::{
@@ -1635,7 +1635,14 @@ fn logical_cell_texture<'a>(
             } else if let Some(input) = settled_input(&background) {
                 Ok((
                     LogicalCellFeed::Input(input),
-                    project_texture(registry, graded, project, scene_outputs, input, frame.deadline)?,
+                    project_texture(
+                        registry,
+                        graded,
+                        project,
+                        scene_outputs,
+                        input,
+                        frame.deadline,
+                    )?,
                 ))
             } else {
                 Err(NativeSourceRenderError::UnsupportedOutputFeed {
@@ -2435,7 +2442,10 @@ impl fmt::Display for NativeSourceRenderError {
                 "native logical output {output} was not rendered before its MultiView reader"
             ),
             Self::InvalidOutputComposition(error) => {
-                write!(formatter, "native logical-output MultiView composition failed: {error}")
+                write!(
+                    formatter,
+                    "native logical-output MultiView composition failed: {error}"
+                )
             }
             Self::UnsupportedTransition(kind) => {
                 write!(formatter, "native transition {kind:?} is not supported")
@@ -9448,11 +9458,7 @@ impl NativeMediaRuntime {
         program: &NativeTexture,
         logical_outputs: &BTreeMap<OutputId, NativeTexture>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
-        let overlays = plan
-            .overlays
-            .iter()
-            .map(plan_overlay)
-            .collect::<Vec<_>>();
+        let overlays = plan.overlays.iter().map(plan_overlay).collect::<Vec<_>>();
         match &plan.video {
             OutputVideo::MultiView(cells) => {
                 let base = self
@@ -9528,8 +9534,8 @@ impl NativeMediaRuntime {
         logical_outputs: &BTreeMap<OutputId, NativeTexture>,
         cells: &[fm_switcher::MultiViewCellPlan],
     ) -> Result<NativeTexture, NativeSourceRenderError> {
-        let layout =
-            GridLayout::for_cells(cells.len()).map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        let layout = GridLayout::for_cells(cells.len())
+            .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
         let grid = plan_grid(
             project.dimensions.width(),
             project.dimensions.height(),
@@ -9581,10 +9587,8 @@ impl NativeMediaRuntime {
             },
         )
         .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
-        let (composition, _) =
-            compile_scene(&scene, OutputTarget::Program).map_err(|error| {
-                NativeSourceRenderError::InvalidOutputComposition(error)
-            })?;
+        let (composition, _) = compile_scene(&scene, OutputTarget::Program)
+            .map_err(|error| NativeSourceRenderError::InvalidOutputComposition(error))?;
         let sources = unique
             .iter()
             .enumerate()

@@ -891,7 +891,10 @@ fn cell_count_layouts_are_deterministic_and_bounded() {
             "{cells} cells"
         );
         assert!(layout.capacity() >= cells);
-        assert!(layout.capacity() < cells + usize::from(columns), "{cells} cells");
+        assert!(
+            layout.capacity() < cells + usize::from(columns),
+            "{cells} cells"
+        );
     }
 }
 

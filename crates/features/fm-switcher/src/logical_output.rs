@@ -563,10 +563,12 @@ impl OutputRoutingFrame {
     /// enabled and resolved this frame.
     #[must_use]
     pub fn plan_for(&self, output: OutputId) -> Option<&OutputRenderPlan> {
-        self.render_order.iter().find_map(|slot| match self.output(*slot) {
-            Some(Ok(plan)) if plan.output == output => Some(plan),
-            _ => None,
-        })
+        self.render_order
+            .iter()
+            .find_map(|slot| match self.output(*slot) {
+                Some(Ok(plan)) if plan.output == output => Some(plan),
+                _ => None,
+            })
     }
 }
 

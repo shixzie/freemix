@@ -142,8 +142,7 @@ impl GridLayout {
             });
         }
         let mut columns = 1_u8;
-        while columns < MAX_MULTIVIEW_COLUMNS
-            && usize::from(columns) * usize::from(columns) < cells
+        while columns < MAX_MULTIVIEW_COLUMNS && usize::from(columns) * usize::from(columns) < cells
         {
             columns += 1;
         }
@@ -745,8 +744,8 @@ pub fn compile_grid_scene_fitted(
         background,
         border_width,
         |index, cell| {
-            let frame = resolve(index, cell)
-                .ok_or(MultiviewError::UnresolvedGridCell { cell: index })?;
+            let frame =
+                resolve(index, cell).ok_or(MultiviewError::UnresolvedGridCell { cell: index })?;
             let placement = place_source(
                 frame.width,
                 frame.height,
