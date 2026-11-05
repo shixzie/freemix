@@ -525,10 +525,17 @@ impl ThumbnailRenderer {
         // grade; intermediate alias crops are ignored, as in the resolver.
         let mut resolved = input;
         let mut alias_crop = None;
+        let mut alias_effects: Vec<fm_model::LayerEffect> = Vec::new();
         let mut hops = 0;
-        while let InputKind::Alias { target, crop, .. } = &resolved.kind {
+        while let InputKind::Alias {
+            target,
+            crop,
+            effects,
+        } = &resolved.kind
+        {
             if hops == 0 {
                 alias_crop = *crop;
+                alias_effects = effects.clone();
             }
             hops += 1;
             if hops > work.project.inputs().len() {
@@ -548,6 +555,13 @@ impl ThumbnailRenderer {
                     fm_video::CropRect::new(crop.x, crop.y, crop.width, crop.height),
                 )
                 .ok()?;
+            }
+            for effect in &alias_effects {
+                let descriptor =
+                    fm_compositor::Effect::new(effect.name.clone(), effect.parameters.clone());
+                let reference =
+                    fm_compositor::ReferenceEffect::from_descriptor(&descriptor).ok()?;
+                picture = fm_compositor::apply_reference_effect(&picture, reference).ok()?;
             }
             let graded = match work.grades.input(input.id) {
                 Some(grade) => fm_compositor::apply_grade(&picture, grade).ok()?,
