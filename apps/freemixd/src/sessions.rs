@@ -2212,6 +2212,10 @@ struct TitleRowSource {
     interval: Duration,
     keep_live: bool,
     source: fm_data::FilePollingSource,
+    /// The HTTP URL this source fetches, when it is not a bundle file.
+    url: Option<String>,
+    /// The last HTTP body, so an unchanged response emits nothing.
+    last_http: Option<Vec<u8>>,
     next_poll: Instant,
     applied_rows: u64,
     error: Option<String>,
@@ -2330,7 +2334,7 @@ impl TitleRowSources {
                 input,
                 TitleRowSource {
                     input,
-                    path: (*relative).to_owned(),
+                    path: source_path.to_owned(),
                     interval,
                     keep_live: *keep_live == "1",
                     source,
