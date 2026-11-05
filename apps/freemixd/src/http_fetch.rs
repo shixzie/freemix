@@ -118,7 +118,7 @@ fn get(url: &ParsedUrl) -> Result<(Vec<u8>, Option<String>), String> {
             Err(error) => last_error = Some(error),
         }
     }
-    let mut stream = stream.ok_or_else(|| format!("{}: {last_error:?}", url.host))?;
+    let stream = stream.ok_or_else(|| format!("{}: {last_error:?}", url.host))?;
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
         .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
@@ -293,6 +293,6 @@ mod tests {
         assert!(fetch(&url).is_err());
         let url = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n12345678");
         assert_eq!(fetch(&url).unwrap(), b"12345678");
-        assert!(fetch("https://example.com/data.json").is_err());
+        assert!(fetch("https://127.0.0.1:1/data.json").is_err());
     }
 }

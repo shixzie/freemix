@@ -5158,11 +5158,11 @@ a daemon keeps a runtime, per-title scheduled source for a bundle-relative
 `fm-data`'s bounded file source, and applies each changed row as an authority
 `set_title_row`; `remote-title-source` starts, stops, or reports one. Each source spec is stored in the bundle as
 `title-data-sources.v1` and restored (and its poller resumed) when the daemon
-restarts. An `http://` source is fetched with a bounded HTTP/1.1 client: three-second
-connect and five-second read timeouts, four-megabyte body cap, at most three
-redirects, and no request body. An unchanged body emits nothing. Remaining
-gaps: `https://` needs a TLS trust store, so it is refused; Studio's title
-editor has
+restarts. An `http://` or `https://` source is fetched with a bounded HTTP/1.1 client:
+three-second connect and five-second read timeouts, four-megabyte body cap,
+at most three redirects, and no request body. HTTPS uses rustls with the
+Mozilla root store from `webpki-roots`. An unchanged body emits nothing.
+Remaining gaps: Studio's title editor has
 a data-row section with a `Name=value` draft, a local preview against the
 replicated field names and values, a keep-failed-fields toggle, and one
 atomic `set_title_row` action; there
