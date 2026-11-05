@@ -1496,7 +1496,7 @@ mod tests {
             name: "Alias scene".into(),
             background: Rgba8::OPAQUE_BLACK,
             layers: vec![Layer {
-                id: fm_model::LayerId::new(NonZeroU128::new(1).unwrap()).unwrap(),
+                id: fm_model::LayerId::new(1).unwrap(),
                 name: "Alias".into(),
                 source: SourceRef::Input(input_id(2)),
                 enabled: true,
