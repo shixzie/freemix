@@ -10855,7 +10855,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::NameMixFeed, t("Entrada de mezcla")),
-    (Msg::KindMixFeedKey, t("MEZCLA")),
+    (Msg::KindMixFeedKey, t("MEZCLA DE BUS")),
     (
         Msg::KindMixFeedHover,
         t("Una entrada virtual que muestra el bus Programa o Previo con un fotograma de retraso"),
@@ -10870,8 +10870,8 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Selecciona una entrada para el alias"),
     ),
     (Msg::AddInputFeedBus, t("Mezcla")),
-    (Msg::AddInputFeedProgram, t("Programa")),
-    (Msg::AddInputFeedPreview, t("Previo")),
+    (Msg::AddInputFeedProgram, t("Mezcla Programa")),
+    (Msg::AddInputFeedPreview, t("Mezcla Previo")),
     (
         Msg::KindReplayHover,
         t(
