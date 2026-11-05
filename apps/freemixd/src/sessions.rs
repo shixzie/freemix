@@ -2524,7 +2524,7 @@ impl Runtime<'_> {
                     self.frozen_still(request.input.to_domain(), durable, native.as_deref_mut());
                 match answer {
                     Ok((width, height, png)) => {
-                        let parts = fm_protocol::monitor_image::frozen_still_parts(
+                        let parts = fm_protocol::frozen_still_parts(
                             request.protocol,
                             &request.request_id,
                             request.input,
@@ -2988,7 +2988,7 @@ impl Runtime<'_> {
     /// the input's current simulated picture. The input must be frozen.
     fn frozen_still(
         &self,
-        input: InputId,
+        input: fm_types::InputId,
         durable: &StoredProject,
         native: Option<&mut NativeDaemon>,
     ) -> Result<(u32, u32, Vec<u8>), String> {
