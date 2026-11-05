@@ -11854,7 +11854,7 @@ mod tests {
             .copy_feed_texture_blocking(plan.dimensions(), &first)
             .unwrap();
 
-        let fed = runtime
+        let repeated = runtime
             .render_project_frame_result_with_stingers_and_feeds_blocking(
                 playback.registry(),
                 playback.registry(),
@@ -11866,10 +11866,13 @@ mod tests {
                 },
             )
             .unwrap();
-        let fed_pixels =
-            rgba16f_components(&block_on(runtime.diagnostic_readback(&fed)).unwrap().bytes);
+        let repeated_pixels = rgba16f_components(
+            &block_on(runtime.diagnostic_readback(&repeated))
+                .unwrap()
+                .bytes,
+        );
         assert!(
-            fed_pixels[0] > 0.5 && fed_pixels[0] > fed_pixels[2] * 2.0,
+            repeated_pixels[0] > 0.5 && repeated_pixels[0] > repeated_pixels[2] * 2.0,
             "the Program feed repeats the committed red picture"
         );
 
