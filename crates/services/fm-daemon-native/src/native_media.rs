@@ -12217,6 +12217,117 @@ mod tests {
     }
 
     #[test]
+    fn native_feed_inputs_take_their_input_grade() {
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(84).unwrap());
+        let program = input(1);
+        let feed = input(2);
+        let scene_input = input(3);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: program,
+                    frame: split_retained_frame(
+                        clock_domain,
+                        [255, 0, 0, 255],
+                        [0, 0, 255, 255],
+                        4,
+                        2,
+                    ),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, program);
+        project.add_input(Input {
+            id: feed,
+            name: "program feed".into(),
+            kind: InputKind::MixFeed(fm_model::MixFeed::Program),
+            required_capabilities: Vec::new(),
+        });
+        add_scene_input(&mut project, scene_input, scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(feed), 0)],
+        );
+        let mut plan =
+            NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let first = runtime
+            .render_project_frame_result_blocking(
+                playback.registry(),
+                &plan,
+                &frame_result(0, program, None),
+            )
+            .unwrap();
+        let committed = runtime
+            .copy_feed_texture_blocking(plan.dimensions(), &first)
+            .unwrap();
+        let feeds = NativeFeedFrames {
+            program: Some(&committed),
+            preview: None,
+        };
+        let plain = runtime
+            .render_project_frame_result_with_stingers_and_feeds_blocking(
+                playback.registry(),
+                playback.registry(),
+                &plan,
+                &frame_result(1, feed, None),
+                feeds,
+            )
+            .unwrap();
+        let plain = block_on(runtime.diagnostic_readback(&plain)).unwrap();
+        assert!(
+            rgba16f_pixel(&plain.bytes, 4, 0, 0)[0] > 0.5
+                && rgba16f_pixel(&plain.bytes, 4, 3, 0)[2] > 0.5,
+            "the ungraded feed keeps the committed red and blue halves"
+        );
+
+        let mut grading = fm_model::ProjectGrading::default();
+        grading
+            .set_input(
+                feed,
+                Some(fm_model::GradeSource::Inline(Box::new(fm_grade::Grade {
+                    saturation_permille: 0,
+                    ..fm_grade::Grade::IDENTITY
+                }))),
+            )
+            .unwrap();
+        let compiled =
+            fm_engine::CompiledProjectGrades::compile_grading(&grading, &BTreeMap::new()).unwrap();
+        plan.set_grades(
+            runtime
+                .prepare_project_grades_blocking(1, &compiled)
+                .unwrap(),
+        );
+        for program in [feed, scene_input] {
+            let graded = runtime
+                .render_project_frame_result_with_stingers_and_feeds_blocking(
+                    playback.registry(),
+                    playback.registry(),
+                    &plan,
+                    &frame_result(1, program, None),
+                    feeds,
+                )
+                .unwrap();
+            let graded = block_on(runtime.diagnostic_readback(&graded)).unwrap();
+            for x in [0_u32, 3] {
+                let pixel = rgba16f_pixel(&graded.bytes, 4, x, 0);
+                assert!(
+                    (pixel[0] - pixel[1]).abs() < 0.05 && (pixel[1] - pixel[2]).abs() < 0.05,
+                    "the feed input grade desaturates {program} at x={x}: {pixel:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn native_project_plan_routes_aliases_and_draws_feeds_black() {
         let mut project = native_plan_project(4, 2);
         add_leaf(&mut project, input(1));
