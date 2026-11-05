@@ -2321,7 +2321,14 @@ fn output_statuses() -> Vec<fm_protocol::OutputStatus> {
 }
 
 fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
-    [input(1), input(2)]
+    let mut inputs = vec![input(1), input(2)];
+    inputs.extend(SNAPSHOT_EXTRA_INPUTS.with(|cell| {
+        cell.borrow()
+            .iter()
+            .map(|status| status.input)
+            .collect::<Vec<_>>()
+    }));
+    inputs
         .into_iter()
         .map(|input| fm_protocol::InputAudioStripStatus {
             pan_basis_points: 0,
