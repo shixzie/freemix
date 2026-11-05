@@ -4060,7 +4060,7 @@ mod tests {
         let mut sources = TitleRowSources::default();
         let response = sources.configure(
             fm_protocol::TitleRowSourceRequest {
-                protocol: CURRENT_PROTOCOL_VERSION,
+                protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
                 request_id: "source-7".into(),
                 input: fm_protocol::WireInputId::from_domain(input),
                 operation: fm_protocol::TitleRowSourceOperation::Start {
