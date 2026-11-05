@@ -125,12 +125,13 @@ fn aliases_follow_their_chain_and_feeds_use_a_black_scene() {
         animation: SceneAnimation::default(),
     });
     add_alias(&mut project, 7, 6, None);
+    let baked_scene = scene(10);
     let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
     assert_eq!(
         plan.video_route(input(7)),
-        Some(NativeVideoRoute::Scene(scene(10)))
+        Some(NativeVideoRoute::Scene(baked_scene))
     );
-    assert!(plan.scene_order().any(|scene| scene == scene(10)));
+    assert!(plan.scene_order().any(|scene| scene == baked_scene));
 }
 
 #[test]
