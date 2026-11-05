@@ -1826,6 +1826,7 @@ fn preview_audio_badge(l: Locale, draft: &AddInputDraft) -> Option<String> {
 }
 
 /// A 16:9 picture of the new source, tagged with its identifier.
+#[allow(clippy::too_many_lines)] // one preview per input kind
 fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<InputId>) {
     let l = l10n::locale(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(Vec2::new(176.0, 99.0), Sense::hover());
