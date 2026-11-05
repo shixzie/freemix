@@ -262,6 +262,44 @@ fn installs_and_validates_snapshot() {
 }
 
 #[test]
+fn input_video_delays_replicate_from_snapshots_and_events() {
+    let project_id = project(10);
+    let mut initial = snapshot(project_id, 4);
+    initial.input_video_delays = vec![fm_protocol::WireInputVideoDelay {
+        input: WireInputId::from_domain(input(1)),
+        frames: 5,
+    }];
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(initial).unwrap();
+    assert_eq!(
+        model.view().unwrap().input_video_delays,
+        vec![fm_protocol::WireInputVideoDelay {
+            input: WireInputId::from_domain(input(1)),
+            frames: 5
+        }]
+    );
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            5,
+            DurableChange::InputVideoDelayChanged {
+                input: input(2),
+                frames: 9,
+            },
+        ))
+        .unwrap();
+    let view = model.view().unwrap();
+    assert_eq!(view.input_video_delays.len(), 2);
+    assert!(
+        view.input_video_delays.iter().any(|entry| {
+            entry.input == WireInputId::from_domain(input(2)) && entry.frames == 9
+        })
+    );
+}
+
+#[test]
 fn frozen_inputs_replicate_from_snapshots_and_events() {
     let project_id = project(10);
     let mut initial = snapshot(project_id, 4);

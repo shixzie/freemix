@@ -67,6 +67,25 @@ fn model_input(value: u128) -> InputId {
 }
 
 #[test]
+fn video_delay_intent_maps_to_the_wire_command() {
+    let payload = studio_intent_payload(
+        StudioIntent::SetInputVideoDelay {
+            input: model_input(1),
+            frames: 12,
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        payload,
+        CommandPayload::SetInputVideoDelay {
+            input: input(1),
+            frames: 12
+        }
+    );
+}
+
+#[test]
 fn freeze_intent_maps_to_the_wire_command() {
     let payload = studio_intent_payload(
         StudioIntent::SetInputFreeze {
