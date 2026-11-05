@@ -3190,13 +3190,20 @@ save. Protocol 2.160 carries the list in every snapshot, sets one with
 delay locally with `input-video-delay <show> <input> <frames>` and remotely
 with `remote-input-video-delay <address> <input> <frames>`, and both save and
 restore paths now preserve and fold every related setting (logical outputs,
-secondary mixes, and video delays) instead of dropping them. Remaining gaps:
-no daemon applies the requested delay to decoded or simulated frames, no UI
-editor, no loop, freeze integration, or clip save; `SampleDelay` can change its
-delay live within the one-second bound while preserving history (growing
-prepends silence), and the Master mixer's delay setter uses that path; it still
-cannot exceed one second; no source/output clock drift compensation; and memory
-accounting relies on caller-reported sizes. `IN-022` remains planned.
+secondary mixes, and video delays) instead of dropping them. The native daemon
+applies the stored delay from the first frame: decoded sources select the
+picture at the deadline minus the delay, holding black until the delayed
+instant reaches the source's first picture, while live sources retain recent
+pictures and count back from the newest. Both clamp to what one source ring can
+retain (seven frames at the default eight-frame ring), and the frame loop sends
+the realizer a changed map only. Remaining gaps: the simulated render path does
+not apply the delay, the native delay is clamped by the source ring, there is
+no UI editor, no audio alignment, no loop, freeze integration, or clip save;
+`SampleDelay` can change its delay live within the one-second bound while
+preserving history (growing prepends silence), and the Master mixer's delay
+setter uses that path; it still cannot exceed one second; no source/output
+clock drift compensation; and memory accounting relies on caller-reported
+sizes. `IN-022` remains planned.
 
 Current implementation boundary for virtual and mix-feed inputs (`IN-024`,
 `IN-025`): project schema 25 added alias inputs with their own id,
