@@ -261,6 +261,46 @@ fn installs_and_validates_snapshot() {
 }
 
 #[test]
+fn frozen_inputs_replicate_from_snapshots_and_events() {
+    let project_id = project(10);
+    let mut initial = snapshot(project_id, 4);
+    initial.frozen_inputs = vec![input(1)];
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(initial).unwrap();
+    assert_eq!(model.view().unwrap().frozen_inputs, vec![input(1)]);
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            5,
+            DurableChange::InputFreezeChanged {
+                input: input(2),
+                frozen: true,
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        model.view().unwrap().frozen_inputs,
+        vec![input(1), input(2)]
+    );
+
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            6,
+            DurableChange::InputFreezeChanged {
+                input: input(1),
+                frozen: false,
+            },
+        ))
+        .unwrap();
+    assert_eq!(model.view().unwrap().frozen_inputs, vec![input(2)]);
+}
+
+#[test]
 fn reduces_exact_desired_and_realized_fade_to_black_state() {
     let project_id = project(10);
     let mut initial = snapshot(project_id, 4);
