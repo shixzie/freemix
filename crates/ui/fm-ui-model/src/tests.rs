@@ -6,6 +6,7 @@ use fm_protocol::{
 };
 
 use super::*;
+use fm_protocol::WireInputId;
 
 fn project(value: u128) -> ProjectId {
     ProjectId::new(NonZeroU128::new(value).unwrap())
@@ -264,12 +265,12 @@ fn installs_and_validates_snapshot() {
 fn frozen_inputs_replicate_from_snapshots_and_events() {
     let project_id = project(10);
     let mut initial = snapshot(project_id, 4);
-    initial.frozen_inputs = vec![fm_protocol::WireInputId::from_domain(input(1))];
+    initial.frozen_inputs = vec![WireInputId::from_domain(input(1))];
     let mut model = ClientModel::new(project_id);
     model.install_snapshot(initial).unwrap();
     assert_eq!(
         model.view().unwrap().frozen_inputs,
-        vec![fm_protocol::WireInputId::from_domain(input(1))]
+        vec![WireInputId::from_domain(input(1))]
     );
     let identity = model.reconnect_cursor().unwrap().engine.clone();
 
@@ -287,8 +288,8 @@ fn frozen_inputs_replicate_from_snapshots_and_events() {
     assert_eq!(
         model.view().unwrap().frozen_inputs,
         vec![
-            fm_protocol::WireInputId::from_domain(input(1)),
-            fm_protocol::WireInputId::from_domain(input(2))
+            WireInputId::from_domain(input(1)),
+            WireInputId::from_domain(input(2))
         ]
     );
 
@@ -305,7 +306,7 @@ fn frozen_inputs_replicate_from_snapshots_and_events() {
         .unwrap();
     assert_eq!(
         model.view().unwrap().frozen_inputs,
-        vec![fm_protocol::WireInputId::from_domain(input(2))]
+        vec![WireInputId::from_domain(input(2))]
     );
 }
 
@@ -1852,7 +1853,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 revision: 8,
             },
             payload: EventPayload::InputAdded {
-                input: fm_protocol::WireInputId::from_domain(input(11)),
+                input: WireInputId::from_domain(input(11)),
                 name: "Bars".into(),
                 network_stream: None,
                 system_audio: None,
@@ -1884,7 +1885,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 revision: 9,
             },
             payload: EventPayload::InputRemoved {
-                input: fm_protocol::WireInputId::from_domain(input(11)),
+                input: WireInputId::from_domain(input(11)),
             },
             edit_history: EditHistoryStatus::EMPTY,
         },
@@ -1919,7 +1920,7 @@ mod titles {
     fn title_state(revision: u64, field_revision: u64) -> TitleStateMessage {
         TitleStateMessage {
             revision,
-            input: fm_protocol::WireInputId::from_domain(input(TITLE)),
+            input: WireInputId::from_domain(input(TITLE)),
             name: "Lower third".into(),
             field_revision,
             phase: fm_protocol::TitlePhase::In,
@@ -2011,7 +2012,7 @@ mod titles {
         let protocol = fm_protocol::SnapshotMessage {
             production_clocks: Vec::new(),
             titles: vec![fm_protocol::TitleSummary {
-                input: fm_protocol::WireInputId::from_domain(input(TITLE)),
+                input: WireInputId::from_domain(input(TITLE)),
                 field_revision: 2,
             }],
             ..edit_history_protocol_snapshot()
@@ -2023,7 +2024,7 @@ mod titles {
     }
 
     fn edit_history_protocol_snapshot() -> fm_protocol::SnapshotMessage {
-        let wire = |value| fm_protocol::WireInputId::from_domain(input(value));
+        let wire = |value| WireInputId::from_domain(input(value));
         fm_protocol::SnapshotMessage {
             production_clocks: Vec::new(),
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
@@ -2097,7 +2098,7 @@ mod titles {
         let mut stale_revision = title_state(9, 2);
         let wrong_field_revision = title_state(10, 3);
         let mut unknown = title_state(10, 2);
-        unknown.input = fm_protocol::WireInputId::from_domain(input(1));
+        unknown.input = WireInputId::from_domain(input(1));
         let mut unordered = title_state(10, 2);
         unordered.fields.reverse();
         for message in [
@@ -2212,7 +2213,7 @@ mod titles {
             ))
             .unwrap();
         let text = |field_id, value| fm_protocol::CueTitleText {
-            input: fm_protocol::WireInputId::from_domain(input(TITLE)),
+            input: WireInputId::from_domain(input(TITLE)),
             field_revision: 5,
             field: field(field_id),
             value,
@@ -2410,7 +2411,7 @@ mod titles {
     fn animation_state(revision: u64, animation_revision: u64) -> TitleAnimationStateMessage {
         TitleAnimationStateMessage {
             revision,
-            input: fm_protocol::WireInputId::from_domain(input(TITLE)),
+            input: WireInputId::from_domain(input(TITLE)),
             animation_revision,
             clip: Box::new(animation_clip(10)),
         }
@@ -2432,7 +2433,7 @@ mod titles {
         assert!(!model.state().unwrap().title_animations_complete());
         // Wrong revision, unknown title: refused without change.
         let mut unknown = animation_state(10, 4);
-        unknown.input = fm_protocol::WireInputId::from_domain(input(1));
+        unknown.input = WireInputId::from_domain(input(1));
         for message in [animation_state(9, 4), unknown] {
             let input = message.input.to_domain();
             assert_eq!(
@@ -2502,7 +2503,7 @@ mod titles {
 
         let layout_state = |revision: u64| TitleLayoutStateMessage {
             revision,
-            input: fm_protocol::WireInputId::from_domain(input(TITLE)),
+            input: WireInputId::from_domain(input(TITLE)),
             layout: Box::new(WireTitleLayout {
                 width: 1_920,
                 height: 1_080,
@@ -2521,7 +2522,7 @@ mod titles {
             .unwrap();
         // Wrong revision, unknown title: refused without change.
         let mut unknown = layout_state(10);
-        unknown.input = fm_protocol::WireInputId::from_domain(input(1));
+        unknown.input = WireInputId::from_domain(input(1));
         for message in [layout_state(9), unknown] {
             let input = message.input.to_domain();
             assert_eq!(
@@ -2580,7 +2581,7 @@ mod titles {
         assert_eq!(
             save_payload(&document, input(TITLE)),
             Some(CommandPayload::SetTitleAnimation {
-                input: fm_protocol::WireInputId::from_domain(input(TITLE)),
+                input: WireInputId::from_domain(input(TITLE)),
                 base_revision: 5,
                 clip: Box::new(draft.clone()),
             })
@@ -2649,7 +2650,7 @@ fn playlist_changed_replicates_the_playlist_and_desired_selection() {
 
     let entry = |input_value: u128| PlaylistEntrySpec {
         id: 4,
-        input: fm_protocol::WireInputId::from_domain(input(input_value)),
+        input: WireInputId::from_domain(input(input_value)),
         duration_frames: 50,
         follow_media: false,
         transition: fm_protocol::PlaylistTransitionKind::Fade,
@@ -2672,8 +2673,8 @@ fn playlist_changed_replicates_the_playlist_and_desired_selection() {
                 cycle: 0,
                 started_frame: 120,
             },
-            program: fm_protocol::WireInputId::from_domain(input(3)),
-            preview: fm_protocol::WireInputId::from_domain(input(1)),
+            program: WireInputId::from_domain(input(3)),
+            preview: WireInputId::from_domain(input(1)),
         },
         edit_history: EditHistoryStatus::EMPTY,
     };
@@ -2730,7 +2731,7 @@ fn an_announced_playlist_state_completes_the_snapshot() {
         loop_mode: PlaylistLoopMode::One,
         entries: vec![PlaylistEntrySpec {
             id: 2,
-            input: fm_protocol::WireInputId::from_domain(input(entry_input)),
+            input: WireInputId::from_domain(input(entry_input)),
             duration_frames: 250,
             follow_media: false,
             transition: PlaylistTransitionKind::Cut,
@@ -3035,7 +3036,7 @@ fn transition_favourites_replicate_from_snapshot_and_change_events() {
 #[allow(clippy::too_many_lines)] // one scenario across every lifecycle edit
 fn input_lifecycle_changes_reduce_into_labels_catalogue_and_availability() {
     use fm_protocol::{InputColorLabel, InputLifecycleOperation as Operation};
-    let wire = fm_protocol::WireInputId::from_domain;
+    let wire = WireInputId::from_domain;
     let project = project(1);
     let mut model = ClientModel::new(project);
     let base = snapshot(project, 4);
@@ -3203,7 +3204,7 @@ fn replicates_mixer_labels_groups_and_fade_to_black_outputs() {
     let mut initial = snapshot(project_id, 1);
     initial.fade_to_black_excluded_outputs = vec![output(2)];
     initial.audio_mixer.labels = vec![fm_protocol::InputAudioLabel {
-        input: fm_protocol::WireInputId::from_domain(input(1)),
+        input: WireInputId::from_domain(input(1)),
         label: "Host".into(),
     }];
     model.install_snapshot(initial).unwrap();
@@ -3215,11 +3216,11 @@ fn replicates_mixer_labels_groups_and_fade_to_black_outputs() {
 
     let changes = [
         DurableChange::AudioMixerChanged(AudioMixerOperation::SetGroup {
-            input: fm_protocol::WireInputId::from_domain(input(3)),
+            input: WireInputId::from_domain(input(3)),
             group: Some(2),
         }),
         DurableChange::AudioMixerChanged(AudioMixerOperation::SetLabel {
-            input: fm_protocol::WireInputId::from_domain(input(3)),
+            input: WireInputId::from_domain(input(3)),
             label: "Guest".into(),
         }),
         DurableChange::AudioMixerChanged(AudioMixerOperation::SetGroupLevel {
@@ -3258,7 +3259,7 @@ fn replicates_mixer_labels_groups_and_fade_to_black_outputs() {
     // Changes naming an unknown input, group, or output are refused.
     for (revision, change) in [
         DurableChange::AudioMixerChanged(AudioMixerOperation::SetGroup {
-            input: fm_protocol::WireInputId::from_domain(input(9)),
+            input: WireInputId::from_domain(input(9)),
             group: Some(1),
         }),
         DurableChange::FadeToBlackOutputChanged {
@@ -3439,7 +3440,7 @@ fn capture_inputs_follow_snapshot_edits_replacements_and_duplicates() {
         ..CaptureSettings::default()
     };
     base.capture_inputs = vec![CaptureInputEntry {
-        input: fm_protocol::WireInputId::from_domain(input(1)),
+        input: WireInputId::from_domain(input(1)),
         config: CaptureInputConfig {
             stable_key: "cam-a".into(),
             settings: settings.clone(),
@@ -3465,7 +3466,7 @@ fn capture_inputs_follow_snapshot_edits_replacements_and_duplicates() {
             5,
             DurableChange::InputLifecycleChanged {
                 operation: InputLifecycleOperation::ReplaceSource {
-                    input: fm_protocol::WireInputId::from_domain(input(1)),
+                    input: WireInputId::from_domain(input(1)),
                     source: WireInputSource::Device {
                         stable_key: "cam-b".into(),
                     },
@@ -3486,8 +3487,8 @@ fn capture_inputs_follow_snapshot_edits_replacements_and_duplicates() {
             6,
             DurableChange::InputLifecycleChanged {
                 operation: InputLifecycleOperation::Duplicate {
-                    source: fm_protocol::WireInputId::from_domain(input(1)),
-                    input: fm_protocol::WireInputId::from_domain(input(7)),
+                    source: WireInputId::from_domain(input(1)),
+                    input: WireInputId::from_domain(input(7)),
                     name: None,
                 },
                 added: vec![(input(7), "Camera 2".into())],
@@ -3533,7 +3534,7 @@ fn capture_inputs_follow_snapshot_edits_replacements_and_duplicates() {
             8,
             DurableChange::InputLifecycleChanged {
                 operation: InputLifecycleOperation::ReplaceSource {
-                    input: fm_protocol::WireInputId::from_domain(input(1)),
+                    input: WireInputId::from_domain(input(1)),
                     source: WireInputSource::Generator {
                         video: fm_protocol::WireGeneratorVideo::Bars,
                         tone_hz: None,
@@ -3562,7 +3563,7 @@ fn a_batch_removal_forgets_the_removed_inputs_source_entries() {
     let mut model = ClientModel::new(project);
     let mut base = snapshot(project, 4);
     base.system_audio_inputs = vec![SystemAudioEntry {
-        input: fm_protocol::WireInputId::from_domain(input(3)),
+        input: WireInputId::from_domain(input(3)),
         config: SystemAudioConfig::new(SystemAudioBackend::Pulse, "@DEFAULT_MONITOR@"),
         status: SystemAudioStatus::default(),
     }];
@@ -3577,7 +3578,7 @@ fn a_batch_removal_forgets_the_removed_inputs_source_entries() {
     };
     let remove_seven = || DurableChange::InputLifecycleChanged {
         operation: InputLifecycleOperation::RemoveInputs {
-            inputs: vec![fm_protocol::WireInputId::from_domain(input(7))],
+            inputs: vec![WireInputId::from_domain(input(7))],
         },
         added: Vec::new(),
     };
@@ -3596,8 +3597,8 @@ fn a_batch_removal_forgets_the_removed_inputs_source_entries() {
         &mut model,
         DurableChange::InputLifecycleChanged {
             operation: InputLifecycleOperation::Duplicate {
-                source: fm_protocol::WireInputId::from_domain(input(3)),
-                input: fm_protocol::WireInputId::from_domain(input(7)),
+                source: WireInputId::from_domain(input(3)),
+                input: WireInputId::from_domain(input(7)),
                 name: None,
             },
             added: vec![(input(7), "Desktop 2".into())],
@@ -4278,7 +4279,7 @@ fn media_list_status(input_id: u128, active: u32) -> fm_protocol::MediaListStatu
         mark_out: None,
     };
     fm_protocol::MediaListStatus {
-        input: fm_protocol::WireInputId::from_domain(input(input_id)),
+        input: WireInputId::from_domain(input(input_id)),
         items: vec![item(1), item(2)],
         options: fm_protocol::MediaListOptionsSpec::default(),
         active,
@@ -4444,7 +4445,7 @@ fn strip_dsp_records_complete_the_snapshot_and_events_keep_them_current() {
     use fm_types::strip_dsp::{StripDsp, StripDspPreset, StripDspTarget};
     let record = |revision, value, chain| AudioStripDspStateMessage {
         revision,
-        input: fm_protocol::WireInputId::from_domain(input(value)),
+        input: WireInputId::from_domain(input(value)),
         chain,
     };
     let project_id = project(10);
@@ -4501,7 +4502,7 @@ fn strip_dsp_records_complete_the_snapshot_and_events_keep_them_current() {
             gesture: None,
         })
     };
-    let strip = |value| AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(input(value)));
+    let strip = |value| AudioDspTarget::Input(WireInputId::from_domain(input(value)));
     model
         .apply_event(event(project_id, identity.clone(), 8, set(strip(1), music)))
         .unwrap();
@@ -4558,7 +4559,7 @@ fn send_state_records_complete_the_snapshot_and_carry_levels_and_taps() {
 
     let record = |revision, value, sends| AudioStripSendStateMessage {
         revision,
-        input: fm_protocol::WireInputId::from_domain(input(value)),
+        input: WireInputId::from_domain(input(value)),
         sends,
     };
     let a = AuxBusNumber::new(1).unwrap();
