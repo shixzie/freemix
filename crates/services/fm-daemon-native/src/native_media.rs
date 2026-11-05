@@ -12096,6 +12096,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // crop and layer grade in one render contract
     fn native_feed_scene_layers_take_their_crop_and_grade() {
         let Some(runtime) = native_test_runtime() else {
             return;
@@ -12217,6 +12218,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Program and scene-layer input grade in one contract
     fn native_feed_inputs_take_their_input_grade() {
         let Some(runtime) = native_test_runtime() else {
             return;
@@ -12273,7 +12275,7 @@ mod tests {
             program: Some(&committed),
             preview: None,
         };
-        let plain = runtime
+        let ungraded = runtime
             .render_project_frame_result_with_stingers_and_feeds_blocking(
                 playback.registry(),
                 playback.registry(),
@@ -12282,10 +12284,10 @@ mod tests {
                 feeds,
             )
             .unwrap();
-        let plain = block_on(runtime.diagnostic_readback(&plain)).unwrap();
+        let ungraded = block_on(runtime.diagnostic_readback(&ungraded)).unwrap();
         assert!(
-            rgba16f_pixel(&plain.bytes, 4, 0, 0)[0] > 0.5
-                && rgba16f_pixel(&plain.bytes, 4, 3, 0)[2] > 0.5,
+            rgba16f_pixel(&ungraded.bytes, 4, 0, 0)[0] > 0.5
+                && rgba16f_pixel(&ungraded.bytes, 4, 3, 0)[2] > 0.5,
             "the ungraded feed keeps the committed red and blue halves"
         );
 
