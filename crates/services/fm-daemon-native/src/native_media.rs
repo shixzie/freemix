@@ -12928,6 +12928,7 @@ mod tests {
             kind: InputKind::Alias {
                 target: leaf,
                 crop: Some(fm_model::CropRect::new(0, 0, 2, 2)),
+                effects: Vec::new(),
             },
             required_capabilities: Vec::new(),
         });
@@ -12949,6 +12950,7 @@ mod tests {
             kind: InputKind::Alias {
                 target: scene_input,
                 crop: Some(fm_model::CropRect::new(0, 0, 2, 2)),
+                effects: Vec::new(),
             },
             required_capabilities: Vec::new(),
         });
@@ -13187,6 +13189,7 @@ mod tests {
             kind: InputKind::Alias {
                 target: input(1),
                 crop: None,
+                effects: Vec::new(),
             },
             required_capabilities: Vec::new(),
         });
@@ -13251,6 +13254,7 @@ mod tests {
             kind: InputKind::Alias {
                 target: input(1),
                 crop: Some(fm_model::CropRect::new(0, 0, 2, 1)),
+                effects: Vec::new(),
             },
             required_capabilities: Vec::new(),
         });
@@ -13272,6 +13276,7 @@ mod tests {
             kind: InputKind::Alias {
                 target: input(2),
                 crop: None,
+                effects: Vec::new(),
             },
             required_capabilities: Vec::new(),
         });
@@ -13281,6 +13286,7 @@ mod tests {
             kind: InputKind::Alias {
                 target: input(1),
                 crop: None,
+                effects: Vec::new(),
             },
             required_capabilities: Vec::new(),
         });
