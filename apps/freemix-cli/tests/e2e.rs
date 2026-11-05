@@ -8305,6 +8305,90 @@ fn remote_input_freeze_sends_the_exact_edit() {
     server.finish();
 }
 
+/// IN-024, Protocol 2.162: alias authoring sends the exact source payload.
+#[test]
+fn remote_alias_input_add_sends_the_exact_source() {
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-alias-input-add",
+        payload: CommandPayload::AddInput {
+            input: input(3),
+            name: "Alias A".into(),
+            source: fm_protocol::LiveInputSource::Alias {
+                target: input(1),
+                crop: Some(fm_protocol::WireLayerCrop {
+                    x: 0,
+                    y: 0,
+                    width: 960,
+                    height: 1080,
+                }),
+            },
+        },
+        event: EventPayload::InputAdded {
+            input: input(3),
+            name: "Alias A".into(),
+            network_stream: None,
+            capture: None,
+            system_audio: None,
+            still: None,
+            screen_capture: None,
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-alias-input-add",
+        &server.address(),
+        "3",
+        "Alias A",
+        "1",
+        "--crop",
+        "0,0,960,1080",
+        "--key",
+        "remote-alias-input-add",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
+/// IN-025, Protocol 2.162: feed authoring sends the exact source payload.
+#[test]
+fn remote_mix_feed_input_add_sends_the_exact_source() {
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-mix-feed-input-add",
+        payload: CommandPayload::AddInput {
+            input: input(4),
+            name: "Program feed".into(),
+            source: fm_protocol::LiveInputSource::ProgramFeed,
+        },
+        event: EventPayload::InputAdded {
+            input: input(4),
+            name: "Program feed".into(),
+            network_stream: None,
+            capture: None,
+            system_audio: None,
+            still: None,
+            screen_capture: None,
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-mix-feed-input-add",
+        &server.address(),
+        "4",
+        "Program feed",
+        "program",
+        "--key",
+        "remote-mix-feed-input-add",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
 /// The title state the fake daemon announces for `remote-title-apply-row`:
 /// two fields at field revision 7, off air.
 fn title_row_state(phase: fm_protocol::TitlePhase) -> fm_protocol::TitleStateMessage {
