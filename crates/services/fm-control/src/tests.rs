@@ -2911,20 +2911,27 @@ fn alias_and_feed_add_sources_map_to_the_engine() {
                 width: 3,
                 height: 4,
             }),
+            effects: vec![fm_protocol::WireLayerEffect {
+                name: "saturation".into(),
+                parameters: vec![-50],
+            }],
         }),
         fm_engine::EngineInputSource::Alias {
             target: input(1),
             crop: Some(fm_model::CropRect::new(1, 2, 3, 4)),
+            effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
         }
     );
     assert_eq!(
         engine_input_source(&LiveInputSource::Alias {
             target: WireInputId::from_domain(input(2)),
             crop: None,
+            effects: Vec::new(),
         }),
         fm_engine::EngineInputSource::Alias {
             target: input(2),
             crop: None,
+            effects: Vec::new(),
         }
     );
     assert_eq!(
@@ -2939,10 +2946,12 @@ fn alias_and_feed_add_sources_map_to_the_engine() {
         wire_input_source(&fm_engine::EngineInputSource::Alias {
             target: input(4),
             crop: None,
+            effects: Vec::new(),
         }),
         LiveInputSource::Alias {
             target: WireInputId::from_domain(input(4)),
             crop: None,
+            effects: Vec::new(),
         }
     );
 }
