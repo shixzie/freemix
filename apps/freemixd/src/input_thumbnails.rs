@@ -1533,10 +1533,7 @@ mod tests {
         let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
         let feed = input(1, InputKind::MixFeed(MixFeed::Program));
         let mut work = work(project(vec![feed]), 1);
-        let mut composed = ImageFrame::packed(4, 2).unwrap();
-        for pixel in composed.pixels_mut().as_chunks_mut::<4>().0 {
-            pixel.copy_from_slice(&[12, 200, 34, 255]);
-        }
+        let composed = fm_video::solid_color(4, 2, fm_video::Rgba8::new(12, 200, 34, 255)).unwrap();
         work.feed_pictures
             .insert(MixFeed::Program, Arc::new(composed));
 
