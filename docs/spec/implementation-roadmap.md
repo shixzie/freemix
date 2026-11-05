@@ -3200,15 +3200,20 @@ save. Protocol 2.161 carries the list in every snapshot, sets one with
 delay locally with `input-video-delay <show> <input> <frames>` and remotely
 with `remote-input-video-delay <address> <input> <frames>`, and both save and
 restore paths now preserve and fold every related setting (logical outputs,
-secondary mixes, and video delays) instead of dropping them. The native daemon
+secondary mixes, and video delays) instead of dropping them. Studio's
+input-bank menu exposes a per-input video-delay field (0 through 600 frames)
+gated by project editing and the padlock, and a tile whose delay is set says
+so in its hover text; the replicated `input_video_delays` view drives the
+field. The native daemon
 applies the stored delay from the first frame: decoded sources select the
 picture at the deadline minus the delay, holding black until the delayed
 instant reaches the source's first picture, while live sources retain recent
 pictures (only while delayed) and count back from the newest. Both clamp to what one source ring can
 retain (seven frames at the default eight-frame ring), and the frame loop sends
 the realizer a changed map only. Remaining gaps: the simulated render path does
-not apply the delay, the native delay is clamped by the source ring, there is
-no UI editor, no audio alignment, no loop, freeze integration, or clip save;
+not apply the delay, the native delay is clamped by the source ring, the
+Studio field commits when the drag ends rather than continuously, there is no
+audio alignment, loop, freeze integration, or clip save;
 `SampleDelay` can change its delay live within the one-second bound while
 preserving history (growing prepends silence), and the Master mixer's delay
 setter uses that path; it still cannot exceed one second; no source/output

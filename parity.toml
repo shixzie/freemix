@@ -100,8 +100,8 @@ commands = ["cargo test -p fm-virtual-set --test camera_moves_and_stack", "cargo
 [[tests]]
 id = "accept-in-022"
 state = "present"
-paths = ["crates/media/fm-video/tests/video_delay.rs"]
-commands = ["cargo test -p fm-video --test video_delay"]
+paths = ["crates/media/fm-video/tests/video_delay.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-video --test video_delay", "cargo test -p freemix-studio --test studio", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-023"
 state = "present"
