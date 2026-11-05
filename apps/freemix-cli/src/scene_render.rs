@@ -7,18 +7,26 @@ use fm_compositor::{
     execute_cpu,
 };
 use fm_engine::CompiledProjectGrades;
-use fm_model::{Input, InputKind, Project, SimulatedVideo, SourceRef};
+use fm_model::{
+    Input, InputKind, MixFeedHistory, MixSelection, Project, RenderSource, ResolveError,
+    SimulatedVideo, SourceRef, SourceResolver,
+};
 use fm_types::{InputId, SceneId};
-use fm_video::{CropRect, FrameError, ImageFrame, Rgba8, scale_nearest};
+use fm_video::{CropRect, FrameError, ImageFrame, Rgba8, scale_nearest, solid_color};
 
 #[derive(Debug)]
 pub(crate) enum SceneRenderError {
     UnknownScene(SceneId),
     UnknownInput(InputId),
     SceneSource(SceneId),
+    Resolve(ResolveError),
+    AliasCropUnsupported {
+        input: InputId,
+    },
     UnsupportedInput {
         input: InputId,
     },
+    Frame(FrameError),
     CropBoundsOverflow {
         layer: usize,
     },
@@ -49,6 +57,12 @@ impl fmt::Display for SceneRenderError {
             Self::UnknownScene(scene) => write!(formatter, "scene {scene} does not exist"),
             Self::UnknownInput(input) => write!(formatter, "input {input} does not exist"),
             Self::SceneSource(scene) => write!(formatter, "scene source {scene} is unsupported"),
+            Self::Resolve(error) => error.fmt(formatter),
+            Self::AliasCropUnsupported { input } => write!(
+                formatter,
+                "alias input {input} has a crop, which scene rendering does not support"
+            ),
+            Self::Frame(error) => error.fmt(formatter),
             Self::UnsupportedInput { input } => {
                 write!(
                     formatter,
@@ -139,7 +153,43 @@ pub(crate) fn render_scene(
         ),
     )
     .map_err(SceneRenderError::Scene)?;
-    let mut sources = BTreeMap::new();
+    let resolver = SourceResolver::new(project);
+    let history = MixFeedHistory::<ImageFrame>::new();
+    let selection = shown_by.or_else(|| project.inputs().first().map(|input| input.id));
+    let context = match selection {
+        Some(input) => Some(
+            resolver
+                .context(
+                    MixSelection {
+                        program: input,
+                        preview: input,
+                    },
+                    &history,
+                )
+                .map_err(SceneRenderError::Resolve)?,
+        ),
+        None => None,
+    };
+    // Resolves one layer source through its alias chain: a concrete leaf
+    // draws normally, a feed draws black before its first commit, and an
+    // alias's own crop is not composable into a scene layer yet (IN-024).
+    let resolve_layer = |input: InputId| -> Result<(InputId, Option<InputId>), SceneRenderError> {
+        let Some(context) = context.as_ref() else {
+            return Err(SceneRenderError::UnknownInput(input));
+        };
+        let resolved = context
+            .resolve_input(input)
+            .map_err(SceneRenderError::Resolve)?;
+        if resolved.crop.is_some() {
+            return Err(SceneRenderError::AliasCropUnsupported { input });
+        }
+        Ok(match &resolved.source {
+            RenderSource::Input(concrete) => (*concrete, Some(*concrete)),
+            RenderSource::Scene(scene) => return Err(SceneRenderError::SceneSource(*scene)),
+            RenderSource::PreviousFrame { .. } | RenderSource::Black { .. } => (input, None),
+        })
+    };
+    let mut sources: BTreeMap<InputId, (SourceId, Option<InputId>)> = BTreeMap::new();
 
     for (index, layer) in model.layers.iter().enumerate() {
         if !layer.enabled {
@@ -152,7 +202,16 @@ pub(crate) fn render_scene(
             }));
         }
         let input = input_for_layer(project, layer.source)?;
-        validate_input(input)?;
+        let (source_input, rendered_input) = resolve_layer(input.id)?;
+        if let Some(render) = rendered_input {
+            validate_input(
+                project
+                    .inputs()
+                    .iter()
+                    .find(|candidate| candidate.id == render)
+                    .ok_or(SceneRenderError::UnknownInput(render))?,
+            )?;
+        }
         validate_bounds(
             index,
             layer.crop,
@@ -160,27 +219,27 @@ pub(crate) fn render_scene(
             pipeline.width(),
             pipeline.height(),
         )?;
-        let mut token_of = |input: InputId| {
-            if let Some(token) = sources.get(&input) {
-                *token
-            } else {
-                let token = SourceId::new(sources.len() as u64);
-                sources.insert(input, token);
-                token
-            }
-        };
-        let token = token_of(input.id);
+        let token = scene_source_token(&mut sources, source_input, rendered_input);
         // A key/fill key's input (SW-008) renders like a layer source.
         let key_token = match layer.key.and_then(fm_model::LayerKey::key_input) {
             Some(key_input) => {
                 let key_input = input_for_layer(project, SourceRef::Input(key_input))?;
-                validate_input(key_input)?;
-                Some(token_of(key_input.id))
+                let (key_source, key_render) = resolve_layer(key_input.id)?;
+                if let Some(render) = key_render {
+                    validate_input(
+                        project
+                            .inputs()
+                            .iter()
+                            .find(|candidate| candidate.id == render)
+                            .ok_or(SceneRenderError::UnknownInput(render))?,
+                    )?;
+                }
+                Some(scene_source_token(&mut sources, key_source, key_render))
             }
             None => None,
         };
         let mut source_layer = compositor_layer(token, layer, key_token);
-        if let Some(grade) = grades.input(input.id) {
+        if let Some(grade) = grades.input(rendered_input.unwrap_or(source_input)) {
             source_layer = source_layer.with_grade(grade.clone());
         }
         if let Some(grade) = grades.layer(fm_model::SceneLayerRef::new(scene, layer.id)) {
@@ -193,11 +252,18 @@ pub(crate) fn render_scene(
         compile_scene(&composition, OutputTarget::Program).map_err(SceneRenderError::Plan)?;
     let frames = sources
         .into_iter()
-        .map(|(input, source)| {
-            pipeline
+        .map(|(_, (source, rendered))| match rendered {
+            Some(input) => pipeline
                 .render_source(input, frame_number)
                 .map(|frame| (source, frame))
-                .map_err(SceneRenderError::Source)
+                .map_err(SceneRenderError::Source),
+            None => solid_color(
+                pipeline.width(),
+                pipeline.height(),
+                Rgba8::new(0, 0, 0, u8::MAX),
+            )
+            .map(|frame| (source, frame))
+            .map_err(SceneRenderError::Frame),
         })
         .collect::<Result<Vec<_>, _>>()?;
     let bindings = frames
@@ -215,6 +281,21 @@ pub(crate) fn render_scene(
         return Ok(composed);
     }
     scale_nearest(&composed, width, height).map_err(SceneRenderError::Scale)
+}
+
+/// Tokens one layer source by its resolved key, sharing a texture between
+/// aliases of the same concrete input.
+fn scene_source_token(
+    sources: &mut BTreeMap<InputId, (SourceId, Option<InputId>)>,
+    key: InputId,
+    rendered: Option<InputId>,
+) -> SourceId {
+    if let Some((token, _)) = sources.get(&key) {
+        return *token;
+    }
+    let token = SourceId::new(u64::try_from(sources.len()).unwrap_or(u64::MAX));
+    sources.insert(key, (token, rendered));
+    token
 }
 
 fn input_for_layer(project: &Project, source: SourceRef) -> Result<&Input, SceneRenderError> {
