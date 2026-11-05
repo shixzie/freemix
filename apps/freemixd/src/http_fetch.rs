@@ -25,10 +25,20 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 /// Returns a message naming the URL parse, connection, timeout, status,
 /// redirect, or size bound failure. `https://` is refused explicitly.
 pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, String> {
+    fetch_with(url, None, false)
+}
+
+/// [`fetch`] with an optional TLS client configuration and a test-only
+/// permission for private addresses. Production callers use [`fetch`].
+fn fetch_with(
+    url: &str,
+    tls: Option<&Arc<rustls::ClientConfig>>,
+    allow_private: bool,
+) -> Result<Vec<u8>, String> {
     let mut current = url.to_owned();
     for _ in 0..=MAX_REDIRECTS {
         let parsed = ParsedUrl::parse(&current)?;
-        let (response, location) = get(&parsed)?;
+        let (response, location) = get(&parsed, tls, allow_private)?;
         if let Some(location) = location {
             current = parsed.resolve(&location);
             continue;
@@ -103,13 +113,24 @@ impl ParsedUrl {
     }
 }
 
-fn get(url: &ParsedUrl) -> Result<(Vec<u8>, Option<String>), String> {
+fn get(
+    url: &ParsedUrl,
+    tls: Option<&Arc<rustls::ClientConfig>>,
+    allow_private: bool,
+) -> Result<(Vec<u8>, Option<String>), String> {
     let mut addresses = (url.host.as_str(), url.port)
         .to_socket_addrs()
         .map_err(|error| format!("{}: {error}", url.host))?;
     let mut last_error = None;
     let mut stream = None;
     for address in addresses.by_ref() {
+        if !allow_private && !public_address(address.ip()) {
+            last_error = Some(std::io::Error::other(format!(
+                "outbound address {} is not public",
+                address.ip()
+            )));
+            continue;
+        }
         match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
             Ok(candidate) => {
                 stream = Some(candidate);
@@ -124,7 +145,7 @@ fn get(url: &ParsedUrl) -> Result<(Vec<u8>, Option<String>), String> {
         .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
         .map_err(|error| error.to_string())?;
     let mut stream: Box<dyn ReadWrite> = if url.tls {
-        Box::new(tls_stream(stream, &url.host)?)
+        Box::new(tls_stream(stream, &url.host, tls)?)
     } else {
         Box::new(stream)
     };
@@ -217,12 +238,42 @@ fn tls_config() -> Result<&'static Arc<rustls::ClientConfig>, String> {
 fn tls_stream(
     stream: TcpStream,
     host: &str,
+    config: Option<&Arc<rustls::ClientConfig>>,
 ) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, String> {
     let name = rustls::pki_types::ServerName::try_from(host.to_owned())
         .map_err(|_| format!("invalid TLS server name {host:?}"))?;
-    let connection = rustls::ClientConnection::new(Arc::clone(tls_config()?), name)
-        .map_err(|error| error.to_string())?;
+    let config = match config {
+        Some(config) => Arc::clone(config),
+        None => Arc::clone(tls_config()?),
+    };
+    let connection =
+        rustls::ClientConnection::new(config, name).map_err(|error| error.to_string())?;
     Ok(rustls::StreamOwned::new(connection, stream))
+}
+
+/// Whether `address` is a globally routable unicast address. Loopback,
+/// private, link-local, CGNAT, unspecified, multicast, and IPv6 unique-local
+/// ranges are refused so a data source cannot probe the host or its LAN.
+fn public_address(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(address) => {
+            !address.is_loopback()
+                && !address.is_private()
+                && !address.is_link_local()
+                && !address.is_unspecified()
+                && !address.is_multicast()
+                && !address.is_broadcast()
+                && !(address.octets()[0] == 100 && (64..128).contains(&address.octets()[1]))
+                && address.octets()[0] != 0
+        }
+        std::net::IpAddr::V6(address) => {
+            !address.is_loopback()
+                && !address.is_unspecified()
+                && !address.is_multicast()
+                && (address.segments()[0] & 0xfe00) != 0xfc00
+                && (address.segments()[0] & 0xffc0) != 0xfe80
+        }
+    }
 }
 
 fn find_headers_end(buffer: &[u8]) -> Option<usize> {
@@ -284,15 +335,25 @@ mod tests {
     #[test]
     fn a_bounded_http_get_returns_the_body() {
         let url = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
-        assert_eq!(fetch(&url).unwrap(), b"[]");
+        assert_eq!(fetch_with(&url, None, true).unwrap(), b"[]");
     }
 
     #[test]
     fn redirects_and_size_bounds_are_enforced() {
         let url = serve(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/no\r\n\r\n");
-        assert!(fetch(&url).is_err());
+        assert!(fetch_with(&url, None, true).is_err());
         let url = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n12345678");
-        assert_eq!(fetch(&url).unwrap(), b"12345678");
+        assert_eq!(fetch_with(&url, None, true).unwrap(), b"12345678");
         assert!(fetch("https://127.0.0.1:1/data.json").is_err());
+    }
+
+    #[test]
+    fn private_and_metadata_addresses_are_refused() {
+        let url = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
+        assert!(fetch(&url).is_err());
+        assert!(fetch("http://169.254.169.254/latest/meta-data").is_err());
+        assert!(fetch("http://10.0.0.1/data.json").is_err());
+        assert!(fetch("http://[::1]/data.json").is_err());
+        assert!(fetch_with(&url, None, true).is_ok());
     }
 }
