@@ -1036,6 +1036,7 @@ impl ModerationDesk {
     /// # Errors
     ///
     /// Returns [`DeskDocumentError`] for anything but the exact contract.
+    #[allow(clippy::too_many_lines)] // one pass over the desk document
     pub fn from_document(
         document: &str,
         social: SocialAggregator,
@@ -1864,7 +1865,7 @@ fn hex_text(text: &str) -> String {
 }
 
 fn unhex_text(text: &str) -> Option<String> {
-    if text.is_empty() || text.len() % 2 != 0 {
+    if text.is_empty() || !text.len().is_multiple_of(2) {
         return None;
     }
     let digit = |byte: u8| match byte {

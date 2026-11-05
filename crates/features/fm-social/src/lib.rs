@@ -755,12 +755,10 @@ impl SocialAggregator {
     ) -> Option<MessageKey> {
         let body = normalized_text(&incoming.body);
         let author = normalized_text(&incoming.author_name);
-        let mut scanned = 0;
-        for key in self.message_order.iter().rev() {
+        for (scanned, key) in self.message_order.iter().rev().enumerate() {
             if scanned >= dedup.max_scan {
                 break;
             }
-            scanned += 1;
             let Some(message) = self.messages.get(key) else {
                 continue;
             };
