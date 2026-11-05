@@ -65,7 +65,7 @@ fn freeze_is_a_live_operation_and_is_not_undone() {
     assert!(!engine.show().is_input_frozen(input(2)));
 
     // Undo has nothing to revert: freeze is runtime state, not an edit.
-    assert!(execute(
+    assert!(!execute(
         &mut engine,
         "undo",
         EngineCommand::Undo {
