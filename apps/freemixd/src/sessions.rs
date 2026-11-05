@@ -866,6 +866,7 @@ pub(super) fn run(
         reel_pacer: std::cell::RefCell::new(ReelStatusPacer::default()),
         as_run: std::cell::RefCell::new(crate::as_run::AsRunLog::new(as_run_root)),
         bundle_root: as_run_root,
+        title_row_sources: std::cell::RefCell::new(TitleRowSources::default()),
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -1422,6 +1423,18 @@ pub(super) fn run(
                 Some(process_shutdown),
                 Instant::now(),
                 ready_turn.is_none(),
+            )
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+        // Scheduled title data sources apply each refreshed row as an
+        // authority command (GX-005).
+        if !settling
+            && let Err(error) = runtime.poll_title_row_sources(
+                durable,
+                native.as_deref_mut(),
+                Some(process_shutdown),
             )
         {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
@@ -2172,6 +2185,163 @@ impl PreviewRequest {
     }
 }
 
+/// One scheduled title data source (GX-005).
+struct TitleRowSource {
+    input: fm_types::InputId,
+    path: String,
+    interval: Duration,
+    keep_live: bool,
+    source: fm_data::FilePollingSource,
+    next_poll: Instant,
+    applied_rows: u64,
+    error: Option<String>,
+}
+
+/// Every scheduled title data source, keyed by title input.
+#[derive(Default)]
+struct TitleRowSources {
+    sources: std::collections::BTreeMap<fm_types::InputId, TitleRowSource>,
+}
+
+impl TitleRowSources {
+    /// Configures one source from a request and returns its status.
+    fn configure(
+        &mut self,
+        request: fm_protocol::TitleRowSourceRequest,
+        bundle_root: &std::path::Path,
+    ) -> fm_protocol::TitleRowSourceResponse {
+        let input = request.input.to_domain();
+        let mut response = |active, path, interval_ms, keep_live, applied_rows, error| {
+            fm_protocol::TitleRowSourceResponse {
+                protocol: request.protocol,
+                request_id: request.request_id.clone(),
+                input: request.input,
+                active,
+                path,
+                interval_ms,
+                keep_live,
+                applied_rows,
+                error,
+            }
+        };
+        match request.operation {
+            fm_protocol::TitleRowSourceOperation::Start {
+                path,
+                interval_ms,
+                keep_live,
+            } => {
+                let relative = std::path::Path::new(&path);
+                if relative.is_absolute()
+                    || relative
+                        .components()
+                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    return response(
+                        false,
+                        Some(path),
+                        Some(interval_ms),
+                        keep_live,
+                        0,
+                        Some("source path must be relative to the project bundle".to_owned()),
+                    );
+                }
+                let resolved = bundle_root.join(relative);
+                let format = match relative
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "json" => fm_data::FileFormat::Json(fm_data::ParseLimits::default()),
+                    "csv" => fm_data::FileFormat::Csv(fm_data::CsvOptions::default()),
+                    "xlsx" => fm_data::FileFormat::Xlsx { sheet: None },
+                    "ods" => fm_data::FileFormat::Ods { sheet: None },
+                    _ => {
+                        return response(
+                            false,
+                            Some(path),
+                            Some(interval_ms),
+                            keep_live,
+                            0,
+                            Some("source must be .json, .csv, .xlsx, or .ods".to_owned()),
+                        );
+                    }
+                };
+                let interval = Duration::from_millis(u64::from(interval_ms));
+                let mut source = fm_data::FilePollingSource::new(
+                    format!("title-row-{input}"),
+                    resolved,
+                    format,
+                    interval,
+                );
+                if let Err(error) = fm_data::DataSource::start(&mut source) {
+                    return response(
+                        false,
+                        Some(path),
+                        Some(interval_ms),
+                        keep_live,
+                        0,
+                        Some(error.to_string()),
+                    );
+                }
+                self.sources.insert(
+                    input,
+                    TitleRowSource {
+                        input,
+                        path: path.clone(),
+                        interval,
+                        keep_live,
+                        source,
+                        next_poll: Instant::now(),
+                        applied_rows: 0,
+                        error: None,
+                    },
+                );
+                response(true, Some(path), Some(interval_ms), keep_live, 0, None)
+            }
+            fm_protocol::TitleRowSourceOperation::Stop => {
+                self.sources.remove(&input);
+                response(false, None, None, false, 0, None)
+            }
+            fm_protocol::TitleRowSourceOperation::Status => match self.sources.get(&input) {
+                Some(source) => response(
+                    true,
+                    Some(source.path.clone()),
+                    Some(u32::try_from(source.interval.as_millis()).unwrap_or(u32::MAX)),
+                    source.keep_live,
+                    source.applied_rows,
+                    source.error.clone(),
+                ),
+                None => response(false, None, None, false, 0, None),
+            },
+        }
+    }
+}
+
+/// A flat row of scalar strings from a polled data value.
+fn title_row_values(value: &fm_data::DataValue) -> Result<Vec<fm_protocol::TitleRowValue>, String> {
+    let row = match value {
+        fm_data::DataValue::Object(row) => row,
+        fm_data::DataValue::List(rows) => match rows.first() {
+            Some(fm_data::DataValue::Object(row)) => row,
+            _ => return Err("source does not contain an object row".to_owned()),
+        },
+        _ => return Err("source does not contain an object row".to_owned()),
+    };
+    row.iter()
+        .map(|(field, value)| {
+            value
+                .scalar_text()
+                .map(|text| fm_protocol::TitleRowValue {
+                    field: field.clone(),
+                    value: text,
+                })
+                .ok_or_else(|| format!("field {field:?} is not a scalar value"))
+        })
+        .collect()
+}
+
 struct Runtime<'a> {
     server: &'a Server<ControlHandle>,
     /// The daemon identity engine ticks run under.
@@ -2217,11 +2387,105 @@ struct Runtime<'a> {
     reel_pacer: std::cell::RefCell<ReelStatusPacer>,
     /// Writes every realized Program change beside the project (OR-015).
     as_run: std::cell::RefCell<crate::as_run::AsRunLog>,
-    /// The project bundle root, for daemon-written frozen stills (SW-016).
+    /// The project bundle root, for daemon-written frozen stills (SW-016)
+    /// and scheduled title data sources (GX-005).
     bundle_root: &'a std::path::Path,
+    /// Scheduled title data sources (GX-005), runtime state.
+    title_row_sources: std::cell::RefCell<TitleRowSources>,
 }
 
 impl Runtime<'_> {
+    /// Polls every scheduled title data source and applies each refreshed row
+    /// as one authority `set_title_row` command (GX-005).
+    fn poll_title_row_sources(
+        &self,
+        durable: &mut StoredProject,
+        mut native: Option<&mut NativeDaemon>,
+        process_shutdown: Option<&ProcessShutdown>,
+    ) -> AppResult<()> {
+        let now = Instant::now();
+        let mut sources = self.title_row_sources.borrow_mut();
+        for source in sources.sources.values_mut() {
+            if now < source.next_poll {
+                continue;
+            }
+            source.next_poll = now + source.interval;
+            let event = match fm_data::PollingSource::poll(&mut source.source) {
+                Ok(event) => event,
+                Err(error) => {
+                    source.error = Some(error.to_string());
+                    continue;
+                }
+            };
+            let Some(event) = event else { continue };
+            let values = match title_row_values(&event.value) {
+                Ok(values) if !values.is_empty() => values,
+                Ok(_) => continue,
+                Err(error) => {
+                    source.error = Some(error);
+                    continue;
+                }
+            };
+            let control = self.control.borrow();
+            let Some(title) = control.show().title(source.input) else {
+                source.error = Some("source input is no longer a title".to_owned());
+                continue;
+            };
+            let base_revision = title.fields.revision();
+            let on_air = control
+                .show()
+                .desired_switcher()
+                .on_air_usage(source.input)
+                .is_some()
+                || control
+                    .realized_switcher()
+                    .on_air_usage(source.input)
+                    .is_some();
+            drop(control);
+            let sequence = source.applied_rows.saturating_add(1);
+            let command = CommandMessage {
+                protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                id: format!("title-row-source-{}-{sequence}", source.input.get().get()),
+                idempotency_key: format!(
+                    "title-row-source-{}-{}-{sequence}",
+                    source.input.get().get(),
+                    now_millis()?
+                ),
+                expected_revision: None,
+                deadline_ms: None,
+                payload: fm_protocol::CommandPayload::SetTitleRow {
+                    input: fm_protocol::WireInputId::from_domain(source.input),
+                    base_revision,
+                    require: if on_air {
+                        fm_protocol::TitleAirRequirement::OnAir
+                    } else {
+                        fm_protocol::TitleAirRequirement::OffAir
+                    },
+                    values,
+                    keep_live: source.keep_live,
+                },
+            };
+            let delivery = crate::command_window::execute_authority_command(
+                self.control,
+                self.store,
+                durable,
+                &development_principal()?,
+                self.authority,
+                &command,
+                now_millis()?,
+                native.as_deref_mut(),
+                process_shutdown,
+            )?;
+            if matches!(delivery.result, fm_protocol::CommandResult::Accepted { .. }) {
+                source.applied_rows = sequence;
+                source.error = None;
+            } else if let fm_protocol::CommandResult::Rejected { message, .. } = &delivery.result {
+                source.error = Some(message.clone());
+            }
+        }
+        Ok(())
+    }
+
     /// A simulated daemon's pass that waits for the frame loop to settle:
     /// its playlist and cue clocks follow the frames the pacer realizes
     /// (see [`crate::playlist_clock::PlaylistClock::track`]).
@@ -2684,6 +2948,14 @@ impl Runtime<'_> {
             }
             // One window of a slideshow's slide list (IN-009), only to a
             // session that steps or edits presentations.
+            WireMessage::TitleRowSourceRequest(request) => {
+                let response = self
+                    .title_row_sources
+                    .borrow_mut()
+                    .configure(request, self.bundle_root);
+                peer.reply(WireMessage::TitleRowSourceResponse(response))?;
+                Ok(())
+            }
             WireMessage::SlideshowSlidesRequest(request) => {
                 if self.refuse_request(
                     peer,
