@@ -1197,6 +1197,10 @@ impl NativeProjectPlan {
         self.feeds.values().any(|candidate| *candidate == feed)
     }
 
+    fn alias_crop(&self, input: InputId) -> Option<NativeAliasCrop> {
+        self.alias_crops.get(&input).copied()
+    }
+
     /// The project video dimensions the plan composes at.
     #[must_use]
     pub const fn dimensions(&self) -> VideoDimensions {
@@ -7988,6 +7992,9 @@ fn project_texture<'a>(
     input: InputId,
     deadline: ClockTime,
 ) -> Result<&'a NativeTexture, NativeSourceRenderError> {
+    if let Some(texture) = graded.get(&input) {
+        return Ok(texture);
+    }
     if let Some(feed) = project.feed(input) {
         if let Some(texture) = graded.get(&input) {
             return Ok(texture);
@@ -8262,6 +8269,78 @@ impl NativeMediaRuntime {
             graded.insert(leaf, texture);
         }
         Ok(graded)
+    }
+
+    /// Crops every alias whose concrete source is a leaf or feed among
+    /// `inputs` into a full-frame texture (IN-024).
+    async fn render_alias_leaf_crops(
+        &self,
+        registry: &NativeSourceRegistry,
+        project: &NativeProjectPlan,
+        inputs: &[InputId],
+        feeds: NativeFeedFrames<'_>,
+        graded: &mut BTreeMap<InputId, NativeTexture>,
+    ) -> Result<(), NativeSourceRenderError> {
+        for input in inputs {
+            let Some(alias) = project.alias_crop(*input) else {
+                continue;
+            };
+            if graded.contains_key(input) {
+                continue;
+            }
+            let target = match alias.source {
+                NativeAliasSource::Leaf(leaf) => graded
+                    .get(&leaf)
+                    .map_or_else(
+                        || {
+                            registry_frame(registry, leaf, ClockTime::ZERO)
+                                .map(NativeWorkingFrame::texture)
+                        },
+                        Ok,
+                    )
+                    .ok(),
+                NativeAliasSource::Feed(feed) => feeds.get(feed),
+                NativeAliasSource::Scene(_) => None,
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let texture = self
+                .crop_project_texture(project.dimensions, alias.crop, target)
+                .await?;
+            graded.insert(*input, texture);
+        }
+        Ok(())
+    }
+
+    /// Crops every alias whose concrete source is a scene among `inputs`,
+    /// after those scenes have rendered (IN-024).
+    async fn render_alias_scene_crops(
+        &self,
+        project: &NativeProjectPlan,
+        inputs: &[InputId],
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        graded: &mut BTreeMap<InputId, NativeTexture>,
+    ) -> Result<(), NativeSourceRenderError> {
+        for input in inputs {
+            let Some(alias) = project.alias_crop(*input) else {
+                continue;
+            };
+            if graded.contains_key(input) {
+                continue;
+            }
+            let NativeAliasSource::Scene(scene) = alias.source else {
+                continue;
+            };
+            let Some((_, target)) = scene_outputs.get(&scene) else {
+                continue;
+            };
+            let texture = self
+                .crop_project_texture(project.dimensions, alias.crop, target)
+                .await?;
+            graded.insert(*input, texture);
+        }
+        Ok(())
     }
 
     /// Grades each feed input's committed picture before Program, Preview,
@@ -10053,6 +10132,8 @@ impl NativeMediaRuntime {
             .await?;
         self.grade_feed_inputs(project, &leaf_inputs, &execution, feeds, &mut graded)
             .await?;
+        self.render_alias_leaf_crops(registry, project, &leaf_inputs, feeds, &mut graded)
+            .await?;
         let (program, scene_outputs) = self
             .render_project_base_with_stingers(
                 registry,
@@ -10702,6 +10783,8 @@ impl NativeMediaRuntime {
             .render_project_scenes(registry, graded, project, frame, execution, feeds)
             .await?;
         self.grade_scene_inputs(project, inputs, &scene_outputs, graded)
+            .await?;
+        self.render_alias_scene_crops(project, inputs, &scene_outputs, graded)
             .await?;
         let graded = &*graded;
         let program = match plan {
