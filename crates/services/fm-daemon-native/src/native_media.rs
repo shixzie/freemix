@@ -2155,8 +2155,13 @@ fn visit_native_scene(
         .map(|layer| resolve_scene_source(layer.source, inputs, scenes))
         .collect::<Result<BTreeSet<_>, _>>()?;
     for dependency in dependencies {
-        if let NativeSceneSource::Scene(dependency) = dependency {
-            visit_native_scene(dependency, inputs, scenes, visiting, visited, order)?;
+        match dependency {
+            NativeSceneSource::Scene(dependency)
+            | NativeSceneSource::Alias {
+                source: NativeAliasSource::Scene(dependency),
+                ..
+            } => visit_native_scene(dependency, inputs, scenes, visiting, visited, order)?,
+            _ => {}
         }
     }
     visiting.remove(&scene);
