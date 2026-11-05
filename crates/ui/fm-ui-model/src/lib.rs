@@ -656,11 +656,7 @@ impl ProjectSnapshot {
             logical_outputs: message.logical_outputs,
             secondary_mixes: message.secondary_mixes,
             secondary_mix_states: message.secondary_mix_states,
-            input_video_delays: message
-                .input_video_delays
-                .into_iter()
-                .map(|entry| (entry.input.to_domain(), entry.frames))
-                .collect(),
+            input_video_delays: message.input_video_delays,
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
