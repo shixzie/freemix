@@ -217,8 +217,8 @@ commands = ["cargo test -p fm-compositor --test vertical_canvas"]
 [[tests]]
 id = "accept-sw-016"
 state = "present"
-paths = ["crates/media/fm-video/tests/snapshot_freeze.rs"]
-commands = ["cargo test -p fm-video --test snapshot_freeze"]
+paths = ["crates/media/fm-video/tests/snapshot_freeze.rs", "crates/services/fm-engine/tests/input_freeze.rs", "crates/foundation/fm-protocol/tests/input_freeze.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/src/native_media.rs"]
+commands = ["cargo test -p fm-video --test snapshot_freeze", "cargo test -p fm-engine --test input_freeze", "cargo test -p fm-protocol --test input_freeze", "cargo test -p freemix-cli --test e2e"]
 [[tests]]
 id = "accept-sw-017"
 state = "present"
