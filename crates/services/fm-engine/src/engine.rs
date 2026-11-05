@@ -4316,6 +4316,15 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        // Live mix operations act on the runtime bank, not the desired show.
+        if matches!(
+            &self.command,
+            EngineCommand::SecondaryMixCut { .. } | EngineCommand::SecondaryMixTransition { .. }
+        ) {
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if is_playlist_command(&self.command)
             || matches!(&self.command, EngineCommand::RealizePlaylistCue(_))
         {
