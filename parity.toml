@@ -257,8 +257,8 @@ commands = ["cargo test -p fm-data --test typed_ingest"]
 [[tests]]
 id = "accept-gx-005"
 state = "present"
-paths = ["crates/features/fm-data/tests/title_binding_preview.rs"]
-commands = ["cargo test -p fm-data --test title_binding_preview"]
+paths = ["crates/features/fm-data/tests/title_binding_preview.rs", "apps/freemix-cli/tests/e2e.rs", "apps/freemix-cli/tests/project_bundles.rs"]
+commands = ["cargo test -p fm-data --test title_binding_preview", "cargo test -p freemix-cli --test e2e", "cargo test -p freemix-cli --test project_bundles"]
 [[tests]]
 id = "accept-gx-006"
 state = "present"

@@ -5097,10 +5097,18 @@ standalone `TitleFieldSet` by template field name, and
 unless `--keep-live` keeps the live value of each failed field) and saves the
 result into the
 title input's `project.json` fields with per-field revisions; `--preview`
-prints each mapped field's current and new value without saving. Remaining gaps:
-no daemon, protocol command, or UI preview drives a mapped row; there is no
-time-zone database or localization; image URIs are never fetched; and
-preview state is in memory only. `GX-005` remains planned. Preview state now
+prints each mapped field's current and new value without saving.
+`freemix-cli remote-title-apply-row` maps the same row against the local
+template, reads the target title's field revision, phase, and on-air state
+from the daemon's snapshot, addresses the mapped values to the remote title's
+own field ids by name, drops values that already match, and sends one
+`set_title_fields` edit at the live base revision with `require=on_air` or
+`require=off_air` as the title demands; `--keep-live` omits failed fields and
+`--preview` reports the remote changes without sending. Remaining gaps:
+no daemon, protocol command, or UI preview drives a mapped row directly from
+a data source; the remote command still needs the local project for its
+template; there is no time-zone database or localization; image URIs are never
+fetched; and preview state is in memory only. `GX-005` remains planned. Preview state now
 round-trips through a strict, versioned text document (`PreviewSnapshot`) and
 persists per title input in `project.json` (schema 106), strictly parsed and
 canonicalized on load; `freemix-cli preview-check`, `preview-import`, and
