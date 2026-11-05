@@ -908,6 +908,12 @@ pub enum EngineEvent {
         input: InputId,
         frames: u32,
     },
+    /// One input's freeze changed (SW-016); the state is read from
+    /// [`ShowState::is_input_frozen`].
+    InputFreezeChanged {
+        input: InputId,
+        frozen: bool,
+    },
     /// The `LiveLAN` configuration changed (or the edit was undone or redone)
     /// (OR-017); it is read from [`ShowState::live_lan`].
     LiveLanChanged(Box<fm_types::live_lan::LiveLanConfig>),
@@ -5127,6 +5133,7 @@ impl EngineMutation {
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
             | EngineCommand::SetInputVideoDelay { .. }
+            | EngineCommand::SetInputFreeze { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SetLiveLan(_)
@@ -5784,6 +5791,7 @@ fn apply_runtime(
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
             | EngineCommand::SetInputVideoDelay { .. }
+            | EngineCommand::SetInputFreeze { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SetLiveLan(_)
@@ -5872,6 +5880,9 @@ fn apply_runtime(
         }
         EngineCommand::SetInputAudioStrip { .. } => {
             unreachable!("audio-strip commands return before switcher command mapping")
+        }
+        EngineCommand::SetInputFreeze { .. } => {
+            unreachable!("freeze commands return before switcher command mapping")
         }
         EngineCommand::SelectPreview(input) => SwitcherCommand::SelectPreview(input),
         EngineCommand::Cut => SwitcherCommand::Cut,
@@ -5988,6 +5999,7 @@ fn apply_runtime(
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetInputVideoDelay { .. }
+        | EngineCommand::SetInputFreeze { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
@@ -6195,6 +6207,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetInputVideoDelay { .. }
+        | EngineCommand::SetInputFreeze { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
@@ -6243,6 +6256,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetLogicalOutput { .. })
         && !matches!(command, EngineCommand::SetSecondaryMix { .. })
         && !matches!(command, EngineCommand::SetInputVideoDelay { .. })
+        && !matches!(command, EngineCommand::SetInputFreeze { .. })
         && !matches!(command, EngineCommand::SecondaryMixCut { .. })
         && !matches!(command, EngineCommand::SecondaryMixTransition { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
