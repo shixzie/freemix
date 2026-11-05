@@ -117,7 +117,7 @@ fn animation_preset_files_are_exact_and_strict() {
             decode_animation_preset_file(&other),
             Err(PresetFileError::UnsupportedSchema {
                 found,
-                supported: 107
+                supported: 108
             }) if found == schema
         ));
     }
