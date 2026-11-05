@@ -271,6 +271,7 @@ pub(crate) fn restore_engine_with_titles(
             .map(|output| (output.id, output.name.clone()))
             .collect(),
     )?
+    .with_audio_buses(canonical.audio_buses().iter().map(|bus| bus.id).collect())
     .with_stream_targets(canonical.stream_targets())?;
     restore_input_audio_strips(&mut show, canonical)?;
 

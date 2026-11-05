@@ -196,6 +196,8 @@ pub struct ShowState {
     outputs: Vec<(OutputId, String)>,
     /// Logical output routing (SW-012), ascending by slot.
     logical_outputs: BTreeMap<fm_model::LogicalOutputSlot, fm_model::LogicalOutputConfig>,
+    /// The project's audio bus identifiers, for logical-output audio maps.
+    audio_buses: Vec<fm_types::BusId>,
     input_audio_strips: BTreeMap<InputId, EngineInputAudioStripState>,
     desired_switcher: SwitcherState,
     project_locked: bool,
@@ -340,6 +342,7 @@ impl ShowState {
             input_names: inputs.into_iter().map(|(_, name)| name).collect(),
             outputs: Vec::new(),
             logical_outputs: BTreeMap::new(),
+            audio_buses: Vec::new(),
             desired_switcher,
             project_locked: false,
             locked_inputs: BTreeSet::new(),
@@ -457,6 +460,20 @@ impl ShowState {
     #[must_use]
     pub fn outputs(&self) -> &[(OutputId, String)] {
         &self.outputs
+    }
+
+    /// Sets the project's audio bus identifiers, which logical outputs may
+    /// name (SW-012).
+    #[must_use]
+    pub fn with_audio_buses(mut self, buses: Vec<fm_types::BusId>) -> Self {
+        self.audio_buses = buses;
+        self
+    }
+
+    /// The project's audio bus identifiers.
+    #[must_use]
+    pub fn audio_buses(&self) -> &[fm_types::BusId] {
+        &self.audio_buses
     }
 
     /// The logical output routing, ascending by slot (SW-012).

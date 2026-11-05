@@ -30,12 +30,21 @@ fn slot(value: u8) -> LogicalOutputSlot {
 fn engine() -> Engine {
     let show = ShowState::new(
         "logical",
-        vec![(input(1), "Camera".into()), (input(2), "Slides".into())],
+        vec![
+            (input(1), "Camera".into()),
+            (input(2), "Slides".into()),
+            (input(3), "Guest".into()),
+        ],
         input(1),
         input(2),
     )
     .unwrap()
-    .with_outputs(vec![(output(40), "Program".into())])
+    .with_outputs(vec![
+        (output(40), "Program".into()),
+        (output(41), "Preview".into()),
+        (output(42), "Guest".into()),
+        (output(43), "Grid".into()),
+    ])
     .unwrap();
     Engine::new(
         show,
@@ -107,6 +116,69 @@ fn a_logical_output_is_a_project_edit_that_undoes_to_nothing() {
         },
     ));
     assert!(engine.show().logical_output(slot(1)).is_some());
+}
+
+#[test]
+fn a_frame_resolves_program_preview_input_and_multiview_outputs() {
+    use fm_switcher::{AudioSource, CellFeed, LogicalOutputSlot as WireSlot, OutputVideo};
+
+    let mut engine = engine();
+    for (key, slot_number, source, audio) in [
+        (1, 1, LogicalOutputSource::Program, LogicalAudioMap::Master),
+        (2, 2, LogicalOutputSource::Preview, LogicalAudioMap::Master),
+        (
+            3,
+            3,
+            LogicalOutputSource::Input(input(3)),
+            LogicalAudioMap::FollowVideo,
+        ),
+        (
+            4,
+            4,
+            LogicalOutputSource::MultiView(vec![
+                fm_model::LogicalMultiViewCell::Program,
+                fm_model::LogicalMultiViewCell::Input(input(3)),
+                fm_model::LogicalMultiViewCell::Output(slot(1)),
+            ]),
+            LogicalAudioMap::Master,
+        ),
+    ] {
+        assert!(execute(
+            &mut engine,
+            &format!("set-{key}"),
+            EngineCommand::SetLogicalOutput {
+                slot: slot(slot_number),
+                config: Some(Box::new(LogicalOutputConfig {
+                    slot: slot(slot_number),
+                    output: output(39 + u128::from(slot_number)),
+                    source,
+                    overlays: LogicalOverlayPolicy::All,
+                    audio,
+                })),
+            },
+        ));
+    }
+    let frame = engine.tick().unwrap();
+    let plan = |number| {
+        frame
+            .logical_outputs
+            .output(WireSlot::new(number).unwrap())
+            .expect("enabled")
+            .as_ref()
+            .expect("resolved")
+    };
+    assert_eq!(plan(1).audio, AudioSource::Master);
+    assert!(matches!(plan(1).video, OutputVideo::Background(_)));
+    assert_eq!(plan(2).audio, AudioSource::Master);
+    assert!(matches!(plan(2).video, OutputVideo::Background(_)));
+    assert_eq!(plan(3).audio, AudioSource::Input(input(3)));
+    let OutputVideo::MultiView(cells) = &plan(4).video else {
+        panic!("a multiview plan");
+    };
+    assert_eq!(cells.len(), 3);
+    assert!(matches!(cells[0].feed, CellFeed::Background(_)));
+    assert!(matches!(cells[1].feed, CellFeed::Background(_)));
+    assert!(matches!(cells[2].feed, CellFeed::Output(_)));
 }
 
 #[test]

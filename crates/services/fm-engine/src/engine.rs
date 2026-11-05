@@ -1137,6 +1137,8 @@ pub struct FrameResult {
     /// What every Replay input shows this frame, ascending by input
     /// (OR-012).
     pub replay: Vec<crate::EngineReplayFrame>,
+    /// Every enabled logical output's render plan for this frame (SW-012).
+    pub logical_outputs: fm_switcher::OutputRoutingFrame,
     pub revision: Revision,
     pub runtime_generation: RuntimeGeneration,
 }
@@ -3321,6 +3323,7 @@ impl Engine {
         }
         self.title_air.retain(|_, (_, air)| air.at(next).is_some());
 
+        let logical_outputs = crate::logical_output::frame(self.commands.state());
         Ok(FrameResult {
             frame: tick.deadline.frame,
             deadline: ClockTime::from_nanos(tick.deadline.at_ns),
@@ -3339,6 +3342,7 @@ impl Engine {
             media: self.tick_media(&media_operations),
             slideshows: self.tick_slideshows(&page_operations),
             replay: self.replay.step(self.commands.state(), frame),
+            logical_outputs,
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })

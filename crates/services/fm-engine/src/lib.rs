@@ -9,6 +9,7 @@ mod grade;
 mod grade_edit;
 mod history;
 mod input_lifecycle;
+mod logical_output;
 mod media;
 pub(crate) mod media_list;
 mod paged;

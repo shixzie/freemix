@@ -542,6 +542,15 @@ pub struct OutputRoutingFrame {
 }
 
 impl OutputRoutingFrame {
+    /// An empty frame with every slot disabled.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            outputs: Default::default(),
+            render_order: Vec::new(),
+        }
+    }
+
     #[must_use]
     pub fn output(
         &self,

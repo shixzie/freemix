@@ -10300,6 +10300,7 @@ mod tests {
                 mix_end_numerator,
             },
             events: Vec::new(),
+            logical_outputs: fm_switcher::OutputRoutingFrame::empty(),
             revision: Revision::new(0),
             runtime_generation: RuntimeGeneration::new(0),
         }
