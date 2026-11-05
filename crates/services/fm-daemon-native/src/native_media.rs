@@ -7916,10 +7916,10 @@ fn project_texture<'a>(
     input: InputId,
     deadline: ClockTime,
 ) -> Result<&'a NativeTexture, NativeSourceRenderError> {
-    if let Some(feed) = project.feed(input) {
-        return feeds
-            .get(feed)
-            .ok_or(NativeSourceRenderError::MissingSource { input });
+    if let Some(feed) = project.feed(input)
+        && let Some(texture) = feeds.get(feed)
+    {
+        return Ok(texture);
     }
     match project.video_route(input) {
         Some(NativeVideoRoute::Leaf(leaf)) => leaf_texture(registry, graded, leaf, deadline),
