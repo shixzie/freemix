@@ -1082,6 +1082,7 @@ pub struct SimulatedMonitorWorker {
 
 /// The last work handed to the worker, so unchanged polls skip the lock.
 #[derive(Clone, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)] // the state is compared and cloned as one value
 enum Published {
     Nothing,
     Idle,
