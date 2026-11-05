@@ -124,6 +124,10 @@ pub enum InputUse {
     SceneOnAir,
     /// Recorded for replay (OR-012).
     ReplaySource,
+    /// A Program or Preview source of a secondary mix (IN-023).
+    SecondaryMix {
+        mix: u8,
+    },
 }
 
 impl fmt::Display for InputUse {
@@ -147,6 +151,9 @@ impl fmt::Display for InputUse {
             }
             Self::SceneOnAir => formatter.write_str("shown by a scene on air"),
             Self::ReplaySource => formatter.write_str("recorded for replay"),
+            Self::SecondaryMix { mix } => {
+                write!(formatter, "a Program or Preview source of mix {mix}")
+            }
         }
     }
 }

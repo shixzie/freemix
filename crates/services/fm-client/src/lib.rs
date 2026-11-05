@@ -2097,6 +2097,8 @@ impl Client {
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetLogicalOutput { .. }
             | CommandPayload::ClearLogicalOutput { .. }
+            | CommandPayload::SetSecondaryMix { .. }
+            | CommandPayload::ClearSecondaryMix { .. }
             | CommandPayload::SetLiveLan { .. }
             | CommandPayload::SetAlertRule(_)
             | CommandPayload::Replay(_)

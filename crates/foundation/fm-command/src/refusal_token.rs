@@ -52,6 +52,7 @@ fn usage_token(usage: InputUse) -> String {
         InputUse::ManualTransition => "manual_transition".to_owned(),
         InputUse::SceneOnAir => "scene_on_air".to_owned(),
         InputUse::ReplaySource => "replay_source".to_owned(),
+        InputUse::SecondaryMix { mix } => format!("secondary_mix:{mix}"),
         InputUse::Overlay { channel } => format!("overlay:{channel}"),
         InputUse::OverlayQueue { channel } => format!("overlay_queue:{channel}"),
         InputUse::Stinger { slot } => format!("stinger:{slot}"),
@@ -87,6 +88,9 @@ fn parse_usage(parts: &[&str]) -> Option<InputUse> {
         ["manual_transition"] => InputUse::ManualTransition,
         ["scene_on_air"] => InputUse::SceneOnAir,
         ["replay_source"] => InputUse::ReplaySource,
+        ["secondary_mix", mix] => InputUse::SecondaryMix {
+            mix: parse_nonzero_u8(mix)?,
+        },
         ["overlay", channel] => InputUse::Overlay {
             channel: parse_nonzero_u8(channel)?,
         },

@@ -34,6 +34,7 @@ pub(crate) fn input_reference_use(reference: fm_model::InputReference) -> fm_pro
         // replay, so report the closest existing use rather than widening
         // the protocol in the model-only slice.
         InputReference::ReplaySource | InputReference::ReelClip { .. } => InputUse::ReplaySource,
+        InputReference::SecondaryMix(mix) => InputUse::SecondaryMix { mix: mix.number() },
     }
 }
 
