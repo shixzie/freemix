@@ -3002,6 +3002,8 @@ impl Engine {
         let staged_reel = reel.clone();
         let title_clip_bound = self.title_clip_bound;
         let scene_clip_bound = self.scene_clip_bound;
+        let frame_rate = self.frame_rate;
+        let audio_sample_rate = self.audio_sample_rate;
         let outcome = self.commands.apply(envelope, now_millis, move |_, _| {
             let ResolvedCommand { command, .. } = staged_resolution?;
             if let Some(frame) = held_until {
@@ -3056,8 +3058,8 @@ impl Engine {
             Ok(EngineMutation {
                 command,
                 target_frame,
-                frame_rate: self.frame_rate,
-                audio_sample_rate: self.audio_sample_rate,
+                frame_rate,
+                audio_sample_rate,
                 realized_on_air,
                 playlist,
                 title_clip_bound,
