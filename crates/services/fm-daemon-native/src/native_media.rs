@@ -734,14 +734,15 @@ impl NativeProjectPlan {
                         match &concrete.kind {
                             InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(*scene_id),
                             InputKind::MixFeed(_) => NativeVideoRoute::Scene(
-                                black_scene.expect("a mix feed configures the black scene"),
+                                black_scene
+                                    .ok_or(NativeProjectPlanError::MissingInput(input.id))?,
                             ),
                             _ => NativeVideoRoute::Leaf(concrete.id),
                         }
                     }
                     InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(*scene_id),
                     InputKind::MixFeed(_) => NativeVideoRoute::Scene(
-                        black_scene.expect("a mix feed configures the black scene"),
+                        black_scene.ok_or(NativeProjectPlanError::MissingInput(input.id))?,
                     ),
                     _ => NativeVideoRoute::Leaf(input.id),
                 };
