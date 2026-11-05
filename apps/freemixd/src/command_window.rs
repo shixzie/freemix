@@ -1962,6 +1962,7 @@ pub(crate) fn stored_project_with_receipts(
     sync_project_audio_mixer(&mut project, show)?;
     sync_project_display_outputs(&mut project, show)?;
     sync_project_logical_outputs(&mut project, show)?;
+    sync_project_secondary_mixes(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_cue_lists(show.cue_lists().to_vec());
     project.set_scripts(show.scripts().to_vec());

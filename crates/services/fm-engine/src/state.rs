@@ -196,6 +196,8 @@ pub struct ShowState {
     outputs: Vec<(OutputId, String)>,
     /// Logical output routing (SW-012), ascending by slot.
     logical_outputs: BTreeMap<fm_model::LogicalOutputSlot, fm_model::LogicalOutputConfig>,
+    /// Secondary mixes (IN-023), ascending by number.
+    secondary_mixes: BTreeMap<fm_model::MixNumber, fm_model::SecondaryMixConfig>,
     /// The project's audio bus identifiers, for logical-output audio maps.
     audio_buses: Vec<fm_types::BusId>,
     input_audio_strips: BTreeMap<InputId, EngineInputAudioStripState>,
@@ -342,6 +344,7 @@ impl ShowState {
             input_names: inputs.into_iter().map(|(_, name)| name).collect(),
             outputs: Vec::new(),
             logical_outputs: BTreeMap::new(),
+            secondary_mixes: BTreeMap::new(),
             audio_buses: Vec::new(),
             desired_switcher,
             project_locked: false,
@@ -546,6 +549,87 @@ impl ShowState {
             .map(|(output, _)| *output)
             .collect::<Vec<_>>();
         fm_model::validate_logical_outputs(&configs, &outputs, &self.inputs, None)
+    }
+
+    /// The secondary mixes, ascending by number (IN-023).
+    pub fn secondary_mixes(&self) -> impl Iterator<Item = &fm_model::SecondaryMixConfig> {
+        self.secondary_mixes.values()
+    }
+
+    /// One secondary mix by number.
+    #[must_use]
+    pub fn secondary_mix(
+        &self,
+        number: fm_model::MixNumber,
+    ) -> Option<&fm_model::SecondaryMixConfig> {
+        self.secondary_mixes.get(&number)
+    }
+
+    /// Configures or replaces one secondary mix, atomically (IN-023).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidSecondaryMix`] for Main, a malformed name,
+    /// a missing or self-referential source, a Preview that conflicts with
+    /// the mode, or a cycle. Nothing changes on error.
+    pub fn set_secondary_mix(
+        &mut self,
+        config: fm_model::SecondaryMixConfig,
+    ) -> Result<(), ShowError> {
+        let previous = self.secondary_mixes.clone();
+        self.secondary_mixes.insert(config.number, config);
+        if let Err(error) = self.validate_secondary_mixes() {
+            self.secondary_mixes = previous;
+            return Err(ShowError::InvalidSecondaryMix(error));
+        }
+        Ok(())
+    }
+
+    /// Removes one secondary mix, atomically (IN-023). Another mix that still
+    /// reads it must be changed first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidSecondaryMix`] for an unknown mix or a
+    /// dangling reference. Nothing changes on error.
+    pub fn remove_secondary_mix(
+        &mut self,
+        number: fm_model::MixNumber,
+    ) -> Result<(), ShowError> {
+        let previous = self.secondary_mixes.clone();
+        if self.secondary_mixes.remove(&number).is_none() {
+            return Err(ShowError::InvalidSecondaryMix(
+                fm_model::SecondaryMixError::UnknownMix(number),
+            ));
+        }
+        if let Err(error) = self.validate_secondary_mixes() {
+            self.secondary_mixes = previous;
+            return Err(ShowError::InvalidSecondaryMix(error));
+        }
+        Ok(())
+    }
+
+    /// Restores persisted secondary mixes; problems are reported as a
+    /// [`ShowError::InvalidSecondaryMix`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidSecondaryMix`] for invalid routing.
+    pub fn restore_secondary_mixes(
+        &mut self,
+        configs: impl IntoIterator<Item = fm_model::SecondaryMixConfig>,
+    ) -> Result<(), ShowError> {
+        self.secondary_mixes.clear();
+        for config in configs {
+            self.secondary_mixes.insert(config.number, config);
+        }
+        self.validate_secondary_mixes()
+            .map_err(ShowError::InvalidSecondaryMix)
+    }
+
+    fn validate_secondary_mixes(&self) -> Result<(), fm_model::SecondaryMixError> {
+        let configs = self.secondary_mixes.values().cloned().collect::<Vec<_>>();
+        fm_model::validate_secondary_mixes(&configs, &self.inputs)
     }
 
     /// Replaces the stream destinations (OR-006): their authored

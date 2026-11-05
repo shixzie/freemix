@@ -506,6 +506,12 @@ pub enum EngineCommand {
         slot: fm_model::LogicalOutputSlot,
         config: Option<Box<fm_model::LogicalOutputConfig>>,
     },
+    /// Configures (`Some`) or clears (`None`) one secondary mix (IN-023). A
+    /// project edit, undone by restoring the mix's previous routing.
+    SetSecondaryMix {
+        number: fm_model::MixNumber,
+        config: Option<Box<fm_model::SecondaryMixConfig>>,
+    },
     /// Replaces the `LiveLAN` viewer stream's configuration (OR-017), its PIN
     /// already resolved to the exact one it will hold. A project edit,
     /// undone by restoring the previous configuration; the daemon realizes
@@ -865,6 +871,12 @@ pub enum EngineEvent {
     LogicalOutputChanged {
         slot: fm_model::LogicalOutputSlot,
         config: Option<Box<fm_model::LogicalOutputConfig>>,
+    },
+    /// One secondary mix was configured or cleared (or the edit was undone or
+    /// redone) (IN-023); it is read from [`ShowState::secondary_mix`].
+    SecondaryMixChanged {
+        number: fm_model::MixNumber,
+        config: Option<Box<fm_model::SecondaryMixConfig>>,
     },
     /// The `LiveLAN` configuration changed (or the edit was undone or redone)
     /// (OR-017); it is read from [`ShowState::live_lan`].
@@ -4393,6 +4405,23 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetSecondaryMix { number, config } = &self.command {
+            match config {
+                Some(config) => state.set_secondary_mix((**config).clone()).map_err(|error| {
+                    Rejection::new(RejectionCode::InvalidCommand, error.to_string())
+                })?,
+                None => state.remove_secondary_mix(*number).map_err(|error| {
+                    Rejection::new(RejectionCode::InvalidCommand, error.to_string())
+                })?,
+            }
+            events.push(EngineEvent::SecondaryMixChanged {
+                number: *number,
+                config: config.clone(),
+            });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetAlertRule(setting) = self.command {
             state.set_alert_rule(setting).map_err(|error| {
                 Rejection::new(RejectionCode::InvalidCommand, error.to_string()).with_field(
@@ -4906,6 +4935,7 @@ impl EngineMutation {
             | EngineCommand::SetFadeToBlackCurve { .. }
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLogicalOutput { .. }
+            | EngineCommand::SetSecondaryMix { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -5559,6 +5589,7 @@ fn apply_runtime(
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLogicalOutput { .. }
+            | EngineCommand::SetSecondaryMix { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -5759,6 +5790,7 @@ fn apply_runtime(
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
+        | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -5962,6 +5994,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
+        | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -6006,6 +6039,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetFadeToBlackCurve { .. })
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
         && !matches!(command, EngineCommand::SetLogicalOutput { .. })
+        && !matches!(command, EngineCommand::SetSecondaryMix { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
         && !matches!(command, EngineCommand::SetAlertRule(_))
         && !matches!(command, EngineCommand::Replay(_))

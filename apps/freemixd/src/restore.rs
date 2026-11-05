@@ -669,6 +669,7 @@ pub(crate) fn restore_display_outputs(
         show.set_display_output(slot, Some(config.clone()))?;
     }
     show.restore_logical_outputs(project.logical_outputs().iter().cloned())?;
+    show.restore_secondary_mixes(project.secondary_mixes().iter().cloned())?;
     show.set_live_lan(project.live_lan().clone())?;
     for setting in project.alert_rules() {
         show.set_alert_rule(*setting)?;
@@ -735,6 +736,22 @@ pub(crate) fn sync_project_logical_outputs(
     project
         .validate_logical_outputs()
         .map_err(|error| AppFailure(format!("project cannot take logical outputs: {error}")))?;
+    Ok(())
+}
+
+/// Folds the show's secondary mixes (IN-023) into the stored project.
+pub(crate) fn sync_project_secondary_mixes(
+    project: &mut fm_model::Project,
+    show: &ShowState,
+) -> AppResult<()> {
+    let configs = show.secondary_mixes().cloned().collect::<Vec<_>>();
+    if project.secondary_mixes() == configs.as_slice() {
+        return Ok(());
+    }
+    project.restore_secondary_mixes(configs);
+    project
+        .validate_secondary_mixes()
+        .map_err(|error| AppFailure(format!("project cannot take secondary mixes: {error}")))?;
     Ok(())
 }
 
