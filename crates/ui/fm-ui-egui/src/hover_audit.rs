@@ -1947,7 +1947,9 @@ fn frozen_bank_scenes(locale: Locale) -> Vec<Scene> {
         asset_uri: "asset://frozen-1.png".into(),
         path: "assets/frozen-1.png".into(),
     });
-    vec![Scene::console("input-bank/frozen", shell(&|_| {}), state)]
+    let mut shell = StudioShell::default();
+    shell.set_locale(locale);
+    vec![Scene::console("input-bank/frozen", shell, state)]
 }
 
 /// The Add input dialog's alias and feed forms (IN-024, IN-025): an alias
