@@ -2436,8 +2436,7 @@ impl Runtime<'_> {
                 .show()
                 .desired_switcher()
                 .on_air_usage(source.input)
-                .is_some()
-
+                .is_some();
             drop(control);
             let sequence = source.applied_rows.saturating_add(1);
             let command = fm_protocol::CommandMessage {
