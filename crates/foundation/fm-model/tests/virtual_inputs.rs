@@ -7,10 +7,10 @@ use std::num::NonZeroU128;
 
 use fm_model::{
     AudioRoute, CropRect, EntityRef, Input, InputAudioStripState, InputGainMilliDb, InputKind,
-    Layer, LayerGeometry, MainMix, MixFeed, MixFeedHistory, MixSelection, Project, ProjectSettings,
-    RemoveInputError, RenderSource, ReplaceInputError, ResolveError, Rgba8, Rotation, Scene,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SourceRef, SourceResolver, ValidationError,
-    ValidationErrorKind,
+    Layer, LayerEffect, LayerGeometry, MainMix, MixFeed, MixFeedHistory, MixSelection, Project,
+    ProjectSettings, RemoveInputError, RenderSource, ReplaceInputError, ResolveError, Rgba8,
+    Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SourceRef, SourceResolver,
+    ValidationError, ValidationErrorKind,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -64,6 +64,15 @@ fn alias(target: u128, crop: Option<CropRect>) -> InputKind {
     InputKind::Alias {
         target: input_id(target),
         crop,
+        effects: Vec::new(),
+    }
+}
+
+fn alias_with_effects(target: u128, effects: Vec<LayerEffect>) -> InputKind {
+    InputKind::Alias {
+        target: input_id(target),
+        crop: None,
+        effects,
     }
 }
 
@@ -201,6 +210,47 @@ fn alias_chains_resolve_to_the_concrete_source_with_only_the_requested_crop() {
 fn an_alias_and_its_target_may_sit_on_program_and_preview_together() {
     let project = aliased_project().with_main_mix(MainMix::new(input_id(1), input_id(2)));
     assert_eq!(project.validate(), Ok(()));
+}
+
+#[test]
+fn alias_effects_are_validated() {
+    let mut project = Project::new(ProjectId::new(NonZeroU128::MIN), "Show", settings());
+    project.add_input(input(1, "Camera", bars()));
+    project.add_input(input(
+        2,
+        "Tinted camera",
+        alias_with_effects(1, vec![LayerEffect::new("saturation", vec![-50])]),
+    ));
+    assert!(project.validate().is_ok(), "{:?}", project.validate().err());
+
+    let mut invalid = project.clone();
+    invalid
+        .replace_input_source(
+            input_id(2),
+            alias_with_effects(1, vec![LayerEffect::new("posterize", vec![4])]),
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(errors(&invalid).iter().any(|error| {
+        error.field == "kind.alias.effects" && error.kind == ValidationErrorKind::OutOfRange
+    }));
+
+    let mut too_many = project.clone();
+    too_many
+        .replace_input_source(
+            input_id(2),
+            alias_with_effects(
+                1,
+                (0..=LayerEffect::MAX_EFFECTS_PER_LAYER)
+                    .map(|_| LayerEffect::new("saturation", vec![0]))
+                    .collect(),
+            ),
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(errors(&too_many).iter().any(|error| {
+        error.field == "kind.alias.effects" && error.kind == ValidationErrorKind::OutOfRange
+    }));
 }
 
 #[test]
