@@ -989,6 +989,8 @@ fn grid_plans_reject_zero_canvas_and_overflowing_cell_counts() {
     );
 }
 
+#[test]
+fn overlay_flags_are_independent_placement_intent() {
     let overlays = MultiviewOverlays::none()
         .with_labels(true)
         .with_tally(true)
