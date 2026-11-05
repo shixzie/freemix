@@ -2734,6 +2734,7 @@ fn dependency_tree_contains_only_client_side_freemix_crates() {
         "fm-io-omt",
         "fm-preset-file",
         "fm-protocol",
+        "fm-record",
         "fm-script",
         "fm-types",
         "fm-ui-egui",
