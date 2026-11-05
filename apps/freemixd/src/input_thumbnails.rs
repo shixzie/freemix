@@ -67,7 +67,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use fm_engine::CompiledProjectGrades;
-use fm_model::{Input, InputKind, Project};
+use fm_model::{Input, InputKind, MixFeed, Project};
 use fm_protocol::{
     InputThumbnailMessage, MAX_INPUT_THUMBNAIL_BYTES, MAX_INPUT_THUMBNAIL_HEIGHT,
     MAX_INPUT_THUMBNAIL_WIDTH, MAX_LINE_BYTES, MonitorFrameOrigin, ServerIdentity, WireInputId,
@@ -177,6 +177,9 @@ pub(crate) struct ThumbnailWork {
     pub(crate) clocks: fm_clock::production::ProductionClocks,
     /// A native daemon's newest source frames; `None` on a simulated one.
     pub(crate) live: Option<LiveSourceFrames>,
+    /// The composed Program and Preview pictures the feed inputs re-enter
+    /// (IN-025), when the daemon's monitor taps have one.
+    pub(crate) feed_pictures: BTreeMap<MixFeed, Arc<ImageFrame>>,
 }
 
 /// One input's latest rendered thumbnail.
@@ -557,6 +560,22 @@ impl ThumbnailRenderer {
             .pipeline
             .as_ref()
             .and_then(|(_, pipeline)| pipeline.as_ref());
+        if let InputKind::MixFeed(feed) = &input.kind {
+            let picture = work.feed_pictures.get(feed)?;
+            let (width, height) = fit_within(
+                picture.width(),
+                picture.height(),
+                MAX_INPUT_THUMBNAIL_WIDTH,
+                MAX_INPUT_THUMBNAIL_HEIGHT,
+            )?;
+            let fitted =
+                fm_video::scale_nearest(picture, u32::from(width), u32::from(height)).ok()?;
+            let graded = match work.grades.input(id) {
+                Some(grade) => fm_compositor::apply_grade(&fitted, grade).ok()?,
+                None => fitted,
+            };
+            return Some(over_black(&graded));
+        }
         if let InputKind::Scene { scene_id, .. } = &input.kind {
             let pipeline = pipeline?;
             let scene = work
@@ -1444,6 +1463,7 @@ mod tests {
             slideshows: Vec::new(),
             clocks: fm_clock::production::ProductionClocks::new(),
             live: None,
+            feed_pictures: BTreeMap::new(),
         }
     }
 
@@ -1778,6 +1798,7 @@ mod tests {
                 slideshows: Vec::new(),
                 clocks: fm_clock::production::ProductionClocks::new(),
                 live: None,
+                feed_pictures: BTreeMap::new(),
             });
             thread::sleep(Duration::from_millis(5));
         }
@@ -2480,6 +2501,7 @@ mod native_tests {
             slideshows: Vec::new(),
             clocks: fm_clock::production::ProductionClocks::new(),
             live: Some(LiveSourceFrames::from_frames(frames)),
+            feed_pictures: BTreeMap::new(),
         };
         let mut out = BTreeMap::new();
         renderer.step(&work, start, false, &mut |key, bytes| {

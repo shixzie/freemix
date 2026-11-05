@@ -1638,7 +1638,16 @@ pub(super) fn run(
         release_held_results(&mut peers, &mut close, |slot| {
             realizing.is_some_and(|native| native.recording_settling(slot))
         });
-        let monitor_demand = peers.iter().any(Peer::wants_monitor_frames);
+        let thumbnail_demand = peers.iter().any(Peer::wants_thumbnails);
+        // Feed-input thumbnails need the composed Program/Preview taps even
+        // when no peer shows a monitor (IN-025).
+        let feed_thumbnail_demand = thumbnail_demand
+            && durable
+                .project()
+                .inputs()
+                .iter()
+                .any(|input| matches!(input.kind, fm_model::InputKind::MixFeed(_)));
+        let monitor_demand = peers.iter().any(Peer::wants_monitor_frames) || feed_thumbnail_demand;
         if let Some(native) = native.as_deref_mut() {
             native.set_monitor_demand(monitor_demand);
             for (tap, bytes) in native.take_monitor_frames() {
@@ -1650,8 +1659,18 @@ pub(super) fn run(
                 publish_monitor_frame(&mut peers, tap, &bytes);
             }
         }
-        let thumbnail_demand = peers.iter().any(Peer::wants_thumbnails);
         let thumbnail_refresh = runtime.thumbnail_refresh.replace(false);
+        let feed_pictures = if feed_thumbnail_demand {
+            match native.as_deref() {
+                Some(native) => native.composed_feed_frames(),
+                None => simulated_monitor
+                    .as_ref()
+                    .map(SimulatedMonitorWorker::composed_feed_frames)
+                    .unwrap_or_default(),
+            }
+        } else {
+            std::collections::BTreeMap::new()
+        };
         let now = Instant::now();
         let records = thumbnails.poll(thumbnail_demand, thumbnail_refresh, now, |worker| {
             let control = control.borrow();
@@ -1661,6 +1680,7 @@ pub(super) fn run(
                 &mut thumbnail_grades,
                 durable.project(),
                 native.as_deref().map(NativeDaemon::live_source_frames),
+                feed_pictures.clone(),
             )
         });
         for (key, bytes) in records {
@@ -1813,6 +1833,10 @@ fn thumbnail_work(
     grades: &mut crate::grading::GradeCache,
     project: &fm_model::Project,
     live: Option<crate::scene_preview::LiveSourceFrames>,
+    feed_pictures: std::collections::BTreeMap<
+        fm_model::MixFeed,
+        std::sync::Arc<fm_video::ImageFrame>,
+    >,
 ) -> ThumbnailWork {
     let revision = control.snapshot().snapshot.revision;
     let timelines = control.title_timelines();
@@ -1847,6 +1871,7 @@ fn thumbnail_work(
         slideshows: crate::stills::SlidesShown::all(control),
         clocks: control.production_clock_registry().clone(),
         live,
+        feed_pictures,
     }
 }
 
