@@ -499,11 +499,7 @@ impl ShowState {
     ///
     /// Returns [`ShowError::InvalidInputVideoDelay`] for an unknown input or a
     /// delay outside `0..=MAX_INPUT_VIDEO_DELAY_FRAMES`.
-    pub fn set_input_video_delay(
-        &mut self,
-        input: InputId,
-        frames: u32,
-    ) -> Result<(), ShowError> {
+    pub fn set_input_video_delay(&mut self, input: InputId, frames: u32) -> Result<(), ShowError> {
         fm_model::validate_input_video_delay(input, frames, &self.inputs)
             .map_err(ShowError::InvalidInputVideoDelay)?;
         if frames == 0 {

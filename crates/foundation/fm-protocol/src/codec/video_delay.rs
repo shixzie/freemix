@@ -69,8 +69,8 @@ pub(super) fn decode_entries(value: &str) -> Result<Vec<WireInputVideoDelay>, Co
             let (input, frames) = entry
                 .split_once(':')
                 .ok_or_else(|| invalid("input_video_delays", entry))?;
-            let input = parse_canonical_input(input)
-                .ok_or_else(|| invalid("input_video_delays", entry))?;
+            let input =
+                parse_canonical_input(input).ok_or_else(|| invalid("input_video_delays", entry))?;
             if previous.is_some_and(|previous| previous >= input) {
                 return Err(invalid("input_video_delays", entry));
             }

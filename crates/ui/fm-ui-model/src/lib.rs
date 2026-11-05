@@ -850,7 +850,10 @@ pub enum DurableChange {
         config: Option<Box<fm_protocol::WireSecondaryMixConfig>>,
     },
     /// One input's video delay changed (Protocol 2.160).
-    InputVideoDelayChanged { input: InputId, frames: u32 },
+    InputVideoDelayChanged {
+        input: InputId,
+        frames: u32,
+    },
     /// The `LiveLAN` configuration changed (Protocol 2.57); never the PIN.
     LiveLanChanged(fm_protocol::LiveLanEntry),
     /// The show's health alert rule settings changed (Protocol 2.112).

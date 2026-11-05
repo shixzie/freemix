@@ -526,7 +526,10 @@ pub enum EngineCommand {
     },
     /// Sets one input's video delay in frames (IN-022). A project edit, undone
     /// by restoring the previous delay.
-    SetInputVideoDelay { input: InputId, frames: u32 },
+    SetInputVideoDelay {
+        input: InputId,
+        frames: u32,
+    },
     /// Replaces the `LiveLAN` viewer stream's configuration (OR-017), its PIN
     /// already resolved to the exact one it will hold. A project edit,
     /// undone by restoring the previous configuration; the daemon realizes
@@ -895,7 +898,10 @@ pub enum EngineEvent {
     },
     /// One input's video delay changed (or the edit was undone or redone)
     /// (IN-022); the delay is read from [`ShowState::input_video_delay`].
-    InputVideoDelayChanged { input: InputId, frames: u32 },
+    InputVideoDelayChanged {
+        input: InputId,
+        frames: u32,
+    },
     /// The `LiveLAN` configuration changed (or the edit was undone or redone)
     /// (OR-017); it is read from [`ShowState::live_lan`].
     LiveLanChanged(Box<fm_types::live_lan::LiveLanConfig>),
