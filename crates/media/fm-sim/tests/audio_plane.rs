@@ -214,3 +214,27 @@ fn the_plane_is_deterministic_for_a_frame() {
     assert_eq!(third.sample_span(), fourth.sample_span());
     assert_eq!(third_pcm, fourth_pcm);
 }
+
+#[test]
+fn frozen_inputs_are_silent_until_unfrozen() {
+    let input = input(1);
+    let mut plane = plane(config(
+        input,
+        StripDsp::DEFAULT,
+        Some(SimulatedTone::new(997.0)),
+    ));
+
+    plane.set_frozen_inputs([input]);
+    let frozen = accumulate(&mut plane, input, 0..30);
+    assert!(
+        frozen.iter().flatten().all(|sample| *sample == 0.0),
+        "a frozen input contributes no audio"
+    );
+
+    plane.set_frozen_inputs([]);
+    let resumed = accumulate(&mut plane, input, 30..60);
+    assert!(
+        resumed.iter().flatten().any(|sample| *sample != 0.0),
+        "unfreezing restores the input's tone"
+    );
+}

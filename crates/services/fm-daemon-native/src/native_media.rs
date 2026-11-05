@@ -14036,6 +14036,29 @@ mod tests {
     }
 
     #[test]
+    fn frozen_input_audio_is_silenced_and_resumes() {
+        let source = input(1);
+        let mut master = audio_test_master(&[(source, 0.5)], 1);
+        master.set_frozen_inputs([source]);
+        assert!(master.service_next_frame().unwrap());
+        let frozen = master
+            .render_frame_audio(&frame_result(0, source, None))
+            .unwrap();
+        for sample in frozen.plane(0).unwrap() {
+            assert_sample_exact(*sample, 0.0);
+        }
+
+        master.set_frozen_inputs([]);
+        assert!(master.service_next_frame().unwrap());
+        let resumed = master
+            .render_frame_audio(&frame_result(1, source, None))
+            .unwrap();
+        for sample in resumed.plane(0).unwrap() {
+            assert_sample_exact(*sample, 0.5);
+        }
+    }
+
+    #[test]
     fn inactive_scene_alias_without_follow_video_remains_audible() {
         let physical = input(1);
         let active = input(2);
