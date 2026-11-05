@@ -67,6 +67,74 @@ fn model_input(value: u128) -> InputId {
 }
 
 #[test]
+fn alias_and_feed_add_intents_map_to_the_wire() {
+    let alias = studio_intent_payload(
+        StudioIntent::AddInput {
+            input: model_input(3),
+            name: "Alias A".into(),
+            source: fm_protocol::LiveInputSource::Alias {
+                target: input(1),
+                crop: Some(fm_protocol::WireLayerCrop {
+                    x: 0,
+                    y: 0,
+                    width: 960,
+                    height: 1080,
+                }),
+            },
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        alias,
+        CommandPayload::AddInput {
+            input: input(3),
+            name: "Alias A".into(),
+            source: fm_protocol::LiveInputSource::Alias {
+                target: input(1),
+                crop: Some(fm_protocol::WireLayerCrop {
+                    x: 0,
+                    y: 0,
+                    width: 960,
+                    height: 1080,
+                }),
+            },
+        }
+    );
+    for (feed, source) in [
+        (true, fm_protocol::LiveInputSource::ProgramFeed),
+        (false, fm_protocol::LiveInputSource::PreviewFeed),
+    ] {
+        let payload = studio_intent_payload(
+            StudioIntent::AddInput {
+                input: model_input(4),
+                name: "Feed".into(),
+                source,
+            },
+            None,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                payload,
+                CommandPayload::AddInput {
+                    input: value,
+                    source: fm_protocol::LiveInputSource::ProgramFeed,
+                    ..
+                } if feed && value == input(4)
+            ) || matches!(
+                payload,
+                CommandPayload::AddInput {
+                    input: value,
+                    source: fm_protocol::LiveInputSource::PreviewFeed,
+                    ..
+                } if !feed && value == input(4)
+            )
+        );
+    }
+}
+
+#[test]
 fn video_delay_intent_maps_to_the_wire_command() {
     let payload = studio_intent_payload(
         StudioIntent::SetInputVideoDelay {

@@ -1933,6 +1933,40 @@ fn with_screen_capture_inventory(
     state
 }
 
+/// The Add input dialog's alias and feed forms (IN-024, IN-025): an alias
+/// with the first input selected, and a Program and Preview feed.
+fn alias_feed_scenes(locale: Locale) -> Vec<Scene> {
+    use crate::input_catalogue::{AddInputDraft, NewInputKind};
+    let operator = ready(true, Variant::default());
+    let shell = |kind: NewInputKind, configure: &dyn Fn(&mut AddInputDraft)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.open_add_input(&operator);
+        if let Some(draft) = shell.add_input.as_mut() {
+            draft.kind = kind;
+            configure(draft);
+        }
+        shell
+    };
+    vec![
+        Scene::console(
+            "dialog/add-input-alias",
+            shell(NewInputKind::Alias, &|_| {}),
+            operator.clone(),
+        ),
+        Scene::console(
+            "dialog/add-input-feed-program",
+            shell(NewInputKind::MixFeed, &|_| {}),
+            operator.clone(),
+        ),
+        Scene::console(
+            "dialog/add-input-feed-preview",
+            shell(NewInputKind::MixFeed, &|draft| draft.feed_program = false),
+            operator,
+        ),
+    ]
+}
+
 /// The screen capture form (IN-011) with the server's targets: a screen,
 /// a picked window followed by its exact title, by a title text, and by
 /// its application; a target that is not open; a listing not yet known;
@@ -4242,6 +4276,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.extend(monitor_output_scenes(locale));
     scenes.extend(still_scenes(locale));
     scenes.extend(screen_capture_scenes(locale));
+    scenes.extend(alias_feed_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
