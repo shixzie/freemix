@@ -5292,7 +5292,6 @@ fn snapshot_record(
         fade_to_black_output_durations: audio_mixer::wire_output_durations(engine.show()),
         fade_to_black_curve: engine.show().desired_switcher().fade_to_black_curve(),
         logical_outputs: logical_output::wire_entries(engine.show()),
-        secondary_mixes: Vec::new(),
         secondary_mixes: secondary_mix::wire_entries(engine.show()),
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),
