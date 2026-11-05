@@ -299,9 +299,11 @@ fn input_video_delays_replicate_from_snapshots_and_events() {
         })
     );
     // The event also aligns the replicated audio strip delay.
-    assert!(view.input_audio_strips.iter().any(|strip| {
-        strip.input == WireInputId::from_domain(input(2)) && strip.delay_samples == 17_280
-    }));
+    assert!(
+        view.input_audio_strips
+            .iter()
+            .any(|strip| strip.input == input(2) && strip.delay_samples == 17_280)
+    );
 }
 
 #[test]
