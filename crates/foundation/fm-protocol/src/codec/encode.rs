@@ -785,6 +785,22 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "clear_logical_output")?;
             record.field("slot", slot)?;
         }
+        CommandPayload::SetSecondaryMix { number, config } => {
+            record.field("payload", "set_secondary_mix")?;
+            if config.number != *number {
+                return Err(CodecError::InvalidField {
+                    field: "number",
+                    value: number.to_string(),
+                });
+            }
+            super::secondary_mix::encode_config(config, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::ClearSecondaryMix { number } => {
+            record.field("payload", "clear_secondary_mix")?;
+            record.field("number", number)?;
+        }
         CommandPayload::Replay(operation) => {
             record.field("payload", operation.token())?;
             super::replay::encode_operation(operation, &mut |name, value| {
@@ -2054,6 +2070,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         super::logical_output::encode_entries(&message.logical_outputs)?,
     )?;
     record.field_string(
+        "secondary_mixes",
+        super::secondary_mix::encode_entries(&message.secondary_mixes)?,
+    )?;
+    record.field_string(
         "display_outputs",
         super::display_output::encode_entries(&message.display_outputs)?,
     )?;
@@ -2946,6 +2966,12 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::LogicalOutputChanged { slot, config } => {
             record.field("event", "logical_output_changed")?;
             super::logical_output::encode_changed(*slot, config.as_deref(), &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        EventPayload::SecondaryMixChanged { number, config } => {
+            record.field("event", "secondary_mix_changed")?;
+            super::secondary_mix::encode_changed(*number, config.as_deref(), &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }

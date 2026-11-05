@@ -2151,6 +2151,17 @@ pub enum CommandPayload {
     ClearLogicalOutput {
         slot: crate::WireLogicalOutputSlot,
     },
+    /// Configures one secondary mix (Protocol 2.158, IN-023). A padlocked,
+    /// undoable project edit.
+    SetSecondaryMix {
+        number: crate::WireMixNumber,
+        config: Box<crate::WireSecondaryMixConfig>,
+    },
+    /// Clears one secondary mix (Protocol 2.158). A padlocked, undoable
+    /// project edit.
+    ClearSecondaryMix {
+        number: crate::WireMixNumber,
+    },
     /// Reconfigures network stream input `input` (Protocol 2.46, IN-015;
     /// 2.49, IN-016/IN-017): a new URL (`None` keeps the current one),
     /// settings, the SRT stream ID, and edits of the RTMP stream key and SRT
@@ -2666,6 +2677,8 @@ pub struct SnapshotMessage {
     pub fade_to_black_curve: crate::FadeToBlackCurve,
     /// Every configured logical output, ascending by slot (Protocol 2.157).
     pub logical_outputs: Vec<crate::WireLogicalOutputConfig>,
+    /// Every configured secondary mix, ascending by number (Protocol 2.158).
+    pub secondary_mixes: Vec<crate::WireSecondaryMixConfig>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<crate::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -2921,6 +2934,12 @@ pub enum EventPayload {
     LogicalOutputChanged {
         slot: crate::WireLogicalOutputSlot,
         config: Option<Box<crate::WireLogicalOutputConfig>>,
+    },
+    /// One secondary mix was configured or cleared, or that edit was undone
+    /// or redone (Protocol 2.158, IN-023).
+    SecondaryMixChanged {
+        number: crate::WireMixNumber,
+        config: Option<Box<crate::WireSecondaryMixConfig>>,
     },
     /// The `LiveLAN` configuration changed, or that edit was undone or redone
     /// (Protocol 2.57). It carries whether a PIN is stored, never the PIN.

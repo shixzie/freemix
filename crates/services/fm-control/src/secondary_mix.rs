@@ -1,0 +1,112 @@
+//! Secondary mixes between the engine and the wire (IN-023).
+
+use fm_engine::{EngineCommand, EngineEvent, ShowState};
+use fm_protocol::{
+    CommandPayload, EventPayload, WireMixNumber, WireSecondaryMixConfig, WireSecondaryMixMode,
+    WireSecondaryMixSource,
+};
+
+/// The engine command of a secondary-mix payload.
+pub(super) fn engine_command(payload: &CommandPayload) -> Option<EngineCommand> {
+    match payload {
+        CommandPayload::SetSecondaryMix { number, config } => {
+            Some(EngineCommand::SetSecondaryMix {
+                number: model_number(*number),
+                config: Some(Box::new(model_config(config))),
+            })
+        }
+        CommandPayload::ClearSecondaryMix { number } => Some(EngineCommand::SetSecondaryMix {
+            number: model_number(*number),
+            config: None,
+        }),
+        _ => None,
+    }
+}
+
+/// The durable event of a secondary-mix edit, or of its undo or redo.
+pub(super) fn changed(event: &EngineEvent) -> Option<EventPayload> {
+    let EngineEvent::SecondaryMixChanged { number, config } = event else {
+        return None;
+    };
+    Some(EventPayload::SecondaryMixChanged {
+        number: wire_number(*number),
+        config: config.as_ref().map(|config| Box::new(wire_config(config))),
+    })
+}
+
+/// The wire command of an undoable secondary-mix edit.
+pub(super) fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
+    let EngineCommand::SetSecondaryMix { number, config } = command else {
+        return None;
+    };
+    Some(match config {
+        Some(config) => CommandPayload::SetSecondaryMix {
+            number: wire_number(*number),
+            config: Box::new(wire_config(config)),
+        },
+        None => CommandPayload::ClearSecondaryMix {
+            number: wire_number(*number),
+        },
+    })
+}
+
+/// Every configured secondary mix in number order.
+pub(super) fn wire_entries(show: &ShowState) -> Vec<WireSecondaryMixConfig> {
+    show.secondary_mixes().map(wire_config).collect()
+}
+
+fn model_number(number: WireMixNumber) -> fm_model::MixNumber {
+    fm_model::MixNumber::new(number.number()).expect("a validated wire mix number")
+}
+
+fn wire_number(number: fm_model::MixNumber) -> WireMixNumber {
+    WireMixNumber::new(number.number()).expect("a model mix number is in range")
+}
+
+fn model_source(source: WireSecondaryMixSource) -> fm_model::SecondaryMixSource {
+    match source {
+        WireSecondaryMixSource::Input(input) => {
+            fm_model::SecondaryMixSource::Input(input.to_domain())
+        }
+        WireSecondaryMixSource::Mix(number) => {
+            fm_model::SecondaryMixSource::Mix(model_number(number))
+        }
+    }
+}
+
+fn wire_source(source: fm_model::SecondaryMixSource) -> WireSecondaryMixSource {
+    match source {
+        fm_model::SecondaryMixSource::Input(input) => {
+            WireSecondaryMixSource::Input(fm_protocol::WireInputId::from_domain(input))
+        }
+        fm_model::SecondaryMixSource::Mix(number) => {
+            WireSecondaryMixSource::Mix(wire_number(number))
+        }
+    }
+}
+
+fn model_config(config: &WireSecondaryMixConfig) -> fm_model::SecondaryMixConfig {
+    fm_model::SecondaryMixConfig {
+        number: model_number(config.number),
+        name: config.name.clone(),
+        mode: match config.mode {
+            WireSecondaryMixMode::PreviewProgram => fm_model::SecondaryMixMode::PreviewProgram,
+            WireSecondaryMixMode::OutputOnly => fm_model::SecondaryMixMode::OutputOnly,
+        },
+        program: model_source(config.program),
+        preview: config.preview.map(model_source),
+    }
+}
+
+fn wire_config(config: &fm_model::SecondaryMixConfig) -> WireSecondaryMixConfig {
+    WireSecondaryMixConfig {
+        number: wire_number(config.number),
+        name: config.name.clone(),
+        mode: match config.mode {
+            fm_model::SecondaryMixMode::PreviewProgram => WireSecondaryMixMode::PreviewProgram,
+            fm_model::SecondaryMixMode::OutputOnly => WireSecondaryMixMode::OutputOnly,
+        },
+        program: wire_source(config.program),
+        preview: config.preview.map(wire_source),
+    }
+}

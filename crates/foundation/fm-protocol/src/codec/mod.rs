@@ -17,6 +17,7 @@ mod logical_output;
 mod media;
 mod media_list;
 mod network_stream;
+mod secondary_mix;
 mod paged;
 mod playlist;
 mod recorder_status;

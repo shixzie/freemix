@@ -37,6 +37,7 @@ mod scene_animation;
 mod scene_layer;
 mod screen_capture;
 mod script;
+mod secondary_mix;
 mod shortcut;
 mod still;
 mod stream_target;
@@ -3607,6 +3608,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
+        | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::SetNetworkStream { .. }
@@ -3725,6 +3727,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::SetLogicalOutput { .. }
         | CommandPayload::ClearLogicalOutput { .. }
+        | CommandPayload::SetSecondaryMix { .. }
+        | CommandPayload::ClearSecondaryMix { .. }
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::SetStreamTarget { .. }
@@ -3909,6 +3913,10 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetLogicalOutput { .. }
         | CommandPayload::ClearLogicalOutput { .. }) => {
             logical_output::engine_command(payload).expect("a logical-output payload")
+        }
+        payload @ (CommandPayload::SetSecondaryMix { .. }
+        | CommandPayload::ClearSecondaryMix { .. }) => {
+            secondary_mix::engine_command(payload).expect("a secondary-mix payload")
         }
         CommandPayload::SetNetworkStream { .. } => {
             unreachable!("network stream edits resolve their URL against the show")
@@ -4424,6 +4432,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetLogicalOutput { .. } => {
             return logical_output::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetSecondaryMix { .. } => {
+            return secondary_mix::wire_edit_payload(command);
+        }
         command @ EngineCommand::SetLiveLan(_) => {
             return live_lan::wire_edit_payload(command);
         }
@@ -4931,6 +4942,13 @@ fn accepted_event_payload(
     if let Some(payload) = outcome
         .events
         .iter()
+        .find_map(|event| secondary_mix::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
         .find_map(|event| live_lan::changed(&event.payload))
     {
         return payload;
@@ -5274,6 +5292,7 @@ fn snapshot_record(
         fade_to_black_output_durations: audio_mixer::wire_output_durations(engine.show()),
         fade_to_black_curve: engine.show().desired_switcher().fade_to_black_curve(),
         logical_outputs: logical_output::wire_entries(engine.show()),
+        secondary_mixes: secondary_mix::wire_entries(engine.show()),
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),
         network_streams: network_stream::wire_entries(engine.show(), network_states),

@@ -817,6 +817,16 @@ fn decode_command_payload(
         "clear_logical_output" => CommandPayload::ClearLogicalOutput {
             slot: super::logical_output::decode_slot(fields)?,
         },
+        "set_secondary_mix" => {
+            let config = super::secondary_mix::decode_config(fields)?;
+            CommandPayload::SetSecondaryMix {
+                number: config.number,
+                config: Box::new(config),
+            }
+        }
+        "clear_secondary_mix" => CommandPayload::ClearSecondaryMix {
+            number: super::secondary_mix::decode_number(fields)?,
+        },
         replay if replay.starts_with("replay_") => {
             CommandPayload::Replay(super::replay::decode_operation(replay, fields)?.ok_or_else(
                 || CodecError::InvalidField {
@@ -2118,6 +2128,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         logical_outputs: super::logical_output::decode_entries(
             &fields.required("logical_outputs")?,
         )?,
+        secondary_mixes: super::secondary_mix::decode_entries(
+            &fields.required("secondary_mixes")?,
+        )?,
         display_outputs: super::display_output::decode_entries(
             &fields.required("display_outputs")?,
         )?,
@@ -2947,6 +2960,13 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             let (slot, config) = super::logical_output::decode_changed(fields)?;
             EventPayload::LogicalOutputChanged {
                 slot,
+                config: config.map(Box::new),
+            }
+        }
+        "secondary_mix_changed" => {
+            let (number, config) = super::secondary_mix::decode_changed(fields)?;
+            EventPayload::SecondaryMixChanged {
+                number,
                 config: config.map(Box::new),
             }
         }
