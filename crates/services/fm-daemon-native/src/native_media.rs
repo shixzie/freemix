@@ -1142,6 +1142,12 @@ impl NativeProjectPlan {
         !self.feeds.is_empty()
     }
 
+    /// The project video dimensions the plan composes at.
+    #[must_use]
+    pub const fn dimensions(&self) -> VideoDimensions {
+        self.dimensions
+    }
+
     #[must_use]
     pub fn audio_route(&self, input: InputId) -> Option<NativeAudioRoute> {
         self.audio_routes.get(&input).copied()
@@ -9644,6 +9650,31 @@ impl NativeMediaRuntime {
         project: &NativeProjectPlan,
         frame: &FrameResult,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
+        self.render_project_frame_result_with_stingers_and_feeds(
+            registry,
+            stingers,
+            project,
+            frame,
+            NativeFeedFrames::default(),
+        )
+        .await
+    }
+
+    /// Renders one authoritative frame with the previous tick's committed
+    /// Program and Preview pictures for mix-feed inputs (IN-025).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed failures as
+    /// [`Self::render_project_frame_result_with_stingers`].
+    pub async fn render_project_frame_result_with_stingers_and_feeds(
+        &self,
+        registry: &NativeSourceRegistry,
+        stingers: &NativeSourceRegistry,
+        project: &NativeProjectPlan,
+        frame: &FrameResult,
+        feeds: NativeFeedFrames<'_>,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
         let output = project.output_ids().first().copied();
         let mut rendered = self
             .render_project_output_set_with_stingers(
@@ -9652,7 +9683,7 @@ impl NativeMediaRuntime {
                 project,
                 frame,
                 &[output],
-                NativeFeedFrames::default(),
+                feeds,
             )
             .await?;
         rendered
@@ -9680,6 +9711,31 @@ impl NativeMediaRuntime {
         project: &NativeProjectPlan,
         frame: &FrameResult,
     ) -> Result<Vec<NativeOutputFrame>, NativeSourceRenderError> {
+        self.render_project_outputs_with_stingers_and_feeds(
+            registry,
+            stingers,
+            project,
+            frame,
+            NativeFeedFrames::default(),
+        )
+        .await
+    }
+
+    /// Renders every configured output with the previous tick's committed
+    /// Program and Preview pictures for mix-feed inputs (IN-025).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed failures as
+    /// [`Self::render_project_outputs_with_stingers`].
+    pub async fn render_project_outputs_with_stingers_and_feeds(
+        &self,
+        registry: &NativeSourceRegistry,
+        stingers: &NativeSourceRegistry,
+        project: &NativeProjectPlan,
+        frame: &FrameResult,
+        feeds: NativeFeedFrames<'_>,
+    ) -> Result<Vec<NativeOutputFrame>, NativeSourceRenderError> {
         let outputs = project
             .output_ids()
             .iter()
@@ -9690,12 +9746,7 @@ impl NativeMediaRuntime {
             return Ok(Vec::new());
         }
         self.render_project_output_set_with_stingers(
-            registry,
-            stingers,
-            project,
-            frame,
-            &outputs,
-            NativeFeedFrames::default(),
+            registry, stingers, project, frame, &outputs, feeds,
         )
         .await?
         .into_iter()
@@ -10720,6 +10771,25 @@ impl NativeMediaRuntime {
         block_on(self.render_project_frame_result_with_stingers(registry, stingers, project, frame))
     }
 
+    /// Synchronous wrapper for
+    /// [`Self::render_project_frame_result_with_stingers_and_feeds`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as the asynchronous call.
+    pub fn render_project_frame_result_with_stingers_and_feeds_blocking(
+        &self,
+        registry: &NativeSourceRegistry,
+        stingers: &NativeSourceRegistry,
+        project: &NativeProjectPlan,
+        frame: &FrameResult,
+        feeds: NativeFeedFrames<'_>,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        block_on(self.render_project_frame_result_with_stingers_and_feeds(
+            registry, stingers, project, frame, feeds,
+        ))
+    }
+
     /// Synchronous wrapper for [`Self::render_project_outputs_with_stingers`].
     ///
     /// # Errors
@@ -10733,6 +10803,70 @@ impl NativeMediaRuntime {
         frame: &FrameResult,
     ) -> Result<Vec<NativeOutputFrame>, NativeSourceRenderError> {
         block_on(self.render_project_outputs_with_stingers(registry, stingers, project, frame))
+    }
+
+    /// Synchronous wrapper for
+    /// [`Self::render_project_outputs_with_stingers_and_feeds`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as the asynchronous call.
+    pub fn render_project_outputs_with_stingers_and_feeds_blocking(
+        &self,
+        registry: &NativeSourceRegistry,
+        stingers: &NativeSourceRegistry,
+        project: &NativeProjectPlan,
+        frame: &FrameResult,
+        feeds: NativeFeedFrames<'_>,
+    ) -> Result<Vec<NativeOutputFrame>, NativeSourceRenderError> {
+        block_on(self.render_project_outputs_with_stingers_and_feeds(
+            registry, stingers, project, frame, feeds,
+        ))
+    }
+
+    /// Copies `texture` into a new full-frame texture for a feed to show on
+    /// the next tick.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed compositor or GPU validation failure.
+    pub fn copy_feed_texture_blocking(
+        &self,
+        dimensions: VideoDimensions,
+        texture: &NativeTexture,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        block_on(self.copy_feed_texture(dimensions, texture))
+    }
+
+    async fn copy_feed_texture(
+        &self,
+        dimensions: VideoDimensions,
+        texture: &NativeTexture,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        let mut scene = CompositorScene::new(
+            dimensions.width(),
+            dimensions.height(),
+            CompositorRgba8::new(0, 0, 0, u8::MAX),
+        )
+        .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        scene.push_layer(SourceLayer::new(
+            SourceId::new(0),
+            0,
+            Transform::new(
+                0,
+                0,
+                dimensions.width(),
+                dimensions.height(),
+                CompositorRotation::Deg0,
+            ),
+        ));
+        let (composition, _) = compile_scene(&scene, OutputTarget::Program)
+            .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        let sources = [NativeSourceFrame::new(SourceId::new(0), texture)];
+        self.composition_renderer
+            .render(&self.context, &composition, &sources)
+            .await
+            .map_err(NativeSourceRenderError::SceneCompositor)
     }
 
     /// Renders a GPU-resident Cut, Fade, or Wipe between canonical RGBA16-float
