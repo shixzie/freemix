@@ -2238,6 +2238,7 @@ impl TitleRowSources {
     /// Loads the persisted sources from the bundle, starting their pollers.
     /// A missing document is empty; a malformed one is reported and ignored
     /// rather than preventing the daemon from starting.
+    #[allow(clippy::too_many_lines)] // one strict parse per document field
     fn load(bundle_root: &std::path::Path) -> Self {
         let path = bundle_root.join(TITLE_ROW_SOURCES_FILE);
         let text = match std::fs::read_to_string(&path) {
@@ -2611,6 +2612,7 @@ struct Runtime<'a> {
 impl Runtime<'_> {
     /// Polls every scheduled title data source and applies each refreshed row
     /// as one authority `set_title_row` command (GX-005).
+    #[allow(clippy::too_many_lines)] // one source's fetch and apply path
     fn poll_title_row_sources(
         &self,
         durable: &mut StoredProject,

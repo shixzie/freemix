@@ -29,7 +29,7 @@ pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, String> {
         let parsed = ParsedUrl::parse(&current)?;
         let (response, location) = get(&parsed)?;
         if let Some(location) = location {
-            current = parsed.resolve(&location)?;
+            current = parsed.resolve(&location);
             continue;
         }
         return Ok(response);
@@ -45,11 +45,10 @@ struct ParsedUrl {
 
 impl ParsedUrl {
     fn parse(url: &str) -> Result<Self, String> {
-        let rest = if let Some(rest) = url.strip_prefix("http://") {
-            rest
-        } else if url.starts_with("https://") {
-            return Err("https title sources are not supported yet".to_owned());
-        } else {
+        let Some(rest) = url.strip_prefix("http://") else {
+            if url.starts_with("https://") {
+                return Err("https title sources are not supported yet".to_owned());
+            }
             return Err("URL source must start with http:// or https://".to_owned());
         };
         let (authority, path) = match rest.split_once('/') {
@@ -71,21 +70,21 @@ impl ParsedUrl {
         Ok(Self { host, port, path })
     }
 
-    fn resolve(&self, location: &str) -> Result<String, String> {
+    fn resolve(&self, location: &str) -> String {
         if location.starts_with("http://") || location.starts_with("https://") {
-            return Ok(location.to_owned());
+            return location.to_owned();
         }
         if location.starts_with('/') {
-            return Ok(format!("http://{}:{}{}", self.host, self.port, location));
+            return format!("http://{}:{}{}", self.host, self.port, location);
         }
         let base = self.path.rsplit_once('/').map_or("/", |(base, _)| base);
-        Ok(format!(
+        format!(
             "http://{}:{}{}/{}",
             self.host,
             self.port,
             base.trim_end_matches('/'),
             location
-        ))
+        )
     }
 }
 
@@ -129,10 +128,10 @@ fn get(url: &ParsedUrl) -> Result<(Vec<u8>, Option<String>), String> {
         if buffer.len() > MAX_RESPONSE_BYTES + MAX_HEADER_BYTES {
             return Err("HTTP response exceeds the size bound".to_owned());
         }
-        if let Some(header_end) = find_headers_end(&buffer) {
-            if buffer.len() - header_end > MAX_RESPONSE_BYTES {
-                return Err("HTTP response body exceeds the size bound".to_owned());
-            }
+        if let Some(header_end) = find_headers_end(&buffer)
+            && buffer.len() - header_end > MAX_RESPONSE_BYTES
+        {
+            return Err("HTTP response body exceeds the size bound".to_owned());
         }
     }
     let header_end = find_headers_end(&buffer)
