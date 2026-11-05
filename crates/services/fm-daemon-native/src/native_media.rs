@@ -2870,6 +2870,9 @@ pub struct NativeSourceRegistry {
     /// The show's frame rate, which turns a requested delay in frames into
     /// presentation time for decoded sources.
     frame_rate: Option<FrameRate>,
+    /// Each frozen input's latched presentation deadline (SW-016). Live
+    /// sources stop ingesting while frozen.
+    frozen_deadlines: BTreeMap<InputId, ClockTime>,
 }
 
 impl NativeSourceRegistry {
@@ -2948,6 +2951,23 @@ impl NativeSourceRegistry {
         u64::try_from(nanos).unwrap_or(u64::MAX)
     }
 
+    /// Whether `input` is frozen (SW-016).
+    #[must_use]
+    pub fn is_input_frozen(&self, input: InputId) -> bool {
+        self.frozen_deadlines.contains_key(&input)
+    }
+
+    /// Freezes `input` at the picture it presents at `deadline`.
+    pub fn freeze_input(&mut self, input: InputId, deadline: ClockTime) {
+        let deadline = self.presentation_deadline(input, deadline);
+        self.frozen_deadlines.insert(input, deadline);
+    }
+
+    /// Resumes `input`.
+    pub fn unfreeze_input(&mut self, input: InputId) {
+        self.frozen_deadlines.remove(&input);
+    }
+
     fn frame_at_deadline(
         &self,
         input: InputId,
@@ -2955,6 +2975,9 @@ impl NativeSourceRegistry {
     ) -> Option<&NativeWorkingFrame> {
         let prefix = self.sources.get(&input)?;
         let delay = self.effective_input_video_delay(input);
+        if let Some(frozen) = self.frozen_deadlines.get(&input).copied() {
+            return prefix.frame_at_deadline(frozen, delay);
+        }
         if delay == 0 {
             return prefix.frame_at_deadline(deadline, 0);
         }
@@ -3187,6 +3210,16 @@ impl NativeSourcePlayback {
     #[must_use]
     pub const fn registry(&self) -> &NativeSourceRegistry {
         &self.registry
+    }
+
+    /// Freezes or resumes one input (SW-016); see
+    /// [`NativeSourceRegistry::freeze_input`].
+    pub fn set_input_freeze(&mut self, input: InputId, frozen: bool, deadline: ClockTime) {
+        if frozen {
+            self.registry.freeze_input(input, deadline);
+        } else {
+            self.registry.unfreeze_input(input);
+        }
     }
 
     /// Applies the project's per-input video delays (IN-022); see
@@ -8000,6 +8033,11 @@ fn leaf_texture<'a>(
     input: InputId,
     deadline: ClockTime,
 ) -> Result<&'a NativeTexture, NativeSourceRenderError> {
+    // A frozen leaf keeps selecting its latched frame through the normal
+    // grade path, so the hold includes the input's grade.
+    if registry.is_input_frozen(input) {
+        return Ok(registry_frame(registry, input, deadline)?.texture());
+    }
     match graded.get(&input) {
         Some(texture) => Ok(texture),
         None => Ok(registry_frame(registry, input, deadline)?.texture()),
@@ -8829,6 +8867,7 @@ impl NativeMediaRuntime {
                 limits,
                 video_delays: BTreeMap::new(),
                 frame_rate: None,
+                frozen_deadlines: BTreeMap::new(),
             },
             worker,
             failed: false,
@@ -9011,6 +9050,9 @@ impl NativeMediaRuntime {
             .ok_or(NativeSourcePlaybackError::SourceNotLive { input })?;
         if prefix.kind != NativeVideoSourceKind::Live {
             return Err(NativeSourcePlaybackError::SourceNotLive { input });
+        }
+        if playback.registry.is_input_frozen(input) {
+            return Ok(());
         }
         validate_live_update_timing(
             input,
@@ -9548,7 +9590,13 @@ impl NativeMediaRuntime {
                     // ingest, not a deadline window (IN-022).
                     continue;
                 }
-                let eviction_deadline = eviction_deadlines.get(input).copied().unwrap_or(deadline);
+                let eviction_deadline = playback
+                    .registry
+                    .frozen_deadlines
+                    .get(input)
+                    .copied()
+                    .or_else(|| eviction_deadlines.get(input).copied())
+                    .unwrap_or(deadline);
                 let remove = source_eviction_count(
                     &prefix.offsets_ns,
                     prefix.pinned_for_stinger,
@@ -14845,6 +14893,7 @@ mod tests {
                 limits: NativeSourceLimits::default(),
                 video_delays: BTreeMap::new(),
                 frame_rate: None,
+                frozen_deadlines: BTreeMap::new(),
             },
             worker: NativeDecodeWorker::spawn(BTreeMap::new()).unwrap(),
             failed: false,
