@@ -745,19 +745,19 @@ fn take_applies_fields_before_the_overlay_realizes() {
 }
 
 #[test]
-#[test]
 fn a_title_data_row_maps_strings_by_field_name_and_keeps_live_on_request() {
     let mut engine = engine();
-    let row = |pairs: &[(&str, &str)], keep_live: bool| EngineCommand::SetTitleRow {
-        input: input(TITLE),
-        base_revision: 0,
-        require: TitleAirRequirement::OffAir,
-        values: pairs
-            .iter()
-            .map(|(field, value)| ((*field).to_owned(), (*value).to_owned()))
-            .collect(),
-        keep_live,
-    };
+    let row =
+        |pairs: &[(&str, &str)], keep_live: bool, base_revision: u64| EngineCommand::SetTitleRow {
+            input: input(TITLE),
+            base_revision,
+            require: TitleAirRequirement::OffAir,
+            values: pairs
+                .iter()
+                .map(|(field, value)| ((*field).to_owned(), (*value).to_owned()))
+                .collect(),
+            keep_live,
+        };
     let saved = run(
         &mut engine,
         "row",
@@ -768,6 +768,7 @@ fn a_title_data_row_maps_strings_by_field_name_and_keeps_live_on_request() {
                 ("field-4", "42"),
             ],
             false,
+            0,
         ),
     );
     assert_accepted(&saved);
@@ -786,7 +787,7 @@ fn a_title_data_row_maps_strings_by_field_name_and_keeps_live_on_request() {
     let kept = run(
         &mut engine,
         "row-keep",
-        row(&[("field-1", "live"), ("field-4", "not a number")], true),
+        row(&[("field-1", "live"), ("field-4", "not a number")], true, 1),
     );
     assert_accepted(&kept);
     let set = fields(&engine, TITLE);
@@ -800,7 +801,7 @@ fn a_title_data_row_maps_strings_by_field_name_and_keeps_live_on_request() {
     let refused = run(
         &mut engine,
         "row-refused",
-        row(&[("field-1", "lost"), ("field-4", "nope")], false),
+        row(&[("field-1", "lost"), ("field-4", "nope")], false, 2),
     );
     assert_eq!(rejection(&refused).code, RejectionCode::InvalidCommand);
     assert_eq!(
