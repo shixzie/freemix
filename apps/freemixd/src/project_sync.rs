@@ -254,7 +254,11 @@ pub(crate) fn sync_project_inputs(
                     })?;
                 continue;
             }
-            fm_protocol::LiveInputSource::Alias { target, crop } => {
+            fm_protocol::LiveInputSource::Alias {
+                target,
+                crop,
+                effects,
+            } => {
                 project
                     .add_input_checked(fm_model::Input {
                         id: input,
@@ -264,6 +268,15 @@ pub(crate) fn sync_project_inputs(
                             crop: crop.map(|crop| {
                                 fm_model::CropRect::new(crop.x, crop.y, crop.width, crop.height)
                             }),
+                            effects: effects
+                                .iter()
+                                .map(|effect| {
+                                    fm_model::LayerEffect::new(
+                                        effect.name.clone(),
+                                        effect.parameters.clone(),
+                                    )
+                                })
+                                .collect(),
                         },
                         required_capabilities: Vec::new(),
                     })

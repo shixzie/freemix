@@ -526,7 +526,7 @@ impl ThumbnailRenderer {
         let mut resolved = input;
         let mut alias_crop = None;
         let mut hops = 0;
-        while let InputKind::Alias { target, crop } = &resolved.kind {
+        while let InputKind::Alias { target, crop, .. } = &resolved.kind {
             if hops == 0 {
                 alias_crop = *crop;
             }
