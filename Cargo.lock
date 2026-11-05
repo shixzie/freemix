@@ -2232,6 +2232,7 @@ dependencies = [
 name = "fm-video"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "fm-animation",
  "fm-audio",
  "fm-clock",
