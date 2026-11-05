@@ -159,6 +159,38 @@ fn video_delay_intent_maps_to_the_wire_command() {
 }
 
 #[test]
+#[test]
+fn title_row_intent_maps_to_the_wire_command() {
+    let payload = studio_intent_payload(
+        StudioIntent::SetTitleRow {
+            input: model_input(9),
+            base_revision: 4,
+            require: fm_protocol::TitleAirRequirement::OnAir,
+            values: vec![fm_protocol::TitleRowValue {
+                field: "Score".into(),
+                value: "12".into(),
+            }],
+            keep_live: true,
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        payload,
+        CommandPayload::SetTitleRow {
+            input: input(9),
+            base_revision: 4,
+            require: fm_protocol::TitleAirRequirement::OnAir,
+            values: vec![fm_protocol::TitleRowValue {
+                field: "Score".into(),
+                value: "12".into(),
+            }],
+            keep_live: true,
+        }
+    );
+}
+
+#[test]
 fn freeze_intent_maps_to_the_wire_command() {
     let payload = studio_intent_payload(
         StudioIntent::SetInputFreeze {
