@@ -1158,6 +1158,13 @@ fn decode_title_command(fields: &mut Fields, name: &str) -> Result<CommandPayloa
             require: parse_title_air_requirement(fields.required("require")?)?,
             fields: decode_title_fields(&fields.required("fields")?)?,
         },
+        "title_row" => CommandPayload::SetTitleRow {
+            input,
+            base_revision: fields.canonical_required("base_revision")?,
+            require: parse_title_air_requirement(fields.required("require")?)?,
+            values: super::title::decode_title_row(&fields.required("values")?)?,
+            keep_live: fields.boolean("keep_live")?,
+        },
         "title_take" => CommandPayload::TakeTitle {
             input,
             channel: decode_overlay_channel(fields)?,

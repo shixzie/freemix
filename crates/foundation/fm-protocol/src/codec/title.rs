@@ -72,6 +72,88 @@ pub(super) fn validate_title_fields(fields: &[TitleFieldUpdate]) -> Result<(), C
     Ok(())
 }
 
+/// Validates one title data row: bounded count, non-empty and bounded field
+/// names, bounded values, unique names, and the encoded-size bound.
+pub(super) fn validate_title_row(values: &[crate::TitleRowValue]) -> Result<(), CodecError> {
+    if values.len() > crate::MAX_TITLE_ROW_VALUES {
+        return Err(CodecError::TooManyItems("values"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for value in values {
+        if value.field.is_empty()
+            || value.field.len() > crate::MAX_TITLE_ROW_FIELD_BYTES
+            || value.value.len() > crate::MAX_TITLE_ROW_VALUE_BYTES
+            || value.field.chars().any(char::is_control)
+            || value.value.chars().any(|character| character == '\0')
+        {
+            return Err(CodecError::InvalidField {
+                field: "values",
+                value: format!("{}={}", value.field, value.value.len()),
+            });
+        }
+        if !seen.insert(value.field.as_str()) {
+            return Err(CodecError::InvalidField {
+                field: "values",
+                value: format!("duplicate {}", value.field),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Encodes a title data row as base64url field/value pairs.
+pub(super) fn encode_title_row(values: &[crate::TitleRowValue]) -> Result<String, CodecError> {
+    validate_title_row(values)?;
+    let mut encoded = String::new();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            encoded.push(',');
+        }
+        encoded.push_str(&crate::monitor_image::base64url_encode(
+            value.field.as_bytes(),
+        ));
+        encoded.push(':');
+        encoded.push_str(&crate::monitor_image::base64url_encode(
+            value.value.as_bytes(),
+        ));
+    }
+    if encoded.len() > crate::MAX_TITLE_ROW_BYTES {
+        return Err(CodecError::InvalidField {
+            field: "values",
+            value: format!("{} bytes", encoded.len()),
+        });
+    }
+    Ok(encoded)
+}
+
+/// Strictly decodes and validates a title data row.
+pub(super) fn decode_title_row(value: &str) -> Result<Vec<crate::TitleRowValue>, CodecError> {
+    let invalid = || CodecError::InvalidField {
+        field: "values",
+        value: value.to_owned(),
+    };
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.len() > crate::MAX_TITLE_ROW_BYTES {
+        return Err(invalid());
+    }
+    let mut values = Vec::new();
+    for pair in value.split(',') {
+        if values.len() == crate::MAX_TITLE_ROW_VALUES {
+            return Err(CodecError::TooManyItems("values"));
+        }
+        let (field, text) = pair.split_once(':').ok_or_else(invalid)?;
+        let field = crate::monitor_image::base64url_decode(field).ok_or_else(invalid)?;
+        let text = crate::monitor_image::base64url_decode(text).ok_or_else(invalid)?;
+        let field = String::from_utf8(field).map_err(|_| invalid())?;
+        let text = String::from_utf8(text).map_err(|_| invalid())?;
+        values.push(crate::TitleRowValue { field, value: text });
+    }
+    validate_title_row(&values)?;
+    Ok(values)
+}
+
 /// Encodes a validated field list.
 pub(super) fn encode_title_fields(fields: &[TitleFieldUpdate]) -> Result<String, CodecError> {
     validate_title_fields(fields)?;

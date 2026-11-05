@@ -588,6 +588,7 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         | CommandPayload::AddInput { .. }
         | CommandPayload::RemoveInput { .. }) => encode_input_catalogue_command(record, payload)?,
         payload @ (CommandPayload::SetTitleFields { .. }
+        | CommandPayload::SetTitleRow { .. }
         | CommandPayload::TakeTitle { .. }
         | CommandPayload::TitleOffAir { .. }
         | CommandPayload::SetTitleFieldExposure { .. }) => encode_title_command(record, payload)?,
@@ -1134,6 +1135,21 @@ fn encode_title_command(record: &mut Record, payload: &CommandPayload) -> Result
             record.field("base_revision", base_revision)?;
             record.field("require", title_air_requirement(*require))?;
             record.field_string("fields", fields)
+        }
+        CommandPayload::SetTitleRow {
+            input,
+            base_revision,
+            require,
+            values,
+            keep_live,
+        } => {
+            let values = super::title::encode_title_row(values)?;
+            record.field("payload", "title_row")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field("require", title_air_requirement(*require))?;
+            record.field("keep_live", u8::from(*keep_live))?;
+            record.field_string("values", values)
         }
         CommandPayload::TakeTitle {
             input,

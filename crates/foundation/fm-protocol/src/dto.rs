@@ -1522,6 +1522,22 @@ impl TitleFieldValue {
     }
 }
 
+/// Most field values one title row carries.
+pub const MAX_TITLE_ROW_VALUES: usize = MAX_TITLE_FIELDS;
+/// Longest row field name, in UTF-8 bytes.
+pub const MAX_TITLE_ROW_FIELD_BYTES: usize = 256;
+/// Longest row field value, in UTF-8 bytes.
+pub const MAX_TITLE_ROW_VALUE_BYTES: usize = 4_096;
+/// Largest encoded title-row value list, in bytes.
+pub const MAX_TITLE_ROW_BYTES: usize = 48 * 1024;
+
+/// One raw field value in a title data row, keyed by template field name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleRowValue {
+    pub field: String,
+    pub value: String,
+}
+
 /// One title field and its value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitleFieldUpdate {
@@ -1851,6 +1867,16 @@ pub enum CommandPayload {
         base_revision: u64,
         require: TitleAirRequirement,
         fields: Vec<TitleFieldUpdate>,
+    },
+    /// Maps raw data-row strings onto the title's template fields by name and
+    /// sets them at a base revision (GX-005, Protocol 2.165). `keep_live`
+    /// skips failed fields instead of refusing the whole row.
+    SetTitleRow {
+        input: WireInputId,
+        base_revision: u64,
+        require: TitleAirRequirement,
+        values: Vec<crate::TitleRowValue>,
+        keep_live: bool,
     },
     /// Applies field values to an off-air title and takes it onto `channel`
     /// in the same revision.

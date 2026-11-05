@@ -21,7 +21,7 @@ fn a_frozen_still_request_round_trips() {
     });
     let line = encode_line(&message).unwrap();
     assert!(
-        line.starts_with("frozen_still_request\tprotocol=2.164\t"),
+        line.starts_with("frozen_still_request\tprotocol=2.165\t"),
         "{line}"
     );
     assert!(line.contains("\trequest_id=still-1\tinput=3\n"), "{line}");
