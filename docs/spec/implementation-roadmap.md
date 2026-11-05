@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.160 / schema 109 (2026-11-04).
+(2026-10-19); items refreshed through protocol 2.161 / schema 109 (2026-11-04).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -3163,11 +3163,17 @@ source timestamp, so output never regresses. A std-only PNG encoder writes
 exact RGBA8 and RGBA16 stills with stored DEFLATE blocks, CRC32, and Adler32,
 checked by golden bytes and a structural decoder. The CLI's title, scene, and
 program render commands write an RGBA8 PNG when the output path ends in
-`.png` (binary PPM otherwise). Remaining gaps: no engine, scheduler,
-simulator, protocol, daemon, or UI calls the freeze controller; timestamps
-are bare ticks rather than `fm-frame` timing types; audio and clock-domain
-conversion are absent; and stills carry no color metadata or compression.
-`SW-016` remains planned.
+`.png` (binary PPM otherwise). The engine now exposes a live, non-undoable
+per-input freeze that is never persisted; Protocol 2.161 carries
+`set_input_freeze`, `input_freeze_changed`, and every snapshot's
+`frozen_inputs` list, the client model replicates it, and the CLI has local
+and remote `input-freeze` commands. The native realizer latches the
+presented frame (delay-aware) and holds a live input by ignoring newly
+ingested pictures until it resumes; scene, overlay, key/fill, and logical
+output paths read the same latched picture. Remaining gaps: no Studio freeze
+editor, no capture of a frozen frame as a still, no audio freeze/alignment,
+timestamps are still bare ticks rather than `fm-frame` timing types, and
+stills carry no color metadata or compression. `SW-016` remains planned.
 
 Current implementation boundary for video delay (`IN-022`): `fm-video`
 provides a `VideoDelayLine` timed purely by media timestamps that presents the
@@ -3184,7 +3190,7 @@ oversized frames. The effective delay converts to audio samples, aligning with
 each input's requested delay in frames (schema 109, at most 600), validation
 rejects unknown inputs and oversized delays, `EngineCommand::SetInputVideoDelay`
 is an undoable project edit, and the daemon folds it back into the project on
-save. Protocol 2.160 carries the list in every snapshot, sets one with
+save. Protocol 2.161 carries the list in every snapshot, sets one with
 `set_input_video_delay`, and announces an edit (or its undo or redo) with
 `input_video_delay_changed`; the client model replicates it. The CLI sets the
 delay locally with `input-video-delay <show> <input> <frames>` and remotely
