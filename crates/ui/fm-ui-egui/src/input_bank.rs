@@ -692,6 +692,7 @@ impl StudioShell {
             cut_enabled,
             reorder_enabled,
             frozen,
+            video_delay,
             ..
         } = tile;
         let TileReasons {
@@ -795,10 +796,10 @@ impl StudioShell {
             let mut frames = video_delay;
             let response = ui
                 .add_enabled(
-                    edit_reason.is_none(),
+                    edit_reason.is_empty(),
                     egui::DragValue::new(&mut frames).range(0..=600),
                 )
-                .hint(l.text(Msg::VideoDelayHover), edit_reason.unwrap_or(""));
+                .hint(l.text(Msg::VideoDelayHover), edit_reason);
             if response.drag_stopped() || (response.lost_focus() && response.changed()) {
                 intents.push(StudioIntent::SetInputVideoDelay { input, frames });
             }
