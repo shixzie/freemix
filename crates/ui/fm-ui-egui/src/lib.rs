@@ -213,6 +213,8 @@ pub enum StudioIntent {
     },
     /// Renames one input using the exact submitted text.
     RenameInput { input: InputId, name: String },
+    /// Freezes or resumes one input's picture (SW-016, Protocol 2.161).
+    SetInputFreeze { input: InputId, frozen: bool },
     /// Updates changed Master-strip controls on one input.
     SetInputAudioStrip {
         input: InputId,

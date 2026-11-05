@@ -332,6 +332,10 @@ impl StudioShell {
                                             && input_edit_lock_reason(state, input).is_none(),
                                         locked: input_edit_lock_reason(state, input).is_some(),
                                         removal: self.remove_input_gate(state, input),
+                                        frozen: view
+                                            .frozen_inputs
+                                            .iter()
+                                            .any(|frozen| frozen.to_domain() == input),
                                         grade_reason: crate::studio_color::grade_lock_reason(
                                             state,
                                             fm_ui_model::grade_editor::GradeTarget::Input(input),
@@ -564,6 +568,10 @@ impl StudioShell {
             hover.push('\n');
             hover.push_str(l.text(Msg::TileSelectedNote));
         }
+        if frozen {
+            hover.push('\n');
+            hover.push_str(l.text(Msg::TileFrozenNote));
+        }
         // Clicking, right-clicking, or tabbing to a tile selects its input
         // on this console (RC-004).
         if response.clicked() || response.secondary_clicked() || response.gained_focus() {
@@ -669,6 +677,7 @@ impl StudioShell {
             enabled,
             cut_enabled,
             reorder_enabled,
+            frozen,
             ..
         } = tile;
         let TileReasons {
@@ -745,6 +754,27 @@ impl StudioShell {
             cut_reason,
         ) {
             intents.extend(tile_intents(input, TileGesture::Cut, gates));
+        }
+        if item(
+            ui,
+            enabled,
+            if frozen {
+                l.text(Msg::UnfreezeInput)
+            } else {
+                l.text(Msg::FreezeInput)
+            },
+            "",
+            if frozen {
+                l.text(Msg::TileUnfreezeHover)
+            } else {
+                l.text(Msg::TileFreezeHover)
+            },
+            preview_reason,
+        ) {
+            intents.push(StudioIntent::SetInputFreeze {
+                input,
+                frozen: !frozen,
+            });
         }
         // Grading is a project edit: like Rename and Move, `Grade…` is
         // offered only to a session that may edit this input, and says why
@@ -1290,6 +1320,8 @@ struct TileContext<'a> {
     /// Why this input's grade cannot be edited (no `edit_project`, not
     /// ready, or a padlock), if it cannot.
     grade_reason: Option<&'static str>,
+    /// Whether the realizer is holding this input's picture (SW-016).
+    frozen: bool,
 }
 
 /// What a tile with no picture paints instead of its ordinal.

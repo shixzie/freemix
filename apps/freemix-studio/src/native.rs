@@ -2989,6 +2989,16 @@ fn intent_payload(
         StudioIntent::MoveInput { input, direction } => {
             return resolve_input_move(view, input, direction);
         }
+        StudioIntent::SetInputFreeze { input, frozen } => {
+            let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
+            if !view.inputs.contains(&input) {
+                return Err("Input no longer exists".to_owned());
+            }
+            CommandPayload::SetInputFreeze {
+                input: WireInputId::from_domain(input),
+                frozen,
+            }
+        }
         StudioIntent::SetInputAudioStrip { input, update } => {
             return resolve_input_audio_strip(view, input, update);
         }

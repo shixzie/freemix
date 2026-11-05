@@ -1203,8 +1203,22 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::TileMoreHover,
         t(
-            "Más: Previo, Corte, Duplicar, Categoría, Color, Pausa, Cerrar, Renombrar, Mover, Quitar",
+            "Más: Previo, Corte, Congelar, Duplicar, Categoría, Color, Pausa, Cerrar, Renombrar, Mover, Quitar",
         ),
+    ),
+    (Msg::FreezeInput, t("Congelar")),
+    (Msg::UnfreezeInput, t("Descongelar")),
+    (
+        Msg::TileFreezeHover,
+        t("Mantener la imagen actual de esta entrada"),
+    ),
+    (
+        Msg::TileUnfreezeHover,
+        t("Reanudar la imagen en vivo de esta entrada"),
+    ),
+    (
+        Msg::TileFrozenNote,
+        t("Congelada: mantiene su imagen actual"),
     ),
     (Msg::CutKey, t("CORTE")),
     (
