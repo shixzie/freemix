@@ -5161,13 +5161,16 @@ a daemon keeps a runtime, per-title scheduled source for a bundle-relative
 restarts. An `http://` or `https://` source is fetched with a bounded HTTP/1.1 client:
 three-second connect and five-second read timeouts, four-megabyte body cap,
 at most three redirects, and no request body. HTTPS uses rustls with the
-Mozilla root store from `webpki-roots`. An unchanged body emits nothing.
-Remaining gaps: Studio's title editor has
-a data-row section with a `Name=value` draft, a local preview against the
-replicated field names and values, a keep-failed-fields toggle, and one
-atomic `set_title_row` action; there
-is no time-zone database or localization; image URIs are never fetched; and
-preview state is in memory only. `GX-005` remains planned. Preview state now
+Mozilla root store from `webpki-roots`; a successful local-TLS test injects a
+fresh test root. Outbound fetches refuse non-public addresses (loopback,
+private, link-local, CGNAT, unspecified, multicast, IPv4 broadcast, and IPv6
+unique-local/link-local), so a source cannot probe the host or its LAN. An
+unchanged body emits nothing. Studio's title editor has a data-row section
+with a `Name=value` draft, a local preview against the replicated field names
+and values, a keep-failed-fields toggle, and one atomic `set_title_row`
+action. Remaining gaps: there is no time-zone database or localization; image
+URIs are never fetched; and preview state is in memory only. `GX-005` remains
+planned. Preview state now
 round-trips through a strict, versioned text document (`PreviewSnapshot`) and
 persists per title input in `project.json` (schema 106), strictly parsed and
 canonicalized on load; `freemix-cli preview-check`, `preview-import`, and
