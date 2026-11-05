@@ -76,6 +76,10 @@ pub(crate) struct TitlesPanel {
     /// time it was first drawn, so the timeline playhead runs on between
     /// records (Protocol 2.90).
     phases_seen: Option<(u64, OrderedTime)>,
+    /// The title data row being authored (GX-005).
+    row_draft: String,
+    row_preview: Option<String>,
+    row_keep_live: bool,
 }
 
 /// An egui time in seconds, compared bit for bit (the panel is `Eq`).
@@ -83,6 +87,55 @@ pub(crate) struct TitlesPanel {
 struct OrderedTime(f64);
 
 impl Eq for OrderedTime {}
+
+/// Parses a `Name=value` per-line title data row.
+fn parse_title_row_draft(draft: &str) -> Result<Vec<fm_protocol::TitleRowValue>, ()> {
+    let mut values = Vec::new();
+    for line in draft.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((field, value)) = line.split_once('=') else {
+            return Err(());
+        };
+        let field = field.trim();
+        if field.is_empty() {
+            return Err(());
+        }
+        values.push(fm_protocol::TitleRowValue {
+            field: field.to_owned(),
+            value: value.trim().to_owned(),
+        });
+    }
+    Ok(values)
+}
+
+/// A local preview of a data row against the title's replicated fields.
+fn row_preview_text(l: Locale, presentation: &TitleEditorPresentation, draft: &str) -> String {
+    let values = match parse_title_row_draft(draft) {
+        Ok(values) => values,
+        Err(()) => return l.text(Msg::TitleRowEmpty).to_owned(),
+    };
+    if values.is_empty() {
+        return l.text(Msg::TitleRowEmpty).to_owned();
+    }
+    let mut lines = vec![l.text(Msg::TitleRowPreviewHeading).to_owned()];
+    for value in values {
+        match presentation
+            .fields
+            .iter()
+            .find(|field| field.name == value.field)
+        {
+            Some(field) => lines.push(format!(
+                "{}: {} -> {}",
+                value.field, field.input, value.value
+            )),
+            None => lines.push(format!("{}: {}", value.field, l.text(Msg::TitleRowUnknown))),
+        }
+    }
+    lines.join("\n")
+}
 
 /// The text field of `field` in `title`'s editor.
 fn field_edit_id(title: InputId, field: WireTitleFieldId) -> egui::Id {
@@ -302,6 +355,7 @@ impl TitlesPanel {
                         .map(|(_, exposed)| *exposed);
                     self.draw_field(ui, l, presentation, field, web, intents);
                 }
+                self.draw_row_section(ui, l, presentation, intents);
                 if presentation.previewed
                     && let Some(preview) = self.preview.as_ref().filter(|p| p.title == title)
                 {
@@ -323,6 +377,70 @@ impl TitlesPanel {
                         .request_repaint_after(std::time::Duration::from_millis(100));
                 }
             });
+    }
+
+    /// The title data-row authoring section (GX-005): a `Name=value` draft,
+    /// a local preview against the replicated field names, and one atomic
+    /// daemon-side row application.
+    fn draw_row_section(
+        &mut self,
+        ui: &mut Ui,
+        l: Locale,
+        presentation: &TitleEditorPresentation,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        ui.add_space(4.0);
+        ui.separator();
+        ui.label(RichText::new(l.text(Msg::TitleRowSection)).strong());
+        ui.add(
+            egui::TextEdit::multiline(&mut self.row_draft)
+                .desired_rows(3)
+                .hint_text(l.text(Msg::TitleRowHint)),
+        )
+        .on_hover_text(l.text(Msg::TitleRowHint));
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    presentation.can_edit,
+                    egui::Button::new(l.text(Msg::TitleRowPreview)),
+                )
+                .on_hover_text(l.text(Msg::TitleRowPreviewHover))
+                .clicked()
+            {
+                self.row_preview = Some(row_preview_text(l, presentation, &self.row_draft));
+            }
+            ui.checkbox(&mut self.row_keep_live, l.text(Msg::TitleRowKeepLive))
+                .on_hover_text(l.text(Msg::TitleRowKeepLiveHover));
+            if ui
+                .add_enabled(
+                    presentation.can_edit,
+                    egui::Button::new(l.text(Msg::TitleRowApply)),
+                )
+                .on_hover_text(l.text(Msg::TitleRowApplyHover))
+                .clicked()
+            {
+                match parse_title_row_draft(&self.row_draft) {
+                    Ok(values) if !values.is_empty() => {
+                        intents.push(StudioIntent::SetTitleRow {
+                            input: presentation.title,
+                            base_revision: presentation.live_revision,
+                            require: if presentation.on_air {
+                                fm_protocol::TitleAirRequirement::OnAir
+                            } else {
+                                fm_protocol::TitleAirRequirement::OffAir
+                            },
+                            values,
+                            keep_live: self.row_keep_live,
+                        });
+                    }
+                    Ok(_) => self.row_preview = Some(l.text(Msg::TitleRowEmpty).to_owned()),
+                    Err(()) => self.row_preview = Some(l.text(Msg::TitleRowEmpty).to_owned()),
+                }
+            }
+        });
+        if let Some(preview) = &self.row_preview {
+            ui.label(RichText::new(preview).small().color(muted_color()));
+        }
     }
 
     fn draw_conflict_banner(

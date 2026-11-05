@@ -219,6 +219,15 @@ pub enum StudioIntent {
     /// Protocol 2.164); the answer updates
     /// [`StudioUiState::frozen_still`].
     CaptureFrozenStill { input: InputId },
+    /// Maps one raw data row onto a title's template fields (GX-005,
+    /// Protocol 2.165).
+    SetTitleRow {
+        input: InputId,
+        base_revision: u64,
+        require: fm_protocol::TitleAirRequirement,
+        values: Vec<fm_protocol::TitleRowValue>,
+        keep_live: bool,
+    },
     /// Delays one input's video in frames (IN-022, Protocol 2.160); a
     /// padlocked, undoable project edit.
     SetInputVideoDelay { input: InputId, frames: u32 },

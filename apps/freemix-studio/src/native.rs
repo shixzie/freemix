@@ -3036,6 +3036,19 @@ fn intent_payload(
             input: WireInputId::from_domain(input),
             frozen,
         },
+        StudioIntent::SetTitleRow {
+            input,
+            base_revision,
+            require,
+            values,
+            keep_live,
+        } => CommandPayload::SetTitleRow {
+            input: WireInputId::from_domain(input),
+            base_revision,
+            require,
+            values,
+            keep_live,
+        },
         StudioIntent::SetInputVideoDelay { input, frames } => CommandPayload::SetInputVideoDelay {
             input: WireInputId::from_domain(input),
             frames,
