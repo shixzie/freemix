@@ -61,7 +61,7 @@ use fm_compositor::{
 };
 use fm_control::ControlService;
 use fm_engine::CompiledProjectGrades;
-use fm_model::{InputKind, Project, SimulatedVideo};
+use fm_model::{InputKind, MixFeed, Project, SimulatedVideo};
 use fm_overlay_layout::{overlay_border_width, overlay_transform};
 use fm_protocol::{
     MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin,
@@ -436,6 +436,9 @@ pub struct SimulatedMonitorTap {
     composed: Vec<ComposedScene>,
     /// The latest render of each title input, keyed by its full title state.
     rendered_titles: BTreeMap<InputId, RenderedTitle>,
+    /// Each tap's latest composed picture, shared with the daemon for
+    /// feed-input thumbnails (IN-025).
+    latest: Arc<Mutex<[Option<Arc<ImageFrame>>; 2]>>,
     /// The title phase each title on air is in, and the instant this tap saw
     /// that phase start (`None` when it did not: the phase began before the
     /// tap was watching, or its replay has caught up with the engine).
@@ -471,6 +474,14 @@ impl SimulatedMonitorTap {
     /// This tap, rendering document inputs from `documents` (IN-014).
     pub fn with_documents(self, documents: Arc<DocumentPages>) -> Self {
         Self { documents, ..self }
+    }
+
+    /// This tap, publishing each dangling tap picture into `latest` for
+    /// feed-input thumbnails (IN-025).
+    #[must_use]
+    pub fn with_latest(mut self, latest: Arc<Mutex<[Option<Arc<ImageFrame>>; 2]>>) -> Self {
+        self.latest = latest;
+        self
     }
 
     /// Cadence and rendering against an explicit realized state. Takes the
@@ -557,6 +568,8 @@ impl SimulatedMonitorTap {
             let Some(image) = image else {
                 continue;
             };
+            self.latest.lock().unwrap_or_else(PoisonError::into_inner)[tap.index()] =
+                Some(Arc::clone(&image));
             let Some(sequence) = self.sequences[tap.index()].checked_add(1) else {
                 continue;
             };
@@ -1078,6 +1091,8 @@ pub struct SimulatedMonitorWorker {
     grade_cache: GradeCache,
     /// The grades of the latest demanded poll.
     grades: Arc<CompiledProjectGrades>,
+    /// Each tap's latest composed picture, for feed-input thumbnails.
+    latest: Arc<Mutex<[Option<Arc<ImageFrame>>; 2]>>,
 }
 
 /// The last work handed to the worker, so unchanged polls skip the lock.
@@ -1100,18 +1115,27 @@ impl SimulatedMonitorWorker {
         titles: Arc<TitleAssets>,
         documents: Arc<DocumentPages>,
     ) -> std::io::Result<Self> {
-        let mut tap = SimulatedMonitorTap::with_titles(titles).with_documents(documents);
-        Self::spawn_with(Box::new(move |work, now, emit| {
-            if let Some((state, work)) = work {
-                tap.grades = Arc::clone(&work.grades);
-                tap.poll_state_into(&state, &work.project, &server, now, true, emit);
-            } else {
-                tap.idle();
-            }
-        }))
+        let latest = Arc::new(Mutex::new([None, None]));
+        let mut tap = SimulatedMonitorTap::with_titles(titles)
+            .with_documents(documents)
+            .with_latest(Arc::clone(&latest));
+        Self::spawn_with(
+            Box::new(move |work, now, emit| {
+                if let Some((state, work)) = work {
+                    tap.grades = Arc::clone(&work.grades);
+                    tap.poll_state_into(&state, &work.project, &server, now, true, emit);
+                } else {
+                    tap.idle();
+                }
+            }),
+            latest,
+        )
     }
 
-    fn spawn_with(mut render: MonitorRenderer) -> std::io::Result<Self> {
+    fn spawn_with(
+        mut render: MonitorRenderer,
+        latest: Arc<Mutex<[Option<Arc<ImageFrame>>; 2]>>,
+    ) -> std::io::Result<Self> {
         let shared = Arc::new(WorkerShared {
             slot: Mutex::new(WorkerSlot {
                 work: None,
@@ -1132,6 +1156,7 @@ impl SimulatedMonitorWorker {
             published: Published::Nothing,
             grade_cache: GradeCache::default(),
             grades: Arc::default(),
+            latest,
         })
     }
 
@@ -1174,6 +1199,23 @@ impl SimulatedMonitorWorker {
             .into_iter()
             .filter_map(|tap| Some((tap, slot.finished[tap.index()].take()?)))
             .collect()
+    }
+
+    /// The latest composed Program and Preview pictures, for feed-input
+    /// thumbnails (IN-025).
+    #[must_use]
+    pub fn composed_feed_frames(&self) -> BTreeMap<MixFeed, Arc<ImageFrame>> {
+        let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut frames = BTreeMap::new();
+        for (tap, feed) in [
+            (MonitorTap::Program, MixFeed::Program),
+            (MonitorTap::Preview, MixFeed::Preview),
+        ] {
+            if let Some(image) = &latest[tap.index()] {
+                frames.insert(feed, Arc::clone(image));
+            }
+        }
+        frames
     }
 
     /// Shares one project copy, with its compiled grades, per realized
@@ -2306,20 +2348,24 @@ mod tests {
         let (rendering, rendering_rx) = mpsc::channel();
         let (release, release_rx) = mpsc::channel::<()>();
         let mut blocked_once = false;
-        let mut worker = SimulatedMonitorWorker::spawn_with(Box::new(move |work, _, emit| {
-            let Some((state, _)) = work else {
-                return;
-            };
-            let _ = rendering.send(state.revision);
-            if !blocked_once {
-                blocked_once = true;
-                // Stands in for a slow Scene composition.
-                release_rx
-                    .recv_timeout(Duration::from_secs(30))
-                    .expect("the test releases the composition");
-            }
-            emit(MonitorTap::Program, state.revision.to_be_bytes().to_vec());
-        }))
+        let latest = Arc::new(Mutex::new([None, None]));
+        let mut worker = SimulatedMonitorWorker::spawn_with(
+            Box::new(move |work, _, emit| {
+                let Some((state, _)) = work else {
+                    return;
+                };
+                let _ = rendering.send(state.revision);
+                if !blocked_once {
+                    blocked_once = true;
+                    // Stands in for a slow Scene composition.
+                    release_rx
+                        .recv_timeout(Duration::from_secs(30))
+                        .expect("the test releases the composition");
+                }
+                emit(MonitorTap::Program, state.revision.to_be_bytes().to_vec());
+            }),
+            latest,
+        )
         .unwrap();
 
         assert_eq!(worker.poll_state(Some(state(1, 1, 2)), &project), NO_FRAMES);
@@ -2364,22 +2410,26 @@ mod tests {
         let project = project(1_920, 1_080);
         let (program_started, program_started_rx) = mpsc::channel();
         let (release, release_rx) = mpsc::channel::<()>();
-        let mut worker = SimulatedMonitorWorker::spawn_with(Box::new(move |work, _, emit| {
-            let Some((state, _)) = work else {
-                return;
-            };
-            emit(
-                MonitorTap::Preview,
-                vec![b'p', state.revision.to_be_bytes()[7]],
-            );
-            let _ = program_started.send(state.revision);
-            // Every Program composition is slow until released.
-            let _ = release_rx.recv_timeout(Duration::from_secs(30));
-            emit(
-                MonitorTap::Program,
-                vec![b'P', state.revision.to_be_bytes()[7]],
-            );
-        }))
+        let latest = Arc::new(Mutex::new([None, None]));
+        let mut worker = SimulatedMonitorWorker::spawn_with(
+            Box::new(move |work, _, emit| {
+                let Some((state, _)) = work else {
+                    return;
+                };
+                emit(
+                    MonitorTap::Preview,
+                    vec![b'p', state.revision.to_be_bytes()[7]],
+                );
+                let _ = program_started.send(state.revision);
+                // Every Program composition is slow until released.
+                let _ = release_rx.recv_timeout(Duration::from_secs(30));
+                emit(
+                    MonitorTap::Program,
+                    vec![b'P', state.revision.to_be_bytes()[7]],
+                );
+            }),
+            latest,
+        )
         .unwrap();
 
         assert_eq!(worker.poll_state(Some(state(1, 1, 2)), &project), NO_FRAMES);

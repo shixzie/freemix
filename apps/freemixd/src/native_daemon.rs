@@ -204,6 +204,9 @@ pub(crate) struct NativeDaemon {
     pub(crate) monitor_interval: Option<u64>,
     /// Whether any peer wants monitor frames.
     pub(crate) monitor_demand: bool,
+    /// Each monitor tap's latest composed readback, for feed-input
+    /// thumbnails (IN-025).
+    pub(crate) feed_taps: std::sync::Arc<std::sync::Mutex<[Option<crate::NativeTapImage>; 2]>>,
     /// Which due Preview tap frames a late loop still composites, mirroring
     /// the realizer's own capture pacing.
     pub(crate) preview_pacing: display_outputs::PresentationPacing,
@@ -463,6 +466,7 @@ impl NativeDaemon {
         };
         let latest_frames = playback.latest_frames();
         let monitor = NativeMonitorTap::new(&runtime, stored.project().settings());
+        let feed_taps = monitor.latest_handle();
         let monitor_interval = monitor.dimensions.map(|_| monitor.interval());
         let video = native_video_realizer::NativeVideoHandle::spawn(
             Arc::clone(&runtime),
@@ -1908,6 +1912,36 @@ impl NativeDaemon {
     /// demand no readback runs.
     pub(crate) fn set_monitor_demand(&mut self, demand: bool) {
         self.monitor_demand = demand;
+    }
+
+    /// The latest composed Program and Preview pictures from the monitor
+    /// taps, for feed-input thumbnails (IN-025).
+    pub(crate) fn composed_feed_frames(
+        &self,
+    ) -> std::collections::BTreeMap<fm_model::MixFeed, std::sync::Arc<fm_video::ImageFrame>> {
+        let latest = self
+            .feed_taps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut frames = std::collections::BTreeMap::new();
+        for (tap, feed) in [
+            (MonitorTap::Program, fm_model::MixFeed::Program),
+            (MonitorTap::Preview, fm_model::MixFeed::Preview),
+        ] {
+            let Some(image) = latest[tap.index()].as_ref() else {
+                continue;
+            };
+            let Ok(frame) = fm_video::ImageFrame::new(
+                image.width,
+                image.height,
+                image.stride,
+                image.pixels.clone(),
+            ) else {
+                continue;
+            };
+            frames.insert(feed, std::sync::Arc::new(frame));
+        }
+        frames
     }
 
     /// A snapshot of the newest CPU frame of every Program source, for an
@@ -3884,6 +3918,13 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     pub(crate) fn set_monitor_demand(&mut self, _demand: bool) {}
+
+    #[allow(clippy::unused_self)]
+    pub(crate) fn composed_feed_frames(
+        &self,
+    ) -> std::collections::BTreeMap<fm_model::MixFeed, std::sync::Arc<fm_video::ImageFrame>> {
+        std::collections::BTreeMap::new()
+    }
 
     #[allow(clippy::unused_self)]
     pub(crate) fn live_source_frames(&self) -> scene_preview::LiveSourceFrames {

@@ -38,6 +38,21 @@ pub(crate) struct NativeMonitorTap {
     pub(crate) demand: bool,
     /// Per tap, in [`MonitorTap::index`] order.
     pub(crate) taps: [NativeTapSlot; 2],
+    /// Each tap's latest readback at monitor size, shared with the daemon so
+    /// feed-input thumbnails see the composed Program and Preview pictures
+    /// without a second readback (IN-025).
+    latest: std::sync::Arc<std::sync::Mutex<[Option<NativeTapImage>; 2]>>,
+}
+
+/// One tap's latest composed readback: tightly packed RGBA8 at the monitor
+/// size, before QOI encoding.
+#[cfg(feature = "native-media")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeTapImage {
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) stride: usize,
+    pub(crate) pixels: Vec<u8>,
 }
 
 /// One native monitor tap's readback target, readback in flight, and latest
@@ -89,6 +104,7 @@ impl NativeMonitorTap {
             interval: whole_fps.div_ceil(Self::TARGET_FPS).max(1),
             demand: false,
             taps: [NativeTapSlot::default(), NativeTapSlot::default()],
+            latest: std::sync::Arc::new(std::sync::Mutex::new([None, None])),
         };
         if let Some((width, height)) = tap.dimensions {
             for slot in &mut tap.taps {
@@ -101,6 +117,15 @@ impl NativeMonitorTap {
     /// The frame interval between this monitor's taps.
     pub(crate) const fn interval(&self) -> u64 {
         self.interval
+    }
+
+    /// The cache of each tap's latest composed readback, shared with the
+    /// daemon for feed-input thumbnails (IN-025).
+    #[must_use]
+    pub(crate) fn latest_handle(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<[Option<NativeTapImage>; 2]>> {
+        std::sync::Arc::clone(&self.latest)
     }
 
     /// Sets whether any peer wants monitor frames.
@@ -146,15 +171,32 @@ impl NativeMonitorTap {
                     slot.in_flight = Some(NativeTapReadback { pending, ..started });
                     continue;
                 }
-                Ok(fm_gpu::NativeReadbackPoll::Ready(pixels)) => slot.encode(
-                    server,
-                    tap,
-                    started.frame,
-                    started.input,
-                    width,
-                    height,
-                    &pixels,
-                ),
+                Ok(fm_gpu::NativeReadbackPoll::Ready(pixels)) => {
+                    if pixels.width == u32::from(width)
+                        && pixels.height == u32::from(height)
+                        && let Ok(stride) = usize::try_from(pixels.stride)
+                    {
+                        let mut latest = self
+                            .latest
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        latest[tap.index()] = Some(NativeTapImage {
+                            width,
+                            height,
+                            stride,
+                            pixels: pixels.bytes.clone(),
+                        });
+                    }
+                    slot.encode(
+                        server,
+                        tap,
+                        started.frame,
+                        started.input,
+                        width,
+                        height,
+                        &pixels,
+                    )
+                }
                 Err(_) => false,
             };
             let tap_counters = &mut counters[tap.index()];
