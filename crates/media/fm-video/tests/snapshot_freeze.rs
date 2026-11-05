@@ -516,3 +516,59 @@ fn srgb_stills_carry_the_colour_chunk() {
     }
     assert_eq!(srgb.as_deref(), Some(&[0_u8][..]), "perceptual sRGB intent");
 }
+
+#[test]
+fn compressed_stills_are_smaller_and_round_trip_exactly() {
+    use flate2::read::ZlibDecoder;
+    use fm_video::encode_png_rgba8_srgb_compressed;
+    use std::io::Read;
+
+    let frame = solid_color(320, 180, Rgba8::new(31, 63, 127, 255)).unwrap();
+    let stored = fm_video::encode_png_rgba8_srgb(&frame).unwrap();
+    let compressed = encode_png_rgba8_srgb_compressed(&frame).unwrap();
+    assert!(
+        compressed.len() < stored.len(),
+        "compressed {} vs stored {}",
+        compressed.len(),
+        stored.len()
+    );
+    assert_eq!(&compressed[..8], &PNG_SIGNATURE);
+
+    let mut cursor = 8;
+    let mut idat = Vec::new();
+    let mut srgb = None;
+    while cursor < compressed.len() {
+        let length = usize::try_from(be32(&compressed[cursor..cursor + 4])).unwrap();
+        let kind: [u8; 4] = compressed[cursor + 4..cursor + 8].try_into().unwrap();
+        let data = &compressed[cursor + 8..cursor + 8 + length];
+        assert_eq!(
+            be32(&compressed[cursor + 8 + length..cursor + 12 + length]),
+            bitwise_crc32(&compressed[cursor + 4..cursor + 8 + length]),
+            "chunk CRC"
+        );
+        match &kind {
+            b"IDAT" => idat.extend_from_slice(data),
+            b"sRGB" => srgb = Some(data.to_vec()),
+            _ => {}
+        }
+        cursor += 12 + length;
+    }
+    assert_eq!(cursor, compressed.len());
+    assert_eq!(srgb.as_deref(), Some(&[0_u8][..]), "perceptual sRGB intent");
+
+    let mut raw = Vec::new();
+    ZlibDecoder::new(idat.as_slice())
+        .read_to_end(&mut raw)
+        .unwrap();
+    let row = usize::try_from(frame.width()).unwrap() * 4;
+    assert_eq!(
+        raw.len(),
+        (row + 1) * usize::try_from(frame.height()).unwrap()
+    );
+    let mut pixels = Vec::new();
+    for scanline in raw.chunks(row + 1) {
+        assert_eq!(scanline[0], 0, "filter type None");
+        pixels.extend_from_slice(&scanline[1..]);
+    }
+    assert_eq!(pixels, frame.pixels());
+}

@@ -3161,7 +3161,9 @@ most two frames, and resumes live with output timestamps of
 `max(map(source_pts), last_output_pts + d)` on a grid anchored at the first
 source timestamp, so output never regresses. A std-only PNG encoder writes
 exact RGBA8 and RGBA16 stills with stored DEFLATE blocks, CRC32, and Adler32,
-checked by golden bytes and a structural decoder. The CLI's title, scene, and
+checked by golden bytes and a structural decoder; operator exports use a
+compressed deflate stream with an explicit `sRGB` chunk, while the raw
+encoder's stored-block output stays bit-exact. The CLI's title, scene, and
 program render commands write an RGBA8 PNG when the output path ends in
 `.png` (binary PPM otherwise). The engine now exposes a live, non-undoable
 per-input freeze that is never persisted; Protocol 2.161 carries
@@ -3189,8 +3191,7 @@ picture; a simulated daemon renders the input's current simulated picture.
 Studio's input-bank menu offers Capture still on a frozen tile, sends the
 2.164 request through the session, and shows the returned asset URI (or the
 daemon's refusal) under the action. Remaining gaps: timestamps are still
-bare ticks rather than `fm-frame` timing types, and stills carry no color
-metadata or compression. `SW-016` remains planned.
+bare ticks rather than `fm-frame` timing types. `SW-016` remains planned.
 
 Current implementation boundary for video delay (`IN-022`): `fm-video`
 provides a `VideoDelayLine` timed purely by media timestamps that presents the
