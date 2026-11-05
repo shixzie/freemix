@@ -7651,7 +7651,7 @@ fn registry_stinger_frame(
     }
     let deadline = stinger_frame_deadline(frame_rate, frame_index)?;
     let frame = prefix
-        .frame_at_deadline(deadline)
+        .frame_at_deadline(deadline, 0)
         .ok_or(NativeSourceRenderError::MissingSource { input })?;
     if let Some((expected_width, expected_height)) = registry.dimensions {
         let actual_width = frame.texture().width();
@@ -8760,7 +8760,8 @@ impl NativeMediaRuntime {
         if retained_history > 0 {
             // The composed picture replaces the source's live history, so
             // its dropped textures release their retained-byte charge.
-            let dropped = rgba16f_frame_bytes(input, width, height)?
+            let dropped = rgba16f_frame_bytes(input, width, height)
+                .map_err(|_| NativeSourceRenderError::ResourceBounds)?
                 .saturating_mul(u64::try_from(retained_history).unwrap_or(u64::MAX));
             playback.registry.retained_rgba16f_bytes = playback
                 .registry
