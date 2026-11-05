@@ -405,6 +405,7 @@ impl TitlesPanel {
                     egui::Button::new(l.text(Msg::TitleRowPreview)),
                 )
                 .on_hover_text(l.text(Msg::TitleRowPreviewHover))
+                .on_disabled_hover_text(l.text(Msg::TitleRowPreviewHover))
                 .clicked()
             {
                 self.row_preview = Some(row_preview_text(l, presentation, &self.row_draft));
@@ -417,6 +418,7 @@ impl TitlesPanel {
                     egui::Button::new(l.text(Msg::TitleRowApply)),
                 )
                 .on_hover_text(l.text(Msg::TitleRowApplyHover))
+                .on_disabled_hover_text(l.text(Msg::TitleRowApplyHover))
                 .clicked()
             {
                 match parse_title_row_draft(&self.row_draft) {
