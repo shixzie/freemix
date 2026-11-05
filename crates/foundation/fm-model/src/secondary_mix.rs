@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn the_list_is_bounded() {
         let inputs = [input(1)];
-        let configs = (0..MAX_SECONDARY_MIXES + 1)
+        let configs = (0..=MAX_SECONDARY_MIXES)
             .map(|_| {
                 SecondaryMixConfig::output_only(
                     number(2),

@@ -354,6 +354,34 @@ fn validate_multiview_references(
     visit(config.slot, configs, &mut visiting, &mut done)
 }
 
+fn visit(
+    slot: LogicalOutputSlot,
+    configs: &[LogicalOutputConfig],
+    visiting: &mut Vec<LogicalOutputSlot>,
+    done: &mut Vec<LogicalOutputSlot>,
+) -> Result<(), LogicalOutputError> {
+    if done.contains(&slot) {
+        return Ok(());
+    }
+    if visiting.contains(&slot) {
+        return Err(LogicalOutputError::Cycle);
+    }
+    let Some(config) = configs.iter().find(|config| config.slot == slot) else {
+        return Ok(());
+    };
+    visiting.push(slot);
+    if let LogicalOutputSource::MultiView(cells) = &config.source {
+        for cell in cells {
+            if let LogicalMultiViewCell::Output(target) = cell {
+                visit(*target, configs, visiting, done)?;
+            }
+        }
+    }
+    visiting.pop();
+    done.push(slot);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use core::num::NonZeroU128;
@@ -539,32 +567,4 @@ mod tests {
             Err(LogicalOutputError::DuplicateOverlayChannel(1))
         );
     }
-}
-
-fn visit(
-    slot: LogicalOutputSlot,
-    configs: &[LogicalOutputConfig],
-    visiting: &mut Vec<LogicalOutputSlot>,
-    done: &mut Vec<LogicalOutputSlot>,
-) -> Result<(), LogicalOutputError> {
-    if done.contains(&slot) {
-        return Ok(());
-    }
-    if visiting.contains(&slot) {
-        return Err(LogicalOutputError::Cycle);
-    }
-    let Some(config) = configs.iter().find(|config| config.slot == slot) else {
-        return Ok(());
-    };
-    visiting.push(slot);
-    if let LogicalOutputSource::MultiView(cells) = &config.source {
-        for cell in cells {
-            if let LogicalMultiViewCell::Output(target) = cell {
-                visit(*target, configs, visiting, done)?;
-            }
-        }
-    }
-    visiting.pop();
-    done.push(slot);
-    Ok(())
 }
