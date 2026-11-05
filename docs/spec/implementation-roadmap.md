@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.162 / schema 109 (2026-11-04).
+(2026-10-19); items refreshed through protocol 2.162 / schema 109 (2026-11-05).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -4022,10 +4022,14 @@ Each patched file is reported as `FREEMIXD_RECORD_TRACK_LOUDNESS_FILE` with
 its path and the five hundredths values written into `bext`.
 Track WAV starts run the same free-space preflight as their MP4 segment,
 using the map's PCM bitrate, and refuse when every measured root is
-exhausted, reporting `FREEMIXD_RECORD_TRACK_SPACE`. Remaining gap: the WAVs
-use their own resilient WAV sessions rather than the MP4 packet spool, while
-sharing its preflight, roots, manifests, and recovery behavior. `AU-010`
-remains planned.
+exhausted, reporting `FREEMIXD_RECORD_TRACK_SPACE`. The document formats
+(track map, map document, rollover limits, loudness document, and `bext`
+loudness fields) live in the client-safe `fm-record-doc` foundation crate,
+which both `fm-record` and Studio use, so Studio reads and rewrites the same
+files without linking the media recorder. Remaining gap: the WAVs use their
+own resilient WAV sessions rather than the MP4 packet spool, while sharing
+its preflight, roots, manifests, and recovery behavior. `AU-010` remains
+planned.
 
 Current implementation boundary for statistics and alerts (`RC-015`):
 `fm-observability` provides a deterministic, clock-free statistics layer: a
