@@ -82,10 +82,7 @@ fn a_cut_moves_a_live_secondary_mix() {
     ));
     let first = engine.tick().unwrap();
     assert_eq!(mix_frame(&first).primary, MixLayer::Input(input(1)));
-    assert_eq!(
-        mix_frame(&first).preview,
-        Some(MixLayer::Input(input(2)))
-    );
+    assert_eq!(mix_frame(&first).preview, Some(MixLayer::Input(input(2))));
     assert_eq!(
         mix_frame(&first).primary,
         engine
@@ -98,10 +95,7 @@ fn a_cut_moves_a_live_secondary_mix() {
     engine.cut_secondary_mix(mix(2)).unwrap();
     let second = engine.tick().unwrap();
     assert_eq!(mix_frame(&second).primary, MixLayer::Input(input(2)));
-    assert_eq!(
-        mix_frame(&second).preview,
-        Some(MixLayer::Input(input(1)))
-    );
+    assert_eq!(mix_frame(&second).preview, Some(MixLayer::Input(input(1))));
     assert_eq!(
         engine
             .secondary_mix_frame()

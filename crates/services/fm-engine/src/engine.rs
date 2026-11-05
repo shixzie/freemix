@@ -514,7 +514,9 @@ pub enum EngineCommand {
     },
     /// Cuts secondary mix `number` from its Program to its Preview (IN-023).
     /// A live operation realized on acceptance.
-    SecondaryMixCut { number: fm_model::MixNumber },
+    SecondaryMixCut {
+        number: fm_model::MixNumber,
+    },
     /// Starts a timed transition of secondary mix `number` toward its Preview
     /// (IN-023). A live operation realized on acceptance.
     SecondaryMixTransition {
@@ -3267,10 +3269,7 @@ impl Engine {
         if main_preview == Some(MixSource::Input(program))
             && self.mix_bank.apply(MixBankCommand::Cut(MAIN)).is_ok()
             && preview != program
-            && self
-                .mix_bank
-                .mix(MAIN)
-                .and_then(MixState::preview)
+            && self.mix_bank.mix(MAIN).and_then(MixState::preview)
                 != Some(MixSource::Input(preview))
         {
             let _ = self.mix_bank.apply(MixBankCommand::SelectPreview {

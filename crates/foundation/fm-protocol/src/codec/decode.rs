@@ -832,10 +832,7 @@ fn decode_command_payload(
         },
         "secondary_mix_transition" => CommandPayload::SecondaryMixTransition {
             number: super::secondary_mix::decode_number(fields)?,
-            kind: super::transition::decode_auto_transition_kind(
-                fields.required("kind")?,
-                "kind",
-            )?,
+            kind: super::transition::decode_auto_transition_kind(fields.required("kind")?, "kind")?,
             duration_frames: fields.parse_required("duration_frames")?,
         },
         replay if replay.starts_with("replay_") => {

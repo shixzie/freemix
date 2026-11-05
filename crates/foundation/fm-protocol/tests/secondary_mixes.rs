@@ -5,8 +5,8 @@ use core::num::NonZeroU128;
 
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, WireInputId,
-    WireMessage, WireMixNumber, WireSecondaryMixConfig, WireSecondaryMixMode, WireSecondaryMixSource,
-    decode_line, encode_line,
+    WireMessage, WireMixNumber, WireSecondaryMixConfig, WireSecondaryMixMode,
+    WireSecondaryMixSource, decode_line, encode_line,
 };
 
 fn input(value: u128) -> WireInputId {
