@@ -3170,10 +3170,14 @@ per-input freeze that is never persisted; Protocol 2.161 carries
 and remote `input-freeze` commands. The native realizer latches the
 presented frame (delay-aware) and holds a live input by ignoring newly
 ingested pictures until it resumes; scene, overlay, key/fill, and logical
-output paths read the same latched picture. Remaining gaps: no Studio freeze
-editor, no capture of a frozen frame as a still, no audio freeze/alignment,
-timestamps are still bare ticks rather than `fm-frame` timing types, and
-stills carry no color metadata or compression. `SW-016` remains planned.
+output paths read the same latched picture. Studio's input-bank menu offers
+Freeze or Unfreeze, marks a frozen tile in its hover text, and sends the
+2.161 command, and the replicated view carries the frozen set. Remaining gaps:
+there is no dedicated freeze button or always-visible badge beyond the menu
+and hover note, no capture of a frozen frame as a still, no audio
+freeze/alignment, timestamps are still bare ticks rather than `fm-frame`
+timing types, and stills carry no color metadata or compression. `SW-016`
+remains planned.
 
 Current implementation boundary for video delay (`IN-022`): `fm-video`
 provides a `VideoDelayLine` timed purely by media timestamps that presents the
