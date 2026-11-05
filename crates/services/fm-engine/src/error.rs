@@ -52,6 +52,8 @@ pub enum ShowError {
     InvalidLogicalOutput(fm_model::LogicalOutputError),
     /// Secondary-mix routing is invalid (IN-023).
     InvalidSecondaryMix(fm_model::SecondaryMixError),
+    /// An input's video delay is invalid (IN-022).
+    InvalidInputVideoDelay(fm_model::InputVideoDelayError),
     /// An output is not part of the show's output roster.
     UnknownOutput(OutputId),
     /// A Fade-to-Black output duration is outside 1 through 3600 frames
@@ -116,6 +118,9 @@ impl fmt::Display for ShowError {
             }
             Self::InvalidSecondaryMix(error) => {
                 write!(formatter, "secondary-mix routing is refused: {error}")
+            }
+            Self::InvalidInputVideoDelay(error) => {
+                write!(formatter, "input video delay is refused: {error}")
             }
             Self::InvalidAudioGroupGain(gain) => {
                 write!(formatter, "audio group gain {gain} millidB is out of range")

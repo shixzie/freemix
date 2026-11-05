@@ -200,6 +200,8 @@ pub struct ShowState {
     secondary_mixes: BTreeMap<fm_model::MixNumber, fm_model::SecondaryMixConfig>,
     /// The project's audio bus identifiers, for logical-output audio maps.
     audio_buses: Vec<fm_types::BusId>,
+    /// Per-input video delays in frames (IN-022), ascending.
+    input_video_delays: BTreeMap<InputId, u32>,
     input_audio_strips: BTreeMap<InputId, EngineInputAudioStripState>,
     desired_switcher: SwitcherState,
     project_locked: bool,
@@ -346,6 +348,7 @@ impl ShowState {
             logical_outputs: BTreeMap::new(),
             secondary_mixes: BTreeMap::new(),
             audio_buses: Vec::new(),
+            input_video_delays: BTreeMap::new(),
             desired_switcher,
             project_locked: false,
             locked_inputs: BTreeSet::new(),
@@ -477,6 +480,56 @@ impl ShowState {
     #[must_use]
     pub fn audio_buses(&self) -> &[fm_types::BusId] {
         &self.audio_buses
+    }
+
+    /// Every input's video delay in frames, ascending by input (IN-022).
+    pub fn input_video_delays(&self) -> impl Iterator<Item = (&InputId, &u32)> {
+        self.input_video_delays.iter()
+    }
+
+    /// One input's video delay in frames (zero when unset).
+    #[must_use]
+    pub fn input_video_delay(&self, input: InputId) -> u32 {
+        self.input_video_delays.get(&input).copied().unwrap_or(0)
+    }
+
+    /// Sets one input's video delay, or clears it with zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidInputVideoDelay`] for an unknown input or a
+    /// delay outside `0..=MAX_INPUT_VIDEO_DELAY_FRAMES`.
+    pub fn set_input_video_delay(
+        &mut self,
+        input: InputId,
+        frames: u32,
+    ) -> Result<(), ShowError> {
+        fm_model::validate_input_video_delay(input, frames, &self.inputs)
+            .map_err(ShowError::InvalidInputVideoDelay)?;
+        if frames == 0 {
+            self.input_video_delays.remove(&input);
+        } else {
+            self.input_video_delays.insert(input, frames);
+        }
+        Ok(())
+    }
+
+    /// Restores persisted video delays; problems are reported as a
+    /// [`ShowError::InvalidInputVideoDelay`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidInputVideoDelay`] for an unknown input or
+    /// an oversized delay.
+    pub fn restore_input_video_delays(
+        &mut self,
+        delays: impl IntoIterator<Item = (InputId, u32)>,
+    ) -> Result<(), ShowError> {
+        self.input_video_delays.clear();
+        self.input_video_delays.extend(delays);
+        let delays = self.input_video_delays.clone();
+        fm_model::validate_input_video_delays(&delays, &self.inputs)
+            .map_err(ShowError::InvalidInputVideoDelay)
     }
 
     /// The logical output routing, ascending by slot (SW-012).

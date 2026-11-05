@@ -524,6 +524,9 @@ pub enum EngineCommand {
         kind: fm_switcher::TransitionKind,
         duration_frames: u32,
     },
+    /// Sets one input's video delay in frames (IN-022). A project edit, undone
+    /// by restoring the previous delay.
+    SetInputVideoDelay { input: InputId, frames: u32 },
     /// Replaces the `LiveLAN` viewer stream's configuration (OR-017), its PIN
     /// already resolved to the exact one it will hold. A project edit,
     /// undone by restoring the previous configuration; the daemon realizes
@@ -890,6 +893,9 @@ pub enum EngineEvent {
         number: fm_model::MixNumber,
         config: Option<Box<fm_model::SecondaryMixConfig>>,
     },
+    /// One input's video delay changed (or the edit was undone or redone)
+    /// (IN-022); the delay is read from [`ShowState::input_video_delay`].
+    InputVideoDelayChanged { input: InputId, frames: u32 },
     /// The `LiveLAN` configuration changed (or the edit was undone or redone)
     /// (OR-017); it is read from [`ShowState::live_lan`].
     LiveLanChanged(Box<fm_types::live_lan::LiveLanConfig>),
@@ -4564,6 +4570,17 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetInputVideoDelay { input, frames } = self.command {
+            state
+                .set_input_video_delay(input, frames)
+                .map_err(|error| {
+                    Rejection::new(RejectionCode::InvalidCommand, error.to_string())
+                })?;
+            events.push(EngineEvent::InputVideoDelayChanged { input, frames });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetAlertRule(setting) = self.command {
             state.set_alert_rule(setting).map_err(|error| {
                 Rejection::new(RejectionCode::InvalidCommand, error.to_string()).with_field(
@@ -5078,6 +5095,7 @@ impl EngineMutation {
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
+            | EngineCommand::SetInputVideoDelay { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SetLiveLan(_)
@@ -5734,6 +5752,7 @@ fn apply_runtime(
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
+            | EngineCommand::SetInputVideoDelay { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SetLiveLan(_)
@@ -5937,6 +5956,7 @@ fn apply_runtime(
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
+        | EngineCommand::SetInputVideoDelay { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
@@ -6143,6 +6163,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
+        | EngineCommand::SetInputVideoDelay { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
@@ -6190,6 +6211,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
         && !matches!(command, EngineCommand::SetLogicalOutput { .. })
         && !matches!(command, EngineCommand::SetSecondaryMix { .. })
+        && !matches!(command, EngineCommand::SetInputVideoDelay { .. })
         && !matches!(command, EngineCommand::SecondaryMixCut { .. })
         && !matches!(command, EngineCommand::SecondaryMixTransition { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))

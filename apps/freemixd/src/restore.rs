@@ -670,6 +670,12 @@ pub(crate) fn restore_display_outputs(
     }
     show.restore_logical_outputs(project.logical_outputs().iter().cloned())?;
     show.restore_secondary_mixes(project.secondary_mixes().iter().cloned())?;
+    show.restore_input_video_delays(
+        project
+            .input_video_delays()
+            .iter()
+            .map(|(&input, &frames)| (input, frames)),
+    )?;
     show.set_live_lan(project.live_lan().clone())?;
     for setting in project.alert_rules() {
         show.set_alert_rule(*setting)?;
@@ -752,6 +758,25 @@ pub(crate) fn sync_project_secondary_mixes(
     project
         .validate_secondary_mixes()
         .map_err(|error| AppFailure(format!("project cannot take secondary mixes: {error}")))?;
+    Ok(())
+}
+
+/// Folds the show's per-input video delays (IN-022) into the stored project.
+pub(crate) fn sync_project_input_video_delays(
+    project: &mut fm_model::Project,
+    show: &ShowState,
+) -> AppResult<()> {
+    let delays = show
+        .input_video_delays()
+        .map(|(&input, &frames)| (input, frames))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if project.input_video_delays() == &delays {
+        return Ok(());
+    }
+    project.restore_input_video_delays(delays);
+    project
+        .validate_input_video_delays()
+        .map_err(|error| AppFailure(format!("project cannot take input video delays: {error}")))?;
     Ok(())
 }
 
