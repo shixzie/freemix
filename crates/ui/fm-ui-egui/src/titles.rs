@@ -113,9 +113,8 @@ fn parse_title_row_draft(draft: &str) -> Result<Vec<fm_protocol::TitleRowValue>,
 
 /// A local preview of a data row against the title's replicated fields.
 fn row_preview_text(l: Locale, presentation: &TitleEditorPresentation, draft: &str) -> String {
-    let values = match parse_title_row_draft(draft) {
-        Ok(values) => values,
-        Err(()) => return l.text(Msg::TitleRowEmpty).to_owned(),
+    let Ok(values) = parse_title_row_draft(draft) else {
+        return l.text(Msg::TitleRowEmpty).to_owned();
     };
     if values.is_empty() {
         return l.text(Msg::TitleRowEmpty).to_owned();
@@ -439,8 +438,9 @@ impl TitlesPanel {
                             keep_live: self.row_keep_live,
                         });
                     }
-                    Ok(_) => self.row_preview = Some(l.text(Msg::TitleRowEmpty).to_owned()),
-                    Err(()) => self.row_preview = Some(l.text(Msg::TitleRowEmpty).to_owned()),
+                    Ok(_) | Err(()) => {
+                        self.row_preview = Some(l.text(Msg::TitleRowEmpty).to_owned());
+                    }
                 }
             }
         });
