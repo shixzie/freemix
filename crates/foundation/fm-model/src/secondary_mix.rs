@@ -489,10 +489,10 @@ mod tests {
     #[test]
     fn the_list_is_bounded() {
         let inputs = [input(1)];
-        let configs = (2..=17)
-            .map(|value| {
+        let configs = (0..MAX_SECONDARY_MIXES + 1)
+            .map(|_| {
                 SecondaryMixConfig::output_only(
-                    number(value),
+                    number(2),
                     "Feed",
                     SecondaryMixSource::Input(input(1)),
                 )
