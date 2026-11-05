@@ -8596,6 +8596,14 @@ impl NativeMediaRuntime {
                 .unwrap_or(usize::MAX);
         let maximum_bytes = playback.registry.limits.max_retained_rgba16f_bytes;
         let retained_before = playback.registry.retained_rgba16f_bytes;
+        // Only a delayed live source needs history; an undelayed one holds
+        // just its newest picture, as before.
+        let history_frames = usize::try_from(
+            playback.registry.effective_input_video_delay(input),
+        )
+        .unwrap_or(0)
+        .saturating_add(1)
+        .min(maximum_frames);
         let prefix = playback
             .registry
             .sources
@@ -8609,7 +8617,7 @@ impl NativeMediaRuntime {
             .frames
             .len()
             .saturating_add(1)
-            .saturating_sub(maximum_frames);
+            .saturating_sub(history_frames);
         let retained = retained_before.saturating_add(frame_bytes);
         if retained > maximum_bytes {
             let byte_remove = usize::try_from(
