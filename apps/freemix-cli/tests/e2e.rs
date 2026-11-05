@@ -8227,6 +8227,7 @@ fn remote_input_video_delay_sends_the_exact_edit() {
         event: EventPayload::InputVideoDelayChanged {
             input: input(1),
             frames: 5,
+            audio_delay_samples: 8_000,
         },
         domain: "project",
     });

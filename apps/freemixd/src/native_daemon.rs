@@ -50,6 +50,11 @@ pub(crate) struct NativeDaemon {
     pub(crate) applied_video_delays: Option<std::collections::BTreeMap<InputId, u32>>,
     /// Every input the video realizer currently holds frozen (SW-016).
     pub(crate) applied_frozen_inputs: std::collections::BTreeSet<InputId>,
+    /// The audio strip state the audio realizer last received, so a
+    /// project edit that changes a strip (such as the audio alignment of
+    /// IN-022) reaches it without a live strip command.
+    pub(crate) applied_audio_strips:
+        std::collections::BTreeMap<InputId, EngineInputAudioStripState>,
     /// A frame submitted to the audio and video realizers, waiting for the
     /// pass's peer work to finish before its consumers run.
     pub(crate) pending_frame: Option<PendingFrame>,
@@ -493,6 +498,7 @@ impl NativeDaemon {
             latest_frames,
             applied_video_delays: Some(applied_video_delays),
             applied_frozen_inputs: std::collections::BTreeSet::new(),
+            applied_audio_strips: std::collections::BTreeMap::new(),
             pending_frame: None,
             pending_preview_render: false,
             projected_frame: None,
@@ -2964,6 +2970,7 @@ impl NativeDaemon {
         let aux_bus_outputs = &mut self.aux_bus_outputs;
         let aux_bus_omt = &mut self.aux_bus_omt;
         let project_plan = &mut self.project_plan;
+        let applied_audio_strips = &mut self.applied_audio_strips;
         let projected_frame = self.projected_frame.as_ref();
         let mut fade_to_black_excluded = Vec::new();
         let monitor_interval = self.monitor_interval;
@@ -2975,6 +2982,9 @@ impl NativeDaemon {
         } else {
             Vec::new()
         };
+        // A project edit can change a strip (IN-022's audio alignment), so
+        // diff the show's strips against what the audio realizer last saw.
+        let show_audio_strips = control.show().input_audio_strips().clone();
         let outcome = control.tick_with_realizer(server, |frame| {
             debug_assert_eq!(projected_frame, Some(frame));
             monitor_frame = Some((frame.frame.get(), frame.program.primary));
@@ -3051,7 +3061,19 @@ impl NativeDaemon {
                 .submit_render(native_audio_realizer::AudioRenderJob {
                     frame: frame.clone(),
                     plan: project_plan.clone(),
-                    strip_updates: frame.input_audio_strip_updates.clone(),
+                    strip_updates: {
+                        let mut updates = frame.input_audio_strip_updates.clone();
+                        for &(input, state) in &updates {
+                            applied_audio_strips.insert(input, state);
+                        }
+                        for (&input, &state) in &show_audio_strips {
+                            if applied_audio_strips.get(&input) != Some(&state) {
+                                applied_audio_strips.insert(input, state);
+                                updates.push((input, state));
+                            }
+                        }
+                        updates
+                    },
                     mixer_updates: frame.audio_mixer_updates.clone(),
                     replay_inputs: replay_inputs.clone(),
                 })

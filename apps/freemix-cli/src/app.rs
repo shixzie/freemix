@@ -5377,6 +5377,7 @@ fn restore_project_engine(path: &Path, stored: &StoredProject) -> AppResult<Proj
                 .collect::<AppResult<Vec<_>>>()?,
         },
     )?;
+    engine.set_audio_sample_rate(project.settings().audio.sample_rate.hertz());
     restore_document_page_counts(path, &project, &mut engine);
     // Every shown title continues its timeline (GX-001, schema 68).
     engine.restore_title_timelines(project.title_timelines())?;

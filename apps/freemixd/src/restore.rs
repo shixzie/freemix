@@ -366,6 +366,7 @@ pub(crate) fn restore_engine_with_titles(
                 .collect::<AppResult<Vec<_>>>()?,
         },
     )?;
+    engine.set_audio_sample_rate(canonical.settings().audio.sample_rate.hertz());
     // Every shown title continues its timeline (GX-001, schema 68).
     engine.restore_title_timelines(canonical.title_timelines())?;
     Ok(engine)
