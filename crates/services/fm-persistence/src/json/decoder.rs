@@ -66,6 +66,7 @@ struct ProjectDto {
     outputs: Vec<Output>,
     logical_outputs: Vec<fm_model::LogicalOutputConfig>,
     secondary_mixes: Vec<fm_model::SecondaryMixConfig>,
+    input_video_delays: Vec<(InputId, u32)>,
     stream_targets: Vec<StreamTarget>,
     main_mix: Option<MainMix>,
     recording_desired: [bool; RECORDER_SLOT_COUNT],
@@ -137,6 +138,7 @@ impl ProjectDto {
             outputs: parse_array(object.take("outputs")?, "outputs", parse_output)?,
             logical_outputs: super::logical_output::parse_logical_outputs(&mut object)?,
             secondary_mixes: super::secondary_mix::parse_secondary_mixes(&mut object)?,
+            input_video_delays: super::input_video_delays::parse_input_video_delays(&mut object)?,
             stream_targets: parse_array(
                 object.take("stream_targets")?,
                 "stream_targets",
@@ -265,6 +267,7 @@ impl ProjectDto {
         }
         project.restore_logical_outputs(self.logical_outputs);
         project.restore_secondary_mixes(self.secondary_mixes);
+        project.restore_input_video_delays(self.input_video_delays.into_iter().collect());
         for target in self.stream_targets {
             project.add_stream_target(target);
         }

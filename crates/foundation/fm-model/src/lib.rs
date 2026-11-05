@@ -22,6 +22,7 @@ mod stream;
 mod title;
 mod transition_favorite;
 mod validation;
+mod video_delay;
 
 pub use animation_preset::{
     AnimationPresetError, AnimationPresetId, AnimationPresetLibrary,
@@ -177,3 +178,7 @@ pub use transition_favorite::{
     TransitionFavoriteDurationError, TransitionFavorites,
 };
 pub use validation::{EntityRef, ValidationError, ValidationErrorKind};
+pub use video_delay::{
+    InputVideoDelayError, MAX_INPUT_VIDEO_DELAY_FRAMES, input_from_u128,
+    validate_input_video_delay, validate_input_video_delays,
+};

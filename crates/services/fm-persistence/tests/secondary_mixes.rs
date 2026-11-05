@@ -138,7 +138,7 @@ fn secondary_mixes_round_trip_exactly_and_strictly() {
     assert_eq!(loaded.project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 108"), "{text}");
+    assert!(text.contains("\"schema_version\": 109"), "{text}");
     let first = "{\"number\": 2, \"name\": \"Clean\", \"mode\": \"preview_program\", \"program\": {\"input\": 10}, \"preview\": {\"input\": 11}}";
     let second =
         "{\"number\": 3, \"name\": \"Feed\", \"mode\": \"output_only\", \"program\": {\"mix\": 2}}";

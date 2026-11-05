@@ -68,6 +68,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_title_timelines(project, &mut errors);
     validate_scoreboards(project, &mut errors);
     validate_previews(project, &mut errors);
+    validate_input_video_delays(project, &mut errors);
     validate_crawls(project, &mut errors);
     validate_ptz_presets(project, &mut errors);
     validate_production_clocks(project, &mut errors);
@@ -496,6 +497,26 @@ fn validate_previews(project: &Project, errors: &mut Vec<ValidationError>) {
             });
         }
     }
+}
+
+fn validate_input_video_delays(project: &Project, errors: &mut Vec<ValidationError>) {
+    let Err(error) = project.validate_input_video_delays() else {
+        return;
+    };
+    let (field, kind) = match error {
+        crate::InputVideoDelayError::UnknownInput(input) => (
+            "input_video_delays.input",
+            ValidationErrorKind::MissingReference(EntityRef::Input(input)),
+        ),
+        crate::InputVideoDelayError::TooLong { .. } => {
+            ("input_video_delays.frames", ValidationErrorKind::OutOfRange)
+        }
+    };
+    errors.push(ValidationError {
+        entity: None,
+        field,
+        kind,
+    });
 }
 
 fn validate_scoreboards(project: &Project, errors: &mut Vec<ValidationError>) {

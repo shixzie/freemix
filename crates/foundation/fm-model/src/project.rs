@@ -1048,7 +1048,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(108);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(109);
 
 /// Maximum stored scoreboard documents on one project (GX-003).
 pub const MAX_SCOREBOARDS: usize = 256;
@@ -1160,6 +1160,9 @@ pub struct Project {
     /// Each title input's canonical preview-state document (GX-005, schema
     /// 106), by input. Staged data-binding values, not live title values.
     previews: BTreeMap<InputId, String>,
+    /// Each input's persisted video delay in frames (IN-022, schema 109), by
+    /// input, ascending.
+    input_video_delays: BTreeMap<InputId, u32>,
     /// Each title input's canonical crawl document (GX-003, schema 106), by
     /// input.
     crawls: BTreeMap<InputId, String>,
@@ -1222,6 +1225,7 @@ impl Project {
             scoreboards: BTreeMap::new(),
             production_clocks: Vec::new(),
             previews: BTreeMap::new(),
+            input_video_delays: BTreeMap::new(),
             crawls: BTreeMap::new(),
             ptz_presets: None,
         }
@@ -2392,6 +2396,55 @@ impl Project {
         self.previews = documents;
     }
 
+    /// Every input's video delay in frames, ascending by input (IN-022).
+    #[must_use]
+    pub const fn input_video_delays(&self) -> &BTreeMap<InputId, u32> {
+        &self.input_video_delays
+    }
+
+    /// One input's video delay in frames (zero when unset).
+    #[must_use]
+    pub fn input_video_delay(&self, input: InputId) -> u32 {
+        self.input_video_delays.get(&input).copied().unwrap_or(0)
+    }
+
+    /// Sets one input's video delay, or clears it with zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::InputVideoDelayError`] for an unknown input or a delay
+    /// outside `0..=MAX_INPUT_VIDEO_DELAY_FRAMES`.
+    pub fn set_input_video_delay(
+        &mut self,
+        input: InputId,
+        frames: u32,
+    ) -> Result<(), crate::InputVideoDelayError> {
+        let inputs = self.inputs.iter().map(|input| input.id).collect::<Vec<_>>();
+        crate::validate_input_video_delay(input, frames, &inputs)?;
+        if frames == 0 {
+            self.input_video_delays.remove(&input);
+        } else {
+            self.input_video_delays.insert(input, frames);
+        }
+        Ok(())
+    }
+
+    /// Restores persisted video delays without checking them; problems are
+    /// reported by [`Self::validate`].
+    pub fn restore_input_video_delays(&mut self, delays: BTreeMap<InputId, u32>) {
+        self.input_video_delays = delays;
+    }
+
+    /// Checks every video delay against the show's inputs and the bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`crate::InputVideoDelayError`].
+    pub fn validate_input_video_delays(&self) -> Result<(), crate::InputVideoDelayError> {
+        let inputs = self.inputs.iter().map(|input| input.id).collect::<Vec<_>>();
+        crate::validate_input_video_delays(&self.input_video_delays, &inputs)
+    }
+
     /// Every title input's canonical crawl document (GX-003, schema 106),
     /// ascending by input.
     #[must_use]
@@ -2965,6 +3018,7 @@ impl Project {
         self.title_timelines.remove(&input);
         self.scoreboards.remove(&input);
         self.previews.remove(&input);
+        self.input_video_delays.remove(&input);
         self.crawls.remove(&input);
         self.screen_capture_restore_tokens.remove(&input);
         Ok(())
