@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.158 / schema 108 (2026-11-04).
+(2026-10-19); items refreshed through protocol 2.159 / schema 108 (2026-11-04).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -3066,7 +3066,9 @@ one mix as an undoable project edit, the show state validates it, and the
 daemon folds the routing back into the project on save. Protocol 2.158 carries
 the list in every snapshot, sets or clears one with `secondary_mix_set` /
 `secondary_mix_clear`, and announces an edit (or its undo or redo) with
-`secondary_mix_changed`; the client model replicates it. The engine owns a
+`secondary_mix_changed`; the client model replicates it, and Protocol 2.159
+adds the live `secondary_mix_cut` and `secondary_mix_transition` commands.
+The engine owns a
 live `MixBank` for Main plus the configured mixes, advances it once per frame
 (so a mix-to-mix read sees the previous frame), follows the realized Main
 Program/Preview, exposes the bank frame as `FrameResult.secondary_mixes`, and
@@ -3075,10 +3077,10 @@ resolves logical outputs against it; `cut_secondary_mix` and
 logical output's secondary-mix background: a single input, black, a nested
 mix, or a running transition, followed by the mix's full-frame overlay
 channels; a Program background still reads the shared Program transition.
-Remaining gaps: no protocol, Studio, or CLI surface for live mix cuts and
-transitions and no audio path, and stinger effects still do not check slot
-readiness or fallback; overlay fades, mix-sourced overlays, T-bar, and
-Fade-to-Black inside a mix are absent. `IN-023` remains planned.
+Remaining gaps: no Studio or CLI surface for live cuts and transitions and no
+live mix status in snapshots yet, and no audio path; stinger effects still do
+not check slot readiness or fallback, and overlay fades, mix-sourced overlays,
+T-bar, and Fade-to-Black inside a mix are absent. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
