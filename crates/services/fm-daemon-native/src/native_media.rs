@@ -12971,7 +12971,7 @@ mod tests {
             .unwrap()
             .expect("a frozen input has a latched picture");
         assert_eq!((still.width, still.height), (2, 2));
-        assert!(still.png.starts_with(fm_video::PNG_SIGNATURE), "not a PNG");
+        assert!(still.png.starts_with(&fm_video::PNG_SIGNATURE), "not a PNG");
         let width = u32::from_be_bytes(still.png[16..20].try_into().unwrap());
         let height = u32::from_be_bytes(still.png[20..24].try_into().unwrap());
         assert_eq!((width, height), (2, 2));
