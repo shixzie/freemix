@@ -8505,7 +8505,10 @@ fn remote_alias_input_add_sends_the_exact_source() {
                     width: 960,
                     height: 1080,
                 }),
-                effects: Vec::new(),
+                effects: vec![fm_protocol::WireLayerEffect {
+                    name: "saturation".into(),
+                    parameters: vec![-50],
+                }],
             },
         },
         event: EventPayload::InputAdded {
@@ -8527,6 +8530,8 @@ fn remote_alias_input_add_sends_the_exact_source() {
         "1",
         "--crop",
         "0,0,960,1080",
+        "--effect",
+        "saturation:-50",
         "--key",
         "remote-alias-input-add",
         "--expect",
