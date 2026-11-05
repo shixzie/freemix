@@ -1356,11 +1356,12 @@ impl StudioShell {
                                 .as_ref()
                                 .map(|view| view.inputs.iter().copied().zip(&view.input_names));
                             let current = draft.alias_target.and_then(|target| {
-                                state
-                                    .view
-                                    .as_ref()
-                                    .and_then(|view| view.input_name(target))
-                                    .map(|name| (target, name.to_owned()))
+                                state.view.as_ref().and_then(|view| {
+                                    view.inputs
+                                        .iter()
+                                        .position(|input| *input == target)
+                                        .map(|index| (target, view.input_names[index].clone()))
+                                })
                             });
                             egui::ComboBox::from_id_salt("studio-add-input-alias-target")
                                 .selected_text(current.as_ref().map_or_else(
@@ -1799,7 +1800,8 @@ fn preview_audio_badge(l: Locale, draft: &AddInputDraft) -> Option<String> {
         NewInputKind::Solid
         | NewInputKind::Bars
         | NewInputKind::Image
-        | NewInputKind::Slideshow => Some(l.text(Msg::PreviewSilent).to_owned()),
+        | NewInputKind::Slideshow
+        | NewInputKind::MixFeed => Some(l.text(Msg::PreviewSilent).to_owned()),
         NewInputKind::ScreenCapture => Some(match draft.screen_capture.config.audio {
             fm_protocol::ScreenCaptureAudio::None => l.text(Msg::PreviewSilent).to_owned(),
             fm_protocol::ScreenCaptureAudio::System => l.text(Msg::ScAudioSystem).to_uppercase(),
@@ -1809,6 +1811,7 @@ fn preview_audio_badge(l: Locale, draft: &AddInputDraft) -> Option<String> {
         | NewInputKind::Capture
         | NewInputKind::SystemAudio
         | NewInputKind::MediaList
+        | NewInputKind::Alias
         | NewInputKind::Replay => None,
     }
 }
@@ -1857,6 +1860,28 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
         }
         // A system audio input has no picture of its own; a picture or a
         // media list's first file shows once the server decoded it.
+        NewInputKind::Alias => {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                l.text(Msg::KindAliasKey),
+                FontId::new(10.0, FontFamily::Proportional),
+                muted_color(),
+            );
+        }
+        NewInputKind::MixFeed => {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                l.text(if draft.feed_program {
+                    Msg::AddInputFeedProgram
+                } else {
+                    Msg::AddInputFeedPreview
+                }),
+                FontId::new(10.0, FontFamily::Proportional),
+                muted_color(),
+            );
+        }
         NewInputKind::SystemAudio
         | NewInputKind::Image
         | NewInputKind::Slideshow
