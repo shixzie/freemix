@@ -87,6 +87,7 @@ fn alias_and_feed_add_intents_map_to_the_wire() {
                     width: 960,
                     height: 1080,
                 }),
+                effects: Vec::new(),
             },
         },
         Some(&view),
@@ -105,6 +106,7 @@ fn alias_and_feed_add_intents_map_to_the_wire() {
                     width: 960,
                     height: 1080,
                 }),
+                effects: Vec::new(),
             },
         }
     );
