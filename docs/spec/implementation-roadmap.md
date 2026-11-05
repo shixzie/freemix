@@ -3265,11 +3265,11 @@ optional project-pixel crop) or `kind=program_feed`/`kind=preview_feed`, the
 engine adds the virtual input while keeping it out of the replaceable-source
 set, the daemon folds it into the stored project, and the CLI has
 `remote-alias-input-add` and `remote-mix-feed-input-add`. Studio's Add input
-dialog offers Alias (with an input picker) and Feed (Program or Preview); the
-alias form does not author a crop yet. Remaining gaps: the Studio alias form
-has no crop editor, aliases do not yet carry independent effects, shortcuts,
-or layer state, and no data source drives a mapped row through the protocol.
-`IN-024` and `IN-025` remain planned.
+dialog offers Alias (with an input picker, an optional project-pixel crop, and
+a nonempty/16384-bound check) and Feed (Program or Preview). Remaining gaps:
+aliases do not yet carry independent effects, shortcuts, or layer state, and
+no data source drives a mapped row through the protocol. `IN-024` and
+`IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
