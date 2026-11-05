@@ -34,6 +34,7 @@ use fm_ui_egui::{
     StudioIntent, ToolWindow, WindowGeometry,
 };
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
+use fm_ui_model::{ClientModel, ProjectSnapshot};
 use freemix_studio::{
     ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, LifecycleState,
     PREFERENCES_ENV, PreferenceStore, RestartPolicy, SavedPreferences, StudioConfig, StudioError,
@@ -68,6 +69,12 @@ fn model_input(value: u128) -> InputId {
 
 #[test]
 fn alias_and_feed_add_intents_map_to_the_wire() {
+    let project = fm_types::ProjectId::new(NonZeroU128::new(7).unwrap());
+    let mut model = ClientModel::new(project);
+    model
+        .install_snapshot(ProjectSnapshot::from_protocol(project, snapshot(0)))
+        .unwrap();
+    let view = model.view().unwrap();
     let alias = studio_intent_payload(
         StudioIntent::AddInput {
             input: model_input(3),
@@ -82,7 +89,7 @@ fn alias_and_feed_add_intents_map_to_the_wire() {
                 }),
             },
         },
-        None,
+        Some(&view),
     )
     .unwrap();
     assert_eq!(
@@ -120,7 +127,7 @@ fn alias_and_feed_add_intents_map_to_the_wire() {
                     name: name.into(),
                     source,
                 },
-                None,
+                Some(&view),
             )
             .unwrap(),
             CommandPayload::AddInput {
