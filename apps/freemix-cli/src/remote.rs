@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpStream},
     num::NonZeroU128,
+    path::Path,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -1277,7 +1278,7 @@ pub fn frozen_still(address: SocketAddr, input: InputId, output: &Path) -> Remot
                 }
                 let (count, width, height, data) = parts.as_ref().expect("a part started");
                 if part.part + 1 == *count {
-                    if !data.starts_with(&fm_video::png::PNG_SIGNATURE) {
+                    if !data.starts_with(&fm_video::PNG_SIGNATURE) {
                         return Err(
                             RemoteFailure("frozen-still response is not a PNG".into()).into()
                         );
@@ -1291,7 +1292,9 @@ pub fn frozen_still(address: SocketAddr, input: InputId, output: &Path) -> Remot
                     return Ok(());
                 }
             }
-            WireMessage::Event(event) => remote.client.intake(WireMessage::Event(event))?,
+            WireMessage::Event(event) => {
+                remote.client.intake(WireMessage::Event(event))?;
+            }
             WireMessage::RuntimeEvent(event) => {
                 remote.client.intake(WireMessage::RuntimeEvent(event))?;
             }
