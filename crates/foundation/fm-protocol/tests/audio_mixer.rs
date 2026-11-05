@@ -145,6 +145,7 @@ fn snapshot(audio_mixer: AudioMixerStatus, excluded: Vec<WireOutputId>) -> WireM
         fade_to_black_output_durations: Vec::new(),
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         logical_outputs: Vec::new(),
+        secondary_mixes: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
