@@ -2928,6 +2928,31 @@ fn locked_snapshot(edit_locks: EditLockStatus, edit_history: EditHistoryStatus) 
 }
 
 #[test]
+fn snapshot_frozen_inputs_round_trip_and_are_strict() {
+    let mut message = locked_snapshot(EditLockStatus::default(), EditHistoryStatus::EMPTY);
+    let WireMessage::Snapshot(snapshot) = &mut message else {
+        unreachable!("the fixture is a snapshot")
+    };
+    snapshot.frozen_inputs = vec![input(1), input(2)];
+    let encoded = encode_line(&message).unwrap();
+    assert!(encoded.contains("\tfrozen_inputs=1%2C2\t"), "{encoded}");
+    assert_eq!(decode_line(&encoded).unwrap(), message);
+
+    for frozen in [
+        vec![input(2), input(1)],
+        vec![input(1), input(1)],
+        vec![input(3)],
+    ] {
+        let mut broken = message.clone();
+        let WireMessage::Snapshot(snapshot) = &mut broken else {
+            unreachable!("the fixture is a snapshot")
+        };
+        snapshot.frozen_inputs = frozen;
+        assert!(encode_line(&broken).is_err());
+    }
+}
+
+#[test]
 fn edit_history_and_padlock_commands_are_exact() {
     let cases = [
         (

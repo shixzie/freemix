@@ -1997,6 +1997,7 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     encode_overlays(record, "desired_overlays", &message.desired_overlays)?;
     encode_overlays(record, "realized_overlays", &message.realized_overlays)?;
     encode_edit_locks(record, &message.edit_locks, &message.inputs)?;
+    super::value::validate_frozen_inputs(&message.frozen_inputs, &message.inputs)?;
     record.field_string(
         "frozen_inputs",
         message

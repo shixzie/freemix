@@ -427,6 +427,29 @@ pub(super) fn input_ids(values: &[crate::WireInputId]) -> Result<String, CodecEr
     Ok(encoded)
 }
 
+pub(super) fn validate_frozen_inputs(
+    frozen: &[crate::WireInputId],
+    inputs: &[crate::InputStatus],
+) -> Result<(), CodecError> {
+    let known = inputs
+        .iter()
+        .map(|status| status.input)
+        .collect::<std::collections::BTreeSet<_>>();
+    if frozen.windows(2).any(|pair| pair[0] >= pair[1])
+        || frozen.iter().any(|input| !known.contains(input))
+    {
+        return Err(CodecError::InvalidField {
+            field: "frozen_inputs",
+            value: frozen
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn parse_input_ids(value: &str) -> Result<Vec<crate::WireInputId>, CodecError> {
     if value.is_empty() {
         return Err(CodecError::InvalidField {

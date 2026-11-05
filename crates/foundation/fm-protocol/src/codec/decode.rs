@@ -2044,6 +2044,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
     let revision = fields.parse_required("revision")?;
     let edit_locks = decode_edit_locks(fields, &inputs)?;
     let frozen_inputs = decode_frozen_inputs(&fields.required("frozen_inputs")?)?;
+    super::value::validate_frozen_inputs(&frozen_inputs, &inputs)?;
     let edit_history = decode_edit_history(fields, revision)?;
     let titles = decode_title_summaries(
         &fields.required("titles")?,
