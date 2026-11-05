@@ -1396,12 +1396,14 @@ impl StudioShell {
                                     &mut draft.feed_program,
                                     true,
                                     l.text(Msg::AddInputFeedProgram),
-                                );
+                                )
+                                .on_hover_text(l.text(Msg::KindMixFeedHover));
                                 ui.radio_value(
                                     &mut draft.feed_program,
                                     false,
                                     l.text(Msg::AddInputFeedPreview),
-                                );
+                                )
+                                .on_hover_text(l.text(Msg::KindMixFeedHover));
                             });
                         }
                         if draft.kind == NewInputKind::Capture {
