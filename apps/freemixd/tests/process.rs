@@ -31,7 +31,7 @@ use fm_persistence::{
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     DiagnosticsRequest, DiagnosticsResponse, EngineIdentity, EventCursor, EventPayload,
-    HandshakeOutcome, HandshakeRequest, HeartbeatMessage, ManualTransitionKind,
+    FrozenStillRequest, HandshakeOutcome, HandshakeRequest, HeartbeatMessage, ManualTransitionKind,
     ManualTransitionPosition, ManualTransitionStatus, ProtocolVersion, PtzPresetStatus,
     PtzPresetsRequest, PtzPresetsResponse, ResumeCursor, Role, RuntimeLifecycleEvent,
     ServerIdentity, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, WireInputId,
@@ -5001,6 +5001,83 @@ fn studio_operator_silences_and_unsilences_a_health_alert_rule() {
     assert_eq!(refused, "permission_denied");
     drop(studio);
     drop(viewer);
+    daemon.stop();
+}
+
+#[test]
+fn frozen_still_export_returns_the_latched_picture_as_png() {
+    let directory = TestDirectory::new("frozen-still");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Operator, None);
+    client.receive_snapshot();
+
+    let source = WireInputId::from_domain(domain_input(1));
+    client.send(&command(
+        "freeze",
+        "freeze",
+        CommandPayload::SetInputFreeze {
+            input: source,
+            frozen: true,
+        },
+    ));
+    let accepted = client.receive();
+    assert!(
+        matches!(
+            accepted,
+            WireMessage::CommandResult(CommandResult::Accepted { .. })
+        ),
+        "expected the freeze to be accepted: {accepted:?}"
+    );
+
+    client.send(&WireMessage::FrozenStillRequest(FrozenStillRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "still-1".into(),
+        input: source,
+    }));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut data = Vec::new();
+    let (width, height) = loop {
+        assert!(Instant::now() < deadline, "timed out waiting for the still");
+        match client.receive() {
+            WireMessage::FrozenStillResponse(part) if part.request_id == "still-1" => {
+                assert_eq!(part.input, source);
+                assert_eq!(part.part as usize * 32 * 1024, data.len());
+                data.extend_from_slice(&part.data);
+                if part.part + 1 == part.parts {
+                    break (part.width, part.height);
+                }
+            }
+            WireMessage::Error(error) => panic!("still refused: {error:?}"),
+            _ => {}
+        }
+    };
+    assert!(data.starts_with(&fm_video::PNG_SIGNATURE), "not a PNG");
+    assert!(width > 0 && height > 0);
+    let header_width = u32::from_be_bytes(data[16..20].try_into().unwrap());
+    let header_height = u32::from_be_bytes(data[20..24].try_into().unwrap());
+    assert_eq!((header_width, header_height), (width, height));
+
+    // A request for an input that is not frozen is refused by name.
+    client.send(&WireMessage::FrozenStillRequest(FrozenStillRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "still-2".into(),
+        input: WireInputId::from_domain(domain_input(2)),
+    }));
+    let refused = receive_within(
+        &mut client,
+        Duration::from_secs(5),
+        "a still refusal",
+        |message| match message {
+            WireMessage::Error(error) if error.request_id.as_deref() == Some("still-2") => {
+                Some(error.error.code)
+            }
+            _ => None,
+        },
+    );
+    assert_eq!(refused, "still_unavailable");
     daemon.stop();
 }
 
