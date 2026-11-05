@@ -12939,6 +12939,54 @@ mod tests {
     }
 
     #[test]
+    fn native_frozen_input_capture_reads_back_the_latched_picture() {
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(87).unwrap());
+        let source = input(1);
+        let mut playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::LiveFrame {
+                    input: source,
+                    frame: live_solid_frame(clock_domain, 0, 0, [255, 0, 0, 255], 2, 2),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        playback.set_input_freeze(source, true, ClockTime::ZERO);
+        runtime
+            .ingest_live_video_frame_blocking(
+                &mut playback,
+                source,
+                live_solid_frame(clock_domain, 1, 1_000_000_000, [0, 0, 255, 255], 2, 2),
+            )
+            .unwrap();
+
+        let still = runtime
+            .capture_frozen_still_blocking(&playback, source)
+            .unwrap()
+            .expect("a frozen input has a latched picture");
+        assert_eq!((still.width, still.height), (2, 2));
+        assert!(still.png.starts_with(fm_video::PNG_SIGNATURE), "not a PNG");
+        let width = u32::from_be_bytes(still.png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(still.png[20..24].try_into().unwrap());
+        assert_eq!((width, height), (2, 2));
+
+        playback.set_input_freeze(source, false, ClockTime::ZERO);
+        assert!(
+            runtime
+                .capture_frozen_still_blocking(&playback, source)
+                .unwrap()
+                .is_none(),
+            "an unfrozen input has no still"
+        );
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)] // alias, feed, crop, and cycle routes in one contract
     fn native_project_plan_routes_aliases_and_draws_feeds_black() {
         let mut project = native_plan_project(4, 2);
