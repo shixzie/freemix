@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.156 / schema 107 (2026-11-04).
+(2026-10-19); items refreshed through protocol 2.157 / schema 107 (2026-11-04).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -2624,7 +2624,10 @@ validation rejects duplicate outputs, unknown inputs or buses, empty or
 duplicate multiviews, out-of-order slots, missing output references, and
 self or chained recursion. `EngineCommand::SetLogicalOutput` changes one slot
 as an undoable project edit, and the daemon folds the show's routing back into
-the project on save. Remaining gaps: no protocol, compositor, or delivery
+the project on save. Protocol 2.157 carries the four slots in every snapshot,
+sets or clears one with `set_logical_output` / `clear_logical_output`, and
+announces an edit (or its undo or redo) with `logical_output_changed`; the
+client model replicates the list. Remaining gaps: no compositor or delivery
 wiring, no `MixBank` Main drive from the bank, no MultiView grid geometry for
 mixes or outputs, and follow-video audio still switches only at take
 completion. `SW-012` remains planned.

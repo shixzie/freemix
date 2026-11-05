@@ -1752,6 +1752,8 @@ pub(crate) fn command_base_ticks(
         | CommandPayload::SetFadeToBlackCurve { .. }
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
+        | CommandPayload::SetLogicalOutput { .. }
+        | CommandPayload::ClearLogicalOutput { .. }
         | CommandPayload::SetLiveLan { .. }
         | CommandPayload::SetAlertRule(_)
         | CommandPayload::Replay(_)

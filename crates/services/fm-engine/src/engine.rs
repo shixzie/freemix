@@ -860,6 +860,12 @@ pub enum EngineEvent {
         slot: fm_types::display::DisplayOutputSlot,
         config: Option<Box<fm_types::display::DisplayOutputConfig>>,
     },
+    /// A logical output slot was configured or cleared, or the edit was
+    /// undone or redone (SW-012).
+    LogicalOutputChanged {
+        slot: fm_model::LogicalOutputSlot,
+        config: Option<Box<fm_model::LogicalOutputConfig>>,
+    },
     /// The `LiveLAN` configuration changed (or the edit was undone or redone)
     /// (OR-017); it is read from [`ShowState::live_lan`].
     LiveLanChanged(Box<fm_types::live_lan::LiveLanConfig>),
@@ -4375,6 +4381,10 @@ impl EngineMutation {
                 .map_err(|error| {
                     Rejection::new(RejectionCode::InvalidCommand, error.to_string())
                 })?;
+            events.push(EngineEvent::LogicalOutputChanged {
+                slot: *slot,
+                config: config.clone(),
+            });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
             });

@@ -3093,6 +3093,7 @@ impl Remote {
                         | EventPayload::SceneAnimationChanged { .. }
                         | EventPayload::SceneLayoutChanged { .. }
                         | EventPayload::DisplayOutputChanged { .. }
+                        | EventPayload::LogicalOutputChanged { .. }
                         | EventPayload::LiveLanChanged(_)
                         | EventPayload::AlertRulesChanged(_)
                         | EventPayload::NetworkStreamChanged { .. }

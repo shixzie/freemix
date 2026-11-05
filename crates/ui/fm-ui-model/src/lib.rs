@@ -507,6 +507,8 @@ pub struct ProjectSnapshot {
     pub fade_to_black_output_durations: Vec<(OutputId, u32)>,
     /// How automatic Fade-to-Black moves ease (Protocol 2.48).
     pub fade_to_black_curve: fm_protocol::FadeToBlackCurve,
+    /// Every configured logical output, ascending by slot (Protocol 2.157).
+    pub logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -644,6 +646,7 @@ impl ProjectSnapshot {
                 .map(|(output, frames)| (output.to_domain(), frames))
                 .collect(),
             fade_to_black_curve: message.fade_to_black_curve,
+            logical_outputs: message.logical_outputs,
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
@@ -825,6 +828,11 @@ pub enum DurableChange {
     DisplayOutputChanged {
         slot: fm_protocol::DisplayOutputSlot,
         config: Option<Box<fm_protocol::DisplayOutputConfig>>,
+    },
+    /// A logical-output slot was configured or cleared (Protocol 2.157).
+    LogicalOutputChanged {
+        slot: fm_protocol::WireLogicalOutputSlot,
+        config: Option<Box<fm_protocol::WireLogicalOutputConfig>>,
     },
     /// The `LiveLAN` configuration changed (Protocol 2.57); never the PIN.
     LiveLanChanged(fm_protocol::LiveLanEntry),
@@ -1161,6 +1169,9 @@ impl DurableProjectEvent {
             EventPayload::DisplayOutputChanged { slot, config } => {
                 DurableChange::DisplayOutputChanged { slot, config }
             }
+            EventPayload::LogicalOutputChanged { slot, config } => {
+                DurableChange::LogicalOutputChanged { slot, config }
+            }
             EventPayload::LiveLanChanged(entry) => DurableChange::LiveLanChanged(entry),
             EventPayload::AlertRulesChanged(settings) => DurableChange::AlertRulesChanged(settings),
             EventPayload::ReplayChanged { frame, operation } => {
@@ -1340,6 +1351,8 @@ pub struct ProjectState {
     fade_to_black_output_durations: Vec<(OutputId, u32)>,
     /// How automatic Fade-to-Black moves ease (Protocol 2.48).
     fade_to_black_curve: fm_protocol::FadeToBlackCurve,
+    /// Every configured logical output (Protocol 2.157).
+    logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured display-output slot (Protocol 2.42).
     display_outputs: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::DisplayOutputConfig>,
     /// Each slot's runtime state as last reported (Protocol 2.42); kept for
@@ -1977,6 +1990,8 @@ pub struct ClientView {
     pub fade_to_black_output_durations: Vec<(OutputId, u32)>,
     /// How automatic Fade-to-Black moves ease (Protocol 2.48).
     pub fade_to_black_curve: fm_protocol::FadeToBlackCurve,
+    /// Every configured logical output, ascending by slot (Protocol 2.157).
+    pub logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -2433,6 +2448,9 @@ pub enum ModelError {
     InvalidAudioMixerChange,
     /// A display-output change shows an unknown output (Protocol 2.42).
     InvalidDisplayOutputChange,
+    /// A `logical_output_changed` event names an unknown output (Protocol
+    /// 2.157).
+    InvalidLogicalOutputChange,
     /// A `LiveLAN` change streams an unknown output (Protocol 2.57).
     InvalidLiveLanChange,
     /// An alert rule change carries settings a show cannot keep (Protocol
@@ -2603,6 +2621,9 @@ impl fmt::Display for ModelError {
             }
             Self::InvalidDisplayOutputChange => {
                 formatter.write_str("display-output change shows an unknown output")
+            }
+            Self::InvalidLogicalOutputChange => {
+                formatter.write_str("logical-output change routes an unknown output")
             }
             Self::InvalidLiveLanChange => {
                 formatter.write_str("LiveLAN change streams an unknown output")
@@ -3156,6 +3177,7 @@ impl ClientModel {
             fade_to_black_excluded_outputs: state.fade_to_black_excluded_outputs.clone(),
             fade_to_black_output_durations: state.fade_to_black_output_durations.clone(),
             fade_to_black_curve: state.fade_to_black_curve,
+            logical_outputs: state.logical_outputs.clone(),
             display_outputs: state
                 .display_outputs
                 .iter()
@@ -3461,6 +3483,7 @@ impl ClientModel {
             fade_to_black_excluded_outputs: snapshot.fade_to_black_excluded_outputs,
             fade_to_black_output_durations: snapshot.fade_to_black_output_durations,
             fade_to_black_curve: snapshot.fade_to_black_curve,
+            logical_outputs: snapshot.logical_outputs,
             display_outputs: snapshot
                 .display_outputs
                 .into_iter()
@@ -5080,6 +5103,19 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 _ => Ok(()),
             };
         }
+        DurableChange::LogicalOutputChanged { config, .. } => {
+            return match config.as_deref() {
+                Some(config)
+                    if !state
+                        .outputs
+                        .iter()
+                        .any(|status| status.output == config.output.to_domain()) =>
+                {
+                    Err(ModelError::InvalidLogicalOutputChange)
+                }
+                _ => Ok(()),
+            };
+        }
         DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
         DurableChange::GradeChanged(change) => return validate_grade_change(change, state),
         DurableChange::AnimationPresetChanged(change) => {
@@ -5745,6 +5781,15 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 state.display_outputs.remove(&slot);
             }
         },
+        DurableChange::LogicalOutputChanged { slot, config } => {
+            state
+                .logical_outputs
+                .retain(|candidate| candidate.slot != slot);
+            if let Some(config) = config {
+                state.logical_outputs.push(*config);
+                state.logical_outputs.sort_by_key(|config| config.slot);
+            }
+        }
         DurableChange::AlertRulesChanged(settings) => state.alert_rules = settings,
         DurableChange::LiveLanChanged(entry) => {
             // Disabled, it forgets its last report, as the server does.

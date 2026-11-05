@@ -807,6 +807,16 @@ fn decode_command_payload(
         "clear_display_output" => CommandPayload::ClearDisplayOutput {
             slot: super::display_output::decode_slot(fields)?,
         },
+        "set_logical_output" => {
+            let config = super::logical_output::decode_config(fields)?;
+            CommandPayload::SetLogicalOutput {
+                slot: config.slot,
+                config: Box::new(config),
+            }
+        }
+        "clear_logical_output" => CommandPayload::ClearLogicalOutput {
+            slot: super::logical_output::decode_slot(fields)?,
+        },
         replay if replay.starts_with("replay_") => {
             CommandPayload::Replay(super::replay::decode_operation(replay, fields)?.ok_or_else(
                 || CodecError::InvalidField {
@@ -2105,6 +2115,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
             fields,
         )?,
         fade_to_black_curve: super::audio_mixer::decode_snapshot_curve(fields)?,
+        logical_outputs: super::logical_output::decode_entries(
+            &fields.required("logical_outputs")?,
+        )?,
         display_outputs: super::display_output::decode_entries(
             &fields.required("display_outputs")?,
         )?,
@@ -2926,6 +2939,13 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "display_output_changed" => {
             let (slot, config) = super::display_output::decode_changed(fields)?;
             EventPayload::DisplayOutputChanged {
+                slot,
+                config: config.map(Box::new),
+            }
+        }
+        "logical_output_changed" => {
+            let (slot, config) = super::logical_output::decode_changed(fields)?;
+            EventPayload::LogicalOutputChanged {
                 slot,
                 config: config.map(Box::new),
             }

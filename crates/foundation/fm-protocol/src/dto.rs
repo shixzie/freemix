@@ -2140,6 +2140,17 @@ pub enum CommandPayload {
     ClearDisplayOutput {
         slot: crate::DisplayOutputSlot,
     },
+    /// Configures one logical output slot (Protocol 2.157, SW-012). A
+    /// padlocked, undoable project edit.
+    SetLogicalOutput {
+        slot: crate::WireLogicalOutputSlot,
+        config: Box<crate::WireLogicalOutputConfig>,
+    },
+    /// Clears one logical output slot (Protocol 2.157). A padlocked,
+    /// undoable project edit.
+    ClearLogicalOutput {
+        slot: crate::WireLogicalOutputSlot,
+    },
     /// Reconfigures network stream input `input` (Protocol 2.46, IN-015;
     /// 2.49, IN-016/IN-017): a new URL (`None` keeps the current one),
     /// settings, the SRT stream ID, and edits of the RTMP stream key and SRT
@@ -2653,6 +2664,8 @@ pub struct SnapshotMessage {
     pub fade_to_black_output_durations: Vec<(WireOutputId, u32)>,
     /// How automatic Fade-to-Black moves ease (Protocol 2.48).
     pub fade_to_black_curve: crate::FadeToBlackCurve,
+    /// Every configured logical output, ascending by slot (Protocol 2.157).
+    pub logical_outputs: Vec<crate::WireLogicalOutputConfig>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<crate::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -2902,6 +2915,12 @@ pub enum EventPayload {
     DisplayOutputChanged {
         slot: crate::DisplayOutputSlot,
         config: Option<Box<crate::DisplayOutputConfig>>,
+    },
+    /// A logical output slot was configured (`Some`) or cleared (`None`),
+    /// or that edit was undone or redone (Protocol 2.157, SW-012).
+    LogicalOutputChanged {
+        slot: crate::WireLogicalOutputSlot,
+        config: Option<Box<crate::WireLogicalOutputConfig>>,
     },
     /// The `LiveLAN` configuration changed, or that edit was undone or redone
     /// (Protocol 2.57). It carries whether a PIN is stored, never the PIN.

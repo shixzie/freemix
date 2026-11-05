@@ -162,6 +162,16 @@ pub(super) fn decode_list_position(
 }
 
 /// Parses a canonical nonzero input identifier as written by its `Display`.
+pub(super) fn parse_canonical_output(value: &str) -> Option<crate::WireOutputId> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || value.starts_with('0')
+    {
+        return None;
+    }
+    core::num::NonZeroU128::new(value.parse().ok()?).map(crate::WireOutputId::new)
+}
+
 pub(super) fn parse_canonical_input(value: &str) -> Option<crate::WireInputId> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())

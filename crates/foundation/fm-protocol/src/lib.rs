@@ -11,6 +11,7 @@ mod health;
 mod input_lifecycle;
 mod input_thumbnail;
 mod live_lan;
+mod logical_output;
 mod media;
 mod media_list;
 mod monitor_image;
@@ -176,6 +177,13 @@ pub use live_lan::{
     LiveLanSource, LiveLanState, LiveLanStatus, MAX_LIVE_LAN_PIN_DIGITS, MAX_LIVE_LAN_URL_BYTES,
     MAX_LIVE_LAN_VIEWERS, MIN_LIVE_LAN_PIN_DIGITS, MIN_LIVE_LAN_VIEWERS, live_lan_pin_is_valid,
     live_lan_url_is_valid,
+};
+pub use logical_output::{
+    MAX_WIRE_LOGICAL_MIX, MAX_WIRE_LOGICAL_MULTIVIEW_CELLS, MAX_WIRE_LOGICAL_OUTPUTS,
+    WireLogicalAudioMap, WireLogicalOutputCell, WireLogicalOutputConfig, WireLogicalOutputOverlays,
+    WireLogicalOutputSlot, WireLogicalOutputSource, logical_bus_from_number,
+    logical_input_from_number, logical_input_to_domain, logical_output_from_number,
+    logical_output_slot_from_number, logical_output_to_domain,
 };
 pub use media::{
     MAX_MEDIA_AUDIO_TRACKS, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_EVENTS, MAX_MEDIA_FRAME,

@@ -25,6 +25,7 @@ mod display_output;
 mod grade;
 mod input_lifecycle;
 mod live_lan;
+mod logical_output;
 mod media;
 mod media_list;
 mod network_stream;
@@ -3605,6 +3606,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::SetNetworkStream { .. }
@@ -3721,6 +3723,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SceneLayer(_)
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
+        | CommandPayload::SetLogicalOutput { .. }
+        | CommandPayload::ClearLogicalOutput { .. }
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::SetStreamTarget { .. }
@@ -3901,6 +3905,10 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }) => {
             display_output::engine_command(payload).expect("a display-output payload")
+        }
+        payload @ (CommandPayload::SetLogicalOutput { .. }
+        | CommandPayload::ClearLogicalOutput { .. }) => {
+            logical_output::engine_command(payload).expect("a logical-output payload")
         }
         CommandPayload::SetNetworkStream { .. } => {
             unreachable!("network stream edits resolve their URL against the show")
@@ -4413,6 +4421,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetDisplayOutput { .. } => {
             return display_output::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetLogicalOutput { .. } => {
+            return logical_output::wire_edit_payload(command);
+        }
         command @ EngineCommand::SetLiveLan(_) => {
             return live_lan::wire_edit_payload(command);
         }
@@ -4913,6 +4924,13 @@ fn accepted_event_payload(
     if let Some(payload) = outcome
         .events
         .iter()
+        .find_map(|event| logical_output::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
         .find_map(|event| live_lan::changed(&event.payload))
     {
         return payload;
@@ -5255,6 +5273,7 @@ fn snapshot_record(
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),
         fade_to_black_output_durations: audio_mixer::wire_output_durations(engine.show()),
         fade_to_black_curve: engine.show().desired_switcher().fade_to_black_curve(),
+        logical_outputs: logical_output::wire_entries(engine.show()),
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),
         network_streams: network_stream::wire_entries(engine.show(), network_states),

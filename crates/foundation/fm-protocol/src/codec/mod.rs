@@ -13,6 +13,7 @@ mod health;
 mod input_lifecycle;
 mod layout;
 mod live_lan;
+mod logical_output;
 mod media;
 mod media_list;
 mod network_stream;
