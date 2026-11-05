@@ -2833,6 +2833,51 @@ mod tests {
     }
 
     #[test]
+    fn alias_drafts_author_an_optional_crop() {
+        let state = state();
+        let tracker = CatalogueTracker::default();
+        let mut draft = AddInputDraft::new(&state, &tracker);
+        let taken = tracker.taken_names(&state);
+        draft.set_kind(NewInputKind::Alias, &taken);
+        draft.alias_target = Some(input(1));
+        assert_eq!(
+            draft.source(),
+            Ok(LiveInputSource::Alias {
+                target: wire(1),
+                crop: None,
+            })
+        );
+
+        draft.alias_crop = true;
+        draft.alias_crop_x = 10;
+        draft.alias_crop_y = 20;
+        draft.alias_crop_width = 640;
+        draft.alias_crop_height = 360;
+        assert_eq!(
+            draft.source(),
+            Ok(LiveInputSource::Alias {
+                target: wire(1),
+                crop: Some(fm_protocol::WireLayerCrop {
+                    x: 10,
+                    y: 20,
+                    width: 640,
+                    height: 360,
+                }),
+            })
+        );
+
+        draft.alias_crop_width = 0;
+        assert_eq!(draft.source(), Err(Msg::AddInputAliasCropInvalid.en()));
+        assert_eq!(
+            draft.source_problem().map(|problem| problem.field),
+            Some(Msg::AddInputAliasCropWidth)
+        );
+        draft.alias_crop_width = 16_384;
+        draft.alias_crop_x = 1;
+        assert_eq!(draft.source(), Err(Msg::AddInputAliasCropInvalid.en()));
+    }
+
+    #[test]
     fn solid_sources_are_opaque_and_hex_is_lowercase() {
         let state = state();
         let mut draft = AddInputDraft::new(&state, &CatalogueTracker::default());

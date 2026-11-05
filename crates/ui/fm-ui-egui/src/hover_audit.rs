@@ -1955,6 +1955,17 @@ fn alias_feed_scenes(locale: Locale) -> Vec<Scene> {
             operator.clone(),
         ),
         Scene::console(
+            "dialog/add-input-alias-crop",
+            shell(NewInputKind::Alias, &|draft| {
+                draft.alias_crop = true;
+                draft.alias_crop_x = 32;
+                draft.alias_crop_y = 18;
+                draft.alias_crop_width = 1_280;
+                draft.alias_crop_height = 720;
+            }),
+            operator.clone(),
+        ),
+        Scene::console(
             "dialog/add-input-feed-program",
             shell(NewInputKind::MixFeed, &|_| {}),
             operator.clone(),
