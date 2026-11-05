@@ -2426,6 +2426,8 @@ impl Error for NativeSourceRenderError {
             | Self::MissingTransitionKind
             | Self::MissingStingerConfiguration(_)
             | Self::StingerSourceNotPreloaded { .. }
+            | Self::UnsupportedOutputFeed { .. }
+            | Self::UnsupportedOutputMultiView { .. }
             | Self::ResourceBounds
             | Self::ConcurrentProjectRender
             | Self::UnsupportedTransition(_) => None,
