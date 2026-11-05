@@ -1233,7 +1233,11 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                     }
                 }
             }
-            InputKind::Alias { target, crop } => {
+            InputKind::Alias {
+                target,
+                crop,
+                effects,
+            } => {
                 if *target == input.id {
                     errors.push(ValidationError {
                         entity,
@@ -1251,6 +1255,15 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                     errors.push(ValidationError {
                         entity,
                         field: "kind.alias.crop",
+                        kind: ValidationErrorKind::OutOfRange,
+                    });
+                }
+                if effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER
+                    || effects.iter().any(|effect| effect.validate().is_err())
+                {
+                    errors.push(ValidationError {
+                        entity,
+                        field: "kind.alias.effects",
                         kind: ValidationErrorKind::OutOfRange,
                     });
                 }

@@ -1048,7 +1048,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(109);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(110);
 
 /// Maximum stored scoreboard documents on one project (GX-003).
 pub const MAX_SCOREBOARDS: usize = 256;
@@ -5558,10 +5558,13 @@ pub enum InputKind {
     ///
     /// `crop` is the alias's own crop in project pixels of the concrete
     /// source. It is independent: neither inherited from an alias the target
-    /// chain passes through nor applied to the target itself.
+    /// chain passes through nor applied to the target itself. `effects` are
+    /// the alias's own ordered video effects, applied after its crop and
+    /// before any scene layer effects that draw it (IN-024).
     Alias {
         target: InputId,
         crop: Option<CropRect>,
+        effects: Vec<LayerEffect>,
     },
     /// The Program or Preview bus fed back as a source, delayed by exactly one
     /// frame: on tick `n` it shows the bus frame committed at the end of tick
