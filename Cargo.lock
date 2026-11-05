@@ -1731,6 +1731,7 @@ dependencies = [
  "fm-sim",
  "fm-switcher",
  "fm-types",
+ "fm-video",
  "half",
  "tempfile",
 ]
