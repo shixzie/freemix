@@ -8458,10 +8458,21 @@ fn remote_title_apply_row_maps_fields_and_sends_the_exact_edit() {
             event: EventPayload::TitleChanged {
                 input: input(9),
                 field_revision: 8,
-                fields: vec![fm_protocol::TitleFieldUpdate {
-                    field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
-                    value: fm_protocol::TitleFieldValue::Number(12),
-                }],
+                fields: vec![
+                    fm_protocol::TitleFieldUpdate {
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                        value: fm_protocol::TitleFieldValue::Number(12),
+                    },
+                    fm_protocol::TitleFieldUpdate {
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                        value: fm_protocol::TitleFieldValue::Color {
+                            red: 0x11,
+                            green: 0x22,
+                            blue: 0x33,
+                            alpha: 0xff,
+                        },
+                    },
+                ],
                 overlays: OverlayStatus::empty_channels(),
             },
             domain: "project",
