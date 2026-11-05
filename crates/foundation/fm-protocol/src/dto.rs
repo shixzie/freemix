@@ -930,11 +930,13 @@ pub enum LiveInputSource {
     ScreenCapture(Box<crate::ScreenCaptureConfig>),
     /// A replay player (OR-012): `kind=replay`, no other field.
     Replay,
-    /// An alias of another input, optionally cropped in project pixels
-    /// (IN-024): `kind=alias` plus `target` and the optional crop fields.
+    /// An alias of another input, optionally cropped in project pixels and
+    /// carrying its own ordered effects (IN-024): `kind=alias` plus `target`,
+    /// the optional crop fields, and an optional encoded effect list.
     Alias {
         target: crate::WireInputId,
         crop: Option<crate::WireLayerCrop>,
+        effects: Vec<crate::WireLayerEffect>,
     },
     /// The Program bus as a one-frame-delayed input (IN-025):
     /// `kind=program_feed`.

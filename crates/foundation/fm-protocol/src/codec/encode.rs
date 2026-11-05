@@ -1154,7 +1154,11 @@ fn encode_input_catalogue_command(
                 LiveInputSource::Replay => record.field("kind", "replay"),
                 LiveInputSource::ProgramFeed => record.field("kind", "program_feed"),
                 LiveInputSource::PreviewFeed => record.field("kind", "preview_feed"),
-                LiveInputSource::Alias { target, crop } => {
+                LiveInputSource::Alias {
+                    target,
+                    crop,
+                    effects,
+                } => {
                     if let Some(crop) = crop
                         && !crop.fits_source()
                     {
@@ -1170,6 +1174,12 @@ fn encode_input_catalogue_command(
                         record.field("crop_y", crop.y)?;
                         record.field("crop_width", crop.width)?;
                         record.field("crop_height", crop.height)?;
+                    }
+                    if !effects.is_empty() {
+                        record.field_string(
+                            "effects",
+                            super::scene_layout::encode_effect_list(effects)?,
+                        )?;
                     }
                     Ok(())
                 }

@@ -1883,7 +1883,16 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
                     });
                 }
             };
-            Ok(LiveInputSource::Alias { target, crop })
+            let effects = fields
+                .optional("effects")
+                .map(|value| super::scene_layout::decode_effect_list(&value))
+                .transpose()?
+                .unwrap_or_default();
+            Ok(LiveInputSource::Alias {
+                target,
+                crop,
+                effects,
+            })
         }
         _ => Err(CodecError::InvalidField {
             field: "kind",

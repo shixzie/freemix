@@ -71,7 +71,7 @@ fn gateway() -> WebGatewayStatus {
 
 #[test]
 fn the_current_protocol_is_2_71() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 166));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 167));
 }
 
 #[test]
