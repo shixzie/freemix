@@ -595,6 +595,9 @@ pub struct NativeProjectPlan {
     dimensions: VideoDimensions,
     program_outputs: Vec<OutputId>,
     scenes: Vec<NativeScenePlan>,
+    /// The synthetic black scene behind mix feeds, when the project has any
+    /// (IN-025).
+    black_scene: Option<SceneId>,
     peak_rgba16f_targets: usize,
     transient_rgba16f_bytes: u64,
     grades: NativeProjectGrades,
@@ -1024,6 +1027,7 @@ impl NativeProjectPlan {
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         Ok(Self {
             video_routes,
+            black_scene,
             audio_routes,
             audio_strips: project
                 .input_audio_strips()
@@ -1485,6 +1489,14 @@ impl NativeProjectPlan {
                         bound.push((token, source));
                         token
                     }),
+                    (None, NativeSceneSource::Scene(scene)) if Some(scene) == self.black_scene => {
+                        next_source.checked_add(1).map(|after| {
+                            let token = SourceId::new(next_source);
+                            next_source = after;
+                            bound.push((token, source));
+                            token
+                        })
+                    }
                     (None, NativeSceneSource::Scene(_)) => None,
                 };
                 tokens.push(token);
