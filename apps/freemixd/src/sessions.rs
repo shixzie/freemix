@@ -866,7 +866,7 @@ pub(super) fn run(
         reel_pacer: std::cell::RefCell::new(ReelStatusPacer::default()),
         as_run: std::cell::RefCell::new(crate::as_run::AsRunLog::new(as_run_root)),
         bundle_root: as_run_root,
-        title_row_sources: std::cell::RefCell::new(TitleRowSources::default()),
+        title_row_sources: std::cell::RefCell::new(TitleRowSources::load(as_run_root)),
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -2203,7 +2203,134 @@ struct TitleRowSources {
     sources: std::collections::BTreeMap<fm_types::InputId, TitleRowSource>,
 }
 
+/// The bundle document holding every scheduled title data source.
+const TITLE_ROW_SOURCES_FILE: &str = "title-data-sources.v1";
+/// Version of [`TITLE_ROW_SOURCES_FILE`].
+const TITLE_ROW_SOURCES_VERSION: &str = "1";
+/// Most sources one project may store.
+const MAX_TITLE_ROW_SOURCES: usize = 128;
+
 impl TitleRowSources {
+    /// Loads the persisted sources from the bundle, starting their pollers.
+    /// A missing document is empty; a malformed one is reported and ignored
+    /// rather than preventing the daemon from starting.
+    fn load(bundle_root: &std::path::Path) -> Self {
+        let path = bundle_root.join(TITLE_ROW_SOURCES_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Self::default();
+            }
+            Err(error) => {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=read_failed\terror={error}");
+                return Self::default();
+            }
+        };
+        let mut sources = Self::default();
+        let mut lines = text.lines();
+        if lines.next() != Some(&format!("version={TITLE_ROW_SOURCES_VERSION}")) {
+            eprintln!("FREEMIXD_TITLE_SOURCES\tstate=bad_version");
+            return sources;
+        }
+        for line in lines {
+            if line.is_empty() {
+                continue;
+            }
+            if sources.sources.len() == MAX_TITLE_ROW_SOURCES {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=too_many");
+                return sources;
+            }
+            let Some((input, rest)) = line.split_once('\t') else {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=malformed\tline={line}");
+                return sources;
+            };
+            let rest: Vec<&str> = rest.splitn(3, '\t').collect();
+            let [interval, keep_live, source_path] = rest.as_slice() else {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=malformed\tline={line}");
+                return sources;
+            };
+            let Ok(input) = input.parse::<u128>() else {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=malformed\tline={line}");
+                return sources;
+            };
+            let Some(input) = NonZeroU128::new(input).map(fm_types::InputId::new) else {
+                continue;
+            };
+            let Ok(interval_ms) = interval.parse::<u32>() else {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=malformed\tline={line}");
+                return sources;
+            };
+            let Some(relative) = (!std::path::Path::new(source_path).is_absolute()
+                && std::path::Path::new(source_path)
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))))
+            .then_some(source_path) else {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=bad_path\tpath={source_path}");
+                continue;
+            };
+            if !(250..=3_600_000).contains(&interval_ms) {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=bad_interval\tinput={input}");
+                continue;
+            }
+            let format = match std::path::Path::new(relative)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "json" => fm_data::FileFormat::Json(fm_data::ParseLimits::default()),
+                "csv" => fm_data::FileFormat::Csv(fm_data::CsvOptions::default()),
+                "xlsx" => fm_data::FileFormat::Xlsx { sheet: None },
+                "ods" => fm_data::FileFormat::Ods { sheet: None },
+                _ => continue,
+            };
+            let interval = Duration::from_millis(u64::from(interval_ms));
+            let mut source = fm_data::FilePollingSource::new(
+                format!("title-row-{input}"),
+                bundle_root.join(relative),
+                format,
+                interval,
+            );
+            if fm_data::DataSource::start(&mut source).is_err() {
+                continue;
+            }
+            sources.sources.insert(
+                input,
+                TitleRowSource {
+                    input,
+                    path: relative.to_owned(),
+                    interval,
+                    keep_live: *keep_live == "1",
+                    source,
+                    next_poll: Instant::now(),
+                    applied_rows: 0,
+                    error: None,
+                },
+            );
+        }
+        sources
+    }
+
+    /// Writes the current source specs into the bundle atomically enough for
+    /// a daemon restart to resume them.
+    fn save(&self, bundle_root: &std::path::Path) -> std::io::Result<()> {
+        let mut text = format!("version={TITLE_ROW_SOURCES_VERSION}\n");
+        for source in self.sources.values() {
+            let interval_ms = u32::try_from(source.interval.as_millis()).unwrap_or(u32::MAX);
+            text.push_str(&format!(
+                "{}\t{interval_ms}\t{}\t{}\n",
+                source.input.get().get(),
+                u8::from(source.keep_live),
+                source.path
+            ));
+        }
+        let path = bundle_root.join(TITLE_ROW_SOURCES_FILE);
+        let temporary = bundle_root.join(format!("{TITLE_ROW_SOURCES_FILE}.tmp"));
+        std::fs::write(&temporary, text)?;
+        std::fs::rename(temporary, path)
+    }
+
     /// Configures one source from a request and returns its status.
     #[allow(clippy::too_many_lines)] // one arm per source operation
     fn configure(
@@ -2299,10 +2426,31 @@ impl TitleRowSources {
                         error: None,
                     },
                 );
+                if let Err(error) = self.save(bundle_root) {
+                    self.sources.remove(&input);
+                    return response(
+                        false,
+                        Some(path),
+                        Some(interval_ms),
+                        keep_live,
+                        0,
+                        Some(format!("source could not be persisted: {error}")),
+                    );
+                }
                 response(true, Some(path), Some(interval_ms), keep_live, 0, None)
             }
             fm_protocol::TitleRowSourceOperation::Stop => {
                 self.sources.remove(&input);
+                if let Err(error) = self.save(bundle_root) {
+                    return response(
+                        false,
+                        None,
+                        None,
+                        false,
+                        0,
+                        Some(format!("source could not be persisted: {error}")),
+                    );
+                }
                 response(false, None, None, false, 0, None)
             }
             fm_protocol::TitleRowSourceOperation::Status => match self.sources.get(&input) {
