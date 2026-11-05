@@ -1456,6 +1456,28 @@ mod tests {
     }
 
     #[test]
+    fn an_alias_thumbnail_shows_its_target_picture() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
+        let mut project = project(vec![solid(1, 200)]);
+        project.add_input(input(
+            2,
+            InputKind::Alias {
+                target: input_id(1),
+                crop: None,
+            },
+        ));
+        let work = work(project, 1);
+        let thumbnails = step(&mut renderer, &work, start, false);
+        let alias = thumbnails
+            .iter()
+            .find(|(input, _)| *input == input_id(2))
+            .expect("the alias gets a thumbnail");
+        let image = decode_input_thumbnail(&alias.1).unwrap();
+        assert_eq!(&image.rgba[..4], &[200, 0, 0, 255]);
+    }
+
+    #[test]
     fn renders_fitted_thumbnails_paced_and_kept_alive() {
         let start = Instant::now();
         let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
