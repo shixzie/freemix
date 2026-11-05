@@ -31,13 +31,14 @@ use fm_protocol::{
 use fm_types::{InputId, ProjectId};
 use fm_ui_egui::{
     Appearance, ConsoleLayout, DockLayout, DropZone, LayoutPreset, NamedLayout, PanelId,
-    ToolWindow, WindowGeometry,
+    StudioIntent, ToolWindow, WindowGeometry,
 };
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 use freemix_studio::{
     ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, LifecycleState,
     PREFERENCES_ENV, PreferenceStore, RestartPolicy, SavedPreferences, StudioConfig, StudioError,
     StudioRuntime, SupervisedConfig, UiPreferences, parse_args, preferences_path,
+    studio_intent_payload,
 };
 #[cfg(unix)]
 use freemix_studio::{DaemonSupervisor, ReadinessRecord, SupervisorError, SupervisorState};
@@ -63,6 +64,25 @@ fn input(value: u128) -> WireInputId {
 
 fn model_input(value: u128) -> InputId {
     InputId::new(NonZeroU128::new(value).unwrap())
+}
+
+#[test]
+fn freeze_intent_maps_to_the_wire_command() {
+    let payload = studio_intent_payload(
+        StudioIntent::SetInputFreeze {
+            input: model_input(1),
+            frozen: true,
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        payload,
+        CommandPayload::SetInputFreeze {
+            input: input(1),
+            frozen: true
+        }
+    );
 }
 
 fn input_statuses() -> Vec<fm_protocol::InputStatus> {
