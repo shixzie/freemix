@@ -3667,6 +3667,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_input_audio_strips(&mut project, snapshot.show())?;
     sync_audio_mixer(&mut project, snapshot.show())?;
     sync_display_outputs(&mut project, snapshot.show())?;
+    sync_input_video_delays(&mut project, snapshot.show())?;
     sync_stream_running(&mut project, snapshot.show())?;
     sync_recording_desired(&mut project, snapshot.show());
     sync_input_lifecycle(&mut project, snapshot.show());
@@ -5799,6 +5800,22 @@ fn sync_display_outputs(project: &mut Project, show: &ShowState) -> AppResult<()
     Ok(())
 }
 
+/// Folds the show's per-input video delays (IN-022) into the project.
+fn sync_input_video_delays(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    let delays = show
+        .input_video_delays()
+        .map(|(&input, &frames)| (input, frames))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if project.input_video_delays() == &delays {
+        return Ok(());
+    }
+    project.restore_input_video_delays(delays);
+    project
+        .validate_input_video_delays()
+        .map_err(|error| format!("project cannot take input video delays: {error}"))?;
+    Ok(())
+}
+
 /// Folds the show's strip labels, groups, and Fade-to-Black output
 /// selection (AU-001, SW-004) into the project.
 fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
@@ -7485,6 +7502,8 @@ FreeMix deterministic MVP
 
 Usage:
   freemix-cli new <show.freemix> [--name <name>]
+  freemix-cli input-video-delay <show.freemix> <nonzero-input-id> <frames:0..=600>
+  freemix-cli remote-input-video-delay <address> <nonzero-input-id> <frames:0..=600>
   freemix-cli input-add <show.freemix> <nonzero-input-id> <name>
   freemix-cli simulated-solid-input-add <show.freemix> <nonzero-input-id> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255>
   freemix-cli media-input-add <show.freemix> <nonzero-input-id> <name> <asset://key>
