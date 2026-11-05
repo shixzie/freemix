@@ -569,6 +569,7 @@ impl ThumbnailRenderer {
             let sources: &dyn SceneSources = match &work.live {
                 None => {
                     simulated = SimulatedLeaves {
+                        project: &work.project,
                         leaf: LeafContext {
                             pipeline,
                             titles: &self.titles,
@@ -750,13 +751,38 @@ impl LeafContext<'_> {
 /// layout instead of no picture at all (its record says
 /// `origin=simulated`).
 struct SimulatedLeaves<'a> {
+    project: &'a Project,
     leaf: LeafContext<'a>,
     stills: RefCell<&'a mut StillPictures>,
 }
 
+impl SimulatedLeaves<'_> {
+    /// Follows an alias chain to the input that draws the picture.
+    fn concrete<'a>(&'a self, input: &'a Input) -> &'a Input {
+        let mut current = input;
+        let mut hops = 0;
+        while let InputKind::Alias { target, .. } = &current.kind {
+            hops += 1;
+            if hops > self.project.inputs().len() {
+                break;
+            }
+            let Some(next) = self
+                .project
+                .inputs()
+                .iter()
+                .find(|candidate| candidate.id == *target)
+            else {
+                break;
+            };
+            current = next;
+        }
+        current
+    }
+}
+
 impl SceneSources for SimulatedLeaves<'_> {
     fn draws(&self, input: &Input) -> bool {
-        LeafContext::draws(input)
+        LeafContext::draws(self.concrete(input))
     }
 
     fn leaf(
@@ -769,6 +795,7 @@ impl SceneSources for SimulatedLeaves<'_> {
         if (self.leaf.pipeline.width(), self.leaf.pipeline.height()) != (width, height) {
             return None;
         }
+        let input = self.concrete(input);
         let mut stills = self.stills.try_borrow_mut().ok()?;
         self.leaf.picture(input, frame_number, &mut stills, true)
     }
