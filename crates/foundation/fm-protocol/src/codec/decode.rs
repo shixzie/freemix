@@ -205,6 +205,7 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 path: fields.required("path")?,
             })
         }
+        "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
         "title_phases" => WireMessage::TitlePhases(crate::TitlePhasesMessage {
             frame: fields.canonical_required("frame")?,
             titles: decode_title_phases(&fields.required("titles")?)?,
