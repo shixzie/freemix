@@ -458,6 +458,12 @@ pub enum NativeProjectPlanError {
     AudioCycle {
         input: InputId,
     },
+    AliasCycle {
+        input: InputId,
+    },
+    AliasCropUnsupported {
+        input: InputId,
+    },
     TooManyReachableScenes {
         actual: usize,
         maximum: usize,
@@ -503,6 +509,13 @@ impl fmt::Display for NativeProjectPlanError {
             Self::AudioCycle { input } => {
                 write!(formatter, "native scene audio cycle reaches input {input}")
             }
+            Self::AliasCycle { input } => {
+                write!(formatter, "native input alias cycle reaches input {input}")
+            }
+            Self::AliasCropUnsupported { input } => write!(
+                formatter,
+                "native input {input} is a cropped alias, which the native renderer does not support yet"
+            ),
             Self::TooManyReachableScenes { actual, maximum } => write!(
                 formatter,
                 "native project has {actual} reachable scenes; maximum is {maximum}"
@@ -702,17 +715,36 @@ impl NativeProjectPlan {
             .iter()
             .map(|scene| (scene.id, scene))
             .collect::<BTreeMap<_, _>>();
+        let black_scene = project
+            .inputs()
+            .iter()
+            .any(|input| matches!(input.kind, InputKind::MixFeed(_)))
+            .then(|| synthetic_black_scene_id(&scene_models))
+            .transpose()?;
         let video_routes = project
             .inputs()
             .iter()
             .map(|input| {
-                let route = match input.kind {
-                    InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(scene_id),
+                let route = match &input.kind {
+                    InputKind::Alias { .. } => {
+                        let concrete = resolve_alias_target(input.id, &inputs)?;
+                        match &concrete.kind {
+                            InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(*scene_id),
+                            InputKind::MixFeed(_) => NativeVideoRoute::Scene(
+                                black_scene.expect("a mix feed configures the black scene"),
+                            ),
+                            _ => NativeVideoRoute::Leaf(concrete.id),
+                        }
+                    }
+                    InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(*scene_id),
+                    InputKind::MixFeed(_) => NativeVideoRoute::Scene(
+                        black_scene.expect("a mix feed configures the black scene"),
+                    ),
                     _ => NativeVideoRoute::Leaf(input.id),
                 };
-                (input.id, route)
+                Ok((input.id, route))
             })
-            .collect::<BTreeMap<_, _>>();
+            .collect::<Result<BTreeMap<_, _>, NativeProjectPlanError>>()?;
 
         let mut order = Vec::new();
         let mut visiting = BTreeSet::new();
@@ -720,8 +752,8 @@ impl NativeProjectPlan {
         let roots = video_routes
             .values()
             .filter_map(|route| match route {
-                NativeVideoRoute::Scene(scene) => Some(*scene),
-                NativeVideoRoute::Leaf(_) => None,
+                NativeVideoRoute::Scene(scene) if Some(*scene) != black_scene => Some(*scene),
+                NativeVideoRoute::Scene(_) | NativeVideoRoute::Leaf(_) => None,
             })
             .collect::<BTreeSet<_>>();
         for root in roots {
@@ -729,14 +761,18 @@ impl NativeProjectPlan {
                 root,
                 &inputs,
                 &scene_models,
+                black_scene,
                 &mut visiting,
                 &mut visited,
                 &mut order,
             )?;
         }
-        if order.len() > limits.max_reachable_scenes {
+        let reachable_scenes = order
+            .len()
+            .saturating_add(usize::from(black_scene.is_some()));
+        if reachable_scenes > limits.max_reachable_scenes {
             return Err(NativeProjectPlanError::TooManyReachableScenes {
-                actual: order.len(),
+                actual: reachable_scenes,
                 maximum: limits.max_reachable_scenes,
             });
         }
@@ -792,7 +828,8 @@ impl NativeProjectPlan {
                     });
                 }
                 let token = if layer.enabled {
-                    let source = resolve_scene_source(layer.source, &inputs, &scene_models)?;
+                    let source =
+                        resolve_scene_source(layer.source, &inputs, &scene_models, black_scene)?;
                     if let Some(token) = tokens.get(&source) {
                         *token
                     } else {
@@ -815,7 +852,13 @@ impl NativeProjectPlan {
                     .and_then(fm_model::LayerKey::key_input)
                     .filter(|_| layer.enabled)
                     .and_then(|input| {
-                        resolve_scene_source(SourceRef::Input(input), &inputs, &scene_models).ok()
+                        resolve_scene_source(
+                            SourceRef::Input(input),
+                            &inputs,
+                            &scene_models,
+                            black_scene,
+                        )
+                        .ok()
                     })
                     .filter(|source| matches!(source, NativeSceneSource::Leaf(_)));
                 let key_token = match key_source {
@@ -866,6 +909,48 @@ impl NativeProjectPlan {
                     .into_iter()
                     .map(|(source, token)| (token, source))
                     .collect(),
+                rejected: None,
+            });
+        }
+
+        if let Some(black_scene) = black_scene {
+            let model = fm_model::Scene {
+                id: black_scene,
+                name: "Feed black".into(),
+                background: fm_model::Rgba8::OPAQUE_BLACK,
+                layers: Vec::new(),
+                animation: fm_model::SceneAnimation::default(),
+            };
+            let composition = native_scene_composition(
+                black_scene,
+                &model,
+                &[],
+                &[],
+                dimensions.width(),
+                dimensions.height(),
+                NativeSceneGrades {
+                    layers: &BTreeMap::new(),
+                    scene_inputs: &BTreeMap::new(),
+                },
+            )?;
+            let output = SourceId::new(next_source);
+            next_source = next_source
+                .checked_add(1)
+                .ok_or(NativeProjectPlanError::SourceTokenExhausted)?;
+            scenes.push(NativeScenePlan {
+                id: black_scene,
+                output,
+                composition,
+                model: Arc::new(model.clone()),
+                followed: Arc::new(model),
+                layer_tokens: Vec::new(),
+                key_tokens: Vec::new(),
+                inputs: video_routes
+                    .iter()
+                    .filter(|(_, route)| **route == NativeVideoRoute::Scene(black_scene))
+                    .map(|(input, _)| *input)
+                    .collect(),
+                sources: Vec::new(),
                 rejected: None,
             });
         }
@@ -1378,7 +1463,7 @@ impl NativeProjectPlan {
                 let source = match layer.source {
                     SourceRef::Input(input) => match self.video_routes.get(&input) {
                         Some(NativeVideoRoute::Scene(scene)) => NativeSceneSource::Scene(*scene),
-                        Some(NativeVideoRoute::Leaf(_)) => NativeSceneSource::Leaf(input),
+                        Some(NativeVideoRoute::Leaf(leaf)) => NativeSceneSource::Leaf(*leaf),
                         None => {
                             tokens.push(None);
                             continue;
@@ -1435,7 +1520,7 @@ impl NativeProjectPlan {
                     .and_then(fm_model::LayerKey::key_input)
                     .filter(|_| layer.enabled);
                 let source = key_input.and_then(|input| match self.video_routes.get(&input) {
-                    Some(NativeVideoRoute::Leaf(_)) => Some(NativeSceneSource::Leaf(input)),
+                    Some(NativeVideoRoute::Leaf(leaf)) => Some(NativeSceneSource::Leaf(*leaf)),
                     Some(NativeVideoRoute::Scene(_)) | None => None,
                 });
                 let Some(source) = source else {
@@ -1796,25 +1881,75 @@ fn native_execution_peak(
         .ok_or(NativeProjectPlanError::TransientTargetCountOverflow)
 }
 
+/// Follows an alias chain to its first non-alias input (IN-024).
+///
+/// A cropped alias is refused: the native renderer cannot crop a source
+/// inside its existing composition plans yet.
+fn resolve_alias_target<'a>(
+    input: InputId,
+    inputs: &BTreeMap<InputId, &'a fm_model::Input>,
+) -> Result<&'a fm_model::Input, NativeProjectPlanError> {
+    let mut current = input;
+    let mut seen = BTreeSet::new();
+    loop {
+        if !seen.insert(current) {
+            return Err(NativeProjectPlanError::AliasCycle { input: current });
+        }
+        let model = inputs
+            .get(&current)
+            .copied()
+            .ok_or(NativeProjectPlanError::MissingInput(current))?;
+        match &model.kind {
+            InputKind::Alias { target, crop } => {
+                if crop.is_some() {
+                    return Err(NativeProjectPlanError::AliasCropUnsupported { input: current });
+                }
+                current = *target;
+            }
+            _ => return Ok(model),
+        }
+    }
+}
+
+/// A Scene id no project scene uses, for the black scene behind mix feeds.
+fn synthetic_black_scene_id(
+    scenes: &BTreeMap<SceneId, &fm_model::Scene>,
+) -> Result<SceneId, NativeProjectPlanError> {
+    let mut candidate = u128::MAX;
+    for _ in 0..1024 {
+        if let Some(id) = core::num::NonZeroU128::new(candidate) {
+            let id = SceneId::new(id);
+            if !scenes.contains_key(&id) {
+                return Ok(id);
+            }
+        }
+        candidate = candidate.saturating_sub(1);
+    }
+    Err(NativeProjectPlanError::SourceTokenExhausted)
+}
+
 fn resolve_scene_source(
     source: SourceRef,
     inputs: &BTreeMap<InputId, &fm_model::Input>,
     scenes: &BTreeMap<SceneId, &fm_model::Scene>,
+    black_scene: Option<SceneId>,
 ) -> Result<NativeSceneSource, NativeProjectPlanError> {
     match source {
-        SourceRef::Input(input) => match &inputs
-            .get(&input)
-            .ok_or(NativeProjectPlanError::MissingInput(input))?
-            .kind
-        {
-            InputKind::Scene { scene_id, .. } => {
-                if !scenes.contains_key(scene_id) {
-                    return Err(NativeProjectPlanError::MissingScene(*scene_id));
+        SourceRef::Input(input) => {
+            let model = resolve_alias_target(input, inputs)?;
+            match &model.kind {
+                InputKind::Scene { scene_id, .. } => {
+                    if !scenes.contains_key(scene_id) {
+                        return Err(NativeProjectPlanError::MissingScene(*scene_id));
+                    }
+                    Ok(NativeSceneSource::Scene(*scene_id))
                 }
-                Ok(NativeSceneSource::Scene(*scene_id))
+                InputKind::MixFeed(_) => black_scene
+                    .map(NativeSceneSource::Scene)
+                    .ok_or(NativeProjectPlanError::MissingInput(input)),
+                _ => Ok(NativeSceneSource::Leaf(model.id)),
             }
-            _ => Ok(NativeSceneSource::Leaf(input)),
-        },
+        }
         SourceRef::Scene(scene) => {
             if !scenes.contains_key(&scene) {
                 return Err(NativeProjectPlanError::MissingScene(scene));
@@ -1828,6 +1963,7 @@ fn visit_native_scene(
     scene: SceneId,
     inputs: &BTreeMap<InputId, &fm_model::Input>,
     scenes: &BTreeMap<SceneId, &fm_model::Scene>,
+    black_scene: Option<SceneId>,
     visiting: &mut BTreeSet<SceneId>,
     visited: &mut BTreeSet<SceneId>,
     order: &mut Vec<SceneId>,
@@ -1845,11 +1981,22 @@ fn visit_native_scene(
         .layers
         .iter()
         .filter(|layer| layer.enabled)
-        .map(|layer| resolve_scene_source(layer.source, inputs, scenes))
+        .map(|layer| resolve_scene_source(layer.source, inputs, scenes, black_scene))
         .collect::<Result<BTreeSet<_>, _>>()?;
     for dependency in dependencies {
         if let NativeSceneSource::Scene(dependency) = dependency {
-            visit_native_scene(dependency, inputs, scenes, visiting, visited, order)?;
+            if Some(dependency) == black_scene {
+                continue;
+            }
+            visit_native_scene(
+                dependency,
+                inputs,
+                scenes,
+                black_scene,
+                visiting,
+                visited,
+                order,
+            )?;
         }
     }
     visiting.remove(&scene);
