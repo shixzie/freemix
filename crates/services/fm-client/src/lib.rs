@@ -746,6 +746,8 @@ impl Client {
             | WireMessage::SourceSyncStatus(_)
             | WireMessage::HealthStatus(_)
             | WireMessage::MonitorFrame(_)
+            | WireMessage::FrozenStillRequest(_)
+            | WireMessage::FrozenStillResponse(_)
             | WireMessage::InputThumbnailSubscription(_)
             | WireMessage::InputThumbnail(_)
             | WireMessage::CapabilityReport(_)
