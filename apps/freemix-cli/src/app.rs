@@ -3667,6 +3667,8 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_input_audio_strips(&mut project, snapshot.show())?;
     sync_audio_mixer(&mut project, snapshot.show())?;
     sync_display_outputs(&mut project, snapshot.show())?;
+    sync_logical_outputs(&mut project, snapshot.show())?;
+    sync_secondary_mixes(&mut project, snapshot.show())?;
     sync_input_video_delays(&mut project, snapshot.show())?;
     sync_stream_running(&mut project, snapshot.show())?;
     sync_recording_desired(&mut project, snapshot.show());
@@ -5754,6 +5756,14 @@ fn restore_display_outputs(show: &mut ShowState, project: &Project) -> AppResult
     for (&slot, config) in project.display_outputs() {
         show.set_display_output(slot, Some(config.clone()))?;
     }
+    show.restore_logical_outputs(project.logical_outputs().iter().cloned())?;
+    show.restore_secondary_mixes(project.secondary_mixes().iter().cloned())?;
+    show.restore_input_video_delays(
+        project
+            .input_video_delays()
+            .iter()
+            .map(|(&input, &frames)| (input, frames)),
+    )?;
     show.set_live_lan(project.live_lan().clone())?;
     for setting in project.alert_rules() {
         show.set_alert_rule(*setting)?;
@@ -5797,6 +5807,32 @@ fn sync_display_outputs(project: &mut Project, show: &ShowState) -> AppResult<()
             .set_display_output(slot, config.clone())
             .map_err(|error| format!("project cannot take display output {slot}: {error}"))?;
     }
+    Ok(())
+}
+
+/// Folds the show's logical output routing (SW-012) into the project.
+fn sync_logical_outputs(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    let configs = show.logical_outputs().cloned().collect::<Vec<_>>();
+    if project.logical_outputs() == configs.as_slice() {
+        return Ok(());
+    }
+    project.restore_logical_outputs(configs);
+    project
+        .validate_logical_outputs()
+        .map_err(|error| format!("project cannot take logical outputs: {error}"))?;
+    Ok(())
+}
+
+/// Folds the show's secondary mixes (IN-023) into the project.
+fn sync_secondary_mixes(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    let configs = show.secondary_mixes().cloned().collect::<Vec<_>>();
+    if project.secondary_mixes() == configs.as_slice() {
+        return Ok(());
+    }
+    project.restore_secondary_mixes(configs);
+    project
+        .validate_secondary_mixes()
+        .map_err(|error| format!("project cannot take secondary mixes: {error}"))?;
     Ok(())
 }
 
