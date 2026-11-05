@@ -71,7 +71,7 @@ fn push_config_fields(
         return Err(invalid("preview", config.number.to_string()));
     }
     push("name", escape_bounded(&config.name)?)?;
-    push("mode", mode_token(config.mode))?;
+    push("mode", mode_token(config.mode).to_owned())?;
     push(
         "program",
         escape_bounded(&source_token(config.program))?,
