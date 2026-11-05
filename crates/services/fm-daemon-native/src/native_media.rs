@@ -1634,55 +1634,22 @@ enum LogicalCellFeed {
     Program,
     Input(InputId),
     Output(OutputId),
+    Mix(MixId),
+    /// A rendered background that is not one shared feed.
+    Composite(usize),
 }
 
-/// Resolves one logical-output MultiView cell to its shared texture and feed
-/// identity. Referenced logical outputs were rendered earlier in
-/// [`OutputRoutingFrame::render_order`](fm_switcher::OutputRoutingFrame).
-#[allow(clippy::too_many_arguments)]
-fn logical_cell_texture<'a>(
-    feed: CellFeed,
-    output: OutputId,
-    frame: &FrameResult,
-    program: &'a NativeTexture,
-    logical_outputs: &'a BTreeMap<OutputId, NativeTexture>,
-    registry: &'a NativeSourceRegistry,
-    graded: &'a BTreeMap<InputId, NativeTexture>,
-    project: &NativeProjectPlan,
-    scene_outputs: &'a BTreeMap<SceneId, (SourceId, NativeTexture)>,
-) -> Result<(LogicalCellFeed, &'a NativeTexture), NativeSourceRenderError> {
-    match feed {
-        CellFeed::Background(background) => {
-            if is_program_background(&background, frame.program) {
-                Ok((LogicalCellFeed::Program, program))
-            } else if let Some(input) = settled_input(&background) {
-                Ok((
-                    LogicalCellFeed::Input(input),
-                    project_texture(
-                        registry,
-                        graded,
-                        project,
-                        scene_outputs,
-                        input,
-                        frame.deadline,
-                    )?,
-                ))
-            } else {
-                Err(NativeSourceRenderError::UnsupportedOutputFeed {
-                    output: Some(output),
-                })
-            }
-        }
-        CellFeed::Output(slot) => {
-            let Some(Ok(plan)) = frame.logical_outputs.output(slot) else {
-                return Err(NativeSourceRenderError::ResourceBounds);
-            };
-            let texture = logical_outputs.get(&plan.output).ok_or(
-                NativeSourceRenderError::MissingOutputTexture {
-                    output: plan.output,
-                },
-            )?;
-            Ok((LogicalCellFeed::Output(plan.output), texture))
+/// Either a borrowed cell texture or one this pass rendered.
+enum LogicalCellTexture<'a> {
+    Borrowed(&'a NativeTexture),
+    Owned(NativeTexture),
+}
+
+impl LogicalCellTexture<'_> {
+    const fn as_ref(&self) -> &NativeTexture {
+        match self {
+            Self::Borrowed(texture) => texture,
+            Self::Owned(texture) => texture,
         }
     }
 }
@@ -9588,12 +9555,12 @@ impl NativeMediaRuntime {
             cells.len(),
         )
         .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
-        let feeds = cells
-            .iter()
-            .map(|cell| {
-                logical_cell_texture(
+        let mut feeds = Vec::with_capacity(cells.len());
+        for (index, cell) in cells.iter().enumerate() {
+            feeds.push(
+                self.logical_cell_texture(
+                    index,
                     cell.feed,
-                    plan.output,
                     frame,
                     program,
                     logical_outputs,
@@ -9602,12 +9569,13 @@ impl NativeMediaRuntime {
                     project,
                     scene_outputs,
                 )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                .await?,
+            );
+        }
         let mut unique: Vec<(LogicalCellFeed, &NativeTexture)> = Vec::new();
         for (feed, texture) in &feeds {
             if !unique.iter().any(|(known, _)| known == feed) {
-                unique.push((*feed, *texture));
+                unique.push((*feed, texture.as_ref()));
             }
         }
         let scene = compile_grid_scene_fitted(
@@ -9618,16 +9586,16 @@ impl NativeMediaRuntime {
             0,
             FitPolicy::Fit,
             |index, _cell| {
-                let (feed, texture) = feeds[index];
+                let (feed, texture) = &feeds[index];
                 let source = unique
                     .iter()
-                    .position(|(known, _)| *known == feed)
+                    .position(|(known, _)| known == feed)
                     .and_then(|position| u64::try_from(position + 1).ok())
                     .map(SourceId::new)?;
                 Some(MultiviewSourceFrame::new(
                     source,
-                    texture.width(),
-                    texture.height(),
+                    texture.as_ref().width(),
+                    texture.as_ref().height(),
                 ))
             },
         )
@@ -9651,6 +9619,85 @@ impl NativeMediaRuntime {
             .map_err(NativeSourceRenderError::SceneCompositor)?;
         drop(sources);
         Ok(composed)
+    }
+
+    /// Resolves one logical-output MultiView cell to its texture and feed
+    /// identity (SW-012). Referenced logical outputs were rendered earlier in
+    /// [`OutputRoutingFrame::render_order`](fm_switcher::OutputRoutingFrame).
+    #[allow(clippy::too_many_arguments)]
+    async fn logical_cell_texture<'a>(
+        &self,
+        index: usize,
+        feed: CellFeed,
+        frame: &FrameResult,
+        program: &'a NativeTexture,
+        logical_outputs: &'a BTreeMap<OutputId, NativeTexture>,
+        registry: &'a NativeSourceRegistry,
+        graded: &'a BTreeMap<InputId, NativeTexture>,
+        project: &NativeProjectPlan,
+        scene_outputs: &'a BTreeMap<SceneId, (SourceId, NativeTexture)>,
+    ) -> Result<(LogicalCellFeed, LogicalCellTexture<'a>), NativeSourceRenderError> {
+        match feed {
+            CellFeed::Background(background) => {
+                if is_program_background(&background, frame.program) {
+                    Ok((
+                        LogicalCellFeed::Program,
+                        LogicalCellTexture::Borrowed(program),
+                    ))
+                } else if let Some(input) = settled_input(&background) {
+                    Ok((
+                        LogicalCellFeed::Input(input),
+                        LogicalCellTexture::Borrowed(project_texture(
+                            registry,
+                            graded,
+                            project,
+                            scene_outputs,
+                            input,
+                            frame.deadline,
+                        )?),
+                    ))
+                } else {
+                    let feed = match background.primary {
+                        FeedLayer::Mix { mix, .. }
+                            if background.secondary.is_none()
+                                && background.transition_kind.is_none() =>
+                        {
+                            LogicalCellFeed::Mix(mix)
+                        }
+                        _ => LogicalCellFeed::Composite(index),
+                    };
+                    Ok((
+                        feed,
+                        LogicalCellTexture::Owned(
+                            self.render_background_texture(
+                                registry,
+                                graded,
+                                project,
+                                scene_outputs,
+                                frame,
+                                &background,
+                                program,
+                            )
+                            .await?,
+                        ),
+                    ))
+                }
+            }
+            CellFeed::Output(slot) => {
+                let Some(Ok(plan)) = frame.logical_outputs.output(slot) else {
+                    return Err(NativeSourceRenderError::ResourceBounds);
+                };
+                let texture = logical_outputs.get(&plan.output).ok_or(
+                    NativeSourceRenderError::MissingOutputTexture {
+                        output: plan.output,
+                    },
+                )?;
+                Ok((
+                    LogicalCellFeed::Output(plan.output),
+                    LogicalCellTexture::Borrowed(texture),
+                ))
+            }
+        }
     }
 
     /// Applies one output's overlay layers, the program grade, and its
