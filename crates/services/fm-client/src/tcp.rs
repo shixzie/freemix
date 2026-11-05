@@ -2120,6 +2120,8 @@ impl TcpSession {
             | WireMessage::ScreenCaptureTargetsRequest(_)
             | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::ReplayStatusRequest(_)
+            | WireMessage::FrozenStillRequest(_)
+            | WireMessage::FrozenStillResponse(_)
             | WireMessage::AudioPluginStatusRequest(_)
             | WireMessage::ReelStatusRequest(_)
             | WireMessage::HealthAlertRequest(_) => {

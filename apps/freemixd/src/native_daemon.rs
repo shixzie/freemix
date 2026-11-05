@@ -9,6 +9,13 @@ use super::*;
 
 #[cfg(feature = "native-media")]
 #[allow(clippy::struct_excessive_bools)] // each bool is a distinct native-mode operator or media option
+/// One frozen input's captured PNG, shared by both daemon builds.
+pub(crate) struct CapturedStill {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) png: Vec<u8>,
+}
+
 pub(crate) struct NativeDaemon {
     pub(crate) pacer: FramePacer,
     pub(crate) pacer_start_offset: Duration,
@@ -1860,12 +1867,14 @@ impl NativeDaemon {
     ///
     /// Returns the GPU readback or PNG failure, or that the input is not
     /// frozen yet.
-    pub(crate) fn capture_frozen_still(
-        &mut self,
-        input: InputId,
-    ) -> Result<freemixd::native_media::CapturedStill, String> {
+    pub(crate) fn capture_frozen_still(&mut self, input: InputId) -> Result<CapturedStill, String> {
         self.video
             .capture_frozen_still(input)?
+            .map(|still| CapturedStill {
+                width: still.width,
+                height: still.height,
+                png: still.png,
+            })
             .ok_or_else(|| format!("input {input} is not frozen"))
     }
 
@@ -3850,7 +3859,7 @@ impl NativeDaemon {
     pub(crate) fn capture_frozen_still(
         &mut self,
         _input: InputId,
-    ) -> Result<freemixd::native_media::CapturedStill, String> {
+    ) -> Result<CapturedStill, String> {
         Err("native-media support was not compiled in".to_owned())
     }
 
