@@ -842,6 +842,10 @@ fn decode_command_payload(
                 frames: entry.frames,
             }
         }
+        "set_input_freeze" => CommandPayload::SetInputFreeze {
+            input: fields.input("input")?,
+            frozen: fields.boolean("frozen")?,
+        },
         replay if replay.starts_with("replay_") => {
             CommandPayload::Replay(super::replay::decode_operation(replay, fields)?.ok_or_else(
                 || CodecError::InvalidField {
@@ -1819,6 +1823,20 @@ fn decode_edit_locks(
     })
 }
 
+fn decode_frozen_inputs(value: &str) -> Result<Vec<crate::WireInputId>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let inputs = super::value::parse_input_ids(value)?;
+    if inputs.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(CodecError::InvalidField {
+            field: "frozen_inputs",
+            value: value.to_owned(),
+        });
+    }
+    Ok(inputs)
+}
+
 fn decode_overlay_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
     let channel = decode_overlay_channel(fields)?;
     Ok(match name {
@@ -2025,6 +2043,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
     let inputs = parse_input_statuses(&fields.required("inputs")?)?;
     let revision = fields.parse_required("revision")?;
     let edit_locks = decode_edit_locks(fields, &inputs)?;
+    let frozen_inputs = decode_frozen_inputs(&fields.required("frozen_inputs")?)?;
     let edit_history = decode_edit_history(fields, revision)?;
     let titles = decode_title_summaries(
         &fields.required("titles")?,
@@ -2085,6 +2104,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         realized_overlays: decode_overlays(fields, "realized_overlays")?,
         edit_locks,
         edit_history,
+        frozen_inputs,
         titles,
         scenes,
         layout_scenes,
@@ -2994,6 +3014,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "input_video_delay_changed" => EventPayload::InputVideoDelayChanged {
             input: fields.input("input")?,
             frames: fields.parse_required("frames")?,
+        },
+        "input_freeze_changed" => EventPayload::InputFreezeChanged {
+            input: fields.input("input")?,
+            frozen: fields.boolean("frozen")?,
         },
         "scene_layout_changed" => {
             let operation = fields.required("operation")?;

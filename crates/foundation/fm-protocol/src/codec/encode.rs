@@ -825,6 +825,11 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 &mut |name, value| record.field_string(name, value),
             )?;
         }
+        CommandPayload::SetInputFreeze { input, frozen } => {
+            record.field("payload", "set_input_freeze")?;
+            record.field("input", input)?;
+            record.field("frozen", u8::from(*frozen))?;
+        }
         CommandPayload::Replay(operation) => {
             record.field("payload", operation.token())?;
             super::replay::encode_operation(operation, &mut |name, value| {
@@ -1992,6 +1997,15 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     encode_overlays(record, "desired_overlays", &message.desired_overlays)?;
     encode_overlays(record, "realized_overlays", &message.realized_overlays)?;
     encode_edit_locks(record, &message.edit_locks, &message.inputs)?;
+    record.field_string(
+        "frozen_inputs",
+        message
+            .frozen_inputs
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    )?;
     encode_edit_history(record, &message.edit_history, message.revision)?;
     let inputs = message
         .inputs
@@ -3013,6 +3027,11 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("event", "input_video_delay_changed")?;
             record.field("input", input)?;
             record.field("frames", frames)?;
+        }
+        EventPayload::InputFreezeChanged { input, frozen } => {
+            record.field("event", "input_freeze_changed")?;
+            record.field("input", input)?;
+            record.field("frozen", u8::from(*frozen))?;
         }
         EventPayload::CaptureSettingsChanged { input, settings } => {
             record.field("event", "capture_settings_changed")?;

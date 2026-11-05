@@ -2180,6 +2180,12 @@ pub enum CommandPayload {
         input: WireInputId,
         frames: u32,
     },
+    /// Freezes or resumes one input's picture (Protocol 2.161, SW-016). A
+    /// live operation, neither padlocked nor undoable.
+    SetInputFreeze {
+        input: WireInputId,
+        frozen: bool,
+    },
     /// Reconfigures network stream input `input` (Protocol 2.46, IN-015;
     /// 2.49, IN-016/IN-017): a new URL (`None` keeps the current one),
     /// settings, the SRT stream ID, and edits of the RTMP stream key and SRT
@@ -2625,6 +2631,8 @@ pub struct SnapshotMessage {
     pub realized_overlays: Vec<OverlayStatus>,
     pub edit_locks: EditLockStatus,
     pub edit_history: EditHistoryStatus,
+    /// Every frozen input in ascending order (Protocol 2.161, SW-016).
+    pub frozen_inputs: Vec<WireInputId>,
     /// Every title input in ascending input order with its field revision.
     pub titles: Vec<TitleSummary>,
     /// Every Scene input in ascending input order (Protocol 2.31): one
@@ -2969,6 +2977,11 @@ pub enum EventPayload {
     InputVideoDelayChanged {
         input: WireInputId,
         frames: u32,
+    },
+    /// One input's freeze changed (Protocol 2.161, SW-016).
+    InputFreezeChanged {
+        input: WireInputId,
+        frozen: bool,
     },
     /// The `LiveLAN` configuration changed, or that edit was undone or redone
     /// (Protocol 2.57). It carries whether a PIN is stored, never the PIN.
