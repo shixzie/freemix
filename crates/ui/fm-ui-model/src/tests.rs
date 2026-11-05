@@ -264,10 +264,13 @@ fn installs_and_validates_snapshot() {
 fn frozen_inputs_replicate_from_snapshots_and_events() {
     let project_id = project(10);
     let mut initial = snapshot(project_id, 4);
-    initial.frozen_inputs = vec![input(1)];
+    initial.frozen_inputs = vec![WireInputId::from_domain(input(1))];
     let mut model = ClientModel::new(project_id);
     model.install_snapshot(initial).unwrap();
-    assert_eq!(model.view().unwrap().frozen_inputs, vec![input(1)]);
+    assert_eq!(
+        model.view().unwrap().frozen_inputs,
+        vec![WireInputId::from_domain(input(1))]
+    );
     let identity = model.reconnect_cursor().unwrap().engine.clone();
 
     model
@@ -283,7 +286,10 @@ fn frozen_inputs_replicate_from_snapshots_and_events() {
         .unwrap();
     assert_eq!(
         model.view().unwrap().frozen_inputs,
-        vec![input(1), input(2)]
+        vec![
+            WireInputId::from_domain(input(1)),
+            WireInputId::from_domain(input(2))
+        ]
     );
 
     model
@@ -297,7 +303,10 @@ fn frozen_inputs_replicate_from_snapshots_and_events() {
             },
         ))
         .unwrap();
-    assert_eq!(model.view().unwrap().frozen_inputs, vec![input(2)]);
+    assert_eq!(
+        model.view().unwrap().frozen_inputs,
+        vec![WireInputId::from_domain(input(2))]
+    );
 }
 
 #[test]
