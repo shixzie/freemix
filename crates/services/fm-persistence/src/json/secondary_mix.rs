@@ -15,7 +15,7 @@
 //! no `preview`. Project validation reports missing inputs, unknown mixes,
 //! equal Program and Preview, and cycles.
 
-use core::num::NonZeroU128;
+use core::{fmt::Write as _, num::NonZeroU128};
 
 use fm_model::{
     MAX_MIX_NUMBER, MAX_SECONDARY_MIXES, MixNumber, SecondaryMixConfig, SecondaryMixMode,
@@ -30,7 +30,6 @@ pub(crate) fn write_secondary_mixes(output: &mut String, project: &fm_model::Pro
     if project.secondary_mixes().is_empty() {
         return;
     }
-    use core::fmt::Write as _;
     output.push_str(",\n    \"secondary_mixes\": [");
     for (index, config) in project.secondary_mixes().iter().enumerate() {
         output.push_str(if index == 0 { "\n      " } else { ",\n      " });
@@ -57,7 +56,6 @@ pub(crate) fn write_secondary_mixes(output: &mut String, project: &fm_model::Pro
 }
 
 fn write_name(output: &mut String, name: &str) {
-    use core::fmt::Write as _;
     output.push('"');
     for character in name.chars() {
         match character {
@@ -77,7 +75,6 @@ fn write_name(output: &mut String, name: &str) {
 }
 
 fn write_source(output: &mut String, source: SecondaryMixSource) {
-    use core::fmt::Write as _;
     match source {
         SecondaryMixSource::Input(input) => {
             write!(output, "{{\"input\": {input}}}").expect("writing to a string cannot fail");
@@ -147,9 +144,9 @@ fn parse_entry(value: Value) -> Result<SecondaryMixConfig, DecodeError> {
 fn parse_source(value: Value) -> Result<SecondaryMixSource, DecodeError> {
     let mut object = Object::new(value, "secondary mix source")?;
     let source = if let Some(input) = object.take_optional("input") {
-        SecondaryMixSource::Input(InputId::new(nonzero(input, "secondary mix input")?))
+        SecondaryMixSource::Input(InputId::new(nonzero(&input, "secondary mix input")?))
     } else if let Some(mix) = object.take_optional("mix") {
-        let number = u8_value(mix, "secondary mix source mix")?;
+        let number = u8_value(&mix, "secondary mix source mix")?;
         SecondaryMixSource::Mix(MixNumber::new(number).ok_or_else(|| {
             syntax(format!(
                 "secondary mix source mix must be 1 through {MAX_MIX_NUMBER}"
@@ -162,18 +159,18 @@ fn parse_source(value: Value) -> Result<SecondaryMixSource, DecodeError> {
     Ok(source)
 }
 
-fn u8_value(value: Value, context: &str) -> Result<u8, DecodeError> {
+fn u8_value(value: &Value, context: &str) -> Result<u8, DecodeError> {
     match value {
         Value::Number(number) => {
-            u8::try_from(number).map_err(|_| syntax(format!("{context} must fit in a byte")))
+            u8::try_from(*number).map_err(|_| syntax(format!("{context} must fit in a byte")))
         }
         _ => Err(syntax(format!("{context} must be a number"))),
     }
 }
 
-fn nonzero(value: Value, context: &str) -> Result<NonZeroU128, DecodeError> {
+fn nonzero(value: &Value, context: &str) -> Result<NonZeroU128, DecodeError> {
     let Value::Number(number) = value else {
         return Err(syntax(format!("{context} must be a number")));
     };
-    NonZeroU128::new(number).ok_or_else(|| syntax(format!("{context} must be nonzero")))
+    NonZeroU128::new(*number).ok_or_else(|| syntax(format!("{context} must be nonzero")))
 }

@@ -20,7 +20,7 @@
 //! `{"bus": <id>}`. Every reference, duplicate, and multiview cycle is
 //! reported by project validation.
 
-use core::num::NonZeroU128;
+use core::{fmt::Write as _, num::NonZeroU128};
 
 use fm_model::{
     LogicalAudioMap, LogicalMultiViewCell, LogicalOutputConfig, LogicalOutputSlot,
@@ -35,7 +35,6 @@ pub(crate) fn write_logical_outputs(output: &mut String, project: &fm_model::Pro
     if project.logical_outputs().is_empty() {
         return;
     }
-    use core::fmt::Write as _;
     output.push_str(",\n    \"logical_outputs\": [");
     for (index, config) in project.logical_outputs().iter().enumerate() {
         output.push_str(if index == 0 { "\n      " } else { ",\n      " });
@@ -77,7 +76,6 @@ pub(crate) fn write_logical_outputs(output: &mut String, project: &fm_model::Pro
 }
 
 fn write_source(output: &mut String, source: &LogicalOutputSource) {
-    use core::fmt::Write as _;
     match source {
         LogicalOutputSource::Program => output.push_str("\"program\""),
         LogicalOutputSource::Preview => output.push_str("\"preview\""),
@@ -101,7 +99,6 @@ fn write_source(output: &mut String, source: &LogicalOutputSource) {
 }
 
 fn write_cell(output: &mut String, cell: LogicalMultiViewCell) {
-    use core::fmt::Write as _;
     match cell {
         LogicalMultiViewCell::Program => output.push_str("\"program\""),
         LogicalMultiViewCell::Preview => output.push_str("\"preview\""),
@@ -168,7 +165,7 @@ fn parse_source(value: Value) -> Result<LogicalOutputSource, DecodeError> {
         value @ Value::Object(_) => {
             let mut object = Object::new(value, "logical output source")?;
             let source = if let Some(input) = object.take_optional("input") {
-                LogicalOutputSource::Input(InputId::new(nonzero(input, "logical output input")?))
+                LogicalOutputSource::Input(InputId::new(nonzero(&input, "logical output input")?))
             } else if let Some(mix) = object.take_optional("mix") {
                 LogicalOutputSource::Mix(mix_number(mix)?)
             } else if let Some(cells) = object.take_optional("multiview") {
@@ -197,11 +194,11 @@ fn parse_cell(value: Value) -> Result<LogicalMultiViewCell, DecodeError> {
         value @ Value::Object(_) => {
             let mut object = Object::new(value, "multiview cell")?;
             let cell = if let Some(input) = object.take_optional("input") {
-                LogicalMultiViewCell::Input(InputId::new(nonzero(input, "multiview input")?))
+                LogicalMultiViewCell::Input(InputId::new(nonzero(&input, "multiview input")?))
             } else if let Some(mix) = object.take_optional("mix") {
                 LogicalMultiViewCell::Mix(mix_number(mix)?)
             } else if let Some(slot) = object.take_optional("output") {
-                let slot = u8_value(slot, "multiview output")?;
+                let slot = u8_value(&slot, "multiview output")?;
                 LogicalMultiViewCell::Output(LogicalOutputSlot::new(slot).ok_or_else(|| {
                     syntax(format!(
                         "multiview output must be 1 through {MAX_LOGICAL_OUTPUTS}"
@@ -230,7 +227,7 @@ fn parse_overlays(value: Value) -> Result<LogicalOverlayPolicy, DecodeError> {
         value @ Value::Object(_) => {
             let mut object = Object::new(value, "logical output overlays")?;
             let channels = parse_array(object.take("channels")?, "overlay channels", |value| {
-                u8_value(value, "overlay channel")
+                u8_value(&value, "overlay channel")
             })?;
             object.finish()?;
             LogicalOverlayChannels::from_channels(channels)
@@ -263,7 +260,7 @@ fn parse_audio(value: Value) -> Result<LogicalAudioMap, DecodeError> {
 }
 
 fn mix_number(value: Value) -> Result<u8, DecodeError> {
-    let mix = u8_value(value, "mix")?;
+    let mix = u8_value(&value, "mix")?;
     if !(1..=fm_model::MAX_LOGICAL_MIX_NUMBER).contains(&mix) {
         return Err(syntax(format!(
             "mix must be 1 through {}",
@@ -273,18 +270,18 @@ fn mix_number(value: Value) -> Result<u8, DecodeError> {
     Ok(mix)
 }
 
-fn u8_value(value: Value, context: &str) -> Result<u8, DecodeError> {
+fn u8_value(value: &Value, context: &str) -> Result<u8, DecodeError> {
     match value {
         Value::Number(number) => {
-            u8::try_from(number).map_err(|_| syntax(format!("{context} must fit in a byte")))
+            u8::try_from(*number).map_err(|_| syntax(format!("{context} must fit in a byte")))
         }
         _ => Err(syntax(format!("{context} must be a number"))),
     }
 }
 
-fn nonzero(value: Value, context: &str) -> Result<NonZeroU128, DecodeError> {
+fn nonzero(value: &Value, context: &str) -> Result<NonZeroU128, DecodeError> {
     let Value::Number(number) = value else {
         return Err(syntax(format!("{context} must be a number")));
     };
-    NonZeroU128::new(number).ok_or_else(|| syntax(format!("{context} must be nonzero")))
+    NonZeroU128::new(*number).ok_or_else(|| syntax(format!("{context} must be nonzero")))
 }
