@@ -1070,6 +1070,7 @@ impl NativeProjectPlan {
                     sources: Vec::new(),
                     black_scene: None,
                     rejected: None,
+                    alias_effects: BTreeMap::new(),
                 },
             );
         }
@@ -2153,7 +2154,7 @@ fn resolve_scene_source(
 ) -> Result<NativeSceneSource, NativeProjectPlanError> {
     match source {
         SourceRef::Input(input) => {
-            let (model, crop) = resolve_alias_target(input, inputs)?;
+            let (model, crop, _effects) = resolve_alias_target(input, inputs)?;
             let source = match &model.kind {
                 InputKind::Scene { scene_id, .. } => {
                     if !scenes.contains_key(scene_id) {
@@ -10008,7 +10009,12 @@ impl NativeMediaRuntime {
                     }
                 };
                 let texture = self
-                    .crop_project_texture(project.dimensions, *crop, target)
+                    .crop_project_texture(
+                        project.dimensions,
+                        *crop,
+                        project.alias_effects(*input),
+                        target,
+                    )
                     .await?;
                 cropped.insert(index, texture);
             }
