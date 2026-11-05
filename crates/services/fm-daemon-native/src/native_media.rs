@@ -1572,6 +1572,7 @@ impl LogicalBase<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeProgramOverlay {
     input: InputId,
     opacity: u8,
