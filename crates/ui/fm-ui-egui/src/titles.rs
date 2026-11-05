@@ -404,8 +404,10 @@ impl TitlesPanel {
                     presentation.can_edit,
                     egui::Button::new(l.text(Msg::TitleRowPreview)),
                 )
-                .on_hover_text(l.text(Msg::TitleRowPreviewHover))
-                .on_disabled_hover_text(l.text(Msg::TitleRowPreviewHover))
+                .hint(
+                    l.text(Msg::TitleRowPreviewHover),
+                    Msg::ReasonNoEditProject.en(),
+                )
                 .clicked()
             {
                 self.row_preview = Some(row_preview_text(l, presentation, &self.row_draft));
@@ -417,8 +419,10 @@ impl TitlesPanel {
                     presentation.can_edit,
                     egui::Button::new(l.text(Msg::TitleRowApply)),
                 )
-                .on_hover_text(l.text(Msg::TitleRowApplyHover))
-                .on_disabled_hover_text(l.text(Msg::TitleRowApplyHover))
+                .hint(
+                    l.text(Msg::TitleRowApplyHover),
+                    Msg::ReasonNoEditProject.en(),
+                )
                 .clicked()
             {
                 match parse_title_row_draft(&self.row_draft) {
