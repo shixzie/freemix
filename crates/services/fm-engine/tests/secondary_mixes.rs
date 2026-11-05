@@ -142,6 +142,83 @@ fn a_timed_secondary_mix_transition_completes() {
 }
 
 #[test]
+fn a_live_cut_command_moves_the_engine_bank() {
+    use fm_switcher::MixLayer;
+
+    assert_eq!(
+        EngineCommand::SecondaryMixCut { number: mix(2) }.kind(),
+        EngineCommandKind::LiveOperation
+    );
+    let mut engine = engine();
+    assert!(execute(
+        &mut engine,
+        "set",
+        EngineCommand::SetSecondaryMix {
+            number: mix(2),
+            config: Some(Box::new(preview_config())),
+        },
+    ));
+    engine.tick().unwrap();
+    assert!(execute(
+        &mut engine,
+        "cut",
+        EngineCommand::SecondaryMixCut { number: mix(2) },
+    ));
+    let frame = engine.tick().unwrap();
+    assert_eq!(mix_frame(&frame).primary, MixLayer::Input(input(2)));
+}
+
+#[test]
+fn a_live_transition_command_is_accepted_and_completes() {
+    use fm_switcher::{MixLayer, TransitionKind};
+
+    let mut engine = engine();
+    assert!(execute(
+        &mut engine,
+        "set",
+        EngineCommand::SetSecondaryMix {
+            number: mix(2),
+            config: Some(Box::new(preview_config())),
+        },
+    ));
+    engine.tick().unwrap();
+    assert!(execute(
+        &mut engine,
+        "transition",
+        EngineCommand::SecondaryMixTransition {
+            number: mix(2),
+            kind: TransitionKind::Fade,
+            duration_frames: 2,
+        },
+    ));
+    let mut program = MixLayer::Input(input(1));
+    for _ in 0..6 {
+        let frame = engine.tick().unwrap();
+        program = mix_frame(&frame).primary;
+        if program == MixLayer::Input(input(2)) {
+            break;
+        }
+    }
+    assert_eq!(program, MixLayer::Input(input(2)));
+}
+
+#[test]
+fn a_live_cut_of_an_unknown_mix_is_refused_atomically() {
+    let mut engine = engine();
+    let before = engine.secondary_mix_frame().clone();
+    let outcome = engine.execute(
+        CommandEnvelope::new(
+            "command-cut-unknown",
+            IdempotencyKey::new("cut-unknown"),
+            EngineCommand::SecondaryMixCut { number: mix(9) },
+        ),
+        0,
+    );
+    assert!(outcome.is_err());
+    assert_eq!(engine.secondary_mix_frame(), &before);
+}
+
+#[test]
 fn a_secondary_mix_is_a_project_edit_that_undoes_to_nothing() {
     assert_eq!(
         EngineCommand::SetSecondaryMix {
