@@ -1756,6 +1756,8 @@ pub(crate) fn command_base_ticks(
         | CommandPayload::ClearLogicalOutput { .. }
         | CommandPayload::SetSecondaryMix { .. }
         | CommandPayload::ClearSecondaryMix { .. }
+        | CommandPayload::SecondaryMixCut { .. }
+        | CommandPayload::SecondaryMixTransition { .. }
         | CommandPayload::SetLiveLan { .. }
         | CommandPayload::SetAlertRule(_)
         | CommandPayload::Replay(_)
