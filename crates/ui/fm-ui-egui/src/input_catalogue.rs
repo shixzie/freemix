@@ -1381,7 +1381,8 @@ impl StudioShell {
                                                 &mut draft.alias_target,
                                                 Some(input),
                                                 name,
-                                            );
+                                            )
+                                            .on_hover_text(l.text(Msg::AddInputAliasTargetHover));
                                         }
                                     }
                                 })
