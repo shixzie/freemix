@@ -2185,6 +2185,26 @@ impl PreviewRequest {
     }
 }
 
+/// The extension of an HTTP source URL's path, lowercased.
+fn url_path_extension(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    std::path::Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase)
+}
+
+/// The bounded data format for `extension`.
+fn source_format(extension: Option<&str>) -> Option<fm_data::FileFormat> {
+    Some(match extension? {
+        "json" => fm_data::FileFormat::Json(fm_data::ParseLimits::default()),
+        "csv" => fm_data::FileFormat::Csv(fm_data::CsvOptions::default()),
+        "xlsx" => fm_data::FileFormat::Xlsx { sheet: None },
+        "ods" => fm_data::FileFormat::Ods { sheet: None },
+        _ => return None,
+    })
+}
+
 /// One scheduled title data source (GX-005).
 struct TitleRowSource {
     input: fm_types::InputId,
@@ -2260,35 +2280,46 @@ impl TitleRowSources {
                 eprintln!("FREEMIXD_TITLE_SOURCES\tstate=malformed\tline={line}");
                 return sources;
             };
-            let Some(relative) = (!std::path::Path::new(source_path).is_absolute()
-                && std::path::Path::new(source_path)
-                    .components()
-                    .all(|component| matches!(component, std::path::Component::Normal(_))))
-            .then_some(source_path) else {
-                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=bad_path\tpath={source_path}");
-                continue;
-            };
-            if !(250..=3_600_000).contains(&interval_ms) {
-                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=bad_interval\tinput={input}");
+            let is_url = source_path.starts_with("http://") || source_path.starts_with("https://");
+            if source_path.starts_with("https://") {
+                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=https_unsupported\tpath={source_path}");
                 continue;
             }
-            let format = match std::path::Path::new(relative)
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or_default()
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "json" => fm_data::FileFormat::Json(fm_data::ParseLimits::default()),
-                "csv" => fm_data::FileFormat::Csv(fm_data::CsvOptions::default()),
-                "xlsx" => fm_data::FileFormat::Xlsx { sheet: None },
-                "ods" => fm_data::FileFormat::Ods { sheet: None },
-                _ => continue,
+            let (resolved, format, url) = if is_url {
+                let extension = url_path_extension(source_path);
+                let Some(format) = source_format(extension.as_deref()) else {
+                    continue;
+                };
+                let cache = std::env::temp_dir().join(format!(
+                    "freemix-title-source-{}-{}.{}",
+                    std::process::id(),
+                    input.get().get(),
+                    extension.as_deref().unwrap_or("data")
+                ));
+                (cache, format, Some(source_path.to_owned()))
+            } else {
+                let relative = std::path::Path::new(source_path);
+                if relative.is_absolute()
+                    || relative
+                        .components()
+                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    eprintln!("FREEMIXD_TITLE_SOURCES\tstate=bad_path\tpath={source_path}");
+                    continue;
+                }
+                let extension = relative
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .map(str::to_ascii_lowercase);
+                let Some(format) = source_format(extension.as_deref()) else {
+                    continue;
+                };
+                (bundle_root.join(relative), format, None)
             };
             let interval = Duration::from_millis(u64::from(interval_ms));
             let mut source = fm_data::FilePollingSource::new(
                 format!("title-row-{input}"),
-                bundle_root.join(relative),
+                resolved,
                 format,
                 interval,
             );
@@ -2303,6 +2334,8 @@ impl TitleRowSources {
                     interval,
                     keep_live: *keep_live == "1",
                     source,
+                    url,
+                    last_http: None,
                     next_poll: Instant::now(),
                     applied_rows: 0,
                     error: None,
@@ -2360,34 +2393,57 @@ impl TitleRowSources {
                 interval_ms,
                 keep_live,
             } => {
-                let relative = std::path::Path::new(&path);
-                if relative.is_absolute()
-                    || relative
-                        .components()
-                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
-                {
+                let is_url = path.starts_with("http://") || path.starts_with("https://");
+                if path.starts_with("https://") {
                     return response(
                         false,
                         Some(path),
                         Some(interval_ms),
                         keep_live,
                         0,
-                        Some("source path must be relative to the project bundle".to_owned()),
+                        Some("https title sources are not supported yet".to_owned()),
                     );
                 }
-                let resolved = bundle_root.join(relative);
-                let format = match relative
-                    .extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .unwrap_or_default()
-                    .to_ascii_lowercase()
-                    .as_str()
-                {
-                    "json" => fm_data::FileFormat::Json(fm_data::ParseLimits::default()),
-                    "csv" => fm_data::FileFormat::Csv(fm_data::CsvOptions::default()),
-                    "xlsx" => fm_data::FileFormat::Xlsx { sheet: None },
-                    "ods" => fm_data::FileFormat::Ods { sheet: None },
-                    _ => {
+                let (resolved, format, url) = if is_url {
+                    let extension = url_path_extension(&path);
+                    let Some(format) = source_format(extension.as_deref()) else {
+                        return response(
+                            false,
+                            Some(path),
+                            Some(interval_ms),
+                            keep_live,
+                            0,
+                            Some("URL source must end in .json, .csv, .xlsx, or .ods".to_owned()),
+                        );
+                    };
+                    let cache = std::env::temp_dir().join(format!(
+                        "freemix-title-source-{}-{}.{}",
+                        std::process::id(),
+                        input.get().get(),
+                        extension.as_deref().unwrap_or("data")
+                    ));
+                    (cache, format, Some(path.clone()))
+                } else {
+                    let relative = std::path::Path::new(&path);
+                    if relative.is_absolute()
+                        || relative
+                            .components()
+                            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                    {
+                        return response(
+                            false,
+                            Some(path),
+                            Some(interval_ms),
+                            keep_live,
+                            0,
+                            Some("source path must be relative to the project bundle".to_owned()),
+                        );
+                    }
+                    let extension = relative
+                        .extension()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .map(str::to_ascii_lowercase);
+                    let Some(format) = source_format(extension.as_deref()) else {
                         return response(
                             false,
                             Some(path),
@@ -2396,7 +2452,8 @@ impl TitleRowSources {
                             0,
                             Some("source must be .json, .csv, .xlsx, or .ods".to_owned()),
                         );
-                    }
+                    };
+                    (bundle_root.join(relative), format, None)
                 };
                 let interval = Duration::from_millis(u64::from(interval_ms));
                 let mut source = fm_data::FilePollingSource::new(
@@ -2423,6 +2480,8 @@ impl TitleRowSources {
                         interval,
                         keep_live,
                         source,
+                        url,
+                        last_http: None,
                         next_poll: Instant::now(),
                         applied_rows: 0,
                         error: None,
@@ -2561,11 +2620,39 @@ impl Runtime<'_> {
                 continue;
             }
             source.next_poll = now + source.interval;
-            let event = match fm_data::PollingSource::poll(&mut source.source) {
-                Ok(event) => event,
-                Err(error) => {
+            let event = if let Some(url) = &source.url {
+                let bytes = match crate::http_fetch::fetch(url) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        source.error = Some(error);
+                        continue;
+                    }
+                };
+                if source.last_http.as_deref() == Some(bytes.as_slice()) {
+                    continue;
+                }
+                if let Err(error) = std::fs::write(source.source.path(), &bytes) {
                     source.error = Some(error.to_string());
                     continue;
+                }
+                source.source.invalidate();
+                match fm_data::PollingSource::poll(&mut source.source) {
+                    Ok(event) => {
+                        source.last_http = Some(bytes);
+                        event
+                    }
+                    Err(error) => {
+                        source.error = Some(error.to_string());
+                        continue;
+                    }
+                }
+            } else {
+                match fm_data::PollingSource::poll(&mut source.source) {
+                    Ok(event) => event,
+                    Err(error) => {
+                        source.error = Some(error.to_string());
+                        continue;
+                    }
                 }
             };
             let Some(event) = event else { continue };
