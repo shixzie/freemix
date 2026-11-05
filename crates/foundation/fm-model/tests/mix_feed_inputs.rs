@@ -110,6 +110,7 @@ fn feed_project() -> Project {
         InputKind::Alias {
             target: input_id(PROGRAM_FEED),
             crop: None,
+            effects: Vec::new(),
         },
     ));
     project.add_scene(Scene {
