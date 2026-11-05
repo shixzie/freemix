@@ -85,9 +85,9 @@ impl WireSecondaryMixConfig {
     #[must_use]
     pub fn is_consistent(&self) -> bool {
         match self.mode {
-            WireSecondaryMixMode::PreviewProgram => self
-                .preview
-                .is_some_and(|preview| preview != self.program),
+            WireSecondaryMixMode::PreviewProgram => {
+                self.preview.is_some_and(|preview| preview != self.program)
+            }
             WireSecondaryMixMode::OutputOnly => self.preview.is_none(),
         }
     }

@@ -2971,9 +2971,11 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         }
         EventPayload::SecondaryMixChanged { number, config } => {
             record.field("event", "secondary_mix_changed")?;
-            super::secondary_mix::encode_changed(*number, config.as_deref(), &mut |name, value| {
-                record.field_string(name, value)
-            })?;
+            super::secondary_mix::encode_changed(
+                *number,
+                config.as_deref(),
+                &mut |name, value| record.field_string(name, value),
+            )?;
         }
         EventPayload::CaptureSettingsChanged { input, settings } => {
             record.field("event", "capture_settings_changed")?;

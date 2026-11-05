@@ -592,10 +592,7 @@ impl ShowState {
     ///
     /// Returns [`ShowError::InvalidSecondaryMix`] for an unknown mix or a
     /// dangling reference. Nothing changes on error.
-    pub fn remove_secondary_mix(
-        &mut self,
-        number: fm_model::MixNumber,
-    ) -> Result<(), ShowError> {
+    pub fn remove_secondary_mix(&mut self, number: fm_model::MixNumber) -> Result<(), ShowError> {
         let previous = self.secondary_mixes.clone();
         if self.secondary_mixes.remove(&number).is_none() {
             return Err(ShowError::InvalidSecondaryMix(

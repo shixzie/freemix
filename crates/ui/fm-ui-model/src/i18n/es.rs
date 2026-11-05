@@ -3148,10 +3148,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::InUseSecondaryMix,
         t("«{name}» es una fuente de Programa o Vista Previa de la mezcla {mix}."),
     ),
-    (
-        Msg::AdviceSecondaryMix,
-        t("Reasigne esa mezcla primero."),
-    ),
+    (Msg::AdviceSecondaryMix, t("Reasigne esa mezcla primero.")),
     // Typed command refusals (Protocol 2.45).
     (Msg::CommandRefused, t("Comando rechazado: {reason}")),
     (Msg::ToastReasonCode, t("Código del motivo: {code}")),

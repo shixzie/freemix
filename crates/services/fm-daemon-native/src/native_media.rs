@@ -9771,7 +9771,8 @@ impl NativeMediaRuntime {
                 &mut seen,
             )
             .await?;
-        let (Some(secondary), Some(kind)) = (background.secondary, background.transition_kind) else {
+        let (Some(secondary), Some(kind)) = (background.secondary, background.transition_kind)
+        else {
             return Ok(primary);
         };
         let secondary = self
@@ -9788,12 +9789,9 @@ impl NativeMediaRuntime {
             .await?;
         let kind = compositor_transition_kind(kind)
             .ok_or(NativeSourceRenderError::UnsupportedTransition(kind))?;
-        let plan = TransitionPlan::compile(
-            kind,
-            background.mix_numerator,
-            background.mix_denominator,
-        )
-        .map_err(NativeSourceRenderError::InvalidMix)?;
+        let plan =
+            TransitionPlan::compile(kind, background.mix_numerator, background.mix_denominator)
+                .map_err(NativeSourceRenderError::InvalidMix)?;
         self.renderer
             .render(&self.context, plan, &primary, &secondary)
             .await

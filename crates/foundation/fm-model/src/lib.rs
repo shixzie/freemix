@@ -81,11 +81,6 @@ pub use logical_output::{
     LogicalOverlayPolicy, MAX_LOGICAL_MIX_NUMBER, MAX_LOGICAL_OUTPUT_MULTIVIEW_CELLS,
     MAX_LOGICAL_OUTPUTS, validate_logical_outputs,
 };
-pub use secondary_mix::{
-    MAIN_MIX_NUMBER, MAX_MIX_NUMBER, MAX_SECONDARY_MIXES, MAX_SECONDARY_MIX_NAME_BYTES, MixNumber,
-    SecondaryMixConfig, SecondaryMixError, SecondaryMixMode, SecondaryMixSource,
-    validate_secondary_mixes,
-};
 pub use media_list::{
     DEFAULT_MEDIA_LIST_TRANSITION_FRAMES, M3uEntry, MAX_M3U_BYTES, MAX_MEDIA_LIST_ITEM_ID,
     MAX_MEDIA_LIST_ITEMS, MAX_MEDIA_LIST_TEXT_BYTES, MAX_MEDIA_LIST_TITLE_BYTES,
@@ -144,6 +139,11 @@ pub use script::{
     ScriptRun, ScriptRunState, script_limits, script_name_is_valid, script_source_is_valid,
     script_wait_frames, script_waits, validate_script_definition, validate_script_run,
     validate_scripts,
+};
+pub use secondary_mix::{
+    MAIN_MIX_NUMBER, MAX_MIX_NUMBER, MAX_SECONDARY_MIX_NAME_BYTES, MAX_SECONDARY_MIXES, MixNumber,
+    SecondaryMixConfig, SecondaryMixError, SecondaryMixMode, SecondaryMixSource,
+    validate_secondary_mixes,
 };
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,

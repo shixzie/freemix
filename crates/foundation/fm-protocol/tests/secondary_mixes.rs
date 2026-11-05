@@ -4,8 +4,9 @@
 use core::num::NonZeroU128;
 
 use fm_protocol::{
-    CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, WireInputId, WireMessage, WireMixNumber,
-    WireSecondaryMixConfig, WireSecondaryMixMode, WireSecondaryMixSource, decode_line, encode_line,
+    CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, WireInputId, WireMessage,
+    WireMixNumber, WireSecondaryMixConfig, WireSecondaryMixMode, WireSecondaryMixSource,
+    decode_line, encode_line,
 };
 
 fn input(value: u128) -> WireInputId {
@@ -33,7 +34,10 @@ fn round_trip(payload: CommandPayload) {
     assert_eq!(decode_line(&line).unwrap(), message);
 }
 
-fn config(mode: WireSecondaryMixMode, preview: Option<WireSecondaryMixSource>) -> WireSecondaryMixConfig {
+fn config(
+    mode: WireSecondaryMixMode,
+    preview: Option<WireSecondaryMixSource>,
+) -> WireSecondaryMixConfig {
     WireSecondaryMixConfig {
         number: number(2),
         name: "Clean feed".into(),

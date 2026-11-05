@@ -156,9 +156,7 @@ pub fn input_use_sentence(
                 ("list", Arg::Str(&list.to_string())),
             ],
         ),
-        InputUse::SecondaryMix { mix } => {
-            numbered(Msg::InUseSecondaryMix, "mix", &mix.to_string())
-        }
+        InputUse::SecondaryMix { mix } => numbered(Msg::InUseSecondaryMix, "mix", &mix.to_string()),
     }
 }
 

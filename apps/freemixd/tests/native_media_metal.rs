@@ -591,7 +591,7 @@ async fn assert_deadline_frame(
         },
         events: Vec::new(),
         logical_outputs: fm_switcher::OutputRoutingFrame::empty(),
-            secondary_mixes: fm_switcher::MixBankFrame::empty(),
+        secondary_mixes: fm_switcher::MixBankFrame::empty(),
         revision: Revision::new(0),
         runtime_generation: RuntimeGeneration::new(0),
     };
@@ -823,7 +823,7 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
                 },
                 events: Vec::new(),
                 logical_outputs: fm_switcher::OutputRoutingFrame::empty(),
-            secondary_mixes: fm_switcher::MixBankFrame::empty(),
+                secondary_mixes: fm_switcher::MixBankFrame::empty(),
                 revision: Revision::new(0),
                 runtime_generation: RuntimeGeneration::new(0),
             };
@@ -883,7 +883,7 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
         },
         events: Vec::new(),
         logical_outputs: fm_switcher::OutputRoutingFrame::empty(),
-            secondary_mixes: fm_switcher::MixBankFrame::empty(),
+        secondary_mixes: fm_switcher::MixBankFrame::empty(),
         revision: Revision::new(0),
         runtime_generation: RuntimeGeneration::new(0),
     };
@@ -1054,7 +1054,7 @@ fn native_leaf_rgba16f(
         },
         events: Vec::new(),
         logical_outputs: fm_switcher::OutputRoutingFrame::empty(),
-            secondary_mixes: fm_switcher::MixBankFrame::empty(),
+        secondary_mixes: fm_switcher::MixBankFrame::empty(),
         revision: Revision::new(0),
         runtime_generation: RuntimeGeneration::new(0),
     };

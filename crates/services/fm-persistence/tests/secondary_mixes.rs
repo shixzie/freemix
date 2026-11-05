@@ -155,12 +155,21 @@ fn secondary_mixes_round_trip_exactly_and_strictly() {
         ("\"number\": 2,", "\"number\": 3,"),
         ("\"mode\": \"preview_program\"", "\"mode\": \"preview\""),
         ("\"input\": 10", "\"input\": 99"),
-        ("\"preview\": {\"input\": 11}", "\"preview\": {\"input\": 10}"),
-        ("\"preview\": {\"input\": 11}", "\"preview\": {\"input\": 12}"),
+        (
+            "\"preview\": {\"input\": 11}",
+            "\"preview\": {\"input\": 10}",
+        ),
+        (
+            "\"preview\": {\"input\": 11}",
+            "\"preview\": {\"input\": 12}",
+        ),
         ("\"mix\": 2", "\"mix\": 9"),
         ("\"mix\": 2", "\"mix\": 3"),
         ("\"number\": 2,", "\"number\": 2, \"extra\": 1,"),
-        ("\"mode\": \"output_only\",", "\"mode\": \"output_only\", \"preview\": null,"),
+        (
+            "\"mode\": \"output_only\",",
+            "\"mode\": \"output_only\", \"preview\": null,",
+        ),
     ] {
         assert!(text.contains(from), "{from}");
         let broken = text.replacen(from, to, 1);

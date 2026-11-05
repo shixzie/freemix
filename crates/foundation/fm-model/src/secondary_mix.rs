@@ -119,15 +119,22 @@ impl SecondaryMixConfig {
 /// Why secondary-mix routing is invalid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SecondaryMixError {
-    TooManyMixes { maximum: usize },
+    TooManyMixes {
+        maximum: usize,
+    },
     /// Mixes are not strictly ascending by number.
     OutOfOrder,
     /// Main is the switcher's own mix and cannot be configured here.
     MainNotSecondary,
     DuplicateNumber(MixNumber),
     EmptyName,
-    NameTooLong { actual: usize, maximum: usize },
-    ControlCharacterInName { index: usize },
+    NameTooLong {
+        actual: usize,
+        maximum: usize,
+    },
+    ControlCharacterInName {
+        index: usize,
+    },
     PreviewRequired(MixNumber),
     PreviewNotAllowed(MixNumber),
     PreviewEqualsProgram(MixNumber),
@@ -350,11 +357,7 @@ mod tests {
                 SecondaryMixSource::Input(input(1)),
                 SecondaryMixSource::Input(input(2)),
             ),
-            SecondaryMixConfig::output_only(
-                number(3),
-                "Feed",
-                SecondaryMixSource::Mix(number(2)),
-            ),
+            SecondaryMixConfig::output_only(number(3), "Feed", SecondaryMixSource::Mix(number(2))),
         ]
     }
 

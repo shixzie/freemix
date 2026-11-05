@@ -72,10 +72,7 @@ fn push_config_fields(
     }
     push("name", escape_bounded(&config.name)?)?;
     push("mode", mode_token(config.mode).to_owned())?;
-    push(
-        "program",
-        escape_bounded(&source_token(config.program))?,
-    )?;
+    push("program", escape_bounded(&source_token(config.program))?)?;
     if let Some(preview) = config.preview {
         push("preview", escape_bounded(&source_token(preview))?)?;
     }
@@ -120,9 +117,7 @@ pub(super) fn decode_config(
 }
 
 /// Decodes a `number` field.
-pub(super) fn decode_number(
-    fields: &mut dyn FieldSource,
-) -> Result<WireMixNumber, CodecError> {
+pub(super) fn decode_number(fields: &mut dyn FieldSource) -> Result<WireMixNumber, CodecError> {
     parse_number("number", &fields.required("number")?)
 }
 
@@ -177,9 +172,7 @@ pub(super) fn encode_entries(entries: &[WireSecondaryMixConfig]) -> Result<Strin
             if !config.is_consistent() {
                 return Err(invalid("secondary_mixes", config.number.to_string()));
             }
-            let preview = config
-                .preview
-                .map_or_else(|| "-".to_owned(), source_token);
+            let preview = config.preview.map_or_else(|| "-".to_owned(), source_token);
             Ok(format!(
                 "{}~{}~{}~{}~{}",
                 config.number,

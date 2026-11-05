@@ -24,9 +24,9 @@ mod recorder_status;
 mod reel;
 mod replay;
 mod scene_layer;
-mod secondary_mix;
 pub mod screen_capture;
 mod script;
+mod secondary_mix;
 mod shortcut;
 mod source_sync;
 mod still;
@@ -186,10 +186,6 @@ pub use logical_output::{
     logical_input_from_number, logical_input_to_domain, logical_output_from_number,
     logical_output_slot_from_number, logical_output_to_domain,
 };
-pub use secondary_mix::{
-    MAX_WIRE_MIX_NUMBER, MAX_WIRE_SECONDARY_MIXES, WireMixNumber, WireSecondaryMixConfig,
-    WireSecondaryMixMode, WireSecondaryMixSource,
-};
 pub use media::{
     MAX_MEDIA_AUDIO_TRACKS, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_EVENTS, MAX_MEDIA_FRAME,
     MAX_MEDIA_IDLE_COMPLETION_REFRESHES, MAX_MEDIA_LIVE_EDGE_OFFSET_FRAMES,
@@ -280,6 +276,10 @@ pub use script::{
     HIDDEN_SCRIPT_SOURCE, MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES,
     MAX_SCRIPTS, ScriptRunChange, ScriptRunStatus, ScriptSpec, ScriptStateMessage, ScriptStatus,
     script_name_is_valid, script_source_is_valid,
+};
+pub use secondary_mix::{
+    MAX_WIRE_MIX_NUMBER, MAX_WIRE_SECONDARY_MIXES, WireMixNumber, WireSecondaryMixConfig,
+    WireSecondaryMixMode, WireSecondaryMixSource,
 };
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,

@@ -4411,9 +4411,11 @@ impl EngineMutation {
         }
         if let EngineCommand::SetSecondaryMix { number, config } = &self.command {
             match config {
-                Some(config) => state.set_secondary_mix((**config).clone()).map_err(|error| {
-                    Rejection::new(RejectionCode::InvalidCommand, error.to_string())
-                })?,
+                Some(config) => state
+                    .set_secondary_mix((**config).clone())
+                    .map_err(|error| {
+                        Rejection::new(RejectionCode::InvalidCommand, error.to_string())
+                    })?,
                 None => state.remove_secondary_mix(*number).map_err(|error| {
                     Rejection::new(RejectionCode::InvalidCommand, error.to_string())
                 })?,
