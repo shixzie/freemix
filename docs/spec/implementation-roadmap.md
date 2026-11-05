@@ -2627,10 +2627,20 @@ as an undoable project edit, and the daemon folds the show's routing back into
 the project on save. Protocol 2.157 carries the four slots in every snapshot,
 sets or clears one with `set_logical_output` / `clear_logical_output`, and
 announces an edit (or its undo or redo) with `logical_output_changed`; the
-client model replicates the list. Remaining gaps: no compositor or delivery
-wiring, no `MixBank` Main drive from the bank, no MultiView grid geometry for
-mixes or outputs, and follow-video audio still switches only at take
-completion. `SW-012` remains planned.
+client model replicates the list. The engine resolves the show's four slots
+against its desired switcher state every tick and carries the plans in
+`FrameResult.logical_outputs`. Native realization now renders each enabled
+output independently: Program follows the shared transition/Stinger and
+Fade-to-Black state, Preview and a single input render as settled feeds, and a
+MultiView composes up to 16 cells on source-agnostic exact integer grid
+geometry (Program/Preview/settled inputs, and other logical outputs rendered
+first in `render_order`) with the output's chosen, clean, or routed overlay
+layers and its own Fade-to-Black trajectory. Display and stream targets select
+the realized texture for their bound project output. Remaining gaps: logical
+output audio maps do not reach the audio renderer (the flexible project buses
+they name are `AU-011` and not realized, and follow-video audio still switches
+only at take completion), the Main mix is not driven from a `MixBank`, and
+hardware acceptance is absent. `SW-012` remains planned.
 
 
 Current implementation boundary for layer flattening (`SW-018`):
