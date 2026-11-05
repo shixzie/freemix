@@ -2205,6 +2205,8 @@ impl TcpSession {
             | WireMessage::ScreenCaptureTargetsRequest(_)
             | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::ReplayStatusRequest(_)
+            | WireMessage::TitleRowSourceRequest(_)
+            | WireMessage::TitleRowSourceResponse(_)
             | WireMessage::FrozenStillRequest(_)
             | WireMessage::AudioPluginStatusRequest(_)
             | WireMessage::ReelStatusRequest(_)
