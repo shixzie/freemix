@@ -745,6 +745,75 @@ fn take_applies_fields_before_the_overlay_realizes() {
 }
 
 #[test]
+#[test]
+fn a_title_data_row_maps_strings_by_field_name_and_keeps_live_on_request() {
+    let mut engine = engine();
+    let row = |pairs: &[(&str, &str)], keep_live: bool| EngineCommand::SetTitleRow {
+        input: input(TITLE),
+        base_revision: 0,
+        require: TitleAirRequirement::OffAir,
+        values: pairs
+            .iter()
+            .map(|(field, value)| ((*field).to_owned(), (*value).to_owned()))
+            .collect(),
+        keep_live,
+    };
+    let saved = run(
+        &mut engine,
+        "row",
+        row(
+            &[
+                ("field-1", "hello"),
+                ("field-2", "#112233"),
+                ("field-4", "42"),
+            ],
+            false,
+        ),
+    );
+    assert_accepted(&saved);
+    let set = fields(&engine, TITLE);
+    assert_eq!(
+        set.value(field(NAME)),
+        Some(&FieldValue::Text("hello".into()))
+    );
+    assert_eq!(
+        set.value(field(FILL)),
+        Some(&FieldValue::Color(Color::new(0x11, 0x22, 0x33, 0xff)))
+    );
+    assert_eq!(set.value(field(SCORE)), Some(&FieldValue::Number(42)));
+
+    // A failed number is omitted with keep_live while the mapped text saves.
+    let kept = run(
+        &mut engine,
+        "row-keep",
+        row(&[("field-1", "live"), ("field-4", "not a number")], true),
+    );
+    assert_accepted(&kept);
+    let set = fields(&engine, TITLE);
+    assert_eq!(
+        set.value(field(NAME)),
+        Some(&FieldValue::Text("live".into()))
+    );
+    assert_eq!(set.value(field(SCORE)), Some(&FieldValue::Number(42)));
+
+    // Without keep_live the whole row is refused and nothing changes.
+    let refused = run(
+        &mut engine,
+        "row-refused",
+        row(&[("field-1", "lost"), ("field-4", "nope")], false),
+    );
+    assert_eq!(rejection(&refused).code, RejectionCode::InvalidCommand);
+    assert_eq!(
+        fields(&engine, TITLE).value(field(NAME)),
+        Some(&FieldValue::Text("live".into()))
+    );
+
+    // A row naming a field the template does not define is refused.
+    let unknown = run(&mut engine, "row-unknown", row(&[("nope", "1")], true));
+    assert_eq!(rejection(&unknown).code, RejectionCode::NotFound);
+}
+
+#[test]
 fn take_refuses_an_on_air_title_and_stale_fields_atomically() {
     let mut engine = engine();
     // A stale take neither changes fields nor puts the title on air.
