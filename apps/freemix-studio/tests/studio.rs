@@ -101,35 +101,33 @@ fn alias_and_feed_add_intents_map_to_the_wire() {
             },
         }
     );
-    for (feed, source) in [
-        (true, fm_protocol::LiveInputSource::ProgramFeed),
-        (false, fm_protocol::LiveInputSource::PreviewFeed),
+    for (name, source, expected_source) in [
+        (
+            "Program feed",
+            fm_protocol::LiveInputSource::ProgramFeed,
+            fm_protocol::LiveInputSource::ProgramFeed,
+        ),
+        (
+            "Preview feed",
+            fm_protocol::LiveInputSource::PreviewFeed,
+            fm_protocol::LiveInputSource::PreviewFeed,
+        ),
     ] {
-        let payload = studio_intent_payload(
-            StudioIntent::AddInput {
-                input: model_input(4),
-                name: "Feed".into(),
-                source,
-            },
-            None,
-        )
-        .unwrap();
-        assert!(
-            matches!(
-                payload,
-                CommandPayload::AddInput {
-                    input: value,
-                    source: fm_protocol::LiveInputSource::ProgramFeed,
-                    ..
-                } if feed && value == input(4)
-            ) || matches!(
-                payload,
-                CommandPayload::AddInput {
-                    input: value,
-                    source: fm_protocol::LiveInputSource::PreviewFeed,
-                    ..
-                } if !feed && value == input(4)
+        assert_eq!(
+            studio_intent_payload(
+                StudioIntent::AddInput {
+                    input: model_input(4),
+                    name: name.into(),
+                    source,
+                },
+                None,
             )
+            .unwrap(),
+            CommandPayload::AddInput {
+                input: input(4),
+                name: name.into(),
+                source: expected_source,
+            }
         );
     }
 }
