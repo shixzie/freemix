@@ -20,9 +20,10 @@ use fm_engine::{
 };
 use fm_model::{
     AudioBus, CropRect, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
-    InputGainMilliDb, InputKind, Layer, LayerEffect, LayerGeometry, MainMix, Project,
-    ProjectSettings, RecorderSlot as ModelRecorderSlot, RectMask, Rgba8 as ModelRgba8, Rotation,
-    SceneLayerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    InputGainMilliDb, InputKind, Layer, LayerEffect, LayerGeometry, MainMix, MixFeed,
+    MixFeedHistory, MixSelection, Project, ProjectSettings, RecorderSlot as ModelRecorderSlot,
+    RectMask, RenderSource, ResolvedInput, Rgba8 as ModelRgba8, Rotation, SceneLayerError,
+    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, SourceResolver,
     SrtPassphrase, StartupPolicy, StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig,
     StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamProtocol,
     StreamTarget, StreamTargetId,
@@ -220,6 +221,19 @@ pub fn run(command: Command) -> AppResult<()> {
         } => {
             add_scene_input(&path, input_id(input)?, scene_id(scene)?, name)?;
         }
+        Command::AliasInputAdd {
+            path,
+            input,
+            name,
+            target,
+            crop,
+        } => add_alias_input(&path, input_id(input)?, name, input_id(target)?, crop)?,
+        Command::MixFeedInputAdd {
+            path,
+            input,
+            name,
+            feed,
+        } => add_mix_feed_input(&path, input_id(input)?, name, feed)?,
         Command::SceneInputDuplicate {
             path,
             source_scene,
@@ -4005,6 +4019,64 @@ fn add_scene_input(path: &Path, input: InputId, scene: SceneId, name: String) ->
     Ok(())
 }
 
+/// Adds a validated alias input over `target` (IN-024).
+fn add_alias_input(
+    path: &Path,
+    input: InputId,
+    name: String,
+    target: InputId,
+    crop: Option<CropRect>,
+) -> AppResult<()> {
+    add_project_input(
+        path,
+        Input {
+            id: input,
+            name,
+            kind: InputKind::Alias { target, crop },
+            required_capabilities: Vec::new(),
+        },
+    )
+}
+
+/// Adds a validated Program or Preview feed input (IN-025).
+fn add_mix_feed_input(path: &Path, input: InputId, name: String, feed: MixFeed) -> AppResult<()> {
+    add_project_input(
+        path,
+        Input {
+            id: input,
+            name,
+            kind: InputKind::MixFeed(feed),
+            required_capabilities: Vec::new(),
+        },
+    )
+}
+
+/// Saves a new input after checking its identity, name, and every project
+/// reference the input changes (alias cycles, missing targets).
+fn add_project_input(path: &Path, input: Input) -> AppResult<()> {
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    project.add_input_checked(input)?;
+    project.validate().map_err(|errors| {
+        AppFailure(format!(
+            "project cannot take the new input: {:?}",
+            errors.first()
+        ))
+    })?;
+    let configured = StoredProject::from_project_with_complete_runtime_state(
+        project,
+        stored.runtime_routing(),
+        stored.runtime_manual_transitions(),
+        stored.runtime_fade_to_black(),
+        stored.runtime_overlays().clone(),
+        stored.position(),
+        stored.idempotency_receipts().to_vec(),
+    )?;
+    ProjectStore::new(path)?.save(&configured)?;
+    print_status(&load_engine(path)?);
+    Ok(())
+}
+
 fn duplicate_scene_input(
     path: &Path,
     source_scene: SceneId,
@@ -6771,78 +6843,62 @@ pub(crate) fn simulated_pipeline(
 fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> {
     let project = inspect_engine(path)?;
     let engine = &project.engine;
-    let pipeline = simulated_pipeline(&project.project, width, height)?;
-    let program = engine.realized_switcher().program_frame();
-    if program.secondary.is_some()
-        && [Some(program.primary), program.secondary]
+    let realized = engine.realized_switcher();
+    let program = realized.program_frame();
+    let resolver = SourceResolver::new(&project.project);
+    let history = MixFeedHistory::<ImageFrame>::new();
+    let selection = MixSelection {
+        program: realized.program(),
+        preview: realized.preview(),
+    };
+    let context = resolver
+        .context(selection, &history)
+        .map_err(|error| AppFailure(format!("Program inputs cannot be resolved: {error}")))?;
+    let primary = context
+        .resolve_input(program.primary)
+        .map_err(|error| AppFailure(format!("Program input cannot be resolved: {error}")))?;
+    let secondary = program
+        .secondary
+        .map(|input| {
+            context
+                .resolve_input(input)
+                .map_err(|error| AppFailure(format!("Program input cannot be resolved: {error}")))
+        })
+        .transpose()?;
+    if secondary.is_some()
+        && [&primary, secondary.as_ref().expect("checked above")]
             .into_iter()
-            .flatten()
-            .any(|input| is_scene_input(&project.project, input))
+            .any(|resolved| matches!(&resolved.source, RenderSource::Scene(_)))
     {
         return Err(AppFailure(
             "render does not support transitions with Scene input endpoints".into(),
         )
         .into());
     }
-    let scene = project
-        .project
-        .inputs()
-        .iter()
-        .find(|input| input.id == program.primary)
-        .map(|input| &input.kind)
-        .and_then(|kind| match kind {
-            InputKind::Scene { scene_id, .. } => Some(*scene_id),
-            _ => None,
-        });
+    let dimensions = project.project.settings().video.dimensions;
+    let pipeline = simulated_pipeline(&project.project, width, height)?;
+    let scene_pipeline =
+        simulated_pipeline(&project.project, dimensions.width(), dimensions.height())?;
     let grades = crate::grading::compiled_grades(path, &project.project)?;
-    let frame = if let Some(scene) = scene {
-        // Scene geometry, crops and masks are authored in project pixels, so
-        // the scene is composed at the project dimensions from sources
-        // rendered at that size and only then scaled to the requested output.
-        let dimensions = project.project.settings().video.dimensions;
-        let scene_pipeline =
-            simulated_pipeline(&project.project, dimensions.width(), dimensions.height())?;
-        // The engine's on-air scene phases are runtime state a local command
-        // does not replay: `render` draws the scene's static design and
-        // `scene-render-frame` draws any point of its animation.
-        crate::scene_render::render_scene(
-            &project.project,
-            scene,
-            fm_model::fm_animation::ClipState::Static,
-            &scene_pipeline,
-            &grades,
-            Some(program.primary),
-            engine.frame_cursor().get(),
-            width,
-            height,
-        )?
-    } else {
-        for input in [Some(program.primary), program.secondary]
-            .into_iter()
-            .flatten()
-        {
-            if let Some(input) = project
-                .project
-                .inputs()
-                .iter()
-                .find(|candidate| candidate.id == input)
-            {
-                source_pattern(input)?;
-            }
-        }
-        // Each input is graded before the transition mixes it; the program
-        // grade colours the mixed picture.
-        let mixed =
-            pipeline.render_mapped(engine.frame_cursor().get(), program, |input, frame| {
-                match grades.input(input) {
-                    Some(grade) => fm_compositor::apply_grade(&frame, grade),
-                    None => Ok(frame),
-                }
-            })?;
-        match grades.program() {
-            Some(grade) => fm_compositor::apply_grade(&mixed, grade)?,
-            None => mixed,
-        }
+    let renderer = ResolvedRenderer {
+        project: &project.project,
+        pipeline: &pipeline,
+        scene_pipeline: &scene_pipeline,
+        grades: &grades,
+        dimensions,
+        frame_number: engine.frame_cursor().get(),
+        width,
+        height,
+    };
+    let primary = renderer.draw(&primary)?;
+    let secondary = secondary
+        .as_ref()
+        .map(|resolved| renderer.draw(resolved))
+        .transpose()?;
+    let mixed = fm_sim::mix_frames(&program, primary, secondary)?;
+    let frame = match grades.program() {
+        Some(grade) => fm_compositor::apply_grade(&mixed, grade)?,
+        None => mixed,
     };
     write_title_frame(output, &frame)?;
     println!(
@@ -6853,6 +6909,91 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
         output.display()
     );
     Ok(())
+}
+
+/// Draws one resolver-selected Program endpoint: a leaf, a scene, or a feed's
+/// black-before-commit picture, with the alias's crop and the input and
+/// program grades applied (IN-024, IN-025).
+struct ResolvedRenderer<'a> {
+    project: &'a Project,
+    pipeline: &'a SimulatedPipeline,
+    scene_pipeline: &'a SimulatedPipeline,
+    grades: &'a fm_engine::CompiledProjectGrades,
+    dimensions: fm_types::VideoDimensions,
+    frame_number: u64,
+    width: u32,
+    height: u32,
+}
+
+impl ResolvedRenderer<'_> {
+    fn draw(&self, resolved: &ResolvedInput<'_, ImageFrame>) -> AppResult<ImageFrame> {
+        let rendered = match &resolved.source {
+            RenderSource::Input(concrete) => {
+                let input = self
+                    .project
+                    .inputs()
+                    .iter()
+                    .find(|candidate| candidate.id == *concrete)
+                    .ok_or_else(|| {
+                        AppFailure(format!("resolved input {concrete} does not exist"))
+                    })?;
+                source_pattern(input)?;
+                if resolved.crop.is_some() {
+                    // The alias crop is in project pixels, so a cropped leaf
+                    // is drawn at the project size and scaled afterwards.
+                    self.scene_pipeline
+                        .render_source(*concrete, self.frame_number)?
+                } else {
+                    self.pipeline.render_source(*concrete, self.frame_number)?
+                }
+            }
+            RenderSource::Scene(scene) => crate::scene_render::render_scene(
+                self.project,
+                *scene,
+                fm_model::fm_animation::ClipState::Static,
+                self.scene_pipeline,
+                self.grades,
+                Some(resolved.requested),
+                self.frame_number,
+                self.dimensions.width(),
+                self.dimensions.height(),
+            )?,
+            // A single offline render has no previous tick, so a mix feed
+            // shows black exactly as the first native tick does.
+            RenderSource::PreviousFrame { .. } | RenderSource::Black { .. } => {
+                fm_video::solid_color(
+                    self.dimensions.width(),
+                    self.dimensions.height(),
+                    Rgba8::new(0, 0, 0, u8::MAX),
+                )?
+            }
+        };
+        let graded = match self
+            .grades
+            .input(resolved.requested)
+            .or_else(|| self.grades.input(resolved.concrete))
+        {
+            Some(grade) => fm_compositor::apply_grade(&rendered, grade)?,
+            None => rendered,
+        };
+        let cropped = match resolved.crop {
+            Some(crop) => fm_video::crop(
+                &graded,
+                fm_video::CropRect {
+                    x: crop.x,
+                    y: crop.y,
+                    width: crop.width,
+                    height: crop.height,
+                },
+            )?,
+            None => graded,
+        };
+        if cropped.width() == self.width && cropped.height() == self.height {
+            Ok(cropped)
+        } else {
+            Ok(fm_video::scale_nearest(&cropped, self.width, self.height)?)
+        }
+    }
 }
 
 fn is_scene_input(project: &Project, input: InputId) -> bool {
@@ -7663,6 +7804,8 @@ Usage:
       destination's video_bitrate_kbps. Every other destination refuses
       --rung.
   freemix-cli scene-input-add <show.freemix> <nonzero-input-id> <nonzero-scene-id> <name>
+  freemix-cli alias-input-add <show.freemix> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height]
+  freemix-cli mix-feed-input-add <show.freemix> <nonzero-input-id> <name> program|preview
   freemix-cli scene-input-duplicate <show.freemix> <source-scene-id> <new-scene-id> <new-input-id> <scene-name> <input-name>
   freemix-cli scene-input-audio-source <show.freemix> <scene-input-id> <source-input-id>
   freemix-cli scene-input-audio-source-clear <show.freemix> <scene-input-id>
@@ -8091,34 +8234,69 @@ fn render_transition_frame(
     let project = inspect_engine(path)?;
     let realized = project.engine.realized_switcher();
     let (from, to) = (realized.program(), realized.preview());
-    if [from, to]
-        .into_iter()
-        .any(|input| is_scene_input(&project.project, input))
-    {
-        return Err(AppFailure(
-            "transition-render-frame does not support Scene input endpoints".into(),
-        )
-        .into());
-    }
     if denominator == 0 || numerator > denominator {
         return Err(AppFailure(format!(
             "transition progress {numerator}/{denominator} must be within 0 through 1"
         ))
         .into());
     }
+    let resolver = SourceResolver::new(&project.project);
+    let history = MixFeedHistory::<ImageFrame>::new();
+    let selection = MixSelection {
+        program: from,
+        preview: to,
+    };
+    let context = resolver
+        .context(selection, &history)
+        .map_err(|error| AppFailure(format!("transition inputs cannot be resolved: {error}")))?;
+    let from_resolved = context
+        .resolve_input(from)
+        .map_err(|error| AppFailure(format!("transition input cannot be resolved: {error}")))?;
+    let to_resolved = context
+        .resolve_input(to)
+        .map_err(|error| AppFailure(format!("transition input cannot be resolved: {error}")))?;
+    if [&from_resolved, &to_resolved]
+        .into_iter()
+        .any(|resolved| matches!(&resolved.source, RenderSource::Scene(_)))
+    {
+        return Err(AppFailure(
+            "transition-render-frame does not support Scene input endpoints".into(),
+        )
+        .into());
+    }
+    let dimensions = project.project.settings().video.dimensions;
     let pipeline = simulated_pipeline(&project.project, width, height)?;
-    let frame = pipeline.render(
-        project.engine.frame_cursor().get(),
-        fm_switcher::ProgramFrame {
-            primary: from,
-            secondary: Some(to),
-            transition_kind: Some(fm_control::domain_transition_kind(kind)),
-            mix_numerator: numerator,
-            mix_denominator: denominator,
-            mix_start_numerator: numerator,
-            mix_end_numerator: numerator,
-        },
+    let scene_pipeline =
+        simulated_pipeline(&project.project, dimensions.width(), dimensions.height())?;
+    let grades = crate::grading::compiled_grades(path, &project.project)?;
+    let renderer = ResolvedRenderer {
+        project: &project.project,
+        pipeline: &pipeline,
+        scene_pipeline: &scene_pipeline,
+        grades: &grades,
+        dimensions,
+        frame_number: project.engine.frame_cursor().get(),
+        width,
+        height,
+    };
+    let program = fm_switcher::ProgramFrame {
+        primary: from,
+        secondary: Some(to),
+        transition_kind: Some(fm_control::domain_transition_kind(kind)),
+        mix_numerator: numerator,
+        mix_denominator: denominator,
+        mix_start_numerator: numerator,
+        mix_end_numerator: numerator,
+    };
+    let mixed = fm_sim::mix_frames(
+        &program,
+        renderer.draw(&from_resolved)?,
+        Some(renderer.draw(&to_resolved)?),
     )?;
+    let frame = match grades.program() {
+        Some(grade) => fm_compositor::apply_grade(&mixed, grade)?,
+        None => mixed,
+    };
     write_title_frame(output, &frame)?;
     println!(
         "rendered {}x{} {} {numerator}/{denominator} from input {from} to input {to} to {}",

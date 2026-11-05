@@ -130,32 +130,17 @@ impl SimulatedPipeline {
             program.primary,
             self.render_source(program.primary, frame_number)?,
         )?;
-        let Some(secondary) = program
+        let secondary = match program
             .secondary
             .filter(|secondary| *secondary != program.primary)
-        else {
-            return Ok(primary);
-        };
-        let secondary = map(secondary, self.render_source(secondary, frame_number)?)?;
-        match program.transition_kind {
-            Some(TransitionKind::Fade | TransitionKind::AlphaFade) => Ok(crossfade(
-                &primary,
-                &secondary,
-                program.mix_numerator,
-                program.mix_denominator,
+        {
+            Some(secondary) => Some(map(
+                secondary,
+                self.render_source(secondary, frame_number)?,
             )?),
-            Some(kind) => match shape(kind) {
-                Some(shape) => Ok(render_transition(
-                    shape,
-                    &primary,
-                    &secondary,
-                    program.mix_numerator,
-                    program.mix_denominator,
-                )?),
-                None => Err(RenderError::UnsupportedTransition(kind)),
-            },
-            None => Err(RenderError::MissingTransitionKind),
-        }
+            None => None,
+        };
+        mix_frames(&program, primary, secondary)
     }
 
     /// Renders a registered source for a frame number.
@@ -191,6 +176,48 @@ impl SimulatedPipeline {
         let bars = render_test_signal_rgba8(SourcePattern::BARS, self.width, self.height)
             .map_err(crate::source::frame_error)?;
         Ok(self.bars.get_or_init(|| bars).clone())
+    }
+}
+
+/// Mixes two already-rendered endpoint pictures according to `program`'s
+/// transition. A renderer that resolves aliases, scenes, or feeds itself
+/// draws both endpoints and lets this apply the switcher's mix.
+///
+/// # Errors
+///
+/// Returns [`RenderError::MissingTransitionKind`] when both endpoints are
+/// present but the program names no transition, or the structured blend error
+/// of a fade, alpha fade, or shape.
+pub fn mix_frames(
+    program: &ProgramFrame,
+    primary: ImageFrame,
+    secondary: Option<ImageFrame>,
+) -> Result<ImageFrame, RenderError> {
+    let Some(secondary) = program
+        .secondary
+        .filter(|secondary| *secondary != program.primary)
+        .and(secondary)
+    else {
+        return Ok(primary);
+    };
+    match program.transition_kind {
+        Some(TransitionKind::Fade | TransitionKind::AlphaFade) => Ok(crossfade(
+            &primary,
+            &secondary,
+            program.mix_numerator,
+            program.mix_denominator,
+        )?),
+        Some(kind) => match shape(kind) {
+            Some(shape) => Ok(render_transition(
+                shape,
+                &primary,
+                &secondary,
+                program.mix_numerator,
+                program.mix_denominator,
+            )?),
+            None => Err(RenderError::UnsupportedTransition(kind)),
+        },
+        None => Err(RenderError::MissingTransitionKind),
     }
 }
 

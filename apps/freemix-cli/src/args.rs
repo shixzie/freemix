@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use fm_model::{
-    DEFAULT_VIDEO_BITRATE_KBPS, StartupPolicy, StreamLadder, StreamLadderRung,
+    CropRect, DEFAULT_VIDEO_BITRATE_KBPS, MixFeed, StartupPolicy, StreamLadder, StreamLadderRung,
     StreamReconnectError, StreamReconnectPolicy,
 };
 use fm_types::capture::{
@@ -556,6 +556,22 @@ pub enum Command {
         input: u128,
         scene: u128,
         name: String,
+    },
+    /// Adds a virtual input rendering another input through its own crop
+    /// (IN-024).
+    AliasInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        target: u128,
+        crop: Option<CropRect>,
+    },
+    /// Adds the Program or Preview bus as a one-frame-delayed input (IN-025).
+    MixFeedInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        feed: MixFeed,
     },
     SceneInputDuplicate {
         path: PathBuf,
@@ -2255,6 +2271,9 @@ pub enum ArgsError {
     },
     /// A display-output spec does not parse (OR-011).
     InvalidDisplayOutput(String),
+    /// An alias crop is not `<x>,<y>,<width>,<height>` inside the source
+    /// bound (IN-024).
+    InvalidAliasCrop(String),
     /// A `LiveLAN` PIN is not 4 to 12 digits; the value is never echoed.
     InvalidLiveLanPin,
     /// Replay settings are unusable (OR-012).
@@ -2331,6 +2350,11 @@ impl core::fmt::Display for ArgsError {
             Self::InvalidDisplayOutput(error) => {
                 write!(formatter, "invalid display-output spec: {error}")
             }
+            Self::InvalidAliasCrop(value) => write!(
+                formatter,
+                "invalid alias crop `{value}`; expected <x>,<y>,<width>,<height> \
+                 within the source bound"
+            ),
             Self::InvalidNetworkStream(error) => {
                 write!(formatter, "invalid network stream: {error}")
             }
@@ -2453,6 +2477,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "record-start" => parse_record_desired(arguments, true),
         "record-stop" => parse_record_desired(arguments, false),
         "scene-input-add" => parse_scene_input_add(arguments),
+        "alias-input-add" => parse_alias_input_add(arguments),
+        "mix-feed-input-add" => parse_mix_feed_input_add(arguments),
         "scene-input-duplicate" => parse_scene_input_duplicate(arguments),
         "scene-input-audio-source" => parse_scene_input_audio_source(arguments),
         "scene-input-audio-source-clear" => parse_scene_input_audio_source_clear(arguments),
@@ -5547,6 +5573,84 @@ fn parse_scene_input_add(
         scene,
         name,
     })
+}
+
+/// `alias-input-add <project> <input> <name> <target> [--crop x,y,width,height]`
+/// (IN-024).
+fn parse_alias_input_add(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let name = nonblank(&mut arguments, "input name")?;
+    let target = number(&required(&mut arguments, "target input")?, "target input")?;
+    let mut crop = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--crop" => {
+                if crop.is_some() {
+                    return Err(ArgsError::DuplicateOption("--crop"));
+                }
+                crop = Some(alias_crop(&required(&mut arguments, "crop")?)?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::AliasInputAdd {
+        path,
+        input,
+        name,
+        target,
+        crop,
+    })
+}
+
+/// `mix-feed-input-add <project> <input> <name> program|preview` (IN-025).
+fn parse_mix_feed_input_add(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let name = nonblank(&mut arguments, "input name")?;
+    let feed = match required(&mut arguments, "feed")?.as_str() {
+        "program" => MixFeed::Program,
+        "preview" => MixFeed::Preview,
+        other => {
+            return Err(ArgsError::InvalidChoice {
+                field: "feed",
+                value: other.to_owned(),
+            });
+        }
+    };
+    reject_extra(&mut arguments)?;
+    Ok(Command::MixFeedInputAdd {
+        path,
+        input,
+        name,
+        feed,
+    })
+}
+
+/// Parses an alias crop as `<x>,<y>,<width>,<height>` in project pixels.
+fn alias_crop(value: &str) -> Result<CropRect, ArgsError> {
+    let parts = value.split(',').collect::<Vec<_>>();
+    let [x, y, width, height] = parts.as_slice() else {
+        return Err(ArgsError::InvalidAliasCrop(value.to_owned()));
+    };
+    let parse = |part: &str| {
+        part.parse::<u32>()
+            .map_err(|_| ArgsError::InvalidAliasCrop(value.to_owned()))
+    };
+    let crop = CropRect {
+        x: parse(x)?,
+        y: parse(y)?,
+        width: parse(width)?,
+        height: parse(height)?,
+    };
+    if crop.width == 0 || crop.height == 0 || !crop.fits_source() {
+        return Err(ArgsError::InvalidAliasCrop(value.to_owned()));
+    }
+    Ok(crop)
 }
 
 fn parse_scene_input_duplicate(

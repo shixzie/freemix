@@ -18,7 +18,7 @@ pub use media_source::{
     AudioPattern, FaultSchedule, SimulatedAudioSource, SimulatedTimedVideoSource,
     SimulatedVideoSource, SourceEvent, audio_block_hash, video_frame_hash,
 };
-pub use pipeline::SimulatedPipeline;
+pub use pipeline::{SimulatedPipeline, mix_frames};
 pub use sink::{
     CollectError, CollectOutcome, CollectingAudioSink, CollectingSink, CollectingVideoSink,
     OverflowPolicy, SinkConfigError, SinkTelemetry,
