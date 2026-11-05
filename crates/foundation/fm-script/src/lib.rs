@@ -672,8 +672,7 @@ impl Verb {
             Self::PlaylistStart | Self::PlaylistStop => (0, 0),
             Self::Cut => (0, 1),
             Self::Transition => (1, 2),
-            Self::Stinger => (2, 3),
-            Self::Clock => (2, 3),
+            Self::Stinger | Self::Clock => (2, 3),
             Self::Overlay | Self::TitleOn | Self::Gain | Self::Seek | Self::PageGoto => (2, 2),
             Self::TitleText | Self::TitleNumber | Self::TitleAdd => (3, 3),
             Self::Preview
