@@ -1164,6 +1164,17 @@ pub enum Command {
         /// Print the per-field changes without saving anything.
         preview: bool,
     },
+    /// `remote-title-row <address> <input> <row>`: send one raw data row for
+    /// the daemon to map onto its own title template (GX-005).
+    RemoteTitleRow {
+        address: SocketAddr,
+        input: u128,
+        row: PathBuf,
+        row_number: u64,
+        keep_live: bool,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// `remote-title-apply-row <address> <project> <input> <row>`: map one
     /// row against the local template and apply it to the daemon's live
     /// title (GX-005).
@@ -2881,6 +2892,47 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 row_number,
                 keep_live,
                 preview,
+            })
+        }
+        "remote-title-row" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let row = required_path(&mut arguments, "row path")?;
+            let mut row_number = 1;
+            let mut keep_live = false;
+            let mut key = None;
+            let mut expected_revision = None;
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--row" => {
+                        row_number =
+                            number(&required(&mut arguments, "row number")?, "row number")?;
+                    }
+                    "--keep-live" => keep_live = true,
+                    "--key" => {
+                        let value = required(&mut arguments, "idempotency key")?;
+                        if value.trim().is_empty() {
+                            return Err(ArgsError::BlankValue("idempotency key"));
+                        }
+                        key = Some(value);
+                    }
+                    "--expect" => {
+                        expected_revision = Some(number(
+                            &required(&mut arguments, "expected revision")?,
+                            "expected revision",
+                        )?);
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::RemoteTitleRow {
+                address,
+                input,
+                row,
+                row_number,
+                keep_live,
+                key,
+                expected_revision,
             })
         }
         "remote-title-apply-row" => {

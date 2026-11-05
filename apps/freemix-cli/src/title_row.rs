@@ -235,6 +235,61 @@ pub fn remote_apply_row(
     Ok(())
 }
 
+/// Applies one raw data row to `input` on the daemon at `address`
+/// (GX-005): the daemon owns the template, maps the strings by field name,
+/// and applies the coerced values atomically. A null cell is omitted and
+/// keeps the live value.
+pub fn remote_apply_data(
+    address: std::net::SocketAddr,
+    input: u128,
+    row_path: &Path,
+    row_number: u64,
+    keep_live: bool,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> AppResult<()> {
+    let input = input_id(input)?;
+    let row = read_row(row_path, row_number)?;
+    let mut values = Vec::new();
+    for (field, value) in row {
+        if value.is_null() {
+            continue;
+        }
+        let Some(text) = value.scalar_text() else {
+            return Err(AppFailure(format!("table field {field:?} is not a scalar value")).into());
+        };
+        values.push(fm_protocol::TitleRowValue { field, value: text });
+    }
+    let remote = crate::remote::title_state(address, input)?;
+    let require = if remote.on_air {
+        fm_protocol::TitleAirRequirement::OnAir
+    } else {
+        fm_protocol::TitleAirRequirement::OffAir
+    };
+    if values.is_empty() {
+        println!("remote-title-row: input={input} nothing to apply");
+        return Ok(());
+    }
+    let revision = remote.field_revision.saturating_add(1);
+    crate::remote::execute(
+        address,
+        fm_protocol::CommandPayload::SetTitleRow {
+            input: fm_protocol::WireInputId::from_domain(input),
+            base_revision: remote.field_revision,
+            require,
+            values,
+            keep_live,
+        },
+        key,
+        expected_revision,
+    )?;
+    println!(
+        "remote-title-row: input={input} require={} revision={revision}",
+        if remote.on_air { "on_air" } else { "off_air" }
+    );
+    Ok(())
+}
+
 fn wire_field_value(value: &FieldValue) -> WireTitleFieldValue {
     match value {
         FieldValue::Text(text) => WireTitleFieldValue::Text(text.clone()),

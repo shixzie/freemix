@@ -1206,6 +1206,23 @@ pub fn run(command: Command) -> AppResult<()> {
             keep_live,
             preview,
         } => crate::title_row::apply_row(&path, input, &row, row_number, keep_live, preview)?,
+        Command::RemoteTitleRow {
+            address,
+            input,
+            row,
+            row_number,
+            keep_live,
+            key,
+            expected_revision,
+        } => crate::title_row::remote_apply_data(
+            address,
+            input,
+            &row,
+            row_number,
+            keep_live,
+            key,
+            expected_revision,
+        )?,
         Command::RemoteTitleApplyRow {
             address,
             path,
@@ -7999,6 +8016,9 @@ Usage:
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli crawl-apply-table <show.freemix> <input-id> <table.(csv|tsv|xlsx|ods)> --field <column>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.(json|csv|tsv|xlsx|ods)> [--row <n>] [--keep-live] [--preview]
+  freemix-cli remote-title-row <address> <input-id> <row.(json|csv|tsv|xlsx|ods)> [--row <n>] [--keep-live] [--key <idempotency-key>] [--expect <revision>]
+      Sends a raw data row to the daemon, which maps its values onto the
+      title's own template fields and applies them atomically.
   freemix-cli remote-title-apply-row <address> <show.freemix> <input-id> <row.(json|csv|tsv|xlsx|ods)> [--row <n>] [--keep-live] [--preview] [--key <idempotency-key>] [--expect <revision>]
       Maps one row onto the template of the local project's title input and
       applies the mapped fields to the daemon's live title. The title's
