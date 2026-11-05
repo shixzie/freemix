@@ -891,13 +891,7 @@ impl NativeProjectPlan {
                     .and_then(fm_model::LayerKey::key_input)
                     .filter(|_| layer.enabled)
                     .and_then(|input| {
-                        resolve_scene_source(
-                            SourceRef::Input(input),
-                            &inputs,
-                            &scene_models,
-                            black_scene,
-                        )
-                        .ok()
+                        resolve_scene_source(SourceRef::Input(input), &inputs, &scene_models).ok()
                     })
                     .filter(|source| matches!(source, NativeSceneSource::Leaf(_)));
                 let key_token = match key_source {
@@ -1547,12 +1541,14 @@ impl NativeProjectPlan {
                     .map(|(token, _)| *token);
                 let token = match (known, source) {
                     (Some(token), _) => Some(token),
-                    (None, NativeSceneSource::Leaf(_)) => next_source.checked_add(1).map(|after| {
-                        let token = SourceId::new(next_source);
-                        next_source = after;
-                        bound.push((token, source));
-                        token
-                    }),
+                    (None, NativeSceneSource::Leaf(_) | NativeSceneSource::Feed { .. }) => {
+                        next_source.checked_add(1).map(|after| {
+                            let token = SourceId::new(next_source);
+                            next_source = after;
+                            bound.push((token, source));
+                            token
+                        })
+                    }
                     (None, NativeSceneSource::Scene(scene)) if Some(scene) == self.black_scene => {
                         next_source.checked_add(1).map(|after| {
                             let token = SourceId::new(next_source);
@@ -8158,7 +8154,7 @@ impl NativeMediaRuntime {
             .flat_map(|scene| scene.sources.iter())
             .filter_map(|(_, source)| match source {
                 NativeSceneSource::Leaf(input) => Some(*input),
-                NativeSceneSource::Scene(_) => None,
+                NativeSceneSource::Scene(_) | NativeSceneSource::Feed { .. } => None,
             });
         let leaves = direct.chain(scene_leaves).collect::<BTreeSet<_>>();
         for leaf in leaves {
@@ -9559,6 +9555,7 @@ impl NativeMediaRuntime {
         project: &NativeProjectPlan,
         frame: &FrameResult,
         execution: &mut NativeSceneExecution,
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<BTreeMap<SceneId, (SourceId, NativeTexture)>, NativeSourceRenderError> {
         let mut outputs: BTreeMap<SceneId, (SourceId, NativeTexture)> = BTreeMap::new();
         for scene in &project.scenes {
@@ -9581,6 +9578,20 @@ impl NativeMediaRuntime {
                                 })?
                                 .1
                         }
+                        NativeSceneSource::Feed { input, feed } => match feeds.get(*feed) {
+                            Some(texture) => texture,
+                            None => {
+                                let black = scene.black_scene.ok_or(
+                                    NativeSourceRenderError::MissingSource { input: *input },
+                                )?;
+                                &outputs
+                                    .get(&black)
+                                    .ok_or(NativeSourceRenderError::MissingSource {
+                                        input: *input,
+                                    })?
+                                    .1
+                            }
+                        },
                     };
                     Ok(NativeSourceFrame::new(*token, texture))
                 })
@@ -10488,7 +10499,7 @@ impl NativeMediaRuntime {
         NativeSourceRenderError,
     > {
         let scene_outputs = self
-            .render_project_scenes(registry, graded, project, frame, execution)
+            .render_project_scenes(registry, graded, project, frame, execution, feeds)
             .await?;
         self.grade_scene_inputs(project, inputs, &scene_outputs, graded)
             .await?;
