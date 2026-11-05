@@ -11759,7 +11759,7 @@ mod tests {
                 MediaTimestamp::new(i64::try_from(presentation_ns).unwrap()),
                 TimeBase::new(1, 1_000_000_000).unwrap(),
             ),
-            NormalizedTimestamp::from_nanos(presentation_ns),
+            NormalizedTimestamp::from_nanos(i64::try_from(presentation_ns).unwrap()),
             NormalizedDuration::from_nanos(1_000_000_000).unwrap(),
             clock_domain,
             SequenceNumber::new(sequence),
