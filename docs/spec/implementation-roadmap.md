@@ -3222,12 +3222,16 @@ self/cyclic chains, and malformed crops without saving. Its `render`,
 an alias draws its chain's concrete leaf or scene under the alias's own crop,
 a mix feed draws black before any tick is committed, and scene layers resolve
 aliases and feeds while refusing an alias whose crop cannot be composed into
-the layer's own crop. Remaining gaps: the native renderer and monitor taps
-still draw only direct leaves, so aliases and feeds are refused or skipped
-there; a cropped alias inside a scene layer is refused; there is no protocol
-or Studio authoring; feedback ignores the second input of an active
-transition; and aliases do not yet carry independent effects, shortcuts, or
-layer state. `IN-024` and `IN-025` remain planned.
+the layer's own crop. The native plan follows alias chains to their concrete
+leaf or scene in every route and scene layer, including live scene refreshes;
+a feed input or feed layer draws a synthetic black scene (black before the
+first commit, not yet the previous tick's frame); a cropped alias is refused
+natively instead of drawing the uncropped source. Remaining gaps: the native
+feeds do not show committed frames, cropped aliases and cropped alias layers
+are refused, monitor taps do not paint their own alias/feed resolution, there
+is no protocol or Studio authoring, feedback ignores the second input of an
+active transition, and aliases do not yet carry independent effects,
+shortcuts, or layer state. `IN-024` and `IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
