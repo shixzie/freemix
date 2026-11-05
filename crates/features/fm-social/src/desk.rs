@@ -1897,6 +1897,7 @@ mod document_tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one round trip per desk field
     fn desk_documents_round_trip_config_operators_state_and_audit() {
         let document = "freemix-social-desk 4\n\
                         config 512 16 4 4000\n\
