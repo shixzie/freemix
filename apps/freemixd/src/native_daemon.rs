@@ -577,6 +577,7 @@ impl NativeDaemon {
             source_sync_status: native_sync::SourceSyncTracker::default(),
             monitor_interval,
             monitor_demand: false,
+            feed_taps,
             preview_pacing: display_outputs::PresentationPacing::default(),
             monitor_control_skips: 0,
             pending_monitor_frames: Vec::new(),
@@ -1932,8 +1933,8 @@ impl NativeDaemon {
                 continue;
             };
             let Ok(frame) = fm_video::ImageFrame::new(
-                image.width,
-                image.height,
+                u32::from(image.width),
+                u32::from(image.height),
                 image.stride,
                 image.pixels.clone(),
             ) else {
