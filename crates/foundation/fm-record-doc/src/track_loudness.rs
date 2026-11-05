@@ -18,7 +18,7 @@
 
 use core::fmt;
 
-use crate::wav::BextLoudness;
+use crate::BextLoudness;
 
 /// The canonical document's header line.
 pub const TRACK_LOUDNESS_HEADER: &str = "freemix-record-track-loudness 1";

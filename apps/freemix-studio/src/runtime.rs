@@ -14,7 +14,7 @@ use fm_protocol::{
     AudioPluginStatusRequest, CommandMessage, CommandPayload, HeartbeatMessage,
     ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
 };
-use fm_record::{BextLoudness, RecordBus, RecorderTrackMap, TrackLimits};
+use fm_record_doc::{BextLoudness, RecordBus, RecorderTrackMap, TrackLimits};
 use fm_ui_egui::{
     DisplayOutputAnswer, RecorderTrackBus, RecorderTrackFileState, RecorderTrackFileView,
     RecorderTrackLayout, RecorderTrackLimitsView, RecorderTrackLoudnessView, RecorderTrackMapView,
@@ -1380,7 +1380,7 @@ fn load_record_track_views(bundle: Option<&std::path::Path>) -> LoadedRecorderTr
     let limits = match std::fs::read_to_string(
         bundle
             .join("recorders")
-            .join(fm_record::TRACK_LIMITS_FILE_NAME),
+            .join(fm_record_doc::TRACK_LIMITS_FILE_NAME),
     ) {
         Ok(text) => match TrackLimits::from_document(&text) {
             Ok(limits) => limits_view(limits),
@@ -1394,9 +1394,9 @@ fn load_record_track_views(bundle: Option<&std::path::Path>) -> LoadedRecorderTr
     let loudness = match std::fs::read_to_string(
         bundle
             .join("recorders")
-            .join(fm_record::TRACK_LOUDNESS_FILE_NAME),
+            .join(fm_record_doc::TRACK_LOUDNESS_FILE_NAME),
     ) {
-        Ok(text) => match fm_record::decode_track_loudness(&text) {
+        Ok(text) => match fm_record_doc::decode_track_loudness(&text) {
             Ok(loudness) => Some(loudness_view(loudness)),
             Err(read) => {
                 error.get_or_insert_with(|| format!("recorder track loudness: {read}"));
@@ -1434,11 +1434,11 @@ fn write_recorder_track_loudness(
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("recorder track loudness: {error}"))?;
     let temporary = directory.join(".loudness.trackloudness.tmp");
-    std::fs::write(&temporary, fm_record::encode_track_loudness(loudness))
+    std::fs::write(&temporary, fm_record_doc::encode_track_loudness(loudness))
         .map_err(|error| format!("recorder track loudness: {error}"))?;
     std::fs::rename(
         &temporary,
-        directory.join(fm_record::TRACK_LOUDNESS_FILE_NAME),
+        directory.join(fm_record_doc::TRACK_LOUDNESS_FILE_NAME),
     )
     .map_err(|error| format!("recorder track loudness: {error}"))
 }
@@ -1448,7 +1448,7 @@ fn remove_recorder_track_loudness(bundle: &std::path::Path) -> Result<(), String
     match std::fs::remove_file(
         bundle
             .join("recorders")
-            .join(fm_record::TRACK_LOUDNESS_FILE_NAME),
+            .join(fm_record_doc::TRACK_LOUDNESS_FILE_NAME),
     ) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1476,7 +1476,7 @@ fn write_recorder_track_limits(
         .map_err(|error| format!("recorder track limits: {error}"))?;
     std::fs::rename(
         &temporary,
-        directory.join(fm_record::TRACK_LIMITS_FILE_NAME),
+        directory.join(fm_record_doc::TRACK_LIMITS_FILE_NAME),
     )
     .map_err(|error| format!("recorder track limits: {error}"))
 }
@@ -1536,8 +1536,8 @@ fn track_map_view(slot: usize, map: &RecorderTrackMap) -> RecorderTrackMapView {
     RecorderTrackMapView {
         slot: u8::try_from(slot).unwrap_or(u8::MAX),
         layout: match map.layout() {
-            fm_record::TrackMapLayout::Interleaved => RecorderTrackLayout::Interleaved,
-            fm_record::TrackMapLayout::SplitPerTrack => RecorderTrackLayout::SplitPerTrack,
+            fm_record_doc::TrackMapLayout::Interleaved => RecorderTrackLayout::Interleaved,
+            fm_record_doc::TrackMapLayout::SplitPerTrack => RecorderTrackLayout::SplitPerTrack,
         },
         tracks: map
             .tracks()
@@ -1587,8 +1587,8 @@ fn record_track_stamp(bundle: Option<&Path>) -> RecordTrackStamp {
     };
     RecordTrackStamp {
         maps: [stamp("1.trackmap"), stamp("2.trackmap")],
-        limits: stamp(fm_record::TRACK_LIMITS_FILE_NAME),
-        loudness: stamp(fm_record::TRACK_LOUDNESS_FILE_NAME),
+        limits: stamp(fm_record_doc::TRACK_LIMITS_FILE_NAME),
+        loudness: stamp(fm_record_doc::TRACK_LOUDNESS_FILE_NAME),
     }
 }
 
@@ -1719,11 +1719,11 @@ mod tests {
         assert!(reload_changed_record_track_views(Some(&bundle), &mut stamp).is_none());
 
         let edited = RecorderTrackMap::new(
-            vec![fm_record::RecordTrack::mono(
+            vec![fm_record_doc::RecordTrack::mono(
                 "Host",
-                fm_record::TrackSource::master(0),
+                fm_record_doc::TrackSource::master(0),
             )],
-            fm_record::BusInventory::new(vec![(RecordBus::Master, 1)]).unwrap(),
+            fm_record_doc::BusInventory::new(vec![(RecordBus::Master, 1)]).unwrap(),
         )
         .unwrap();
         std::fs::write(bundle.join("recorders/1.trackmap"), edited.to_document()).unwrap();
@@ -1778,20 +1778,20 @@ mod tests {
         std::fs::create_dir_all(bundle.join("recorders")).unwrap();
         let map = RecorderTrackMap::new(
             vec![
-                fm_record::RecordTrack::stereo(
+                fm_record_doc::RecordTrack::stereo(
                     "Program",
-                    fm_record::TrackSource::master(0),
-                    fm_record::TrackSource::master(1),
+                    fm_record_doc::TrackSource::master(0),
+                    fm_record_doc::TrackSource::master(1),
                 ),
-                fm_record::RecordTrack::mono(
+                fm_record_doc::RecordTrack::mono(
                     "Bus A",
-                    fm_record::TrackSource::new(
+                    fm_record_doc::TrackSource::new(
                         RecordBus::Aux(fm_types::audio_bus::AuxBusNumber::new(1).unwrap()),
                         2,
                     ),
                 ),
             ],
-            fm_record::BusInventory::new(vec![
+            fm_record_doc::BusInventory::new(vec![
                 (RecordBus::Master, 2),
                 (
                     RecordBus::Aux(fm_types::audio_bus::AuxBusNumber::new(1).unwrap()),
@@ -1801,7 +1801,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
-        .with_layout(fm_record::TrackMapLayout::SplitPerTrack);
+        .with_layout(fm_record_doc::TrackMapLayout::SplitPerTrack);
         std::fs::write(bundle.join("recorders/1.trackmap"), map.to_document()).unwrap();
         std::fs::write(
             bundle.join("recorders/1.trackstatus"),

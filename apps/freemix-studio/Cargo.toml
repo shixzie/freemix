@@ -19,7 +19,7 @@ fm-client = { path = "../../crates/services/fm-client", features = ["std-websock
 fm-grade = { path = "../../crates/foundation/fm-grade" }
 fm-io-omt = { path = "../../crates/io/fm-io-omt" }
 fm-preset-file = { path = "../../crates/foundation/fm-preset-file" }
-fm-record = { path = "../../crates/media/fm-record" }
+fm-record-doc = { path = "../../crates/foundation/fm-record-doc" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
 fm-types = { path = "../../crates/foundation/fm-types" }
 fm-ui-egui = { path = "../../crates/ui/fm-ui-egui" }

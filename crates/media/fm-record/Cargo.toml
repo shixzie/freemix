@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 fm-frame = { path = "../fm-frame" }
+fm-record-doc = { path = "../../foundation/fm-record-doc" }
 fm-types = { path = "../../foundation/fm-types" }
 
 [lints]

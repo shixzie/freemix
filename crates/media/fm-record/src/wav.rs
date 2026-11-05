@@ -105,17 +105,7 @@ pub enum LargeFilePolicy {
     Rf64WhenNeeded,
 }
 
-/// Broadcast Wave Format `bext` loudness fields (version 2), all in
-/// hundredths: LUFS for integrated, momentary, and short-term loudness, LU
-/// for range, and dBTP for the maximum true peak.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct BextLoudness {
-    pub integrated_lufs: i16,
-    pub range_lu: i16,
-    pub max_true_peak_dbtp: i16,
-    pub max_momentary_lufs: i16,
-    pub max_short_term_lufs: i16,
-}
+pub use fm_record_doc::BextLoudness;
 
 /// Broadcast Wave Format `bext` metadata (written as version 1, or version 2
 /// when loudness fields are present).
