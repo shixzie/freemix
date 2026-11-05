@@ -143,14 +143,16 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                     interval_ms,
                     keep_live,
                 } => {
+                    let is_url = path.starts_with("http://") || path.starts_with("https://");
                     let relative = std::path::Path::new(path);
                     if path.is_empty()
                         || path.len() > 512
                         || path.chars().any(char::is_control)
-                        || relative.is_absolute()
-                        || relative
-                            .components()
-                            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                        || (!is_url
+                            && (relative.is_absolute()
+                                || relative.components().any(|component| {
+                                    !matches!(component, std::path::Component::Normal(_))
+                                })))
                     {
                         return Err(CodecError::InvalidField {
                             field: "path",

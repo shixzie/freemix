@@ -20,6 +20,11 @@ fn title_source_requests_and_responses_round_trip() {
             keep_live: true,
         },
         TitleRowSourceOperation::Stop,
+        TitleRowSourceOperation::Start {
+            path: "http://example.test/scores.json".into(),
+            interval_ms: 1_000,
+            keep_live: false,
+        },
         TitleRowSourceOperation::Status,
     ];
     for operation in requests {
