@@ -1299,6 +1299,8 @@ pub struct Engine {
     /// any committed receipt even once retention holds the count constant.
     receipts_recorded: u64,
     realized_switcher: SwitcherState,
+    /// Main plus the project's secondary mixes, advanced every frame (IN-023).
+    mix_bank: fm_switcher::MixBank,
     scheduler: RuntimeScheduler,
     clock: ManualClock,
     frame_rate: FrameRate,
@@ -1369,6 +1371,7 @@ impl Engine {
     #[must_use]
     pub fn new(show: ShowState, frame_rate: FrameRate, clock_domain: ClockDomainId) -> Self {
         let realized_switcher = show.desired_switcher().clone();
+        let mix_bank = crate::logical_output::bank(&show);
         let production_clocks =
             crate::production_clock::registry_from_definitions(show.production_clocks());
         let media_clock_inputs =
@@ -1378,6 +1381,7 @@ impl Engine {
             commands: CommandState::new(show, StateEpoch::new(1)).with_receipt_limit(RECEIPT_LIMIT),
             receipts_recorded: 0,
             realized_switcher,
+            mix_bank,
             scheduler: RuntimeScheduler::new(frame_rate, 0, PlanGeneration::new(0), Arc::new(())),
             clock: ManualClock::new(clock_domain, ClockTime::ZERO),
             frame_rate,
@@ -3011,6 +3015,15 @@ impl Engine {
         if let (Some(revision), Ok(resolved)) = (accepted_revision, resolution) {
             let ResolvedCommand { command, step } = resolved;
             self.pending_actions += 1;
+            if matches!(
+                &command,
+                EngineCommand::SetSecondaryMix { .. }
+                    | EngineCommand::InputLifecycle(_)
+                    | EngineCommand::AddInput { .. }
+                    | EngineCommand::RemoveInput { .. }
+            ) {
+                self.mix_bank = crate::logical_output::bank(self.commands.state());
+            }
             if let Some(kind) = runtime_transition_kind(self.commands.state(), &command)
                 .or(playlist_transition)
                 .or(cue_transition)
@@ -3202,6 +3215,81 @@ impl Engine {
             .collect()
     }
 
+    /// Keeps the bank's Main Program/Preview in step with the realized
+    /// switcher, so a secondary mix reading Main follows the live show.
+    fn sync_mix_bank_main(&mut self) {
+        use fm_switcher::{MixBankCommand, MixId, MixSource, MixState};
+        const MAIN: MixId = MixId::MAIN;
+        let program = self.realized_switcher.program();
+        let preview = self.realized_switcher.preview();
+        let main = self.mix_bank.mix(MAIN);
+        let main_program = main.map(MixState::program);
+        let main_preview = main.and_then(MixState::preview);
+        if main_program == Some(MixSource::Input(program)) {
+            if preview != program && main_preview != Some(MixSource::Input(preview)) {
+                let _ = self.mix_bank.apply(MixBankCommand::SelectPreview {
+                    mix: MAIN,
+                    source: MixSource::Input(preview),
+                });
+            }
+            return;
+        }
+        // A take swaps Program and Preview; follow it when the bank's Preview
+        // is exactly the realized Program.
+        if main_preview == Some(MixSource::Input(program))
+            && self.mix_bank.apply(MixBankCommand::Cut(MAIN)).is_ok()
+            && preview != program
+            && self
+                .mix_bank
+                .mix(MAIN)
+                .and_then(MixState::preview)
+                != Some(MixSource::Input(preview))
+        {
+            let _ = self.mix_bank.apply(MixBankCommand::SelectPreview {
+                mix: MAIN,
+                source: MixSource::Input(preview),
+            });
+        }
+    }
+
+    /// Cuts secondary mix `number` from Program to Preview (IN-023).
+    ///
+    /// # Errors
+    ///
+    /// Returns the bank's refusal: an unknown or output-only mix, or a
+    /// transition already in flight.
+    pub fn cut_secondary_mix(
+        &mut self,
+        number: fm_model::MixNumber,
+    ) -> Result<(), fm_switcher::MixBankError> {
+        let mix = fm_switcher::MixId::new(number.number()).expect("a validated mix number");
+        self.mix_bank
+            .apply(fm_switcher::MixBankCommand::Cut(mix))
+            .map(drop)
+    }
+
+    /// Starts a timed transition of secondary mix `number` (IN-023).
+    ///
+    /// # Errors
+    ///
+    /// Returns the bank's refusal: an unknown or output-only mix, a duration
+    /// outside the bank's bound, or a transition already in flight.
+    pub fn transition_secondary_mix(
+        &mut self,
+        number: fm_model::MixNumber,
+        kind: fm_switcher::TransitionKind,
+        duration_frames: u32,
+    ) -> Result<(), fm_switcher::MixBankError> {
+        let mix = fm_switcher::MixId::new(number.number()).expect("a validated mix number");
+        self.mix_bank
+            .apply(fm_switcher::MixBankCommand::Transition {
+                mix,
+                kind,
+                duration_frames,
+            })
+            .map(drop)
+    }
+
     /// Renders the next frame at its exact simulated deadline.
     ///
     /// # Errors
@@ -3337,7 +3425,8 @@ impl Engine {
         }
         self.title_air.retain(|_, (_, air)| air.at(next).is_some());
 
-        let secondary_mixes = crate::logical_output::mixes(self.commands.state());
+        self.sync_mix_bank_main();
+        let (secondary_mixes, _mix_events) = self.mix_bank.advance_frame();
         let logical_outputs = crate::logical_output::frame(self.commands.state(), &secondary_mixes);
         Ok(FrameResult {
             frame: tick.deadline.frame,
@@ -3769,6 +3858,7 @@ impl Engine {
             Arc::new(()),
         )
         .map_err(|_| SnapshotError::InvalidFrameCounter)?;
+        let mix_bank = crate::logical_output::bank(&show);
         Ok(Self {
             commands: CommandState::restore_with_receipts(
                 show,
@@ -3780,6 +3870,7 @@ impl Engine {
             .with_receipt_limit(RECEIPT_LIMIT),
             receipts_recorded: 0,
             realized_switcher,
+            mix_bank,
             scheduler,
             clock: ManualClock::new(clock_domain, restore_state.clock_time),
             frame_rate,

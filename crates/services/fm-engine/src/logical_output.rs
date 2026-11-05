@@ -6,9 +6,8 @@ use fm_model::{
     LogicalOverlayPolicy, SecondaryMixSource,
 };
 use fm_switcher::{
-    AudioMap, LogicalOutputSlot, LogicalOutputs, MixBankFrame, MixFrame, MixId, MixLayer,
-    MultiViewCell, OVERLAY_CHANNEL_COUNT, OutputRoutingFrame, OutputSource, OverlayPolicy,
-    OverlaySet, RoutingContext,
+    AudioMap, LogicalOutputSlot, LogicalOutputs, MixBankFrame, MixId, MultiViewCell,
+    OutputRoutingFrame, OutputSource, OverlayPolicy, OverlaySet, RoutingContext,
 };
 
 use crate::ShowState;
@@ -32,35 +31,39 @@ pub(crate) fn frame(state: &ShowState, mixes: &MixBankFrame) -> OutputRoutingFra
     })
 }
 
-/// The project's secondary mixes as one bank frame. Each mix carries its
-/// configured Program and Preview source; no transition is running until the
-/// live bank is wired.
-pub(crate) fn mixes(state: &ShowState) -> MixBankFrame {
-    MixBankFrame {
-        frame: 0,
-        mixes: state
-            .secondary_mixes()
-            .map(|config| MixFrame {
-                mix: MixId::new(config.number.number()).expect("a validated mix number"),
-                primary: mix_layer(config.program),
-                secondary: None,
-                transition_kind: None,
-                mix_numerator: 0,
-                mix_denominator: 1,
-                preview: config.preview.map(mix_layer),
-                overlays: [None; OVERLAY_CHANNEL_COUNT],
-            })
-            .collect(),
+/// Builds the runtime mix bank from the show's secondary-mix routing and
+/// desired Main Program/Preview (IN-023).
+pub(crate) fn bank(state: &ShowState) -> fm_switcher::MixBank {
+    let switcher = state.desired_switcher();
+    let mut bank = fm_switcher::MixBank::new(
+        state.inputs().to_vec(),
+        switcher.program(),
+        switcher.preview(),
+    )
+    .expect("the show's desired switcher inputs and Preview are valid");
+    for config in state.secondary_mixes() {
+        let mix = MixId::new(config.number.number()).expect("a validated mix number");
+        let config = match config.mode {
+            fm_model::SecondaryMixMode::PreviewProgram => fm_switcher::MixConfig::PreviewProgram {
+                program: bank_source(config.program),
+                preview: bank_source(config.preview.expect("a validated Preview source")),
+            },
+            fm_model::SecondaryMixMode::OutputOnly => fm_switcher::MixConfig::OutputOnly {
+                program: bank_source(config.program),
+            },
+        };
+        bank.apply(fm_switcher::MixBankCommand::AddMix { mix, config })
+            .expect("a validated secondary mix is valid for the bank");
     }
+    bank
 }
 
-fn mix_layer(source: SecondaryMixSource) -> MixLayer {
+fn bank_source(source: SecondaryMixSource) -> fm_switcher::MixSource {
     match source {
-        SecondaryMixSource::Input(input) => MixLayer::Input(input),
-        SecondaryMixSource::Mix(number) => MixLayer::Mix {
-            mix: MixId::new(number.number()).expect("a validated mix number"),
-            frame: 0,
-        },
+        SecondaryMixSource::Input(input) => fm_switcher::MixSource::Input(input),
+        SecondaryMixSource::Mix(number) => fm_switcher::MixSource::Mix(
+            MixId::new(number.number()).expect("a validated mix number"),
+        ),
     }
 }
 
