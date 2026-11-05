@@ -12603,6 +12603,67 @@ mod tests {
     }
 
     #[test]
+    fn logical_output_helpers_distinguish_program_settled_and_other_feeds() {
+        let primary = input(1);
+        let secondary = input(2);
+        let program = ProgramFrame {
+            primary,
+            secondary: Some(secondary),
+            transition_kind: Some(SwitcherTransitionKind::Fade),
+            mix_numerator: 1,
+            mix_denominator: 2,
+            mix_start_numerator: 0,
+            mix_end_numerator: 1,
+        };
+        let background = BackgroundPlan {
+            primary: FeedLayer::Input(primary),
+            secondary: Some(FeedLayer::Input(secondary)),
+            transition_kind: Some(SwitcherTransitionKind::Fade),
+            mix_numerator: 1,
+            mix_denominator: 2,
+            fade_to_black: fm_switcher::FadeToBlackPosition::LIVE,
+        };
+        assert!(is_program_background(&background, program));
+        assert_eq!(settled_input(&background), None);
+
+        let settled = BackgroundPlan {
+            primary: FeedLayer::Input(primary),
+            secondary: None,
+            transition_kind: None,
+            mix_numerator: 0,
+            mix_denominator: 1,
+            fade_to_black: fm_switcher::FadeToBlackPosition::LIVE,
+        };
+        assert!(!is_program_background(&settled, program));
+        assert_eq!(settled_input(&settled), Some(primary));
+
+        for black in [
+            BackgroundPlan {
+                primary: FeedLayer::Black,
+                ..settled
+            },
+            BackgroundPlan {
+                primary: FeedLayer::Mix {
+                    mix: fm_switcher::MixId::MAIN,
+                    frame: 3,
+                },
+                ..settled
+            },
+        ] {
+            assert_eq!(settled_input(&black), None);
+            assert!(!is_program_background(&black, program));
+        }
+        assert_eq!(
+            settled_input(&BackgroundPlan {
+                primary: FeedLayer::Input(primary),
+                secondary: Some(FeedLayer::Input(secondary)),
+                ..settled
+            }),
+            None
+        );
+    }
+
+    #[test]
     fn program_frame_preserves_slide_kind_and_progress() {
         let primary = input(1);
         let secondary = input((1_u128 << 64) + 1);
