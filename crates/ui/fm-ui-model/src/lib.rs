@@ -516,6 +516,8 @@ pub struct ProjectSnapshot {
     pub secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
     /// Every input's video delay in frames, ascending (Protocol 2.161).
     pub input_video_delays: Vec<fm_protocol::WireInputVideoDelay>,
+    /// Every frozen input, ascending (Protocol 2.161, SW-016).
+    pub frozen_inputs: Vec<fm_protocol::WireInputId>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -657,6 +659,7 @@ impl ProjectSnapshot {
             secondary_mixes: message.secondary_mixes,
             secondary_mix_states: message.secondary_mix_states,
             input_video_delays: message.input_video_delays,
+            frozen_inputs: message.frozen_inputs,
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
@@ -853,6 +856,11 @@ pub enum DurableChange {
     InputVideoDelayChanged {
         input: InputId,
         frames: u32,
+    },
+    /// One input's freeze changed (SW-016).
+    InputFreezeChanged {
+        input: InputId,
+        frozen: bool,
     },
     /// The `LiveLAN` configuration changed (Protocol 2.57); never the PIN.
     LiveLanChanged(fm_protocol::LiveLanEntry),
@@ -1201,6 +1209,12 @@ impl DurableProjectEvent {
                     frames,
                 }
             }
+            EventPayload::InputFreezeChanged { input, frozen } => {
+                DurableChange::InputFreezeChanged {
+                    input: input.to_domain(),
+                    frozen,
+                }
+            }
             EventPayload::LiveLanChanged(entry) => DurableChange::LiveLanChanged(entry),
             EventPayload::AlertRulesChanged(settings) => DurableChange::AlertRulesChanged(settings),
             EventPayload::ReplayChanged { frame, operation } => {
@@ -1387,6 +1401,8 @@ pub struct ProjectState {
     /// Every configured mix's live Program/Preview and transition progress.
     secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
     input_video_delays: BTreeMap<InputId, u32>,
+    /// Every frozen input (SW-016), ascending.
+    frozen_inputs: BTreeSet<InputId>,
     /// Every configured display-output slot (Protocol 2.42).
     display_outputs: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::DisplayOutputConfig>,
     /// Each slot's runtime state as last reported (Protocol 2.42); kept for
@@ -2033,6 +2049,8 @@ pub struct ClientView {
     pub secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
     /// Every input's video delay in frames, ascending (Protocol 2.161).
     pub input_video_delays: Vec<fm_protocol::WireInputVideoDelay>,
+    /// Every frozen input, ascending (Protocol 2.161, SW-016).
+    pub frozen_inputs: Vec<fm_protocol::WireInputId>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -3230,6 +3248,11 @@ impl ClientModel {
                     frames,
                 })
                 .collect(),
+            frozen_inputs: state
+                .frozen_inputs
+                .iter()
+                .map(|&input| fm_protocol::WireInputId::from_domain(input))
+                .collect(),
             display_outputs: state
                 .display_outputs
                 .iter()
@@ -3542,6 +3565,11 @@ impl ClientModel {
                 .input_video_delays
                 .into_iter()
                 .map(|entry| (entry.input.to_domain(), entry.frames))
+                .collect(),
+            frozen_inputs: snapshot
+                .frozen_inputs
+                .into_iter()
+                .map(fm_protocol::WireInputId::to_domain)
                 .collect(),
             display_outputs: snapshot
                 .display_outputs
@@ -5344,6 +5372,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         | DurableChange::FadeToBlackCurveChanged { .. }
         | DurableChange::SecondaryMixChanged { .. }
         | DurableChange::InputVideoDelayChanged { .. }
+        | DurableChange::InputFreezeChanged { .. }
         | DurableChange::EditLockChanged {
             target: EditLockTarget::Project,
             ..
@@ -5865,6 +5894,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 state.input_video_delays.remove(&input);
             } else {
                 state.input_video_delays.insert(input, frames);
+            }
+        }
+        DurableChange::InputFreezeChanged { input, frozen } => {
+            if frozen {
+                state.frozen_inputs.insert(input);
+            } else {
+                state.frozen_inputs.remove(&input);
             }
         }
         DurableChange::AlertRulesChanged(settings) => state.alert_rules = settings,
