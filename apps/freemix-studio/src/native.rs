@@ -4838,6 +4838,7 @@ mod tests {
         assert_eq!((capture.width, capture.height), (1920, 1080));
         assert_eq!(capture.asset_uri, "asset://frozen-2.png");
         assert_eq!(capture.path, "assets/frozen-2.png");
+        drop(runtime);
         server.join().unwrap();
     }
 
