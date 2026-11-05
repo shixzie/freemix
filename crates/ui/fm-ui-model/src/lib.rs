@@ -5300,6 +5300,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         | DurableChange::ReelChanged { .. }
         | DurableChange::ReelRemoved { .. }
         | DurableChange::FadeToBlackCurveChanged { .. }
+        | DurableChange::SecondaryMixChanged { .. }
         | DurableChange::EditLockChanged {
             target: EditLockTarget::Project,
             ..
