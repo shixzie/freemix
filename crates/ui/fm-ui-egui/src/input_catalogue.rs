@@ -600,6 +600,7 @@ impl AddInputDraft {
             alias_crop_y: 0,
             alias_crop_width: 1_920,
             alias_crop_height: 1_080,
+            alias_effects: String::new(),
             feed_program: true,
             focus_pending: true,
             locale: tracker.locale,
@@ -657,7 +658,8 @@ impl AddInputDraft {
                         self.alias_target.ok_or(Msg::AddInputAliasRequired.en())?,
                     ),
                     crop,
-                    effects: parse_alias_effects(&self.alias_effects)?,
+                    effects: parse_alias_effects(&self.alias_effects)
+                        .map_err(|message| message.en())?,
                 }
             }
             NewInputKind::MixFeed if self.feed_program => LiveInputSource::ProgramFeed,

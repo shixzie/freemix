@@ -10941,6 +10941,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AddInputAliasCropInvalid,
         t("El ancho y el alto del recorte deben ser al menos 1 y como máximo 16384 píxeles"),
     ),
+    (Msg::AddInputAliasEffects, t("Efectos")),
+    (
+        Msg::AddInputAliasEffectsHint,
+        t(
+            "Efectos separados por espacios: levels:0,255 brightness_contrast:10,0 saturation:20 sharpen:100 flip:1,0 deinterlace:0",
+        ),
+    ),
+    (
+        Msg::AddInputAliasEffectsInvalid,
+        t(
+            "Usa como máximo ocho efectos válidos: un nombre, opcionalmente seguido de :parámetro,parámetro",
+        ),
+    ),
     (Msg::AddInputFeedBus, t("Mezcla")),
     (Msg::AddInputFeedProgram, t("Mezcla Programa")),
     (Msg::AddInputFeedPreview, t("Mezcla Previo")),
