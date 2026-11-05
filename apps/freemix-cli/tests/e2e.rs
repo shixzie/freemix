@@ -8253,7 +8253,8 @@ fn local_video_delay_holds_the_simulated_picture_at_startup() {
     assert_solid_ppm(&held, 4, 3, [0, 0, 0]);
 
     // One more tick reaches the delay, so the input's picture appears.
-    assert_success(&invoke(&["preview", path, "1"]));
+    // (Delaying input 2 ticks the engine without changing Program.)
+    assert_success(&invoke(&["input-video-delay", path, "2", "2"]));
     let shown = context.root.join("delay-shown.ppm");
     assert_success(&invoke_bounded(&[
         "render",
