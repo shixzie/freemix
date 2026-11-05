@@ -1301,6 +1301,8 @@ pub struct Engine {
     realized_switcher: SwitcherState,
     /// Main plus the project's secondary mixes, advanced every frame (IN-023).
     mix_bank: fm_switcher::MixBank,
+    /// The secondary-mix frame most recently advanced (IN-023).
+    last_mix_frame: fm_switcher::MixBankFrame,
     scheduler: RuntimeScheduler,
     clock: ManualClock,
     frame_rate: FrameRate,
@@ -1382,6 +1384,7 @@ impl Engine {
             receipts_recorded: 0,
             realized_switcher,
             mix_bank,
+            last_mix_frame: fm_switcher::MixBankFrame::empty(),
             scheduler: RuntimeScheduler::new(frame_rate, 0, PlanGeneration::new(0), Arc::new(())),
             clock: ManualClock::new(clock_domain, ClockTime::ZERO),
             frame_rate,
@@ -3252,6 +3255,12 @@ impl Engine {
         }
     }
 
+    /// The secondary-mix state most recently advanced (IN-023).
+    #[must_use]
+    pub const fn secondary_mix_frame(&self) -> &fm_switcher::MixBankFrame {
+        &self.last_mix_frame
+    }
+
     /// Cuts secondary mix `number` from Program to Preview (IN-023).
     ///
     /// # Errors
@@ -3427,7 +3436,9 @@ impl Engine {
 
         self.sync_mix_bank_main();
         let (secondary_mixes, _mix_events) = self.mix_bank.advance_frame();
-        let logical_outputs = crate::logical_output::frame(self.commands.state(), &secondary_mixes);
+        self.last_mix_frame = secondary_mixes;
+        let logical_outputs =
+            crate::logical_output::frame(self.commands.state(), &self.last_mix_frame);
         Ok(FrameResult {
             frame: tick.deadline.frame,
             deadline: ClockTime::from_nanos(tick.deadline.at_ns),
@@ -3447,7 +3458,7 @@ impl Engine {
             slideshows: self.tick_slideshows(&page_operations),
             replay: self.replay.step(self.commands.state(), frame),
             logical_outputs,
-            secondary_mixes,
+            secondary_mixes: self.last_mix_frame.clone(),
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })
@@ -3871,6 +3882,7 @@ impl Engine {
             receipts_recorded: 0,
             realized_switcher,
             mix_bank,
+            last_mix_frame: fm_switcher::MixBankFrame::empty(),
             scheduler,
             clock: ManualClock::new(clock_domain, restore_state.clock_time),
             frame_rate,
