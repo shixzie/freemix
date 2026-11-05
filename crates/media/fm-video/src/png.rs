@@ -171,7 +171,7 @@ pub fn encode_png_rgba8_srgb_compressed(frame: &ImageFrame) -> Result<Vec<u8>, P
         frame.width(),
         frame.height(),
         PngBitDepth::Eight,
-        zlib,
+        &zlib,
         Some(0),
     ))
 }
@@ -311,14 +311,14 @@ fn assemble(
     raw: &[u8],
     srgb_intent: Option<u8>,
 ) -> Vec<u8> {
-    assemble_zlib(width, height, depth, zlib_stored(raw), srgb_intent)
+    assemble_zlib(width, height, depth, &zlib_stored(raw), srgb_intent)
 }
 
 fn assemble_zlib(
     width: u32,
     height: u32,
     depth: PngBitDepth,
-    zlib: Vec<u8>,
+    zlib: &[u8],
     srgb_intent: Option<u8>,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(PNG_SIGNATURE.len() + 25 + 12 + zlib.len() + 12);
