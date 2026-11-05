@@ -8294,7 +8294,7 @@ impl NativeMediaRuntime {
                     .get(&leaf)
                     .map_or_else(
                         || {
-                            registry_frame(registry, leaf, ClockTime::ZERO)
+                            registry_frame(registry, leaf, deadline)
                                 .map(NativeWorkingFrame::texture)
                         },
                         Ok,
