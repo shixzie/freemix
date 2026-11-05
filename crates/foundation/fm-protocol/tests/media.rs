@@ -13,7 +13,7 @@ use fm_protocol::{
 };
 use fm_types::FrameRate;
 
-const PREFIX: &str = "command\tprotocol=2.161\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.162\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
