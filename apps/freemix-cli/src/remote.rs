@@ -3098,7 +3098,6 @@ impl Remote {
                         | EventPayload::LogicalOutputChanged { .. }
                         | EventPayload::SecondaryMixChanged { .. }
                         | EventPayload::InputVideoDelayChanged { .. }
-                        | EventPayload::InputFreezeChanged { .. }
                         | EventPayload::LiveLanChanged(_)
                         | EventPayload::AlertRulesChanged(_)
                         | EventPayload::NetworkStreamChanged { .. }
@@ -3178,6 +3177,9 @@ impl Remote {
                         // A slideshow step answers `page_navigated`, a
                         // document step `paged_changed` (IN-014).
                         EventPayload::PageNavigated { .. } | EventPayload::PagedChanged { .. } => {
+                            completion == CommandCompletion::Switcher
+                        }
+                        EventPayload::InputFreezeChanged { .. } => {
                             completion == CommandCompletion::Switcher
                         }
                         EventPayload::MediaListChanged { operation, .. } => {
