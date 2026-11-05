@@ -6,6 +6,7 @@
 //! bytes are a pure deterministic function of the pixel values.
 
 use core::fmt;
+use std::io::Write;
 
 use crate::ImageFrame;
 
@@ -50,10 +51,21 @@ impl PngBitDepth {
 pub enum PngEncodeError {
     ZeroWidth,
     ZeroHeight,
-    DimensionTooLarge { actual: u32, maximum: u32 },
-    SampleCountMismatch { expected: usize, actual: usize },
+    DimensionTooLarge {
+        actual: u32,
+        maximum: u32,
+    },
+    SampleCountMismatch {
+        expected: usize,
+        actual: usize,
+    },
     LayoutOverflow,
-    RawDataTooLarge { required: usize, maximum: usize },
+    RawDataTooLarge {
+        required: usize,
+        maximum: usize,
+    },
+    /// The deflate stream could not be built.
+    Compression,
 }
 
 impl fmt::Display for PngEncodeError {
@@ -72,6 +84,7 @@ impl fmt::Display for PngEncodeError {
                 formatter,
                 "PNG scanline data of {required} bytes exceeds {maximum}"
             ),
+            Self::Compression => formatter.write_str("PNG compression failed"),
         }
     }
 }
@@ -126,6 +139,39 @@ pub fn encode_png_rgba8_srgb(frame: &ImageFrame) -> Result<Vec<u8>, PngEncodeErr
         frame.height(),
         PngBitDepth::Eight,
         &raw,
+        Some(0),
+    ))
+}
+
+/// Encodes an RGBA8 frame with an explicit sRGB chunk and a compressed
+/// deflate stream, for operator exports where size matters more than the
+/// bit-exact stored-block output of [`encode_png_rgba8`].
+///
+/// # Errors
+///
+/// Returns [`PngEncodeError::Compression`] when the deflate stream cannot be
+/// built, or the same layout errors as [`encode_png_rgba8`].
+pub fn encode_png_rgba8_srgb_compressed(frame: &ImageFrame) -> Result<Vec<u8>, PngEncodeError> {
+    let (row_bytes, raw_len) = raw_layout(frame.width(), frame.height(), PngBitDepth::Eight)?;
+    let mut raw = Vec::with_capacity(raw_len);
+    for row in frame
+        .pixels()
+        .chunks(frame.stride())
+        .take(height_usize(frame.height())?)
+    {
+        raw.push(0);
+        raw.extend_from_slice(&row[..row_bytes]);
+    }
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&raw)
+        .map_err(|_| PngEncodeError::Compression)?;
+    let zlib = encoder.finish().map_err(|_| PngEncodeError::Compression)?;
+    Ok(assemble_zlib(
+        frame.width(),
+        frame.height(),
+        PngBitDepth::Eight,
+        zlib,
         Some(0),
     ))
 }
@@ -265,7 +311,16 @@ fn assemble(
     raw: &[u8],
     srgb_intent: Option<u8>,
 ) -> Vec<u8> {
-    let zlib = zlib_stored(raw);
+    assemble_zlib(width, height, depth, zlib_stored(raw), srgb_intent)
+}
+
+fn assemble_zlib(
+    width: u32,
+    height: u32,
+    depth: PngBitDepth,
+    zlib: Vec<u8>,
+    srgb_intent: Option<u8>,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(PNG_SIGNATURE.len() + 25 + 12 + zlib.len() + 12);
     out.extend_from_slice(&PNG_SIGNATURE);
 

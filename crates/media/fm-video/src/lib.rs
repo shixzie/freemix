@@ -38,7 +38,8 @@ pub use geometry::{
 pub use item_transition::{FULL_ITEM_WEIGHT, ItemTransition, blend_items};
 pub use png::{
     MAX_PNG_DIMENSION, MAX_PNG_RAW_BYTES, PNG_SIGNATURE, PngBitDepth, PngEncodeError,
-    STORED_BLOCK_MAX, adler32, crc32, encode_png_rgba8, encode_png_rgba8_srgb, encode_png_rgba16,
+    STORED_BLOCK_MAX, adler32, crc32, encode_png_rgba8, encode_png_rgba8_srgb,
+    encode_png_rgba8_srgb_compressed, encode_png_rgba16,
 };
 pub use ppm::write_ppm;
 pub use test_signal::{

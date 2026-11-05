@@ -3585,7 +3585,8 @@ impl Runtime<'_> {
         let frame = pipeline
             .render_source(input, durable.position().frames_rendered)
             .map_err(|error| error.to_string())?;
-        let png = fm_video::encode_png_rgba8_srgb(&frame).map_err(|error| error.to_string())?;
+        let png = fm_video::encode_png_rgba8_srgb_compressed(&frame)
+            .map_err(|error| error.to_string())?;
         let _ = simulated;
         Ok((frame.width(), frame.height(), png))
     }

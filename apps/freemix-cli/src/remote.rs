@@ -506,11 +506,12 @@ pub(crate) fn replay_multiview(
                     .map_err(|error| {
                         RemoteFailure(format!("the replay multiview is malformed: {error}"))
                     })?;
-                    let png = fm_video::encode_png_rgba8_srgb(&frame).map_err(|error| {
-                        RemoteFailure(format!(
-                            "the replay multiview could not be encoded: {error}"
-                        ))
-                    })?;
+                    let png =
+                        fm_video::encode_png_rgba8_srgb_compressed(&frame).map_err(|error| {
+                            RemoteFailure(format!(
+                                "the replay multiview could not be encoded: {error}"
+                            ))
+                        })?;
                     std::fs::write(output, &png)?;
                     println!(
                         "ReplayMultiview(input={}, width={}, height={}, file={}, bytes={})",
