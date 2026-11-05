@@ -552,6 +552,15 @@ impl ShowState {
         Ok(())
     }
 
+    /// Aligns `input`'s audio strip delay to a video delay (IN-022). The
+    /// caller bounds the value; an input without a strip is ignored because
+    /// the same command already validated it.
+    pub(crate) fn set_input_audio_strip_delay(&mut self, input: InputId, delay_samples: u32) {
+        if let Some(strip) = self.input_audio_strips.get_mut(&input) {
+            strip.delay_samples = delay_samples;
+        }
+    }
+
     /// Restores persisted video delays; problems are reported as a
     /// [`ShowError::InvalidInputVideoDelay`].
     ///

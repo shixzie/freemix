@@ -2988,10 +2988,12 @@ pub enum EventPayload {
         number: crate::WireMixNumber,
         config: Option<Box<crate::WireSecondaryMixConfig>>,
     },
-    /// One input's video delay changed (Protocol 2.161, IN-022).
+    /// One input's video delay changed (Protocol 2.163, IN-022), with the
+    /// audio strip delay now aligned to it in samples.
     InputVideoDelayChanged {
         input: WireInputId,
         frames: u32,
+        audio_delay_samples: u32,
     },
     /// One input's freeze changed (Protocol 2.161, SW-016).
     InputFreezeChanged {

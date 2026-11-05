@@ -3059,6 +3059,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "input_video_delay_changed" => EventPayload::InputVideoDelayChanged {
             input: fields.input("input")?,
             frames: fields.parse_required("frames")?,
+            audio_delay_samples: fields.parse_required("audio_delay_samples")?,
         },
         "input_freeze_changed" => EventPayload::InputFreezeChanged {
             input: fields.input("input")?,

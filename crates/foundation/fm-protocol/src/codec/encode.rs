@@ -3045,10 +3045,15 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                 &mut |name, value| record.field_string(name, value),
             )?;
         }
-        EventPayload::InputVideoDelayChanged { input, frames } => {
+        EventPayload::InputVideoDelayChanged {
+            input,
+            frames,
+            audio_delay_samples,
+        } => {
             record.field("event", "input_video_delay_changed")?;
             record.field("input", input)?;
             record.field("frames", frames)?;
+            record.field("audio_delay_samples", audio_delay_samples)?;
         }
         EventPayload::InputFreezeChanged { input, frozen } => {
             record.field("event", "input_freeze_changed")?;

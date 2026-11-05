@@ -16,12 +16,18 @@ pub(super) fn engine_command(payload: &CommandPayload) -> Option<EngineCommand> 
 
 /// The durable event of an input-video-delay edit, or of its undo or redo.
 pub(super) fn changed(event: &EngineEvent) -> Option<EventPayload> {
-    let EngineEvent::InputVideoDelayChanged { input, frames } = event else {
+    let EngineEvent::InputVideoDelayChanged {
+        input,
+        frames,
+        audio_delay_samples,
+    } = event
+    else {
         return None;
     };
     Some(EventPayload::InputVideoDelayChanged {
         input: fm_protocol::WireInputId::from_domain(*input),
         frames: *frames,
+        audio_delay_samples: *audio_delay_samples,
     })
 }
 

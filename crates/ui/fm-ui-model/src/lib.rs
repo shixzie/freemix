@@ -856,6 +856,7 @@ pub enum DurableChange {
     InputVideoDelayChanged {
         input: InputId,
         frames: u32,
+        audio_delay_samples: u32,
     },
     /// One input's freeze changed (SW-016).
     InputFreezeChanged {
@@ -1203,12 +1204,15 @@ impl DurableProjectEvent {
             EventPayload::SecondaryMixChanged { number, config } => {
                 DurableChange::SecondaryMixChanged { number, config }
             }
-            EventPayload::InputVideoDelayChanged { input, frames } => {
-                DurableChange::InputVideoDelayChanged {
-                    input: input.to_domain(),
-                    frames,
-                }
-            }
+            EventPayload::InputVideoDelayChanged {
+                input,
+                frames,
+                audio_delay_samples,
+            } => DurableChange::InputVideoDelayChanged {
+                input: input.to_domain(),
+                frames,
+                audio_delay_samples,
+            },
             EventPayload::InputFreezeChanged { input, frozen } => {
                 DurableChange::InputFreezeChanged {
                     input: input.to_domain(),
@@ -5889,11 +5893,22 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 state.secondary_mixes.sort_by_key(|config| config.number);
             }
         }
-        DurableChange::InputVideoDelayChanged { input, frames } => {
+        DurableChange::InputVideoDelayChanged {
+            input,
+            frames,
+            audio_delay_samples,
+        } => {
             if frames == 0 {
                 state.input_video_delays.remove(&input);
             } else {
                 state.input_video_delays.insert(input, frames);
+            }
+            if let Some(strip) = state
+                .input_audio_strips
+                .iter_mut()
+                .find(|strip| strip.input == input)
+            {
+                strip.delay_samples = audio_delay_samples;
             }
         }
         DurableChange::InputFreezeChanged { input, frozen } => {

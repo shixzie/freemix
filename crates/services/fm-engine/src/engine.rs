@@ -907,6 +907,7 @@ pub enum EngineEvent {
     InputVideoDelayChanged {
         input: InputId,
         frames: u32,
+        audio_delay_samples: u32,
     },
     /// One input's freeze changed (SW-016); the state is read from
     /// [`ShowState::is_input_frozen`].
@@ -1329,6 +1330,9 @@ impl EngineSnapshot {
 }
 
 #[derive(Clone, Debug)]
+/// Audio sample rate an engine assumes until the project's own rate is set.
+pub const DEFAULT_AUDIO_SAMPLE_RATE: u32 = 48_000;
+
 pub struct Engine {
     commands: CommandState<ShowState, EngineAcceptance>,
     /// Monotonic count of receipts recorded, so preparations go stale after
@@ -1342,6 +1346,10 @@ pub struct Engine {
     scheduler: RuntimeScheduler,
     clock: ManualClock,
     frame_rate: FrameRate,
+    /// Project audio sample rate, used to align a video delay's audio strip
+    /// delay (IN-022). The daemon restores it from the project settings;
+    /// engines built directly use 48 kHz.
+    audio_sample_rate: u32,
     runtime_generation: RuntimeGeneration,
     pending_actions: usize,
     transition_in_flight: Option<TransitionKind>,
@@ -1424,6 +1432,7 @@ impl Engine {
             scheduler: RuntimeScheduler::new(frame_rate, 0, PlanGeneration::new(0), Arc::new(())),
             clock: ManualClock::new(clock_domain, ClockTime::ZERO),
             frame_rate,
+            audio_sample_rate: DEFAULT_AUDIO_SAMPLE_RATE,
             runtime_generation: RuntimeGeneration::default(),
             pending_actions: 0,
             transition_in_flight: None,
@@ -1450,6 +1459,20 @@ impl Engine {
                 .collect(),
             as_run: Vec::new(),
         }
+    }
+
+    /// Sets the project's audio sample rate used to align an audio strip to
+    /// a video delay (IN-022). Zero is ignored.
+    pub fn set_audio_sample_rate(&mut self, hertz: u32) {
+        if hertz > 0 {
+            self.audio_sample_rate = hertz;
+        }
+    }
+
+    /// The audio sample rate video delays align to.
+    #[must_use]
+    pub const fn audio_sample_rate(&self) -> u32 {
+        self.audio_sample_rate
     }
 
     /// Opens (`Some`) or closes (`None`) media input `input`'s source, cued
@@ -3944,6 +3967,7 @@ impl Engine {
             scheduler,
             clock: ManualClock::new(clock_domain, restore_state.clock_time),
             frame_rate,
+            audio_sample_rate: DEFAULT_AUDIO_SAMPLE_RATE,
             runtime_generation: restore_state.runtime_generation,
             pending_actions: 0,
             transition_in_flight: None,
@@ -4604,7 +4628,16 @@ impl EngineMutation {
                 .map_err(|error| {
                     Rejection::new(RejectionCode::InvalidCommand, error.to_string())
                 })?;
-            events.push(EngineEvent::InputVideoDelayChanged { input, frames });
+            // Audio follows the delayed picture: the strip delay covers the
+            // same wall-clock span, clamped to the strip's one-second bound.
+            let audio_delay_samples =
+                audio_delay_samples(frames, self.frame_rate, self.audio_sample_rate);
+            state.set_input_audio_strip_delay(input, audio_delay_samples);
+            events.push(EngineEvent::InputVideoDelayChanged {
+                input,
+                frames,
+                audio_delay_samples,
+            });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
             });
@@ -5272,6 +5305,25 @@ fn apply_input_catalogue_mutation(
 }
 
 /// Refuses an unusable capture device key or settings (IN-001).
+/// The audio strip delay that keeps sound aligned with `frames` of video
+/// delay, rounded half up and clamped to the strip's one-second bound.
+fn audio_delay_samples(frames: u32, frame_rate: FrameRate, sample_rate: u32) -> u32 {
+    if frames == 0 {
+        return 0;
+    }
+    let numerator = u128::from(frames)
+        .saturating_mul(u128::from(sample_rate))
+        .saturating_mul(u128::from(frame_rate.denominator()));
+    let denominator = u128::from(frame_rate.numerator());
+    let samples = numerator
+        .saturating_add(denominator / 2)
+        .checked_div(denominator)
+        .unwrap_or(u128::MAX);
+    u32::try_from(samples)
+        .unwrap_or(u32::MAX)
+        .min(fm_model::InputDelaySamples::MAX)
+}
+
 fn capture_rejection(error: fm_types::capture::CaptureError) -> Rejection {
     let message = error.to_string();
     let (field, code) = match error {
