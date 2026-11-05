@@ -159,7 +159,6 @@ fn video_delay_intent_maps_to_the_wire_command() {
 }
 
 #[test]
-#[test]
 fn title_row_intent_maps_to_the_wire_command() {
     let payload = studio_intent_payload(
         StudioIntent::SetTitleRow {
