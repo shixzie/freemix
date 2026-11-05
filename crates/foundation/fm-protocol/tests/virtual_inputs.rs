@@ -80,6 +80,45 @@ fn alias_tokens_are_canonical() {
 }
 
 #[test]
+fn an_alias_crop_past_the_source_bound_is_refused() {
+    let line = encode_line(&command(LiveInputSource::Alias {
+        target: input(1),
+        crop: Some(WireLayerCrop {
+            x: 1,
+            y: 0,
+            width: 3,
+            height: 4,
+        }),
+    }))
+    .unwrap();
+    let past = line.replace("crop_width=3", "crop_width=16384");
+    assert!(decode_line(&past).is_err(), "{past}");
+
+    // The encoder refuses an invalid crop instead of emitting it.
+    let invalid = command(LiveInputSource::Alias {
+        target: input(1),
+        crop: Some(WireLayerCrop {
+            x: 1,
+            y: 0,
+            width: 16_384,
+            height: 1,
+        }),
+    });
+    assert!(encode_line(&invalid).is_err());
+
+    // The largest valid crop still round-trips.
+    round_trip(LiveInputSource::Alias {
+        target: input(1),
+        crop: Some(WireLayerCrop {
+            x: 0,
+            y: 0,
+            width: 16_384,
+            height: 16_384,
+        }),
+    });
+}
+
+#[test]
 fn an_incomplete_or_empty_alias_crop_is_refused() {
     let line = encode_line(&command(LiveInputSource::Alias {
         target: input(1),
