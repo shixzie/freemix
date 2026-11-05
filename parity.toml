@@ -110,13 +110,13 @@ commands = ["cargo test -p fm-switcher --test mix_bank"]
 [[tests]]
 id = "accept-in-024"
 state = "present"
-paths = ["crates/foundation/fm-model/tests/mix_feed_inputs.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/src/native_media.rs"]
-commands = ["cargo test -p fm-model --test mix_feed_inputs", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-daemon-native --lib native_project_plan_routes_aliases_and_draws_feeds_black"]
+paths = ["crates/foundation/fm-model/tests/mix_feed_inputs.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/tests/virtual_inputs.rs"]
+commands = ["cargo test -p fm-model --test mix_feed_inputs", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-daemon-native --test virtual_inputs"]
 [[tests]]
 id = "accept-in-025"
 state = "present"
-paths = ["crates/foundation/fm-model/tests/virtual_inputs.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/src/native_media.rs"]
-commands = ["cargo test -p fm-model --test virtual_inputs", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-daemon-native --lib native_project_plan_routes_aliases_and_draws_feeds_black"]
+paths = ["crates/foundation/fm-model/tests/virtual_inputs.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/tests/virtual_inputs.rs"]
+commands = ["cargo test -p fm-model --test virtual_inputs", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-daemon-native --test virtual_inputs"]
 [[tests]]
 id = "accept-in-026"
 state = "present"
