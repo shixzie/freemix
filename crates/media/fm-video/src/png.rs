@@ -334,7 +334,7 @@ fn assemble_zlib(
     if let Some(intent) = srgb_intent {
         write_chunk(&mut out, *b"sRGB", &[intent]);
     }
-    write_chunk(&mut out, *b"IDAT", &zlib);
+    write_chunk(&mut out, *b"IDAT", zlib);
     write_chunk(&mut out, *b"IEND", &[]);
     out
 }
