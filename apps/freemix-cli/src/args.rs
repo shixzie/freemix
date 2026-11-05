@@ -2781,7 +2781,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         }
         "title-apply-row" => {
             let path = required_path(&mut arguments, "project path")?;
-            let (input, row, row_number, keep_live, preview) = title_row_tail(&mut arguments)?;
+            let (input, row, row_number, keep_live, preview, _, _) =
+                title_row_tail(&mut arguments, false)?;
             Ok(Command::TitleApplyRow {
                 path,
                 input,
@@ -2794,8 +2795,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-title-apply-row" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;
             let path = required_path(&mut arguments, "project path")?;
-            let (input, row, row_number, keep_live, preview) = title_row_tail(&mut arguments)?;
-            let (key, expected_revision) = command_options(arguments)?;
+            let (input, row, row_number, keep_live, preview, key, expected_revision) =
+                title_row_tail(&mut arguments, true)?;
             Ok(Command::RemoteTitleApplyRow {
                 address,
                 path,
@@ -7236,15 +7237,20 @@ fn parse_input_freeze(
 }
 
 /// The `<input> <row> [--row <n>] [--keep-live] [--preview]` tail shared by
-/// the local and remote title-row commands (GX-005).
+/// the local and remote title-row commands (GX-005). The remote command also
+/// accepts `--key` and `--expect`.
+#[allow(clippy::type_complexity)] // one row edit's parsed arguments
 fn title_row_tail(
     arguments: &mut impl Iterator<Item = String>,
-) -> Result<(u128, PathBuf, u64, bool, bool), ArgsError> {
+    remote: bool,
+) -> Result<(u128, PathBuf, u64, bool, bool, Option<String>, Option<u64>), ArgsError> {
     let input = number(&required(arguments, "input")?, "input")?;
     let row = required_path(arguments, "row path")?;
     let mut row_number = 1;
     let mut keep_live = false;
     let mut preview = false;
+    let mut key = None;
+    let mut expected_revision = None;
     while let Some(option) = arguments.next() {
         match option.as_str() {
             "--row" => {
@@ -7252,10 +7258,31 @@ fn title_row_tail(
             }
             "--keep-live" => keep_live = true,
             "--preview" => preview = true,
+            "--key" if remote => {
+                let value = required(arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" if remote => {
+                expected_revision = Some(number(
+                    &required(arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
             _ => return Err(ArgsError::UnknownOption(option)),
         }
     }
-    Ok((input, row, row_number, keep_live, preview))
+    Ok((
+        input,
+        row,
+        row_number,
+        keep_live,
+        preview,
+        key,
+        expected_revision,
+    ))
 }
 
 /// A `replay-set` edit (OR-012): each `None` keeps the current value.
