@@ -3229,7 +3229,10 @@ closes scene and audio cycle checks through aliases, while mix feeds add no
 cycle edges because the one-frame delay is the explicit break. `fm-model`'s
 `SourceResolver` maps any input to its concrete source with feedback detection
 and a finite dependency render order, and its borrow structure forbids
-committing a feed frame while a tick is still resolving. The CLI authors both
+committing a feed frame while a tick is still resolving. Feedback counts both
+endpoints of an active Program transition (including an alias or scene
+endpoint), so a feed entering as the transition's secondary still reports its
+own delayed bus. The CLI authors both
 kinds offline with `alias-input-add` (including an optional
 `--crop x,y,width,height`) and `mix-feed-input-add`, refusing missing targets,
 self/cyclic chains, and malformed crops without saving. Its `render`,
