@@ -10132,8 +10132,15 @@ impl NativeMediaRuntime {
             .await?;
         self.grade_feed_inputs(project, &leaf_inputs, &execution, feeds, &mut graded)
             .await?;
-        self.render_alias_leaf_crops(registry, project, &leaf_inputs, feeds, &mut graded)
-            .await?;
+        self.render_alias_leaf_crops(
+            registry,
+            project,
+            &leaf_inputs,
+            frame.deadline,
+            feeds,
+            &mut graded,
+        )
+        .await?;
         let (program, scene_outputs) = self
             .render_project_base_with_stingers(
                 registry,
