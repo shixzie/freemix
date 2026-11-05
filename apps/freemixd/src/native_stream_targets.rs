@@ -947,6 +947,7 @@ pub(crate) fn preview_frame(mut frame: FrameResult, preview: InputId) -> FrameRe
     frame.titles.clear();
     frame.events.clear();
     frame.logical_outputs = fm_switcher::OutputRoutingFrame::empty();
+    frame.secondary_mixes = fm_switcher::MixBankFrame::empty();
     frame.input_audio_strip_updates.clear();
     frame.audio_mixer_updates.clear();
     frame

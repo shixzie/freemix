@@ -513,6 +513,15 @@ pub struct MixBankFrame {
 }
 
 impl MixBankFrame {
+    /// An empty bank frame with no configured mixes.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            frame: 0,
+            mixes: Vec::new(),
+        }
+    }
+
     #[must_use]
     pub fn mix(&self, mix: MixId) -> Option<&MixFrame> {
         self.mixes.iter().find(|frame| frame.mix == mix)

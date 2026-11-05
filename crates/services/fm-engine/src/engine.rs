@@ -1151,6 +1151,8 @@ pub struct FrameResult {
     pub replay: Vec<crate::EngineReplayFrame>,
     /// Every enabled logical output's render plan for this frame (SW-012).
     pub logical_outputs: fm_switcher::OutputRoutingFrame,
+    /// The project's secondary-mix routing for this frame (IN-023).
+    pub secondary_mixes: fm_switcher::MixBankFrame,
     pub revision: Revision,
     pub runtime_generation: RuntimeGeneration,
 }
@@ -3335,7 +3337,8 @@ impl Engine {
         }
         self.title_air.retain(|_, (_, air)| air.at(next).is_some());
 
-        let logical_outputs = crate::logical_output::frame(self.commands.state());
+        let secondary_mixes = crate::logical_output::mixes(self.commands.state());
+        let logical_outputs = crate::logical_output::frame(self.commands.state(), &secondary_mixes);
         Ok(FrameResult {
             frame: tick.deadline.frame,
             deadline: ClockTime::from_nanos(tick.deadline.at_ns),
@@ -3355,6 +3358,7 @@ impl Engine {
             slideshows: self.tick_slideshows(&page_operations),
             replay: self.replay.step(self.commands.state(), frame),
             logical_outputs,
+            secondary_mixes,
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })

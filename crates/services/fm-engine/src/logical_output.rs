@@ -14,10 +14,10 @@ use fm_switcher::{
 use crate::ShowState;
 
 /// Resolves every enabled logical output against the show's desired switcher
-/// state and the secondary mixes configured in the project. A mix source
+/// state and the supplied secondary-mix frame (IN-023). A mix source
 /// resolves from the project's static Program/Preview routing; live mix
 /// transitions remain with the bank when it is wired to the frame loop.
-pub(crate) fn frame(state: &ShowState) -> OutputRoutingFrame {
+pub(crate) fn frame(state: &ShowState, mixes: &MixBankFrame) -> OutputRoutingFrame {
     let mut routing = LogicalOutputs::new();
     for config in state.logical_outputs() {
         let Some(slot) = LogicalOutputSlot::new(config.slot.number()) else {
@@ -25,10 +25,9 @@ pub(crate) fn frame(state: &ShowState) -> OutputRoutingFrame {
         };
         let _ = routing.configure(slot, Some(switcher_config(config)));
     }
-    let mixes = mix_frame(state);
     routing.resolve(&RoutingContext {
         switcher: state.desired_switcher(),
-        mixes: Some(&mixes),
+        mixes: Some(mixes),
         buses: state.audio_buses(),
     })
 }
@@ -36,7 +35,7 @@ pub(crate) fn frame(state: &ShowState) -> OutputRoutingFrame {
 /// The project's secondary mixes as one bank frame. Each mix carries its
 /// configured Program and Preview source; no transition is running until the
 /// live bank is wired.
-fn mix_frame(state: &ShowState) -> MixBankFrame {
+pub(crate) fn mixes(state: &ShowState) -> MixBankFrame {
     MixBankFrame {
         frame: 0,
         mixes: state

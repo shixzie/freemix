@@ -69,7 +69,7 @@ use fm_model::{
 use fm_plugin_host_api::{ReferenceError, ReferenceRack};
 use fm_sim::{CollectingAudioSink, OverflowPolicy, SinkConfigError, SinkTelemetry};
 use fm_switcher::{
-    BackgroundPlan, CellFeed, FadeToBlackFrame, FeedLayer, OutputRenderPlan, OutputVideo,
+    BackgroundPlan, CellFeed, FadeToBlackFrame, FeedLayer, MixId, OutputRenderPlan, OutputVideo,
     OverlayBorderPreset, OverlayPositionPreset, ProgramFrame,
     TransitionKind as SwitcherTransitionKind,
 };
@@ -1557,6 +1557,21 @@ impl NativeProjectPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Either a borrowed Program/input texture or a texture this pass owns.
+enum LogicalBase<'a> {
+    Borrowed(&'a NativeTexture),
+    Owned(NativeTexture),
+}
+
+impl LogicalBase<'_> {
+    const fn as_ref(&self) -> &NativeTexture {
+        match self {
+            Self::Borrowed(texture) => texture,
+            Self::Owned(texture) => texture,
+        }
+    }
+}
+
 struct NativeProgramOverlay {
     input: InputId,
     opacity: u8,
@@ -2377,6 +2392,11 @@ pub enum NativeSourceRenderError {
     UnsupportedOutputFeed {
         output: Option<OutputId>,
     },
+    /// A logical-output feed named a secondary mix the frame does not carry
+    /// (IN-023).
+    MissingSecondaryMix(fm_switcher::MixId),
+    /// A secondary mix (transitively) reads itself in one frame (IN-023).
+    SecondaryMixCycle(fm_switcher::MixId),
     /// A logical output's MultiView read an output texture that was not
     /// rendered first.
     MissingOutputTexture {
@@ -2437,6 +2457,13 @@ impl fmt::Display for NativeSourceRenderError {
                     "native unbound output selects a logical-output feed that is not realized yet",
                 ),
             },
+            Self::MissingSecondaryMix(mix) => write!(
+                formatter,
+                "native logical output reads {mix}, which this frame does not carry"
+            ),
+            Self::SecondaryMixCycle(mix) => {
+                write!(formatter, "native secondary mix {mix} reads itself")
+            }
             Self::MissingOutputTexture { output } => write!(
                 formatter,
                 "native logical output {output} was not rendered before its MultiView reader"
@@ -2498,6 +2525,8 @@ impl Error for NativeSourceRenderError {
             | Self::MissingStingerConfiguration(_)
             | Self::StingerSourceNotPreloaded { .. }
             | Self::UnsupportedOutputFeed { .. }
+            | Self::MissingSecondaryMix(_)
+            | Self::SecondaryMixCycle(_)
             | Self::MissingOutputTexture { .. }
             | Self::ResourceBounds
             | Self::ConcurrentProjectRender
@@ -9488,21 +9517,29 @@ impl NativeMediaRuntime {
             }
             OutputVideo::Background(background) => {
                 let base = if is_program_background(background, frame.program) {
-                    program
-                } else {
-                    let input = settled_input(background).ok_or(
-                        NativeSourceRenderError::UnsupportedOutputFeed {
-                            output: Some(plan.output),
-                        },
-                    )?;
-                    project_texture(
+                    LogicalBase::Borrowed(program)
+                } else if let Some(input) = settled_input(background) {
+                    LogicalBase::Borrowed(project_texture(
                         registry,
                         graded,
                         project,
                         scene_outputs,
                         input,
                         frame.deadline,
-                    )?
+                    )?)
+                } else {
+                    LogicalBase::Owned(
+                        self.render_background_texture(
+                            registry,
+                            graded,
+                            project,
+                            scene_outputs,
+                            frame,
+                            background,
+                            program,
+                        )
+                        .await?,
+                    )
                 };
                 self.finish_project_output(
                     registry,
@@ -9511,7 +9548,7 @@ impl NativeMediaRuntime {
                     scene_outputs,
                     frame,
                     Some(plan.output),
-                    base,
+                    base.as_ref(),
                     &overlays,
                 )
                 .await
@@ -9651,6 +9688,244 @@ impl NativeMediaRuntime {
             .render(&self.context, fade_to_black, &composed)
             .await
             .map_err(NativeSourceRenderError::FadeToBlack)
+    }
+
+    /// Composes one logical-output background (SW-012, IN-023): a single
+    /// input, black, or a secondary mix, with its running transition.
+    #[allow(clippy::too_many_arguments)]
+    async fn render_background_texture(
+        &self,
+        registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
+        project: &NativeProjectPlan,
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        frame: &FrameResult,
+        background: &BackgroundPlan,
+        program: &NativeTexture,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        let mut seen = Vec::new();
+        let primary = self
+            .feed_texture(
+                registry,
+                graded,
+                project,
+                scene_outputs,
+                frame,
+                program,
+                background.primary,
+                &mut seen,
+            )
+            .await?;
+        let (Some(secondary), Some(kind)) = (background.secondary, background.transition_kind) else {
+            return Ok(primary);
+        };
+        let secondary = self
+            .feed_texture(
+                registry,
+                graded,
+                project,
+                scene_outputs,
+                frame,
+                program,
+                secondary,
+                &mut seen,
+            )
+            .await?;
+        let kind = compositor_transition_kind(kind)
+            .ok_or(NativeSourceRenderError::UnsupportedTransition(kind))?;
+        let plan = TransitionPlan::compile(
+            kind,
+            background.mix_numerator,
+            background.mix_denominator,
+        )
+        .map_err(NativeSourceRenderError::InvalidMix)?;
+        self.renderer
+            .render(&self.context, plan, &primary, &secondary)
+            .await
+            .map_err(NativeSourceRenderError::Compositor)
+    }
+
+    /// Resolves one logical-output feed to an owned texture.
+    #[allow(clippy::too_many_arguments)]
+    async fn feed_texture(
+        &self,
+        registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
+        project: &NativeProjectPlan,
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        frame: &FrameResult,
+        program: &NativeTexture,
+        feed: FeedLayer,
+        seen: &mut Vec<MixId>,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        match feed {
+            FeedLayer::Input(input) => {
+                let texture = project_texture(
+                    registry,
+                    graded,
+                    project,
+                    scene_outputs,
+                    input,
+                    frame.deadline,
+                )?;
+                self.copy_project_texture(
+                    registry,
+                    graded,
+                    project,
+                    scene_outputs,
+                    frame.deadline,
+                    texture,
+                )
+                .await
+            }
+            FeedLayer::Black => {
+                let black = FadeToBlackPlan::new(
+                    CompositorFadeToBlackPosition::BLACK,
+                    CompositorFadeToBlackPosition::BLACK,
+                    CompositorFadeToBlackPosition::BLACK,
+                );
+                self.fade_to_black_renderer
+                    .render(&self.context, black, program)
+                    .await
+                    .map_err(NativeSourceRenderError::FadeToBlack)
+            }
+            FeedLayer::Mix { mix, .. } => {
+                self.render_mix_texture(
+                    registry,
+                    graded,
+                    project,
+                    scene_outputs,
+                    frame,
+                    program,
+                    mix,
+                    seen,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Composes a secondary mix's Program background and overlays (IN-023).
+    #[allow(clippy::too_many_arguments)]
+    async fn render_mix_texture(
+        &self,
+        registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
+        project: &NativeProjectPlan,
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        frame: &FrameResult,
+        program: &NativeTexture,
+        mix: MixId,
+        seen: &mut Vec<MixId>,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        if mix.is_main() {
+            return self
+                .copy_project_texture(
+                    registry,
+                    graded,
+                    project,
+                    scene_outputs,
+                    frame.deadline,
+                    program,
+                )
+                .await;
+        }
+        if seen.contains(&mix) {
+            return Err(NativeSourceRenderError::SecondaryMixCycle(mix));
+        }
+        let mix_frame = frame
+            .secondary_mixes
+            .mix(mix)
+            .ok_or(NativeSourceRenderError::MissingSecondaryMix(mix))?;
+        seen.push(mix);
+        let primary = self
+            .feed_texture(
+                registry,
+                graded,
+                project,
+                scene_outputs,
+                frame,
+                program,
+                mix_frame.primary,
+                seen,
+            )
+            .await?;
+        let base = match (mix_frame.secondary, mix_frame.transition_kind) {
+            (Some(secondary), Some(kind)) => {
+                let secondary = self
+                    .feed_texture(
+                        registry,
+                        graded,
+                        project,
+                        scene_outputs,
+                        frame,
+                        program,
+                        secondary,
+                        seen,
+                    )
+                    .await?;
+                let kind = compositor_transition_kind(kind)
+                    .ok_or(NativeSourceRenderError::UnsupportedTransition(kind))?;
+                let plan = TransitionPlan::compile(
+                    kind,
+                    mix_frame.mix_numerator,
+                    mix_frame.mix_denominator,
+                )
+                .map_err(NativeSourceRenderError::InvalidMix)?;
+                self.renderer
+                    .render(&self.context, plan, &primary, &secondary)
+                    .await
+                    .map_err(NativeSourceRenderError::Compositor)?
+            }
+            _ => primary,
+        };
+        let overlays = mix_frame
+            .overlays
+            .iter()
+            .flatten()
+            .map(|input| NativeProgramOverlay {
+                input: *input,
+                opacity: u8::MAX,
+                position: OverlayPositionPreset::FullFrame,
+                border: OverlayBorderPreset::None,
+                motion: None,
+            })
+            .collect::<Vec<_>>();
+        let composed = self
+            .render_project_overlays(
+                registry,
+                graded,
+                project,
+                scene_outputs,
+                frame.deadline,
+                &base,
+                &overlays,
+            )
+            .await?;
+        seen.pop();
+        Ok(composed)
+    }
+
+    /// Copies `texture` into a new working texture with no overlays.
+    async fn copy_project_texture(
+        &self,
+        registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
+        project: &NativeProjectPlan,
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        deadline: ClockTime,
+        texture: &NativeTexture,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        self.render_project_overlays(
+            registry,
+            graded,
+            project,
+            scene_outputs,
+            deadline,
+            texture,
+            &[],
+        )
+        .await
     }
 
     /// Renders the frame's scenes, grades each Scene input among `inputs`
@@ -10694,6 +10969,7 @@ mod tests {
             },
             events: Vec::new(),
             logical_outputs: fm_switcher::OutputRoutingFrame::empty(),
+            secondary_mixes: fm_switcher::MixBankFrame::empty(),
             revision: Revision::new(0),
             runtime_generation: RuntimeGeneration::new(0),
         }
