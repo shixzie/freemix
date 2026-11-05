@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.159 / schema 108 (2026-11-04).
+(2026-10-19); items refreshed through protocol 2.160 / schema 109 (2026-11-04).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -3180,13 +3180,19 @@ newest buffered frame are dropped and counted without clearing the buffer,
 flagged discontinuities and timestamp jumps beyond the skew limit reset and
 re-anchor, and frame-count, byte, and duration bounds evict oldest-first and reject
 oversized frames. The effective delay converts to audio samples, aligning with
-`fm-audio` `SampleDelay` within one sample at 48 kHz. Remaining gaps: no
-engine, input, command, protocol, persistence, or UI wiring; no loop, freeze
-integration, or clip save; `SampleDelay` can change its delay live within the
-one-second bound while preserving history (growing prepends silence), and the
-Master mixer's delay setter uses that path; it still cannot exceed one
-second; no source/output clock drift compensation; and memory accounting
-relies on caller-reported sizes. `IN-022` remains planned.
+`fm-audio` `SampleDelay` within one sample at 48 kHz. The project now stores
+each input's requested delay in frames (schema 109, at most 600), validation
+rejects unknown inputs and oversized delays, `EngineCommand::SetInputVideoDelay`
+is an undoable project edit, and the daemon folds it back into the project on
+save. Protocol 2.160 carries the list in every snapshot, sets one with
+`set_input_video_delay`, and announces an edit (or its undo or redo) with
+`input_video_delay_changed`; the client model replicates it. Remaining gaps:
+no daemon applies the requested delay to decoded or simulated frames, no UI
+editor, no loop, freeze integration, or clip save; `SampleDelay` can change its
+delay live within the one-second bound while preserving history (growing
+prepends silence), and the Master mixer's delay setter uses that path; it still
+cannot exceed one second; no source/output clock drift compensation; and memory
+accounting relies on caller-reported sizes. `IN-022` remains planned.
 
 Current implementation boundary for virtual and mix-feed inputs (`IN-024`,
 `IN-025`): project schema 25 added alias inputs with their own id,
