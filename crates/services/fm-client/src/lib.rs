@@ -2102,6 +2102,7 @@ impl Client {
             | CommandPayload::SecondaryMixCut { .. }
             | CommandPayload::SecondaryMixTransition { .. }
             | CommandPayload::SetInputVideoDelay { .. }
+            | CommandPayload::SetInputFreeze { .. }
             | CommandPayload::SetLiveLan { .. }
             | CommandPayload::SetAlertRule(_)
             | CommandPayload::Replay(_)
