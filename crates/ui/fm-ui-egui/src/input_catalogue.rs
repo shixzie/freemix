@@ -645,20 +645,20 @@ impl AddInputDraft {
                         prompt: true,
                     });
                 }
-                if self.alias_crop
-                    && !fm_protocol::WireLayerCrop {
+                if self.alias_crop {
+                    let crop = fm_protocol::WireLayerCrop {
                         x: self.alias_crop_x,
                         y: self.alias_crop_y,
                         width: self.alias_crop_width,
                         height: self.alias_crop_height,
+                    };
+                    if !crop.fits_source() {
+                        return Some(FieldProblem {
+                            field: Msg::AddInputAliasCropWidth,
+                            reason: Msg::AddInputAliasCropInvalid.en(),
+                            prompt: false,
+                        });
                     }
-                    .fits_source()
-                {
-                    return Some(FieldProblem {
-                        field: Msg::AddInputAliasCropWidth,
-                        reason: Msg::AddInputAliasCropInvalid.en(),
-                        prompt: false,
-                    });
                 }
                 return None;
             }
