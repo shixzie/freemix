@@ -10869,6 +10869,25 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AddInputAliasRequired,
         t("Selecciona una entrada para el alias"),
     ),
+    (Msg::AddInputAliasCropEnable, t("Recortar el alias")),
+    (
+        Msg::AddInputAliasCropEnableHover,
+        t("Mostrar solo parte de la imagen de la entrada con alias, en píxeles del proyecto"),
+    ),
+    (Msg::AddInputAliasCropX, t("Recorte X")),
+    (Msg::AddInputAliasCropY, t("Recorte Y")),
+    (Msg::AddInputAliasCropWidth, t("Ancho del recorte")),
+    (Msg::AddInputAliasCropHeight, t("Alto del recorte")),
+    (
+        Msg::AddInputAliasCropHover,
+        t(
+            "Rectángulo de recorte en píxeles del proyecto; debe ser no vacío y caber en el límite de origen de 16384 píxeles",
+        ),
+    ),
+    (
+        Msg::AddInputAliasCropInvalid,
+        t("El ancho y el alto del recorte deben ser al menos 1 y como máximo 16384 píxeles"),
+    ),
     (Msg::AddInputFeedBus, t("Mezcla")),
     (Msg::AddInputFeedProgram, t("Mezcla Programa")),
     (Msg::AddInputFeedPreview, t("Mezcla Previo")),
