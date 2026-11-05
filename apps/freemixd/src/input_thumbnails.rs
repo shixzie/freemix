@@ -1542,7 +1542,7 @@ mod tests {
         let image = decode_input_thumbnail(&sent[0].1).unwrap();
         assert_eq!((image.width, image.height), (4, 2));
         assert_eq!(&image.rgba[..4], &[12, 200, 34, 255]);
-        assert_eq!(sent[0].1.origin, MonitorFrameOrigin::Native);
+        assert_eq!(sent[0].1.origin, MonitorFrameOrigin::Simulated);
     }
 
     #[test]
