@@ -123,6 +123,7 @@ fn an_alias_crop_past_the_source_bound_is_refused() {
             width: 16_384,
             height: 16_384,
         }),
+        effects: Vec::new(),
     });
 }
 
@@ -136,6 +137,7 @@ fn an_incomplete_or_empty_alias_crop_is_refused() {
             width: 3,
             height: 4,
         }),
+        effects: Vec::new(),
     }))
     .unwrap();
     for damaged in [
