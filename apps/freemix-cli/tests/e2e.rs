@@ -8071,6 +8071,71 @@ fn remote_input_video_delay_sends_the_exact_edit() {
     server.finish();
 }
 
+/// SW-016, Protocol 2.161: freezing an input is runtime state; it changes
+/// no project bytes and an unknown input is refused.
+#[test]
+fn local_input_freeze_is_runtime_state_only() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let manifest = fs::read(context.project.join("project.json")).unwrap();
+    assert_success(&invoke(&[
+        "input-freeze",
+        context.project_path(),
+        "1",
+        "on",
+    ]));
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest
+    );
+    assert_failure_contains(
+        &invoke(&["input-freeze", context.project_path(), "99", "on"]),
+        "99",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest
+    );
+    assert_success(&invoke(&[
+        "input-freeze",
+        context.project_path(),
+        "1",
+        "off",
+    ]));
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// SW-016, Protocol 2.161: the remote freeze command sends the exact live
+/// operation.
+#[test]
+fn remote_input_freeze_sends_the_exact_edit() {
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Operator,
+        key: "remote-input-freeze",
+        payload: CommandPayload::SetInputFreeze {
+            input: input(1),
+            frozen: true,
+        },
+        event: EventPayload::InputFreezeChanged {
+            input: input(1),
+            frozen: true,
+        },
+        domain: "switcher",
+    });
+    let output = invoke(&[
+        "remote-input-freeze",
+        &server.address(),
+        "1",
+        "on",
+        "--key",
+        "remote-input-freeze",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
 /// OR-017: the local `LiveLAN` settings are a validated, persisted project
 /// edit; absent options keep their value, the PIN is stored but never
 /// printed, and a streamed output cannot be removed.
