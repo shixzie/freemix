@@ -28,11 +28,13 @@ pub(super) fn encode_entry(
 pub(super) fn decode_entry(
     fields: &mut dyn FieldSource,
 ) -> Result<WireInputVideoDelay, CodecError> {
-    let input = fields.input("input")?;
-    let frames: u32 = fields.parse_required("frames")?;
-    if frames > MAX_WIRE_INPUT_VIDEO_DELAY_FRAMES {
-        return Err(invalid("frames", frames.to_string()));
-    }
+    let input = fields.required("input")?;
+    let input = parse_canonical_input(&input).ok_or_else(|| invalid("input", &input))?;
+    let frames = fields.required("frames")?;
+    let frames = parse_canonical_u64(&frames)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|frames| *frames <= MAX_WIRE_INPUT_VIDEO_DELAY_FRAMES)
+        .ok_or_else(|| invalid("frames", &frames))?;
     Ok(WireInputVideoDelay { input, frames })
 }
 
