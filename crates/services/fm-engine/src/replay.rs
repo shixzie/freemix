@@ -419,6 +419,7 @@ pub struct EngineReplayFrame {
 }
 
 #[derive(Clone, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)] // playing, live, and shuttling are distinct transport states
 struct Player {
     event: Option<u32>,
     angle: Option<InputId>,

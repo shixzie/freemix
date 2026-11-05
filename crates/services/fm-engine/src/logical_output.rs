@@ -71,7 +71,7 @@ fn switcher_config(config: &LogicalOutputConfig) -> fm_switcher::LogicalOutputCo
     fm_switcher::LogicalOutputConfig {
         output: config.output,
         source: switcher_source(&config.source),
-        overlays: switcher_overlays(&config.overlays),
+        overlays: switcher_overlays(config.overlays),
         audio: switcher_audio(config.audio),
     }
 }
@@ -104,7 +104,7 @@ fn switcher_cell(cell: &LogicalMultiViewCell) -> MultiViewCell {
     }
 }
 
-fn switcher_overlays(policy: &LogicalOverlayPolicy) -> OverlayPolicy {
+fn switcher_overlays(policy: LogicalOverlayPolicy) -> OverlayPolicy {
     match policy {
         LogicalOverlayPolicy::All => OverlayPolicy::All,
         LogicalOverlayPolicy::Clean => OverlayPolicy::Clean,

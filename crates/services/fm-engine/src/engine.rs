@@ -3303,6 +3303,11 @@ impl Engine {
     ///
     /// Returns the bank's refusal: an unknown or output-only mix, or a
     /// transition already in flight.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if `number` is not a valid mix number, which the model
+    /// guarantees by construction.
     pub fn cut_secondary_mix(
         &mut self,
         number: fm_model::MixNumber,
@@ -3319,6 +3324,11 @@ impl Engine {
     ///
     /// Returns the bank's refusal: an unknown or output-only mix, a duration
     /// outside the bank's bound, or a transition already in flight.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if `number` is not a valid mix number, which the model
+    /// guarantees by construction.
     pub fn transition_secondary_mix(
         &mut self,
         number: fm_model::MixNumber,
