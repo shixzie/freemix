@@ -8186,6 +8186,18 @@ fn local_input_video_delays_persist_and_are_bounded() {
         text.contains("\"input_video_delays\": [\n      {\"input\": 1, \"frames\": 5}\n    ]"),
         "{text}"
     );
+    // The audio strip is aligned to the same wall-clock span.
+    let store = ProjectStore::new(&context.project).unwrap();
+    let loaded = store.load().unwrap();
+    let rate = loaded.project().settings().frame_rate;
+    let numerator =
+        5_u128 * 48_000 * u128::from(rate.denominator()) + u128::from(rate.numerator()) / 2;
+    let expected = u32::try_from(numerator / u128::from(rate.numerator())).unwrap();
+    let strip = loaded
+        .project()
+        .input_audio_strip(InputId::new(NonZeroU128::new(1).unwrap()))
+        .unwrap();
+    assert_eq!(strip.delay_samples.get(), expected);
 
     assert_failure_contains(
         &invoke_bounded(&["input-video-delay", context.project_path(), "1", "601"]),
@@ -8210,6 +8222,12 @@ fn local_input_video_delays_persist_and_are_bounded() {
     ]));
     let text = fs::read_to_string(context.project.join("project.json")).unwrap();
     assert!(!text.contains("\"input_video_delays\""), "{text}");
+    let loaded = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let strip = loaded
+        .project()
+        .input_audio_strip(InputId::new(NonZeroU128::new(1).unwrap()))
+        .unwrap();
+    assert_eq!(strip.delay_samples.get(), 0);
     fs::remove_dir_all(context.root).unwrap();
 }
 

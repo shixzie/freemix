@@ -1,54 +1,47 @@
-//! IN-022: per-input video delay commands round-trip at Protocol 2.161.
+//! IN-022: a video-delay event carries its aligned audio strip delay
+//! (Protocol 2.163).
 
 use core::num::NonZeroU128;
 
 use fm_protocol::{
-    CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, MAX_WIRE_INPUT_VIDEO_DELAY_FRAMES,
-    WireInputId, WireMessage, decode_line, encode_line,
+    EngineIdentity, EventCursor, EventMessage, EventPayload, WireInputId, WireMessage, decode_line,
+    encode_line,
 };
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
 }
 
-fn command(payload: CommandPayload) -> CommandMessage {
-    CommandMessage {
-        protocol: CURRENT_PROTOCOL_VERSION,
-        id: "01K:test".to_owned(),
-        idempotency_key: "operator-7:01K".to_owned(),
-        expected_revision: Some(1_842),
-        deadline_ms: Some(500),
-        payload,
+fn engine() -> EngineIdentity {
+    EngineIdentity {
+        engine_id: "engine".into(),
+        state_epoch: 1,
+        log_id: "log".into(),
     }
 }
 
-fn round_trip(payload: CommandPayload) {
-    let message = WireMessage::Command(command(payload));
+#[test]
+fn a_video_delay_change_carries_its_audio_alignment() {
+    let message = WireMessage::Event(EventMessage {
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+        cursor: EventCursor {
+            engine: engine(),
+            revision: 5,
+        },
+        payload: EventPayload::InputVideoDelayChanged {
+            input: input(1),
+            frames: 5,
+            audio_delay_samples: 8_000,
+        },
+    });
     let line = encode_line(&message).unwrap();
+    assert!(
+        line.contains("\tframes=5\taudio_delay_samples=8000"),
+        "{line}"
+    );
     assert_eq!(decode_line(&line).unwrap(), message);
-}
 
-#[test]
-fn video_delay_commands_round_trip() {
-    round_trip(CommandPayload::SetInputVideoDelay {
-        input: input(7),
-        frames: 5,
-    });
-    round_trip(CommandPayload::SetInputVideoDelay {
-        input: input(7),
-        frames: 0,
-    });
-    round_trip(CommandPayload::SetInputVideoDelay {
-        input: input(9),
-        frames: MAX_WIRE_INPUT_VIDEO_DELAY_FRAMES,
-    });
-}
-
-#[test]
-fn a_delay_above_the_wire_bound_is_refused() {
-    let message = WireMessage::Command(command(CommandPayload::SetInputVideoDelay {
-        input: input(7),
-        frames: MAX_WIRE_INPUT_VIDEO_DELAY_FRAMES + 1,
-    }));
-    assert!(encode_line(&message).is_err());
+    // The alignment is part of the contract, not an optional extra.
+    let damaged = line.replace("\taudio_delay_samples=8000", "");
+    assert!(decode_line(&damaged).is_err(), "{damaged}");
 }
