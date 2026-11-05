@@ -9972,9 +9972,9 @@ impl NativeMediaRuntime {
             cells.len(),
         )
         .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
-        let mut feeds = Vec::with_capacity(cells.len());
+        let mut textures = Vec::with_capacity(cells.len());
         for (index, cell) in cells.iter().enumerate() {
-            feeds.push(
+            textures.push(
                 self.logical_cell_texture(
                     index,
                     cell.feed,
@@ -9991,7 +9991,7 @@ impl NativeMediaRuntime {
             );
         }
         let mut unique: Vec<(LogicalCellFeed, &NativeTexture)> = Vec::new();
-        for (feed, texture) in &feeds {
+        for (feed, texture) in &textures {
             if !unique.iter().any(|(known, _)| known == feed) {
                 unique.push((*feed, texture.as_ref()));
             }
@@ -10004,7 +10004,7 @@ impl NativeMediaRuntime {
             0,
             FitPolicy::Fit,
             |index, _cell| {
-                let (feed, texture) = &feeds[index];
+                let (feed, texture) = &textures[index];
                 let source = unique
                     .iter()
                     .position(|(known, _)| known == feed)
@@ -10097,6 +10097,7 @@ impl NativeMediaRuntime {
                                 frame,
                                 &background,
                                 program,
+                                feeds,
                             )
                             .await?,
                         ),
