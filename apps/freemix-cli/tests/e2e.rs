@@ -4479,6 +4479,7 @@ fn local_input_add_persists_default_simulated_strip() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // alias, crop, feed, and refusals in one contract
 fn local_alias_and_mix_feed_inputs_render_through_the_resolver() {
     let context = ContractContext::new();
     assert_success(&invoke(&["new", context.project_path()]));
