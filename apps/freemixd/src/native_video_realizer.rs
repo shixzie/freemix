@@ -30,8 +30,9 @@ use fm_gpu::NativeTexture;
 use fm_protocol::{MonitorTap, ServerIdentity};
 use fm_types::{InputId, OutputScaling};
 use freemixd::native_media::{
-    NativeFeedFrames, NativeMediaError, NativeMediaRuntime, NativeOutputFrame, NativeProjectGrades,
-    NativeProjectPlan, NativeSourceLimits, NativeSourcePlayback, NativeSourceRenderError,
+    CapturedStill, NativeFeedFrames, NativeMediaError, NativeMediaRuntime, NativeOutputFrame,
+    NativeProjectGrades, NativeProjectPlan, NativeSourceLimits, NativeSourcePlayback,
+    NativeSourceRenderError,
 };
 
 use crate::native_replay::{ReplayFormat, ReplayPlayers};
@@ -176,6 +177,10 @@ enum VideoCommand {
         deadline: ClockTime,
         reply: SyncSender<()>,
     },
+    CaptureFrozenStill {
+        input: InputId,
+        reply: SyncSender<Result<Option<CapturedStill>, String>>,
+    },
     SetRetainedByteLimit {
         limit: u64,
     },
@@ -301,6 +306,25 @@ impl NativeVideoHandle {
                 deadline,
                 reply,
             })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())?
+    }
+
+    /// Captures frozen `input`'s latched picture as a PNG (SW-016), or
+    /// `None` when the video realizer does not hold it frozen.
+    ///
+    /// # Errors
+    ///
+    /// Returns the GPU readback or PNG failure, or the video thread stopping.
+    pub(crate) fn capture_frozen_still(
+        &mut self,
+        input: InputId,
+    ) -> Result<Option<CapturedStill>, String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::CaptureFrozenStill { input, reply })
             .map_err(|_| "the video thread stopped".to_owned())?;
         answer
             .recv()
@@ -854,6 +878,12 @@ impl VideoRealizer {
                 } => {
                     self.playback.set_input_freeze(input, frozen, deadline);
                     let _ = reply.send(());
+                }
+                VideoCommand::CaptureFrozenStill { input, reply } => {
+                    let answer = self
+                        .runtime
+                        .capture_frozen_still_blocking(&self.playback, input);
+                    let _ = reply.send(answer);
                 }
                 VideoCommand::SetRetainedByteLimit { limit } => {
                     self.playback.set_retained_byte_limit(limit);

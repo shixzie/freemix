@@ -12,9 +12,10 @@ use core::fmt;
 use std::sync::Arc;
 
 use crate::{
-    MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS,
-    MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin, MonitorImage, MonitorTap,
-    ServerIdentity, TitlePreviewFrameMessage, TitlePreviewImage, WireInputId,
+    FrozenStillResponse, MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES,
+    MAX_MONITOR_FRAME_PARTS, MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin,
+    MonitorImage, MonitorTap, ServerIdentity, TitlePreviewFrameMessage, TitlePreviewImage,
+    WireInputId,
 };
 
 const QOI_MAGIC: [u8; 4] = *b"qoif";
@@ -755,6 +756,54 @@ pub fn title_preview_parts(
             data: data.to_vec(),
         })
         .collect()
+}
+
+/// Splits one PNG into `frozen_still_response` parts of at most
+/// [`crate::MAX_FROZEN_STILL_PART_BYTES`] raw bytes, in send order, each
+/// repeating the header.
+///
+/// # Errors
+///
+/// Returns [`MonitorImageError::InvalidDimensions`] for a zero width or
+/// height, or an encoding error when the PNG exceeds the still bound.
+pub fn frozen_still_parts(
+    protocol: crate::ProtocolVersion,
+    request_id: &str,
+    input: WireInputId,
+    width: u32,
+    height: u32,
+    png: &[u8],
+) -> Result<Vec<FrozenStillResponse>, MonitorImageError> {
+    if width == 0 || height == 0 || png.len() > crate::MAX_FROZEN_STILL_BYTES {
+        return Err(MonitorImageError::InvalidDimensions {
+            width: u16::try_from(width).unwrap_or(u16::MAX),
+            height: u16::try_from(height).unwrap_or(u16::MAX),
+        });
+    }
+    let chunks = png.chunks(crate::MAX_FROZEN_STILL_PART_BYTES);
+    let parts = u16::try_from(chunks.len()).map_err(|_| MonitorImageError::UnexpectedPart {
+        expected: 0,
+        actual: u16::MAX,
+    })?;
+    if parts > crate::MAX_FROZEN_STILL_PARTS {
+        return Err(MonitorImageError::UnexpectedPart {
+            expected: 0,
+            actual: parts,
+        });
+    }
+    Ok(chunks
+        .enumerate()
+        .map(|(part, data)| FrozenStillResponse {
+            protocol,
+            request_id: request_id.to_owned(),
+            input,
+            width,
+            height,
+            part: u16::try_from(part).unwrap_or(u16::MAX),
+            parts,
+            data: data.to_vec(),
+        })
+        .collect())
 }
 
 /// Reassembles `title_preview_frame` parts into decoded previews, with the

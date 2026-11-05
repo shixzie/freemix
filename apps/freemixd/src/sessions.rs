@@ -2519,6 +2519,39 @@ impl Runtime<'_> {
                 peer.reply(response)?;
                 Ok(())
             }
+            WireMessage::FrozenStillRequest(request) => {
+                let answer =
+                    self.frozen_still(request.input.to_domain(), durable, native.as_deref_mut());
+                match answer {
+                    Ok((width, height, png)) => {
+                        let parts = fm_protocol::monitor_image::frozen_still_parts(
+                            request.protocol,
+                            &request.request_id,
+                            request.input,
+                            width,
+                            height,
+                            &png,
+                        )
+                        .map_err(|_| ())?;
+                        for part in parts {
+                            peer.reply(WireMessage::FrozenStillResponse(part))?;
+                        }
+                    }
+                    Err(message) => peer.reply(WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision: Some(
+                            self.control.borrow().diagnostics().current_revision,
+                        ),
+                        error: StructuredError {
+                            code: "still_unavailable".into(),
+                            message,
+                            fields: Vec::new(),
+                            retryable: false,
+                        },
+                    }))?,
+                }
+                Ok(())
+            }
             // The input thumbnail feed (Protocol 2.59) goes to the peers
             // monitor frames go to; others are told it is unavailable.
             WireMessage::InputThumbnailSubscription(subscription) => {
@@ -2948,6 +2981,69 @@ impl Runtime<'_> {
     fn sync_title_templates(&self) {
         self.titles
             .sync_templates(&self.control.borrow().title_templates());
+    }
+
+    /// Encodes frozen `input`'s latched picture as a PNG (SW-016). A native
+    /// daemon reads its GPU-latched texture back; a simulated daemon renders
+    /// the input's current simulated picture. The input must be frozen.
+    fn frozen_still(
+        &self,
+        input: InputId,
+        durable: &StoredProject,
+        native: Option<&mut NativeDaemon>,
+    ) -> Result<(u32, u32, Vec<u8>), String> {
+        if !self
+            .control
+            .borrow()
+            .show()
+            .frozen_inputs()
+            .any(|frozen| frozen == input)
+        {
+            return Err(format!("input {input} is not frozen"));
+        }
+        if let Some(native) = native {
+            let still = native.capture_frozen_still(input)?;
+            return Ok((still.width, still.height, still.png));
+        }
+        let project = durable.project();
+        let Some(entry) = project
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == input)
+        else {
+            return Err(format!("show does not contain input {input}"));
+        };
+        let fm_model::InputKind::Simulated(simulated) = &entry.kind else {
+            return Err(format!(
+                "the simulated daemon has no picture for input {input}"
+            ));
+        };
+        let dimensions = project.settings().video.dimensions;
+        let mut pipeline = fm_sim::SimulatedPipeline::new(dimensions.width(), dimensions.height())
+            .map_err(|error| error.to_string())?;
+        for candidate in project.inputs() {
+            let fm_model::InputKind::Simulated(simulated) = &candidate.kind else {
+                continue;
+            };
+            let pattern = match simulated.video {
+                fm_model::SimulatedVideo::Bars => fm_sim::SourcePattern::Bars,
+                fm_model::SimulatedVideo::Solid(color) => fm_sim::SourcePattern::Solid(
+                    fm_sim::Rgba8::new(color.red, color.green, color.blue, color.alpha),
+                ),
+            };
+            pipeline
+                .register(fm_sim::SimulatedSource::new(candidate.id, pattern))
+                .map_err(|error| error.to_string())?;
+        }
+        for (&delayed, &frames) in project.input_video_delays() {
+            pipeline.set_video_delay(delayed, frames);
+        }
+        let frame = pipeline
+            .render_source(input, durable.position().frames_rendered)
+            .map_err(|error| error.to_string())?;
+        let png = fm_video::encode_png_rgba8(&frame).map_err(|error| error.to_string())?;
+        let _ = simulated;
+        Ok((frame.width(), frame.height(), png))
     }
 
     /// Admits and resolves one exact title or scene preview request and

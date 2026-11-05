@@ -131,6 +131,41 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             }
         }
         WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,
+        WireMessage::FrozenStillRequest(message) => {
+            validate_request_id(&message.request_id)?;
+            record.kind("frozen_still_request");
+            record.field("protocol", message.protocol)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+        }
+        WireMessage::FrozenStillResponse(message) => {
+            validate_request_id(&message.request_id)?;
+            if message.width == 0
+                || message.height == 0
+                || message.parts == 0
+                || message.parts > crate::MAX_FROZEN_STILL_PARTS
+                || message.part >= message.parts
+                || message.data.is_empty()
+                || message.data.len() > crate::MAX_FROZEN_STILL_PART_BYTES
+            {
+                return Err(CodecError::InvalidField {
+                    field: "part",
+                    value: format!("{}/{}", message.part, message.parts),
+                });
+            }
+            record.kind("frozen_still_response");
+            record.field("protocol", message.protocol)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+            record.field("width", message.width)?;
+            record.field("height", message.height)?;
+            record.field("part", message.part)?;
+            record.field("parts", message.parts)?;
+            record.field_string(
+                "data",
+                crate::monitor_image::base64url_encode(&message.data),
+            )?;
+        }
         WireMessage::InputThumbnailSubscription(message) => {
             record.kind("input_thumbnail_subscription");
             record.field_str("enabled", if message.enabled { "1" } else { "0" })?;

@@ -13,6 +13,7 @@ fm-color = { path = "../../gpu/fm-color", features = ["native-wgpu"] }
 fm-compositor = { path = "../../gpu/fm-compositor", features = ["native-wgpu"] }
 fm-engine = { path = "../fm-engine" }
 fm-frame = { path = "../../media/fm-frame" }
+fm-video = { path = "../../media/fm-video" }
 fm-gpu = { path = "../../gpu/fm-gpu", features = ["native-wgpu"] }
 fm-model = { path = "../../foundation/fm-model" }
 fm-overlay-layout = { path = "../../services/fm-overlay-layout" }

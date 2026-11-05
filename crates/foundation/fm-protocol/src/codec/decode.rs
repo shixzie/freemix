@@ -164,6 +164,67 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             WireMessage::PtzPresetsResponse(decode_ptz_presets_response(&mut fields)?)
         }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
+        "frozen_still_request" => {
+            let protocol = fields.required("protocol")?;
+            let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+                field: "protocol",
+                value: protocol,
+            })?;
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::FrozenStillRequest(crate::FrozenStillRequest {
+                protocol,
+                request_id,
+                input: fields.canonical_input("input")?,
+            })
+        }
+        "frozen_still_response" => {
+            let protocol = fields.required("protocol")?;
+            let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+                field: "protocol",
+                value: protocol,
+            })?;
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            let input = fields.canonical_input("input")?;
+            let width: u32 = fields.parse_required("width")?;
+            let height: u32 = fields.parse_required("height")?;
+            let part: u16 = fields.parse_required("part")?;
+            let parts: u16 = fields.parse_required("parts")?;
+            if width == 0
+                || height == 0
+                || parts == 0
+                || parts > crate::MAX_FROZEN_STILL_PARTS
+                || part >= parts
+            {
+                return Err(CodecError::InvalidField {
+                    field: "part",
+                    value: format!("{part}/{parts}"),
+                });
+            }
+            let data_value = fields.required("data")?;
+            let encoded_limit = (crate::MAX_FROZEN_STILL_PART_BYTES * 4).div_ceil(3);
+            let data = if data_value.len() > encoded_limit {
+                None
+            } else {
+                crate::monitor_image::base64url_decode(&data_value)
+            }
+            .filter(|data| !data.is_empty())
+            .ok_or_else(|| CodecError::InvalidField {
+                field: "data",
+                value: format!("{} characters", data_value.len()),
+            })?;
+            WireMessage::FrozenStillResponse(crate::FrozenStillResponse {
+                protocol,
+                request_id,
+                input,
+                width,
+                height,
+                part,
+                parts,
+                data,
+            })
+        }
         "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
         "title_phases" => WireMessage::TitlePhases(crate::TitlePhasesMessage {
             frame: fields.canonical_required("frame")?,

@@ -2968,6 +2968,15 @@ impl NativeSourceRegistry {
         self.frozen_deadlines.remove(&input);
     }
 
+    /// The texture `input` presents while frozen (SW-016), or `None` when it
+    /// is not frozen or its source has no picture at the latched deadline.
+    #[must_use]
+    pub fn frozen_texture(&self, input: InputId) -> Option<&NativeTexture> {
+        let deadline = *self.frozen_deadlines.get(&input)?;
+        self.frame_at_deadline(input, deadline)
+            .map(NativeWorkingFrame::texture)
+    }
+
     fn frame_at_deadline(
         &self,
         input: InputId,
@@ -3188,6 +3197,15 @@ impl NativeLatestFrames {
 }
 
 /// Bounded GPU source rings paired with one CPU-only background decode worker.
+/// One frozen input's captured still (SW-016): a lossless PNG at the
+/// latched picture's dimensions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapturedStill {
+    pub width: u32,
+    pub height: u32,
+    pub png: Vec<u8>,
+}
+
 pub struct NativeSourcePlayback {
     registry: NativeSourceRegistry,
     worker: NativeDecodeWorker,
@@ -3230,6 +3248,12 @@ impl NativeSourcePlayback {
         delays: impl IntoIterator<Item = (InputId, u32)>,
     ) {
         self.registry.set_input_video_delays(frame_rate, delays);
+    }
+
+    /// The texture `input` presents while frozen (SW-016), if any.
+    #[must_use]
+    pub fn frozen_texture(&self, input: InputId) -> Option<&NativeTexture> {
+        self.registry.frozen_texture(input)
     }
 
     /// Verifies that the current ring can continue under a lower aggregate
@@ -11465,6 +11489,52 @@ impl NativeMediaRuntime {
     #[must_use]
     pub const fn diagnostic_adapter_info(&self) -> &NativeAdapterInfo {
         self.context.adapter_info()
+    }
+
+    /// Encodes the latched picture `playback` holds for frozen `input` as a
+    /// PNG (SW-016), or `None` when the input is not frozen.
+    ///
+    /// The source's working light is transformed to sRGB-encoded Rec.709 and
+    /// read back on a fresh reusable target, so the still matches what the
+    /// Program composite shows. This blocking correctness path may wait for
+    /// the readback timeout and is intended for operator-triggered capture,
+    /// never per-frame rendering.
+    ///
+    /// # Errors
+    ///
+    /// Returns the GPU readback, frame-layout, or PNG encoding failure as
+    /// text.
+    pub fn capture_frozen_still_blocking(
+        &self,
+        playback: &NativeSourcePlayback,
+        input: InputId,
+    ) -> Result<Option<CapturedStill>, String> {
+        let Some(texture) = playback.frozen_texture(input) else {
+            return Ok(None);
+        };
+        let width = core::num::NonZeroU32::new(texture.width())
+            .ok_or_else(|| "the frozen picture has no width".to_owned())?;
+        let height = core::num::NonZeroU32::new(texture.height())
+            .ok_or_else(|| "the frozen picture has no height".to_owned())?;
+        let mut owner = self
+            .create_program_readback_blocking(width, height)
+            .map_err(|error| error.to_string())?;
+        let readback = self
+            .readback_program_blocking(&mut owner, texture)
+            .map_err(|error| error.to_string())?;
+        let frame = fm_video::ImageFrame::new(
+            readback.width,
+            readback.height,
+            readback.stride,
+            readback.rgba,
+        )
+        .map_err(|error| error.to_string())?;
+        let png = fm_video::encode_png_rgba8(&frame).map_err(|error| error.to_string())?;
+        Ok(Some(CapturedStill {
+            width: readback.width,
+            height: readback.height,
+            png,
+        }))
     }
 
     /// Reads a native texture back to CPU memory for diagnostics and tests.

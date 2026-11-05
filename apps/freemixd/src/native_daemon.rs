@@ -1853,6 +1853,22 @@ impl NativeDaemon {
 
     /// Every running live source's drift loop (Protocol 2.76, AU-004), in
     /// input order.
+    /// Captures frozen `input`'s latched picture as a PNG (SW-016). The
+    /// frame loop applies a freeze before a later request reads it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the GPU readback or PNG failure, or that the input is not
+    /// frozen yet.
+    pub(crate) fn capture_frozen_still(
+        &mut self,
+        input: InputId,
+    ) -> Result<freemixd::native_media::CapturedStill, String> {
+        self.video
+            .capture_frozen_still(input)?
+            .ok_or_else(|| format!("input {input} is not frozen"))
+    }
+
     pub(crate) fn source_sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
         native_sync::wire_samples(live_sync_samples(
             &self.network,
@@ -3830,6 +3846,14 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self)]
+    pub(crate) fn capture_frozen_still(
+        &mut self,
+        _input: InputId,
+    ) -> Result<freemixd::native_media::CapturedStill, String> {
+        Err("native-media support was not compiled in".to_owned())
+    }
+
     pub(crate) fn source_sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
         Vec::new()
     }
