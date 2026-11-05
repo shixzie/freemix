@@ -6881,7 +6881,7 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
         preview: realized.preview(),
     };
     let context = resolver
-        .context(selection, &history)
+        .context_with_transition(selection, program.secondary, &history)
         .map_err(|error| AppFailure(format!("Program inputs cannot be resolved: {error}")))?;
     let primary = context
         .resolve_input(program.primary)
@@ -8271,7 +8271,7 @@ fn render_transition_frame(
         preview: to,
     };
     let context = resolver
-        .context(selection, &history)
+        .context_with_transition(selection, Some(to), &history)
         .map_err(|error| AppFailure(format!("transition inputs cannot be resolved: {error}")))?;
     let from_resolved = context
         .resolve_input(from)

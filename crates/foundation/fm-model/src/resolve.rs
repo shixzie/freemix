@@ -224,7 +224,32 @@ impl<'p> SourceResolver<'p> {
         selection: MixSelection,
         history: &'f MixFeedHistory<F>,
     ) -> Result<FrameContext<'r, 'p, 'f, F>, ResolveError> {
-        let program_feedback = self.contains_feed(selection.program, MixFeed::Program)?;
+        self.context_with_transition(selection, None, history)
+    }
+
+    /// Fixes the switcher selection and previous frames for one tick,
+    /// counting both endpoints of an active Program transition.
+    ///
+    /// `program_secondary` is the Program frame's second input while a
+    /// transition runs; a Program feed on either endpoint means the Program
+    /// bus shows its own delayed picture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolveError`] when a selected input, or anything its
+    /// picture is built from, is unknown or cyclic.
+    pub fn context_with_transition<'r, 'f, F>(
+        &'r self,
+        selection: MixSelection,
+        program_secondary: Option<InputId>,
+        history: &'f MixFeedHistory<F>,
+    ) -> Result<FrameContext<'r, 'p, 'f, F>, ResolveError> {
+        let secondary_feedback = match program_secondary {
+            Some(secondary) => self.contains_feed(secondary, MixFeed::Program)?,
+            None => false,
+        };
+        let program_feedback =
+            self.contains_feed(selection.program, MixFeed::Program)? || secondary_feedback;
         let preview_feedback = self.contains_feed(selection.preview, MixFeed::Preview)?;
         Ok(FrameContext {
             resolver: self,
