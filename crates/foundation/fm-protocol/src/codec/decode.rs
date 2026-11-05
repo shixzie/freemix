@@ -827,6 +827,17 @@ fn decode_command_payload(
         "clear_secondary_mix" => CommandPayload::ClearSecondaryMix {
             number: super::secondary_mix::decode_number(fields)?,
         },
+        "secondary_mix_cut" => CommandPayload::SecondaryMixCut {
+            number: super::secondary_mix::decode_number(fields)?,
+        },
+        "secondary_mix_transition" => CommandPayload::SecondaryMixTransition {
+            number: super::secondary_mix::decode_number(fields)?,
+            kind: super::transition::decode_auto_transition_kind(
+                fields.required("kind")?,
+                "kind",
+            )?,
+            duration_frames: fields.parse_required("duration_frames")?,
+        },
         replay if replay.starts_with("replay_") => {
             CommandPayload::Replay(super::replay::decode_operation(replay, fields)?.ok_or_else(
                 || CodecError::InvalidField {

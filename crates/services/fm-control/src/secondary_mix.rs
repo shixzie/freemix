@@ -19,6 +19,18 @@ pub(super) fn engine_command(payload: &CommandPayload) -> Option<EngineCommand> 
             number: model_number(*number),
             config: None,
         }),
+        CommandPayload::SecondaryMixCut { number } => Some(EngineCommand::SecondaryMixCut {
+            number: model_number(*number),
+        }),
+        CommandPayload::SecondaryMixTransition {
+            number,
+            kind,
+            duration_frames,
+        } => Some(EngineCommand::SecondaryMixTransition {
+            number: model_number(*number),
+            kind: crate::transition::domain_transition_kind(*kind),
+            duration_frames: *duration_frames,
+        }),
         _ => None,
     }
 }

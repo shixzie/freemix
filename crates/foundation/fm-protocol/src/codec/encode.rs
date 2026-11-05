@@ -801,6 +801,20 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "clear_secondary_mix")?;
             record.field("number", number)?;
         }
+        CommandPayload::SecondaryMixCut { number } => {
+            record.field("payload", "secondary_mix_cut")?;
+            record.field("number", number)?;
+        }
+        CommandPayload::SecondaryMixTransition {
+            number,
+            kind,
+            duration_frames,
+        } => {
+            record.field("payload", "secondary_mix_transition")?;
+            record.field("number", number)?;
+            record.field("kind", kind.token())?;
+            record.field("duration_frames", duration_frames)?;
+        }
         CommandPayload::Replay(operation) => {
             record.field("payload", operation.token())?;
             super::replay::encode_operation(operation, &mut |name, value| {

@@ -2162,6 +2162,18 @@ pub enum CommandPayload {
     ClearSecondaryMix {
         number: crate::WireMixNumber,
     },
+    /// Cuts secondary mix `number` from Program to Preview (Protocol 2.159,
+    /// IN-023). A live operation.
+    SecondaryMixCut {
+        number: crate::WireMixNumber,
+    },
+    /// Starts a timed transition of secondary mix `number` (Protocol 2.159).
+    /// A live operation.
+    SecondaryMixTransition {
+        number: crate::WireMixNumber,
+        kind: AutoTransitionKind,
+        duration_frames: u32,
+    },
     /// Reconfigures network stream input `input` (Protocol 2.46, IN-015;
     /// 2.49, IN-016/IN-017): a new URL (`None` keeps the current one),
     /// settings, the SRT stream ID, and edits of the RTMP stream key and SRT

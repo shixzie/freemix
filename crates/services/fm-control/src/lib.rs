@@ -3789,6 +3789,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::CueAdvance { .. }
         | CommandPayload::RunScript { .. }
         | CommandPayload::StopScript { .. }
+        | CommandPayload::SecondaryMixCut { .. }
+        | CommandPayload::SecondaryMixTransition { .. }
         // A fire needs `transition` like a cue GO or a script run, plus the
         // class of every action it performs (see `action_authority`).
         | CommandPayload::FireShortcut { .. } => CommandClass::Transition,
@@ -3915,7 +3917,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
             logical_output::engine_command(payload).expect("a logical-output payload")
         }
         payload @ (CommandPayload::SetSecondaryMix { .. }
-        | CommandPayload::ClearSecondaryMix { .. }) => {
+        | CommandPayload::ClearSecondaryMix { .. }
+        | CommandPayload::SecondaryMixCut { .. }
+        | CommandPayload::SecondaryMixTransition { .. }) => {
             secondary_mix::engine_command(payload).expect("a secondary-mix payload")
         }
         CommandPayload::SetNetworkStream { .. } => {

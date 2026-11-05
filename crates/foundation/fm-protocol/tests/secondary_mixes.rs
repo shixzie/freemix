@@ -1,11 +1,11 @@
 //! IN-023: secondary-mix commands and configuration round-trip at Protocol
-//! 2.158.
+//! 2.158, with live cuts and transitions at 2.159.
 
 use core::num::NonZeroU128;
 
 use fm_protocol::{
-    CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, WireInputId, WireMessage,
-    WireMixNumber, WireSecondaryMixConfig, WireSecondaryMixMode, WireSecondaryMixSource,
+    AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, WireInputId,
+    WireMessage, WireMixNumber, WireSecondaryMixConfig, WireSecondaryMixMode, WireSecondaryMixSource,
     decode_line, encode_line,
 };
 
@@ -61,6 +61,16 @@ fn secondary_mix_commands_round_trip() {
         config: Box::new(config(WireSecondaryMixMode::OutputOnly, None)),
     });
     round_trip(CommandPayload::ClearSecondaryMix { number: number(2) });
+}
+
+#[test]
+fn live_secondary_mix_commands_round_trip() {
+    round_trip(CommandPayload::SecondaryMixCut { number: number(2) });
+    round_trip(CommandPayload::SecondaryMixTransition {
+        number: number(2),
+        kind: AutoTransitionKind::Fade,
+        duration_frames: 30,
+    });
 }
 
 #[test]
