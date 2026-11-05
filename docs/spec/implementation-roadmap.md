@@ -3194,7 +3194,7 @@ secondary mixes, and video delays) instead of dropping them. The native daemon
 applies the stored delay from the first frame: decoded sources select the
 picture at the deadline minus the delay, holding black until the delayed
 instant reaches the source's first picture, while live sources retain recent
-pictures and count back from the newest. Both clamp to what one source ring can
+pictures (only while delayed) and count back from the newest. Both clamp to what one source ring can
 retain (seven frames at the default eight-frame ring), and the frame loop sends
 the realizer a changed map only. Remaining gaps: the simulated render path does
 not apply the delay, the native delay is clamped by the source ring, there is
