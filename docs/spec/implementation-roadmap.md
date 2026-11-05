@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.163 / schema 109 (2026-11-05).
+(2026-10-19); items refreshed through protocol 2.164 / schema 109 (2026-11-05).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -3172,12 +3172,18 @@ presented frame (delay-aware) and holds a live input by ignoring newly
 ingested pictures until it resumes; scene, overlay, key/fill, and logical
 output paths read the same latched picture. Studio's input-bank menu offers
 Freeze or Unfreeze, marks a frozen tile in its hover text, and sends the
-2.161 command, and the replicated view carries the frozen set. Remaining gaps:
-there is no dedicated freeze button or always-visible badge beyond the menu
-and hover note, no capture of a frozen frame as a still, no audio
-freeze/alignment, timestamps are still bare ticks rather than `fm-frame`
-timing types, and stills carry no color metadata or compression. `SW-016`
-remains planned.
+2.161 command, and the replicated view carries the frozen set. Protocol 2.164
+exports the latched picture: `frozen_still_request` names one frozen input,
+and the daemon answers with `frozen_still_response` parts carrying a lossless
+PNG (32 KiB chunks, strictly ordered and reassembled); `remote-frozen-still
+<address> <input> <output.png>` joins them and writes the file. A native
+daemon reads the GPU-latched source texture back through the sRGB output
+transform, so the still matches the Program picture; a simulated daemon
+renders the input's current simulated picture. Remaining gaps: there is no
+dedicated freeze button or always-visible badge beyond the menu and hover
+note, no Studio capture action, no audio freeze/alignment, timestamps are
+still bare ticks rather than `fm-frame` timing types, and stills carry no
+color metadata or compression. `SW-016` remains planned.
 
 Current implementation boundary for video delay (`IN-022`): `fm-video`
 provides a `VideoDelayLine` timed purely by media timestamps that presents the

@@ -217,8 +217,8 @@ commands = ["cargo test -p fm-compositor --test vertical_canvas"]
 [[tests]]
 id = "accept-sw-016"
 state = "present"
-paths = ["crates/media/fm-video/tests/snapshot_freeze.rs", "crates/services/fm-engine/tests/input_freeze.rs", "crates/foundation/fm-protocol/tests/input_freeze.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/src/native_media.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
-commands = ["cargo test -p fm-video --test snapshot_freeze", "cargo test -p fm-engine --test input_freeze", "cargo test -p fm-protocol --test input_freeze", "cargo test -p freemix-cli --test e2e", "cargo test -p freemix-studio --test studio", "cargo test -p fm-ui-egui --test hover_audit"]
+paths = ["crates/media/fm-video/tests/snapshot_freeze.rs", "crates/services/fm-engine/tests/input_freeze.rs", "crates/foundation/fm-protocol/tests/input_freeze.rs", "crates/foundation/fm-protocol/tests/frozen_still.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/src/native_media.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-video --test snapshot_freeze", "cargo test -p fm-engine --test input_freeze", "cargo test -p fm-protocol --test input_freeze", "cargo test -p fm-protocol --test frozen_still", "cargo test -p freemix-cli --test e2e", "cargo test -p freemix-studio --test studio", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-sw-017"
 state = "present"
