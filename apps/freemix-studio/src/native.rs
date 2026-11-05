@@ -2993,6 +2993,10 @@ fn intent_payload(
             input: WireInputId::from_domain(input),
             frozen,
         },
+        StudioIntent::SetInputVideoDelay { input, frames } => CommandPayload::SetInputVideoDelay {
+            input: WireInputId::from_domain(input),
+            frames,
+        },
         StudioIntent::SetInputAudioStrip { input, update } => {
             return resolve_input_audio_strip(view, input, update);
         }

@@ -1220,6 +1220,15 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::TileFrozenNote,
         t("Congelada: mantiene su imagen actual"),
     ),
+    (Msg::VideoDelayLabel, t("Retardo de vídeo")),
+    (
+        Msg::VideoDelayHover,
+        t("Retrasar el vídeo de esta entrada entre 0 y 600 fotogramas; 0 es en directo"),
+    ),
+    (
+        Msg::TileVideoDelayNote,
+        t("Retardo de vídeo: {frames} fotogramas"),
+    ),
     (Msg::CutKey, t("CORTE")),
     (
         Msg::TileCutHover,

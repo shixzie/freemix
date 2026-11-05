@@ -215,6 +215,9 @@ pub enum StudioIntent {
     RenameInput { input: InputId, name: String },
     /// Freezes or resumes one input's picture (SW-016, Protocol 2.161).
     SetInputFreeze { input: InputId, frozen: bool },
+    /// Delays one input's video in frames (IN-022, Protocol 2.160); a
+    /// padlocked, undoable project edit.
+    SetInputVideoDelay { input: InputId, frames: u32 },
     /// Updates changed Master-strip controls on one input.
     SetInputAudioStrip {
         input: InputId,

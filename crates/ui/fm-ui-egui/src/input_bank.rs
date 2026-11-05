@@ -336,6 +336,11 @@ impl StudioShell {
                                             .frozen_inputs
                                             .iter()
                                             .any(|frozen| frozen.to_domain() == input),
+                                        video_delay: view
+                                            .input_video_delays
+                                            .iter()
+                                            .find(|entry| entry.input.to_domain() == input)
+                                            .map_or(0, |entry| entry.frames),
                                         grade_reason: crate::studio_color::grade_lock_reason(
                                             state,
                                             fm_ui_model::grade_editor::GradeTarget::Input(input),
@@ -381,6 +386,7 @@ impl StudioShell {
             enabled,
             cut_enabled,
             frozen,
+            video_delay,
             ..
         } = tile;
         let l = self.locale;
@@ -572,6 +578,13 @@ impl StudioShell {
         if frozen {
             hover.push('\n');
             hover.push_str(l.text(Msg::TileFrozenNote));
+        }
+        if video_delay > 0 {
+            hover.push('\n');
+            hover.push_str(&l.format(
+                Msg::TileVideoDelayNote,
+                &[("frames", Arg::Plain(u64::from(video_delay)))],
+            ));
         }
         // Clicking, right-clicking, or tabbing to a tile selects its input
         // on this console (RC-004).
@@ -777,6 +790,19 @@ impl StudioShell {
                 frozen: !frozen,
             });
         }
+        ui.horizontal(|ui| {
+            ui.label(l.text(Msg::VideoDelayLabel));
+            let mut frames = video_delay;
+            let response = ui
+                .add_enabled(
+                    edit_reason.is_none(),
+                    egui::DragValue::new(&mut frames).range(0..=600),
+                )
+                .hint(l.text(Msg::VideoDelayHover), edit_reason.unwrap_or(""));
+            if response.drag_stopped() || (response.lost_focus() && response.changed()) {
+                intents.push(StudioIntent::SetInputVideoDelay { input, frames });
+            }
+        });
         // Grading is a project edit: like Rename and Move, `Grade…` is
         // offered only to a session that may edit this input, and says why
         // not otherwise (View › Colour still opens the window to look).
@@ -1323,6 +1349,8 @@ struct TileContext<'a> {
     grade_reason: Option<&'static str>,
     /// Whether the realizer is holding this input's picture (SW-016).
     frozen: bool,
+    /// This input's requested video delay in frames (IN-022).
+    video_delay: u32,
 }
 
 /// What a tile with no picture paints instead of its ordinal.
