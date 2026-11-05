@@ -3214,12 +3214,18 @@ closes scene and audio cycle checks through aliases, while mix feeds add no
 cycle edges because the one-frame delay is the explicit break. `fm-model`'s
 `SourceResolver` maps any input to its concrete source with feedback detection
 and a finite dependency render order, and its borrow structure forbids
-committing a feed frame while a tick is still resolving. Remaining gaps: no
-renderer (native, simulated, CLI, or monitor tap) consumes the resolver, so
-these inputs are refused or skipped at runtime; there is no CLI, protocol, or
-Studio authoring; feedback ignores the second input of an active transition;
-and aliases do not yet carry independent effects, shortcuts, or layer state.
-`IN-024` and `IN-025` remain planned.
+committing a feed frame while a tick is still resolving. The CLI authors both
+kinds offline with `alias-input-add` (including an optional
+`--crop x,y,width,height`) and `mix-feed-input-add`, refusing missing targets,
+self/cyclic chains, and malformed crops without saving. Its `render` and
+`transition-render-frame` commands consume the resolver for Program endpoints:
+an alias draws its chain's concrete leaf or scene under the alias's own crop,
+and a mix feed draws black before any tick is committed. Remaining gaps: the
+native renderer, monitor taps, `scene-render-frame`, and scene layers still
+draw only direct leaves, so aliases nested in a scene are refused there; there
+is no protocol or Studio authoring; feedback ignores the second input of an
+active transition; and aliases do not yet carry independent effects,
+shortcuts, or layer state. `IN-024` and `IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
