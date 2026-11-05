@@ -1830,6 +1830,7 @@ dependencies = [
  "fm-automation",
  "fm-clock",
  "fm-command",
+ "fm-data",
  "fm-frame",
  "fm-grade",
  "fm-model",
