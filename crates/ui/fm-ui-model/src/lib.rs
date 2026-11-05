@@ -3183,6 +3183,7 @@ impl ClientModel {
     /// Builds an immutable render value by layering pending intent over the
     /// authoritative desired state. Realized state is never optimistic.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one field per replicated snapshot state
     pub fn view(&self) -> Option<ClientView> {
         let state = self.state.as_ref()?;
         let cursor = self.cursor.clone()?;
