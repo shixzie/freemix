@@ -1502,12 +1502,11 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
-    /// `remote-frozen-still <address> <input> <output.png>`: exports one
-    /// frozen input's latched picture (SW-016).
+    /// `remote-frozen-still <address> <input>`: exports one frozen input's
+    /// latched picture into the daemon's bundle (SW-016).
     RemoteFrozenStill {
         address: SocketAddr,
         input: u128,
-        output: PathBuf,
     },
     RemoteInputVideoDelay {
         address: SocketAddr,
@@ -3010,13 +3009,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-frozen-still" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;
             let input = number(&required(&mut arguments, "input")?, "input")?;
-            let output = required_path(&mut arguments, "output path")?;
             reject_extra(&mut arguments)?;
-            Ok(Command::RemoteFrozenStill {
-                address,
-                input,
-                output,
-            })
+            Ok(Command::RemoteFrozenStill { address, input })
         }
         live @ ("live-lan" | "remote-live-lan" | "live-lan-set" | "remote-live-lan-set") => {
             parse_live_lan(live, arguments)

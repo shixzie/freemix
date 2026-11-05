@@ -1348,16 +1348,6 @@ pub const MAX_TITLE_PREVIEW_PARTS: u16 = 36;
 pub const MAX_WEB_TITLE_PREVIEW_WIDTH: u16 = 320;
 pub const MAX_WEB_TITLE_PREVIEW_HEIGHT: u16 = 180;
 
-/// Most parts of one frozen-still export: the largest project picture's
-/// stored-block PNG fits.
-pub const MAX_FROZEN_STILL_PARTS: u16 = 5_120;
-/// Largest raw (pre-base64url) PNG payload of one `frozen_still_response`
-/// part.
-pub const MAX_FROZEN_STILL_PART_BYTES: usize = 32 * 1024;
-/// Largest frozen still PNG the daemon accepts, matching the encoder's raw
-/// bound for a full 7680x4320 RGBA8 picture.
-pub const MAX_FROZEN_STILL_BYTES: usize = 160 * 1024 * 1024;
-
 /// A read-only request to export one frozen input's latched picture as a PNG
 /// (SW-016, Protocol 2.164). Like a preview it is not a command: it has no
 /// idempotency, revision, or durability. The input must be frozen.
@@ -1368,9 +1358,10 @@ pub struct FrozenStillRequest {
     pub input: WireInputId,
 }
 
-/// One part of the answer to a [`FrozenStillRequest`]: a lossless PNG split
-/// into `parts` contiguous chunks of at most [`MAX_FROZEN_STILL_PART_BYTES`],
-/// every part repeating the header. The client writes the joined bytes.
+/// The answer to a [`FrozenStillRequest`]: the lossless PNG the daemon wrote
+/// into its own project bundle. `asset_uri` is its `asset://` URI and
+/// `path` its bundle-relative path, so a client with filesystem access can
+/// copy or inspect it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrozenStillResponse {
     pub protocol: crate::ProtocolVersion,
@@ -1378,10 +1369,8 @@ pub struct FrozenStillResponse {
     pub input: WireInputId,
     pub width: u32,
     pub height: u32,
-    pub part: u16,
-    pub parts: u16,
-    /// Raw PNG bytes for this part; base64url (no padding) on the wire.
-    pub data: Vec<u8>,
+    pub asset_uri: String,
+    pub path: String,
 }
 
 /// A read-only request to render one title exactly as the authority would

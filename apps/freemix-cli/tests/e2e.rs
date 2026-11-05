@@ -1241,26 +1241,18 @@ fn serve_frozen_still(listener: &TcpListener) {
     let WireMessage::FrozenStillRequest(request) = read_message(&mut reader) else {
         panic!("expected a frozen_still_request");
     };
-    let frame = fm_video::ImageFrame::new(
-        4,
-        3,
-        16,
-        (0..12).flat_map(|_| [10, 20, 30, 255]).collect::<Vec<_>>(),
-    )
-    .unwrap();
-    let png = fm_video::encode_png_rgba8(&frame).unwrap();
-    for part in fm_protocol::frozen_still_parts(
-        CURRENT_PROTOCOL_VERSION,
-        &request.request_id,
-        request.input,
-        4,
-        3,
-        &png,
-    )
-    .unwrap()
-    {
-        write_message(&mut writer, &WireMessage::FrozenStillResponse(part));
-    }
+    write_message(
+        &mut writer,
+        &WireMessage::FrozenStillResponse(fm_protocol::FrozenStillResponse {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request.request_id,
+            input: request.input,
+            width: 4,
+            height: 3,
+            asset_uri: "asset://frozen-1.png".into(),
+            path: "assets/frozen-1.png".into(),
+        }),
+    );
 }
 
 fn serve_title_snapshot(listener: &TcpListener) {
@@ -8406,30 +8398,21 @@ fn remote_input_freeze_sends_the_exact_edit() {
     server.finish();
 }
 
-/// SW-016, Protocol 2.164: the CLI joins the daemon's PNG parts and writes
-/// the exact still.
+/// SW-016, Protocol 2.164: the CLI reports the still the daemon wrote.
 #[test]
-fn remote_frozen_still_writes_the_joined_png() {
-    let context = ContractContext::new();
-    let output = context.root.join("frozen.png");
+fn remote_frozen_still_reports_the_written_asset() {
     let server = FakeRemoteServer::start_frozen_still();
-    let result = invoke(&[
-        "remote-frozen-still",
-        &server.address(),
-        "1",
-        output.to_str().unwrap(),
-    ]);
+    let result = invoke(&["remote-frozen-still", &server.address(), "1"]);
     assert_success(&result);
     assert!(
-        stdout(&result).contains("frozen-still: input=1 4x3 bytes="),
+        stdout(&result).contains(
+            "frozen-still: input=1 4x3 asset=asset://frozen-1.png path=assets/frozen-1.png"
+        ),
         "{}\n{}",
         stdout(&result),
         String::from_utf8_lossy(&result.stderr)
     );
-    let png = fs::read(&output).unwrap();
-    assert!(png.starts_with(&fm_video::PNG_SIGNATURE), "{png:?}");
     server.finish();
-    fs::remove_dir_all(context.root).unwrap();
 }
 
 /// IN-024, Protocol 2.162: alias authoring sends the exact source payload.

@@ -5037,27 +5037,29 @@ fn frozen_still_export_returns_the_latched_picture_as_png() {
         request_id: "still-1".into(),
         input: source,
     }));
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut data = Vec::new();
-    let (width, height) = loop {
-        assert!(Instant::now() < deadline, "timed out waiting for the still");
-        match client.receive() {
-            WireMessage::FrozenStillResponse(part) if part.request_id == "still-1" => {
-                assert_eq!(part.input, source);
-                assert_eq!(part.part as usize * 32 * 1024, data.len());
-                data.extend_from_slice(&part.data);
-                if part.part + 1 == part.parts {
-                    break (part.width, part.height);
-                }
+    let (width, height, asset_uri, path) = receive_within(
+        &mut client,
+        Duration::from_secs(10),
+        "the still response",
+        |message| match message {
+            WireMessage::FrozenStillResponse(response) if response.request_id == "still-1" => {
+                Some((
+                    response.width,
+                    response.height,
+                    response.asset_uri,
+                    response.path,
+                ))
             }
             WireMessage::Error(error) => panic!("still refused: {error:?}"),
-            _ => {}
-        }
-    };
-    assert!(data.starts_with(&fm_video::PNG_SIGNATURE), "not a PNG");
+            _ => None,
+        },
+    );
     assert!(width > 0 && height > 0);
-    let header_width = u32::from_be_bytes(data[16..20].try_into().unwrap());
-    let header_height = u32::from_be_bytes(data[20..24].try_into().unwrap());
+    assert!(asset_uri.starts_with("asset://"), "{asset_uri}");
+    let png = fs::read(project_path.join(&path)).unwrap();
+    assert!(png.starts_with(&fm_video::PNG_SIGNATURE), "not a PNG");
+    let header_width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+    let header_height = u32::from_be_bytes(png[20..24].try_into().unwrap());
     assert_eq!((header_width, header_height), (width, height));
 
     // A request for an input that is not frozen is refused by name.

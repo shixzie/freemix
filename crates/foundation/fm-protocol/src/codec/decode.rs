@@ -189,47 +189,22 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             let input = fields.canonical_input("input")?;
             let width: u32 = fields.parse_required("width")?;
             let height: u32 = fields.parse_required("height")?;
-            let part: u16 = fields.parse_required("part")?;
-            let parts: u16 = fields.parse_required("parts")?;
-            if width == 0
-                || height == 0
-                || parts == 0
-                || parts > crate::MAX_FROZEN_STILL_PARTS
-                || part >= parts
-            {
+            if width == 0 || height == 0 {
                 return Err(CodecError::InvalidField {
-                    field: "part",
-                    value: format!("{part}/{parts}"),
+                    field: "width",
+                    value: format!("{width}x{height}"),
                 });
             }
-            let data_value = fields.required("data")?;
-            let encoded_limit = (crate::MAX_FROZEN_STILL_PART_BYTES * 4).div_ceil(3);
-            let data = if data_value.len() > encoded_limit {
-                None
-            } else {
-                crate::monitor_image::base64url_decode(&data_value)
-            }
-            .filter(|data| !data.is_empty())
-            .ok_or_else(|| CodecError::InvalidField {
-                field: "data",
-                value: format!("{} characters", data_value.len()),
-            })?;
             WireMessage::FrozenStillResponse(crate::FrozenStillResponse {
                 protocol,
                 request_id,
                 input,
                 width,
                 height,
-                part,
-                parts,
-                data,
+                asset_uri: fields.required("asset_uri")?,
+                path: fields.required("path")?,
             })
         }
-        "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
-        "title_phases" => WireMessage::TitlePhases(crate::TitlePhasesMessage {
-            frame: fields.canonical_required("frame")?,
-            titles: decode_title_phases(&fields.required("titles")?)?,
-        }),
         "playlist_state" => WireMessage::PlaylistState(decode_playlist_state_record(&mut fields)?),
         "grade_state" => WireMessage::GradeState(decode_grade_state(&mut fields)?),
         "title_animation_state" => {

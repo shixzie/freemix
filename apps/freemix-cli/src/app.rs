@@ -1868,11 +1868,9 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
-        Command::RemoteFrozenStill {
-            address,
-            input,
-            output,
-        } => remote::frozen_still(address, input_id(input)?, &output)?,
+        Command::RemoteFrozenStill { address, input } => {
+            remote::frozen_still(address, input_id(input)?)?;
+        }
         Command::Replay { path } => {
             let project = inspect_engine(&path)?;
             let settings = project.engine.show().replay();
@@ -7781,8 +7779,9 @@ Usage:
   freemix-cli remote-input-video-delay <address> <nonzero-input-id> <frames:0..=600>
   freemix-cli input-freeze <show.freemix> <nonzero-input-id> on|off
   freemix-cli remote-input-freeze <address> <nonzero-input-id> on|off
-  freemix-cli remote-frozen-still <address> <nonzero-input-id> <output.png>
-      Exports the frozen input's latched picture as a lossless PNG.
+  freemix-cli remote-frozen-still <address> <nonzero-input-id>
+      Writes the frozen input's latched picture into the daemon bundle's assets
+      as a lossless PNG and prints its asset URI.
   freemix-cli input-add <show.freemix> <nonzero-input-id> <name>
   freemix-cli simulated-solid-input-add <show.freemix> <nonzero-input-id> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255>
   freemix-cli media-input-add <show.freemix> <nonzero-input-id> <name> <asset://key>

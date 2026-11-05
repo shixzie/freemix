@@ -865,6 +865,7 @@ pub(super) fn run(
         replay_pacer: std::cell::RefCell::new(ReplayStatusPacer::default()),
         reel_pacer: std::cell::RefCell::new(ReelStatusPacer::default()),
         as_run: std::cell::RefCell::new(crate::as_run::AsRunLog::new(as_run_root)),
+        bundle_root: as_run_root,
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -2190,6 +2191,8 @@ struct Runtime<'a> {
     reel_pacer: std::cell::RefCell<ReelStatusPacer>,
     /// Writes every realized Program change beside the project (OR-015).
     as_run: std::cell::RefCell<crate::as_run::AsRunLog>,
+    /// The project bundle root, for daemon-written frozen stills (SW-016).
+    bundle_root: &'a std::path::Path,
 }
 
 impl Runtime<'_> {
@@ -2524,18 +2527,22 @@ impl Runtime<'_> {
                     self.frozen_still(request.input.to_domain(), durable, native.as_deref_mut());
                 match answer {
                     Ok((width, height, png)) => {
-                        let parts = fm_protocol::frozen_still_parts(
-                            request.protocol,
-                            &request.request_id,
-                            request.input,
-                            width,
-                            height,
+                        let (asset_uri, path) = self.write_still_asset(
+                            request.input.to_domain(),
+                            durable.position().frames_rendered,
                             &png,
-                        )
-                        .map_err(|_| ())?;
-                        for part in parts {
-                            peer.reply(WireMessage::FrozenStillResponse(part))?;
-                        }
+                        )?;
+                        peer.reply(WireMessage::FrozenStillResponse(
+                            fm_protocol::FrozenStillResponse {
+                                protocol: request.protocol,
+                                request_id: request.request_id,
+                                input: request.input,
+                                width,
+                                height,
+                                asset_uri,
+                                path,
+                            },
+                        ))?;
                     }
                     Err(message) => peer.reply(WireMessage::Error(ErrorMessage {
                         request_id: Some(request.request_id),
@@ -2981,6 +2988,37 @@ impl Runtime<'_> {
     fn sync_title_templates(&self) {
         self.titles
             .sync_templates(&self.control.borrow().title_templates());
+    }
+
+    /// Writes `png` into the bundle's assets under a fresh name and returns
+    /// its `asset://` URI and bundle-relative path (SW-016).
+    fn write_still_asset(
+        &self,
+        input: fm_types::InputId,
+        frame: u64,
+        png: &[u8],
+    ) -> Result<(String, String), DispatchError> {
+        let assets = self.bundle_root.join("assets");
+        std::fs::create_dir_all(&assets).map_err(|_| DispatchError::Peer)?;
+        let stem = format!("frozen-{}-{frame}", input.get().get());
+        let mut suffix = 1_u32;
+        let (name, path) = loop {
+            let name = if suffix == 1 {
+                format!("{stem}.png")
+            } else {
+                format!("{stem}-{suffix}.png")
+            };
+            let path = assets.join(&name);
+            if !path.exists() {
+                break (name, path);
+            }
+            suffix = suffix.saturating_add(1);
+            if suffix == u32::MAX {
+                return Err(DispatchError::Peer);
+            }
+        };
+        std::fs::write(&path, png).map_err(|_| DispatchError::Peer)?;
+        Ok((format!("asset://{name}"), format!("assets/{name}")))
     }
 
     /// Encodes frozen `input`'s latched picture as a PNG (SW-016). A native

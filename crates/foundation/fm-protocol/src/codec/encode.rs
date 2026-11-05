@@ -140,17 +140,10 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         }
         WireMessage::FrozenStillResponse(message) => {
             validate_request_id(&message.request_id)?;
-            if message.width == 0
-                || message.height == 0
-                || message.parts == 0
-                || message.parts > crate::MAX_FROZEN_STILL_PARTS
-                || message.part >= message.parts
-                || message.data.is_empty()
-                || message.data.len() > crate::MAX_FROZEN_STILL_PART_BYTES
-            {
+            if message.width == 0 || message.height == 0 {
                 return Err(CodecError::InvalidField {
-                    field: "part",
-                    value: format!("{}/{}", message.part, message.parts),
+                    field: "width",
+                    value: format!("{}x{}", message.width, message.height),
                 });
             }
             record.kind("frozen_still_response");
@@ -159,18 +152,9 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             record.field("input", message.input)?;
             record.field("width", message.width)?;
             record.field("height", message.height)?;
-            record.field("part", message.part)?;
-            record.field("parts", message.parts)?;
-            record.field_string(
-                "data",
-                crate::monitor_image::base64url_encode(&message.data),
-            )?;
+            record.field_str("asset_uri", &message.asset_uri)?;
+            record.field_str("path", &message.path)?;
         }
-        WireMessage::InputThumbnailSubscription(message) => {
-            record.kind("input_thumbnail_subscription");
-            record.field_str("enabled", if message.enabled { "1" } else { "0" })?;
-        }
-        WireMessage::InputThumbnail(message) => encode_input_thumbnail(&mut record, message)?,
         WireMessage::CapabilityReport(message) => encode_capability_report(&mut record, message)?,
         WireMessage::DiagnosticsRequest(message) => {
             encode_diagnostics_request(&mut record, message)?;
