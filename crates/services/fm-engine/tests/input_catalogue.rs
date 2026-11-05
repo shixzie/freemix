@@ -447,6 +447,58 @@ fn undo_of_an_add_removes_it_and_redo_restores_it_exactly() {
 }
 
 #[test]
+fn alias_and_feed_inputs_add_without_a_replaceable_source() {
+    let mut engine = engine();
+    let alias = EngineInputSource::Alias {
+        target: input(1),
+        crop: Some(fm_model::CropRect::new(0, 0, 10, 10)),
+    };
+    let added = run(&mut engine, "alias", add(4, "Alias", alias.clone()));
+    assert_accepted(&added);
+    assert_eq!(
+        added.events[0].payload,
+        EngineEvent::InputAdded {
+            input: input(4),
+            name: "Alias".into(),
+            source: alias,
+        }
+    );
+    // An alias has no replaceable source: the catalogue only holds its id,
+    // name, strip, and references.
+    assert_eq!(engine.show().input_source(input(4)), None);
+
+    let feed = EngineInputSource::MixFeed(fm_model::MixFeed::Preview);
+    let added = run(&mut engine, "feed", add(5, "Feed", feed.clone()));
+    assert_accepted(&added);
+    assert_eq!(
+        added.events[0].payload,
+        EngineEvent::InputAdded {
+            input: input(5),
+            name: "Feed".into(),
+            source: feed,
+        }
+    );
+    assert_eq!(engine.show().input_source(input(5)), None);
+    assert_eq!(ids(&engine), [1, 2, 3, 4, 5]);
+
+    // A missing alias target is refused before the input is added.
+    let missing = run(
+        &mut engine,
+        "missing",
+        add(
+            6,
+            "Missing",
+            EngineInputSource::Alias {
+                target: input(99),
+                crop: None,
+            },
+        ),
+    );
+    assert_eq!(rejection(&missing).code, RejectionCode::NotFound);
+    assert_eq!(ids(&engine), [1, 2, 3, 4, 5]);
+}
+
+#[test]
 fn undo_of_an_add_is_refused_while_the_input_is_on_air() {
     let mut engine = engine();
     assert_accepted(&run(&mut engine, "add", add(4, "Red", RED)));
