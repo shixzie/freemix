@@ -892,17 +892,20 @@ impl EditHistoryStatus {
 
 /// The source an input may be added with while the show is live.
 ///
-/// These are the generators the simulated daemon renders, network streams
-/// (Protocol 2.46), and capture devices (Protocol 2.47); every other input
-/// kind (media files, Scenes, aliases, mix feeds) is added offline. Wire
+/// These are the sources the daemon can add live: generators, network
+/// streams (Protocol 2.46), capture devices (Protocol 2.47), system audio
+/// (Protocol 2.55), stills, screen capture (IN-011), replay players,
+/// aliases (IN-024, Protocol 2.162), and Program/Preview feeds (IN-025).
+/// Media files, Scenes, paragraphs, and titles are added offline. Wire
 /// encoding: `kind=solid` plus `color=<rrggbbaa>` (eight lowercase hex
 /// digits), `kind=bars`, `kind=network_stream` plus the config fields (see
 /// [`crate::NetworkStreamConfig`]), `kind=capture` plus `device` and the
-/// settings fields (see [`crate::CaptureInputConfig`]), or
-/// `kind=system_audio` plus `backend` and `device` (Protocol 2.55, see
-/// [`crate::SystemAudioConfig`]), or `kind=screen_capture` plus the
-/// capture fields (IN-011, see [`crate::screen_capture`]). Generator audio
-/// is always silent.
+/// settings fields (see [`crate::CaptureInputConfig`]), `kind=system_audio`
+/// plus `backend` and `device` (see [`crate::SystemAudioConfig`]),
+/// `kind=screen_capture` plus the capture fields (IN-011, see
+/// [`crate::screen_capture`]), `kind=alias` plus `target` and optional
+/// `crop_x`/`crop_y`/`crop_width`/`crop_height`, `kind=program_feed`, or
+/// `kind=preview_feed`. Generator audio is always silent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LiveInputSource {
     Solid {
@@ -927,6 +930,18 @@ pub enum LiveInputSource {
     ScreenCapture(Box<crate::ScreenCaptureConfig>),
     /// A replay player (OR-012): `kind=replay`, no other field.
     Replay,
+    /// An alias of another input, optionally cropped in project pixels
+    /// (IN-024): `kind=alias` plus `target` and the optional crop fields.
+    Alias {
+        target: crate::WireInputId,
+        crop: Option<crate::WireLayerCrop>,
+    },
+    /// The Program bus as a one-frame-delayed input (IN-025):
+    /// `kind=program_feed`.
+    ProgramFeed,
+    /// The Preview bus as a one-frame-delayed input (IN-025):
+    /// `kind=preview_feed`.
+    PreviewFeed,
 }
 
 /// Most fields one title carries; equals the title domain bound.

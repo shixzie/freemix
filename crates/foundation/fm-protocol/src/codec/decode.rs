@@ -1720,6 +1720,48 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
             super::screen_capture::decode_config(fields)?,
         ))),
         "replay" => Ok(LiveInputSource::Replay),
+        "program_feed" => Ok(LiveInputSource::ProgramFeed),
+        "preview_feed" => Ok(LiveInputSource::PreviewFeed),
+        "alias" => {
+            let target = fields.canonical_input("target")?;
+            let crop_x = fields.optional("crop_x");
+            let crop_y = fields.optional("crop_y");
+            let crop_width = fields.optional("crop_width");
+            let crop_height = fields.optional("crop_height");
+            let crop = match (crop_x, crop_y, crop_width, crop_height) {
+                (None, None, None, None) => None,
+                (Some(x), Some(y), Some(width), Some(height)) => Some(crate::WireLayerCrop {
+                    x: u32::try_from(x).map_err(|_| CodecError::InvalidField {
+                        field: "crop_x",
+                        value: x.to_string(),
+                    })?,
+                    y: u32::try_from(y).map_err(|_| CodecError::InvalidField {
+                        field: "crop_y",
+                        value: y.to_string(),
+                    })?,
+                    width: u32::try_from(width).ok().filter(|width| *width > 0).ok_or(
+                        CodecError::InvalidField {
+                            field: "crop_width",
+                            value: width.to_string(),
+                        },
+                    )?,
+                    height: u32::try_from(height)
+                        .ok()
+                        .filter(|height| *height > 0)
+                        .ok_or(CodecError::InvalidField {
+                            field: "crop_height",
+                            value: height.to_string(),
+                        })?,
+                }),
+                _ => {
+                    return Err(CodecError::InvalidField {
+                        field: "crop_x",
+                        value: "incomplete crop".to_owned(),
+                    });
+                }
+            };
+            Ok(LiveInputSource::Alias { target, crop })
+        }
         _ => Err(CodecError::InvalidField {
             field: "kind",
             value: kind,

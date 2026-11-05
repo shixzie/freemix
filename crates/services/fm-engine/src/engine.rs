@@ -5234,6 +5234,15 @@ fn apply_input_catalogue_mutation(
             if matches!(source, EngineInputSource::Replay) {
                 check_replay_room(state)?;
             }
+            if let EngineInputSource::Alias { target, .. } = &source
+                && !state.inputs().contains(target)
+            {
+                return Err(Rejection::new(
+                    RejectionCode::NotFound,
+                    format!("show does not contain input {target}"),
+                )
+                .with_reason(crate::error::unknown_input_reason(*target)));
+            }
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;

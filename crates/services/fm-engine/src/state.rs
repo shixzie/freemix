@@ -57,6 +57,13 @@ pub enum EngineInputSource {
     ScreenCapture(Box<fm_types::screen_capture::ScreenCaptureConfig>),
     /// A replay player (OR-012).
     Replay,
+    /// An alias of another input (IN-024).
+    Alias {
+        target: InputId,
+        crop: Option<fm_model::CropRect>,
+    },
+    /// The Program or Preview bus as a one-frame-delayed input (IN-025).
+    MixFeed(fm_model::MixFeed),
 }
 
 impl EngineInputSource {
@@ -92,6 +99,13 @@ impl EngineInputSource {
                 return fm_model::InputSourceSpec::ScreenCapture((**config).clone());
             }
             Self::Replay => return fm_model::InputSourceSpec::Replay,
+            Self::Alias { target, crop } => {
+                return fm_model::InputSourceSpec::Alias {
+                    target: *target,
+                    crop: *crop,
+                };
+            }
+            Self::MixFeed(feed) => return fm_model::InputSourceSpec::MixFeed(*feed),
         };
         fm_model::InputSourceSpec::Generator {
             video,

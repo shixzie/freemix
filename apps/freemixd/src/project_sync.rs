@@ -254,6 +254,50 @@ pub(crate) fn sync_project_inputs(
                     })?;
                 continue;
             }
+            fm_protocol::LiveInputSource::Alias { target, crop } => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::Alias {
+                            target: target.to_domain(),
+                            crop: crop.map(|crop| {
+                                fm_model::CropRect::new(crop.x, crop.y, crop.width, crop.height)
+                            }),
+                        },
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::ProgramFeed => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::MixFeed(fm_model::MixFeed::Program),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::PreviewFeed => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::MixFeed(fm_model::MixFeed::Preview),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
         };
         project
             .add_input_checked(fm_model::Input {

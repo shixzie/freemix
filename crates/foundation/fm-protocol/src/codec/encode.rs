@@ -1065,6 +1065,19 @@ fn encode_input_catalogue_command(
                     })
                 }
                 LiveInputSource::Replay => record.field("kind", "replay"),
+                LiveInputSource::ProgramFeed => record.field("kind", "program_feed"),
+                LiveInputSource::PreviewFeed => record.field("kind", "preview_feed"),
+                LiveInputSource::Alias { target, crop } => {
+                    record.field("kind", "alias")?;
+                    record.field("target", target)?;
+                    if let Some(crop) = crop {
+                        record.field("crop_x", crop.x)?;
+                        record.field("crop_y", crop.y)?;
+                        record.field("crop_width", crop.width)?;
+                        record.field("crop_height", crop.height)?;
+                    }
+                    Ok(())
+                }
             }
         }
         CommandPayload::RemoveInput { input } => {
