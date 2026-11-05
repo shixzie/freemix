@@ -194,6 +194,37 @@ fn feeds_on_their_own_bus_are_valid_because_the_delay_breaks_the_loop() {
 }
 
 #[test]
+fn both_program_transition_endpoints_count_for_feedback() {
+    let project = feed_project();
+    let sources = SourceResolver::new(&project);
+    let history = MixFeedHistory::<&str>::new();
+    let selection = select(CAMERA, GRAPHIC);
+
+    let plain = sources.context(selection, &history).unwrap();
+    assert!(!plain.feedback(MixFeed::Program));
+
+    // The Program feed is only the transition's secondary: the bus still
+    // shows its own delayed picture on the next tick.
+    let direct = sources
+        .context_with_transition(selection, Some(input_id(PROGRAM_FEED)), &history)
+        .unwrap();
+    assert!(direct.feedback(MixFeed::Program));
+    assert!(!direct.feedback(MixFeed::Preview));
+
+    // A scene endpoint reaches the same feed through its layers.
+    let scene = sources
+        .context_with_transition(selection, Some(input_id(MULTIVIEW)), &history)
+        .unwrap();
+    assert!(scene.feedback(MixFeed::Program));
+
+    // The alias endpoint reports feedback without expanding the bus here.
+    let alias = sources
+        .context_with_transition(selection, Some(input_id(PROGRAM_ALIAS)), &history)
+        .unwrap();
+    assert!(alias.feedback(MixFeed::Program));
+}
+
+#[test]
 fn a_feed_is_black_until_the_first_commit_and_then_one_frame_late() {
     let project = feed_project();
     let sources = SourceResolver::new(&project);
