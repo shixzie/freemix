@@ -98,6 +98,84 @@ fn a_video_delay_is_a_project_edit_that_undoes_to_zero() {
 }
 
 #[test]
+fn a_video_delay_aligns_the_audio_strip_delay() {
+    let mut engine = engine();
+    // The engine defaults to 48 kHz: five frames at 25 fps are 9,600 samples.
+    assert_eq!(engine.audio_sample_rate(), 48_000);
+    assert!(execute(
+        &mut engine,
+        "set",
+        EngineCommand::SetInputVideoDelay {
+            input: input(1),
+            frames: 5,
+        },
+    ));
+    assert_eq!(
+        engine
+            .show()
+            .input_audio_strip(input(1))
+            .unwrap()
+            .delay_samples,
+        9_600
+    );
+
+    // Undo restores both the video delay and its aligned strip delay.
+    assert!(execute(
+        &mut engine,
+        "undo",
+        EngineCommand::Undo {
+            expected_edit: None,
+        },
+    ));
+    assert_eq!(engine.show().input_video_delay(input(1)), 0);
+    assert_eq!(
+        engine
+            .show()
+            .input_audio_strip(input(1))
+            .unwrap()
+            .delay_samples,
+        0
+    );
+
+    // The strip's one-second bound clamps a longer video delay.
+    assert!(execute(
+        &mut engine,
+        "set-30",
+        EngineCommand::SetInputVideoDelay {
+            input: input(1),
+            frames: 30,
+        },
+    ));
+    assert_eq!(
+        engine
+            .show()
+            .input_audio_strip(input(1))
+            .unwrap()
+            .delay_samples,
+        48_000
+    );
+
+    // A project's own sample rate is honored.
+    engine.set_audio_sample_rate(44_100);
+    assert!(execute(
+        &mut engine,
+        "set-44100",
+        EngineCommand::SetInputVideoDelay {
+            input: input(2),
+            frames: 5,
+        },
+    ));
+    assert_eq!(
+        engine
+            .show()
+            .input_audio_strip(input(2))
+            .unwrap()
+            .delay_samples,
+        8_820
+    );
+}
+
+#[test]
 fn an_invalid_video_delay_is_refused_without_changing_the_show() {
     let mut engine = engine();
     assert!(!execute(
