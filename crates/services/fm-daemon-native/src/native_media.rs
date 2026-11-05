@@ -11745,6 +11745,52 @@ mod tests {
             .unwrap()
     }
 
+    fn live_solid_frame(
+        clock_domain: ClockDomainId,
+        sequence: u64,
+        presentation_ns: u64,
+        rgba: [u8; 4],
+        width: u32,
+        height: u32,
+    ) -> CpuVideoFrame {
+        use fm_frame::MediaTimestamp;
+        let timing = MediaTiming::new(
+            OriginalTimestamp::new(
+                MediaTimestamp::new(i64::try_from(presentation_ns).unwrap()),
+                TimeBase::new(1, 1_000_000_000).unwrap(),
+            ),
+            NormalizedTimestamp::from_nanos(presentation_ns),
+            NormalizedDuration::from_nanos(1_000_000_000).unwrap(),
+            clock_domain,
+            SequenceNumber::new(sequence),
+        )
+        .unwrap();
+        let width_usize = usize::try_from(width).unwrap();
+        let height_usize = usize::try_from(height).unwrap();
+        let mut bytes = Vec::with_capacity(width_usize * height_usize * 4);
+        for _ in 0..width_usize * height_usize {
+            bytes.extend_from_slice(&rgba);
+        }
+        let payload = CpuVideoPayload::new(
+            PixelFormat::Rgba8,
+            VideoDimensions::new(width, height).unwrap(),
+            vec![CpuVideoPlane::new(width_usize * 4, bytes).unwrap()],
+        )
+        .unwrap();
+        CpuVideoFrame::new(timing, payload)
+            .with_metadata(VideoFrameMetadata::new(
+                ColorMetadata {
+                    primaries: ColorPrimaries::Bt709,
+                    transfer: TransferFunction::Srgb,
+                    matrix: MatrixCoefficients::Identity,
+                    range: SignalRange::Full,
+                    chroma_location: ChromaLocation::Center,
+                },
+                Some(AlphaMode::Straight),
+            ))
+            .unwrap()
+    }
+
     fn rgba16f_components(bytes: &[u8]) -> [f32; 4] {
         std::array::from_fn(|component| {
             let offset = component * 2;
@@ -12755,6 +12801,71 @@ mod tests {
                 "cropped alias {program} selects the red left half: {pixel:?}"
             );
         }
+    }
+
+    #[test]
+    fn native_frozen_live_inputs_hold_their_picture() {
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(86).unwrap());
+        let source = input(1);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::LiveFrame {
+                    input: source,
+                    frame: live_solid_frame(clock_domain, 0, 0, [255, 0, 0, 255], 2, 2),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut playback = playback;
+        let mut project = native_plan_project(2, 2);
+        add_leaf(&mut project, source);
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let read = |playback: &NativeSourcePlayback| {
+            let frame = runtime
+                .render_project_frame_result_blocking(
+                    playback.registry(),
+                    &plan,
+                    &frame_result(0, source, None),
+                )
+                .unwrap();
+            rgba16f_components(&block_on(runtime.diagnostic_readback(&frame)).unwrap().bytes)
+        };
+
+        let red = read(&playback);
+        assert!(red[0] > 0.5 && red[2] < 0.1, "the live seed is red");
+        playback.set_input_freeze(source, true, ClockTime::ZERO);
+        runtime
+            .ingest_live_video_frame_blocking(
+                &mut playback,
+                source,
+                live_solid_frame(clock_domain, 1, 1_000_000_000, [0, 0, 255, 255], 2, 2),
+            )
+            .unwrap();
+        let held = read(&playback);
+        assert!(
+            held[0] > 0.5 && held[2] < 0.1,
+            "a frozen live input ignores the next picture"
+        );
+
+        playback.set_input_freeze(source, false, ClockTime::ZERO);
+        runtime
+            .ingest_live_video_frame_blocking(
+                &mut playback,
+                source,
+                live_solid_frame(clock_domain, 2, 2_000_000_000, [0, 0, 255, 255], 2, 2),
+            )
+            .unwrap();
+        let resumed = read(&playback);
+        assert!(
+            resumed[2] > 0.5 && resumed[0] < 0.1,
+            "resuming shows the newest live picture"
+        );
     }
 
     #[test]
