@@ -3219,8 +3219,12 @@ picture at the deadline minus the delay, holding black until the delayed
 instant reaches the source's first picture, while live sources retain recent
 pictures (only while delayed) and count back from the newest. Both clamp to what one source ring can
 retain (seven frames at the default eight-frame ring), and the frame loop sends
-the realizer a changed map only. Remaining gaps: the simulated render path does
-not apply the delay, the native delay is clamped by the source ring, the
+the realizer a changed map only. The simulated render path applies the stored
+delay as well: `SimulatedPipeline` keeps the project's per-input delays
+(clamped to 600 frames) and presents the source frame `N − delay`, holding the
+input black until the delay has filled; simulated pictures are static, so the
+selection is visible during startup rather than as different pixels. Remaining
+gaps: the native delay is clamped by the source ring, the
 Studio field commits when the drag ends rather than continuously, a video
 delay owns the strip alignment (a manual audio delay is overwritten on the
 next delay edit), there is no loop, freeze integration, or clip save;

@@ -100,8 +100,8 @@ commands = ["cargo test -p fm-virtual-set --test camera_moves_and_stack", "cargo
 [[tests]]
 id = "accept-in-022"
 state = "present"
-paths = ["crates/media/fm-video/tests/video_delay.rs", "crates/services/fm-engine/tests/input_video_delays.rs", "crates/foundation/fm-protocol/tests/input_video_delays.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs", "apps/freemix-cli/tests/e2e.rs"]
-commands = ["cargo test -p fm-video --test video_delay", "cargo test -p fm-engine --test input_video_delays", "cargo test -p fm-protocol --test input_video_delays", "cargo test -p freemix-studio --test studio", "cargo test -p fm-ui-egui --test hover_audit", "cargo test -p freemix-cli --test e2e"]
+paths = ["crates/media/fm-video/tests/video_delay.rs", "crates/media/fm-sim/tests/video_delay.rs", "crates/services/fm-engine/tests/input_video_delays.rs", "crates/foundation/fm-protocol/tests/input_video_delays.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs", "apps/freemix-cli/tests/e2e.rs"]
+commands = ["cargo test -p fm-video --test video_delay", "cargo test -p fm-sim --test video_delay", "cargo test -p fm-engine --test input_video_delays", "cargo test -p fm-protocol --test input_video_delays", "cargo test -p freemix-studio --test studio", "cargo test -p fm-ui-egui --test hover_audit", "cargo test -p freemix-cli --test e2e"]
 [[tests]]
 id = "accept-in-023"
 state = "present"
