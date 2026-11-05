@@ -162,7 +162,7 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 }
                 crate::TitleRowSourceOperation::Stop => record.field("action", "stop")?,
                 crate::TitleRowSourceOperation::Status => record.field("action", "status")?,
-            }?;
+            }
         }
         WireMessage::TitleRowSourceResponse(message) => {
             validate_request_id(&message.request_id)?;
