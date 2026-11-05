@@ -645,6 +645,8 @@ fn parse_input_kind(value: Value) -> Result<InputKind, DecodeError> {
         "alias" => InputKind::Alias {
             target: InputId::new(object.nonzero_u128("target")?),
             crop: parse_optional(object.take("crop")?, parse_crop)?,
+            effects: parse_optional(object.take("effects")?, parse_layer_effects)?
+                .unwrap_or_default(),
         },
         "mix_feed" => InputKind::MixFeed(match object.string("feed")?.as_str() {
             "program" => MixFeed::Program,

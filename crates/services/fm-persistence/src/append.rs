@@ -675,9 +675,14 @@ fn append_inputs(
                 scene_id: maps.scenes[scene_id],
                 audio_source: audio_source.map(|id| maps.inputs[&id]),
             },
-            InputKind::Alias { target, crop } => InputKind::Alias {
+            InputKind::Alias {
+                target,
+                crop,
+                effects,
+            } => InputKind::Alias {
                 target: maps.inputs[target],
                 crop: *crop,
+                effects: effects.clone(),
             },
             // Title assets keep their exact keys (see `append_title_assets`).
             InputKind::Color

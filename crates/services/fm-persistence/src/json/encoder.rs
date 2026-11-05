@@ -757,21 +757,7 @@ fn write_scenes(output: &mut String, project: &fm_model::Project) {
             output.push_str(",\n            \"key\": ");
             write_layer_key(output, layer.key);
             output.push_str(",\n            \"effects\": [");
-            for (effect_index, effect) in layer.effects.iter().enumerate() {
-                if effect_index != 0 {
-                    output.push_str(", ");
-                }
-                output.push_str("{\"name\": \"");
-                escape_string(output, &effect.name);
-                output.push_str("\", \"parameters\": [");
-                for (parameter_index, parameter) in effect.parameters.iter().enumerate() {
-                    if parameter_index != 0 {
-                        output.push_str(", ");
-                    }
-                    write!(output, "{parameter}").expect("writing to a string cannot fail");
-                }
-                output.push_str("]}");
-            }
+            write_effect_list(output, &layer.effects);
             write!(
                 output,
                 "],\n            \"opacity\": {},\n            \"z_order\": {}\n          }}",
@@ -785,6 +771,24 @@ fn write_scenes(output: &mut String, project: &fm_model::Project) {
         output.push_str("\n      }");
     }
     array_end(output, project.scenes().is_empty(), 4);
+}
+
+fn write_effect_list(output: &mut String, effects: &[LayerEffect]) {
+    for (effect_index, effect) in effects.iter().enumerate() {
+        if effect_index != 0 {
+            output.push_str(", ");
+        }
+        output.push_str("{\"name\": \"");
+        escape_string(output, &effect.name);
+        output.push_str("\", \"parameters\": [");
+        for (parameter_index, parameter) in effect.parameters.iter().enumerate() {
+            if parameter_index != 0 {
+                output.push_str(", ");
+            }
+            write!(output, "{parameter}").expect("writing to a string cannot fail");
+        }
+        output.push_str("]}");
+    }
 }
 
 fn write_frame_rate(output: &mut String, rate: fm_types::FrameRate) {
@@ -869,7 +873,11 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
             }
             output.push('}');
         }
-        InputKind::Alias { target, crop } => {
+        InputKind::Alias {
+            target,
+            crop,
+            effects,
+        } => {
             write!(
                 output,
                 "{{\"type\": \"alias\", \"target\": {target}, \"crop\": "
@@ -885,7 +893,9 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
             } else {
                 output.push_str("null");
             }
-            output.push('}');
+            output.push_str(", \"effects\": [");
+            write_effect_list(output, effects);
+            output.push_str("]}");
         }
         InputKind::MixFeed(feed) => {
             let feed = match feed {
