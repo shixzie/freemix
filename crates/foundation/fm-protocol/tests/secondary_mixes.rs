@@ -3,7 +3,6 @@
 
 use core::num::NonZeroU128;
 
-use fm_command::Revision;
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, WireInputId, WireMessage, WireMixNumber,
     WireSecondaryMixConfig, WireSecondaryMixMode, WireSecondaryMixSource, decode_line, encode_line,
@@ -22,7 +21,7 @@ fn command(payload: CommandPayload) -> CommandMessage {
         protocol: CURRENT_PROTOCOL_VERSION,
         id: "01K:test".to_owned(),
         idempotency_key: "operator-7:01K".to_owned(),
-        expected_revision: Some(Revision::new(1_842)),
+        expected_revision: Some(1_842),
         deadline_ms: Some(500),
         payload,
     }
