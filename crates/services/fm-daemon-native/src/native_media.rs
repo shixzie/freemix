@@ -10449,6 +10449,7 @@ impl NativeMediaRuntime {
     }
 
     /// Copies `texture` into a new working texture with no overlays.
+    #[allow(clippy::too_many_arguments)]
     async fn copy_project_texture(
         &self,
         registry: &NativeSourceRegistry,
