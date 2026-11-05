@@ -8278,6 +8278,7 @@ impl NativeMediaRuntime {
         registry: &NativeSourceRegistry,
         project: &NativeProjectPlan,
         inputs: &[InputId],
+        deadline: ClockTime,
         feeds: NativeFeedFrames<'_>,
         graded: &mut BTreeMap<InputId, NativeTexture>,
     ) -> Result<(), NativeSourceRenderError> {
