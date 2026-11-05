@@ -3074,11 +3074,10 @@ composes a logical output's secondary-mix background: a single input, black, a
 nested mix, or a running transition, followed by the mix's full-frame overlay
 channels; a Program background still reads the shared Program transition.
 Remaining gaps: no live `MixBank` frame loop (mixes have no cuts, transitions,
-or one-frame delayed reads in the engine yet), a multiview cell that names a
-secondary mix is still refused by the native path, no Studio or CLI editor and
-no audio path, and stinger effects still do not check slot readiness or
-fallback; overlay fades, mix-sourced overlays, T-bar, and Fade-to-Black inside
-a mix are absent. `IN-023` remains planned.
+or one-frame delayed reads in the engine yet), no Studio or CLI editor and no
+audio path, and stinger effects still do not check slot readiness or fallback;
+overlay fades, mix-sourced overlays, T-bar, and Fade-to-Black inside a mix are
+absent. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
