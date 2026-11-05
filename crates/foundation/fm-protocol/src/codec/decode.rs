@@ -1030,9 +1030,11 @@ fn decode_command_payload(
         "manual_commit" => CommandPayload::CommitManualTransition,
         "manual_cancel" => CommandPayload::CancelManualTransition,
         edit @ ("undo" | "redo" | "edit_lock") => decode_edit_command(fields, edit)?,
-        title @ ("title_fields" | "title_take" | "title_off_air" | "title_field_exposure") => {
-            decode_title_command(fields, title)?
-        }
+        title @ ("title_fields"
+        | "title_row"
+        | "title_take"
+        | "title_off_air"
+        | "title_field_exposure") => decode_title_command(fields, title)?,
         name if name.starts_with("title_animation_") => {
             decode_title_animation_command(fields, name)?
         }
