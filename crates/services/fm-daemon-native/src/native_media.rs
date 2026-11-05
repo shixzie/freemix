@@ -8267,8 +8267,8 @@ impl NativeMediaRuntime {
             .filter(|scene| execution.required.contains(&scene.id))
             .flat_map(|scene| scene.sources.iter())
             .filter_map(|(_, source)| match source {
-                NativeSceneSource::Leaf(input) => Some(*input),
-                NativeSceneSource::Alias {
+                NativeSceneSource::Leaf(input)
+                | NativeSceneSource::Alias {
                     source: NativeAliasSource::Leaf(input),
                     ..
                 } => Some(*input),
@@ -9788,6 +9788,7 @@ impl NativeMediaRuntime {
             .map_err(NativeSourceRenderError::FadeToBlack)
     }
 
+    #[allow(clippy::too_many_lines)] // scene crops, sources, and release in one pass
     async fn render_project_scenes(
         &self,
         registry: &NativeSourceRegistry,
