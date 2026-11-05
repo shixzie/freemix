@@ -69,8 +69,8 @@ use fm_model::{
 use fm_plugin_host_api::{ReferenceError, ReferenceRack};
 use fm_sim::{CollectingAudioSink, OverflowPolicy, SinkConfigError, SinkTelemetry};
 use fm_switcher::{
-    BackgroundPlan, CellFeed, FadeToBlackFrame, FeedLayer, MixId, OutputRenderPlan, OutputVideo,
-    OverlayBorderPreset, OverlayPositionPreset, ProgramFrame,
+    BackgroundPlan, CellFeed, FadeToBlackFrame, FadeToBlackPosition, FeedLayer, MixId,
+    OutputRenderPlan, OutputVideo, OverlayBorderPreset, OverlayPositionPreset, ProgramFrame,
     TransitionKind as SwitcherTransitionKind,
 };
 use fm_types::{
@@ -1601,6 +1601,21 @@ fn is_program_background(background: &BackgroundPlan, program: ProgramFrame) -> 
         && background.transition_kind == program.transition_kind
         && background.mix_numerator == program.mix_numerator
         && background.mix_denominator == program.mix_denominator
+}
+
+/// The Fade-to-Black interval a logical output's plan carries (SW-012): only
+/// a Program background follows the global fade; a settled input, Preview,
+/// mix, or multiview plan is live.
+fn logical_output_fade_to_black(plan: &OutputRenderPlan, frame: &FrameResult) -> FadeToBlackFrame {
+    let position = match &plan.video {
+        OutputVideo::Background(background) => background.fade_to_black,
+        OutputVideo::MultiView(_) => FadeToBlackPosition::LIVE,
+    };
+    if position == FadeToBlackPosition::LIVE {
+        FadeToBlackFrame::LIVE
+    } else {
+        frame.fade_to_black_for(plan.output)
+    }
 }
 
 /// The single settled input a logical output shows, if its background is one
@@ -9435,7 +9450,9 @@ impl NativeMediaRuntime {
                         project,
                         &scene_outputs,
                         frame,
-                        *output,
+                        output.map_or(frame.fade_to_black, |output| {
+                            frame.fade_to_black_for(output)
+                        }),
                         &program,
                         &overlays,
                     )
@@ -9484,7 +9501,7 @@ impl NativeMediaRuntime {
                     project,
                     scene_outputs,
                     frame,
-                    Some(plan.output),
+                    logical_output_fade_to_black(plan, frame),
                     &base,
                     &overlays,
                 )
@@ -9522,7 +9539,7 @@ impl NativeMediaRuntime {
                     project,
                     scene_outputs,
                     frame,
-                    Some(plan.output),
+                    logical_output_fade_to_black(plan, frame),
                     base.as_ref(),
                     &overlays,
                 )
@@ -9710,7 +9727,7 @@ impl NativeMediaRuntime {
         project: &NativeProjectPlan,
         scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
         frame: &FrameResult,
-        output: Option<OutputId>,
+        fade_to_black: FadeToBlackFrame,
         base: &NativeTexture,
         overlays: &[NativeProgramOverlay],
     ) -> Result<NativeTexture, NativeSourceRenderError> {
@@ -9735,10 +9752,7 @@ impl NativeMediaRuntime {
             None => composed,
         };
         // Fade to Black fades only the outputs it affects (SW-004).
-        let fade_to_black =
-            native_fade_to_black_plan(output.map_or(frame.fade_to_black, |output| {
-                frame.fade_to_black_for(output)
-            }))?;
+        let fade_to_black = native_fade_to_black_plan(fade_to_black)?;
         self.fade_to_black_renderer
             .render(&self.context, fade_to_black, &composed)
             .await
