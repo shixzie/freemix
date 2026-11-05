@@ -127,8 +127,8 @@ pub struct NativeFeedFrames<'a> {
     pub preview: Option<&'a NativeTexture>,
 }
 
-impl NativeFeedFrames<'_> {
-    fn get(&self, feed: fm_model::MixFeed) -> Option<&NativeTexture> {
+impl<'a> NativeFeedFrames<'a> {
+    fn get(self, feed: fm_model::MixFeed) -> Option<&'a NativeTexture> {
         match feed {
             fm_model::MixFeed::Program => self.program,
             fm_model::MixFeed::Preview => self.preview,
@@ -9646,7 +9646,14 @@ impl NativeMediaRuntime {
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let output = project.output_ids().first().copied();
         let mut rendered = self
-            .render_project_output_set_with_stingers(registry, stingers, project, frame, &[output])
+            .render_project_output_set_with_stingers(
+                registry,
+                stingers,
+                project,
+                frame,
+                &[output],
+                NativeFeedFrames::default(),
+            )
             .await?;
         rendered
             .pop()
@@ -9682,15 +9689,22 @@ impl NativeMediaRuntime {
         if outputs.is_empty() {
             return Ok(Vec::new());
         }
-        self.render_project_output_set_with_stingers(registry, stingers, project, frame, &outputs)
-            .await?
-            .into_iter()
-            .map(|(output, texture)| {
-                output
-                    .map(|output| NativeOutputFrame { output, texture })
-                    .ok_or(NativeSourceRenderError::ResourceBounds)
-            })
-            .collect()
+        self.render_project_output_set_with_stingers(
+            registry,
+            stingers,
+            project,
+            frame,
+            &outputs,
+            NativeFeedFrames::default(),
+        )
+        .await?
+        .into_iter()
+        .map(|(output, texture)| {
+            output
+                .map(|output| NativeOutputFrame { output, texture })
+                .ok_or(NativeSourceRenderError::ResourceBounds)
+        })
+        .collect()
     }
 
     #[allow(clippy::too_many_lines)] // one pass over the project outputs
@@ -9937,17 +9951,17 @@ impl NativeMediaRuntime {
     /// Composes one logical output's `MultiView` grid (SW-012), reading Program,
     /// settled inputs, and already-rendered logical outputs.
     #[allow(clippy::too_many_arguments)]
-    async fn compose_output_multiview(
-        &self,
-        registry: &NativeSourceRegistry,
-        graded: &BTreeMap<InputId, NativeTexture>,
+    async fn compose_output_multiview<'a>(
+        &'a self,
+        registry: &'a NativeSourceRegistry,
+        graded: &'a BTreeMap<InputId, NativeTexture>,
         project: &NativeProjectPlan,
-        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        scene_outputs: &'a BTreeMap<SceneId, (SourceId, NativeTexture)>,
         frame: &FrameResult,
-        program: &NativeTexture,
-        logical_outputs: &BTreeMap<OutputId, NativeTexture>,
+        program: &'a NativeTexture,
+        logical_outputs: &'a BTreeMap<OutputId, NativeTexture>,
         cells: &[fm_switcher::MultiViewCellPlan],
-        feeds: NativeFeedFrames<'_>,
+        feeds: NativeFeedFrames<'a>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let layout = GridLayout::for_cells(cells.len())
             .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
@@ -10057,6 +10071,7 @@ impl NativeMediaRuntime {
                             graded,
                             project,
                             scene_outputs,
+                            feeds,
                             input,
                             frame.deadline,
                         )?),
