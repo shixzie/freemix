@@ -347,6 +347,74 @@ mod tests {
         assert!(fetch("https://127.0.0.1:1/data.json").is_err());
     }
 
+    /// Serves one HTTPS response under a fresh root, returning the URL and a
+    /// client trusting only that root.
+    fn serve_tls() -> (String, Arc<rustls::ClientConfig>) {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
+            KeyPair, KeyUsagePurpose,
+        };
+
+        let root_key = KeyPair::generate().unwrap();
+        let mut root_params = CertificateParams::default();
+        root_params
+            .distinguished_name
+            .push(DnType::CommonName, "FreeMix title source test root");
+        root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        root_params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::DigitalSignature,
+        ];
+        let root = root_params.self_signed(&root_key).unwrap();
+
+        let leaf_key = KeyPair::generate().unwrap();
+        let mut leaf_params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let issuer = Issuer::from_ca_cert_der(&root.der().clone(), &root_key).unwrap();
+        let leaf = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
+
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![leaf.der().clone()],
+                    rustls::pki_types::PrivateKeyDer::Pkcs8(leaf_key.serialize_der().into()),
+                )
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let connection = rustls::ServerConnection::new(server_config).unwrap();
+            let mut stream = rustls::StreamOwned::new(connection, stream);
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"a\":1}")
+                .unwrap();
+            let _ = stream.flush();
+        });
+
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(root.der().clone()).unwrap();
+        let client = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        (
+            format!("https://localhost:{}/data.json", address.port()),
+            client,
+        )
+    }
+
+    #[test]
+    fn a_local_tls_source_fetches_through_the_trusted_root() {
+        let (url, client) = serve_tls();
+        assert_eq!(fetch_with(&url, Some(&client), true).unwrap(), b"{\"a\":1}");
+    }
+
     #[test]
     fn private_and_metadata_addresses_are_refused() {
         let url = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
