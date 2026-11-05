@@ -202,6 +202,9 @@ struct NativeScenePlan {
     /// scenes' drawn-layer count it was checked against: the same model
     /// under the same budget is not rebuilt (and rejected) again each frame.
     rejected: Option<(Arc<fm_model::Scene>, usize)>,
+    /// Each alias input's own effects, merged ahead of a scene layer's
+    /// effects when the layer draws that alias (IN-024).
+    alias_effects: BTreeMap<InputId, Vec<fm_model::LayerEffect>>,
 }
 
 #[cfg(test)]
@@ -209,6 +212,31 @@ thread_local! {
     /// How many scene rebuilds [`NativeProjectPlan::refresh_scene_models`]
     /// has attempted on this thread.
     static SCENE_REFRESH_REBUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `model` with each alias layer's own effects merged ahead of the layer's
+/// effects (IN-024). A layer drawing the alias applies them in order; the
+/// alias crop, when any, already selected the layer's picture.
+fn scene_with_alias_effects(
+    model: &fm_model::Scene,
+    alias_effects: &BTreeMap<InputId, Vec<fm_model::LayerEffect>>,
+) -> fm_model::Scene {
+    if alias_effects.is_empty() {
+        return model.clone();
+    }
+    let mut model = model.clone();
+    for layer in &mut model.layers {
+        let SourceRef::Input(input) = layer.source else {
+            continue;
+        };
+        let Some(effects) = alias_effects.get(&input) else {
+            continue;
+        };
+        let mut merged = effects.clone();
+        merged.append(&mut layer.effects);
+        layer.effects = merged;
+    }
+    model
 }
 
 /// `model` as drawn with no animation: every layer's anchor resolved, so
@@ -438,10 +466,14 @@ impl NativeScenePlan {
             .find(|scene| scene.input == frame.program.primary)
             .or_else(|| candidates.clone().next());
         let posed = match pose {
-            Some(pose) => {
-                std::borrow::Cow::Owned(self.model.posed(pose.frame.sample, width, height))
-            }
-            None if has_grades => std::borrow::Cow::Owned(resolved_scene(&self.model)),
+            Some(pose) => std::borrow::Cow::Owned(scene_with_alias_effects(
+                &self.model.posed(pose.frame.sample, width, height),
+                &self.alias_effects,
+            )),
+            None if has_grades => std::borrow::Cow::Owned(scene_with_alias_effects(
+                &resolved_scene(&self.model),
+                &self.alias_effects,
+            )),
             None => return std::borrow::Cow::Borrowed(&self.composition),
         };
         // Posing keeps every layer's source and only shrinks crops and
@@ -648,6 +680,8 @@ pub struct NativeProjectPlan {
     feeds: BTreeMap<InputId, fm_model::MixFeed>,
     /// Every cropped alias and the concrete picture its crop selects (IN-024).
     alias_crops: BTreeMap<InputId, NativeAliasCrop>,
+    /// Each alias input's own effects (IN-024).
+    alias_effects: BTreeMap<InputId, Vec<fm_model::LayerEffect>>,
     peak_rgba16f_targets: usize,
     transient_rgba16f_bytes: u64,
     grades: NativeProjectGrades,
@@ -768,26 +802,33 @@ impl NativeProjectPlan {
             .iter()
             .map(|scene| (scene.id, scene))
             .collect::<BTreeMap<_, _>>();
+        let dimensions = project.settings().video.dimensions;
         let mut feeds = BTreeMap::new();
         let mut alias_crops = BTreeMap::new();
+        let mut alias_effects = BTreeMap::new();
         for input in project.inputs() {
-            let (concrete, crop) = resolve_alias_target(input.id, &inputs)?;
+            let (concrete, crop, effects) = resolve_alias_target(input.id, &inputs)?;
             if let InputKind::MixFeed(feed) = &concrete.kind {
                 feeds.insert(input.id, *feed);
             }
-            if let Some(crop) = crop {
+            let crop = crop.unwrap_or_else(|| {
+                fm_model::CropRect::new(0, 0, dimensions.width(), dimensions.height())
+            });
+            if crop != fm_model::CropRect::new(0, 0, dimensions.width(), dimensions.height())
+                || !effects.is_empty()
+            {
                 let source = match &concrete.kind {
                     InputKind::Scene { scene_id, .. } => NativeAliasSource::Scene(*scene_id),
                     InputKind::MixFeed(feed) => NativeAliasSource::Feed(*feed),
                     _ => NativeAliasSource::Leaf(concrete.id),
                 };
-                alias_crops.insert(
-                    input.id,
-                    NativeAliasCrop {
-                        source,
-                        crop: [crop.x, crop.y, crop.width, crop.height],
-                    },
-                );
+                alias_crops.entry(input.id).or_insert(NativeAliasCrop {
+                    source,
+                    crop: [crop.x, crop.y, crop.width, crop.height],
+                });
+            }
+            if !effects.is_empty() {
+                alias_effects.insert(input.id, effects);
             }
         }
         let black_scene = (!feeds.is_empty())
@@ -799,7 +840,7 @@ impl NativeProjectPlan {
             .map(|input| {
                 let route = match &input.kind {
                     InputKind::Alias { .. } => {
-                        let (concrete, _) = resolve_alias_target(input.id, &inputs)?;
+                        let (concrete, _, _) = resolve_alias_target(input.id, &inputs)?;
                         match &concrete.kind {
                             InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(*scene_id),
                             InputKind::MixFeed(_) => NativeVideoRoute::Scene(
@@ -948,7 +989,7 @@ impl NativeProjectPlan {
             }
             let composition = native_scene_composition(
                 scene_id,
-                &resolved_scene(model),
+                &scene_with_alias_effects(&resolved_scene(model), &alias_effects),
                 &layer_tokens,
                 &key_tokens,
                 dimensions.width(),
@@ -981,6 +1022,7 @@ impl NativeProjectPlan {
                     .collect(),
                 black_scene,
                 rejected: None,
+                alias_effects: alias_effects.clone(),
             });
         }
 
@@ -1104,6 +1146,7 @@ impl NativeProjectPlan {
             black_scene,
             feeds,
             alias_crops,
+            alias_effects,
             audio_routes,
             audio_strips: project
                 .input_audio_strips()
@@ -1197,6 +1240,10 @@ impl NativeProjectPlan {
 
     fn alias_crop(&self, input: InputId) -> Option<NativeAliasCrop> {
         self.alias_crops.get(&input).copied()
+    }
+
+    fn alias_effects(&self, input: InputId) -> &[fm_model::LayerEffect] {
+        self.alias_effects.get(&input).map_or(&[], Vec::as_slice)
     }
 
     /// The crop a cropped alias applies, in project pixels (IN-024).
@@ -1701,9 +1748,10 @@ impl NativeProjectPlan {
                 });
                 key_tokens.push(token);
             }
+            let alias_effects = self.alias_effects.clone();
             let Ok(composition) = native_scene_composition(
                 plan.id,
-                &resolved_scene(&drawn),
+                &scene_with_alias_effects(&resolved_scene(&drawn), &alias_effects),
                 &tokens,
                 &key_tokens,
                 width,
@@ -2046,16 +2094,23 @@ fn native_execution_peak(
 fn resolve_alias_target<'a>(
     input: InputId,
     inputs: &BTreeMap<InputId, &'a fm_model::Input>,
-) -> Result<(&'a fm_model::Input, Option<fm_model::CropRect>), NativeProjectPlanError> {
-    // Only the requested alias's own crop applies; crops on intermediate
-    // aliases are ignored, matching `fm_model::SourceResolver`.
+) -> Result<
+    (
+        &'a fm_model::Input,
+        Option<fm_model::CropRect>,
+        Vec<fm_model::LayerEffect>,
+    ),
+    NativeProjectPlanError,
+> {
+    // Only the requested alias's own crop and effects apply; those on
+    // intermediate aliases are ignored, matching `fm_model::SourceResolver`.
     let requested = inputs
         .get(&input)
         .copied()
         .ok_or(NativeProjectPlanError::MissingInput(input))?;
-    let crop = match &requested.kind {
-        InputKind::Alias { crop, .. } => *crop,
-        _ => None,
+    let (crop, effects) = match &requested.kind {
+        InputKind::Alias { crop, effects, .. } => (*crop, effects.clone()),
+        _ => (None, Vec::new()),
     };
     let mut current = input;
     let mut seen = BTreeSet::new();
@@ -2069,7 +2124,7 @@ fn resolve_alias_target<'a>(
             .ok_or(NativeProjectPlanError::MissingInput(current))?;
         match &model.kind {
             InputKind::Alias { target, .. } => current = *target,
-            _ => return Ok((model, crop)),
+            _ => return Ok((model, crop, effects)),
         }
     }
 }
@@ -8416,7 +8471,12 @@ impl NativeMediaRuntime {
                 continue;
             };
             let texture = self
-                .crop_project_texture(project.dimensions, alias.crop, target)
+                .crop_project_texture(
+                    project.dimensions,
+                    alias.crop,
+                    project.alias_effects(*input),
+                    target,
+                )
                 .await?;
             graded.insert(*input, texture);
         }
@@ -8446,7 +8506,12 @@ impl NativeMediaRuntime {
                 continue;
             };
             let texture = self
-                .crop_project_texture(project.dimensions, alias.crop, target)
+                .crop_project_texture(
+                    project.dimensions,
+                    alias.crop,
+                    project.alias_effects(*input),
+                    target,
+                )
                 .await?;
             graded.insert(*input, texture);
         }
@@ -11266,6 +11331,7 @@ impl NativeMediaRuntime {
         &self,
         dimensions: VideoDimensions,
         crop: [u32; 4],
+        effects: &[fm_model::LayerEffect],
         texture: &NativeTexture,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let mut scene = CompositorScene::new(
@@ -11274,22 +11340,27 @@ impl NativeMediaRuntime {
             CompositorRgba8::new(0, 0, 0, u8::MAX),
         )
         .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
-        scene.push_layer(
-            SourceLayer::new(
-                SourceId::new(0),
+        let mut layer = SourceLayer::new(
+            SourceId::new(0),
+            0,
+            Transform::new(
                 0,
-                Transform::new(
-                    0,
-                    0,
-                    dimensions.width(),
-                    dimensions.height(),
-                    CompositorRotation::Deg0,
-                ),
-            )
-            .with_crop(fm_compositor::CropRect::new(
-                crop[0], crop[1], crop[2], crop[3],
-            )),
-        );
+                0,
+                dimensions.width(),
+                dimensions.height(),
+                CompositorRotation::Deg0,
+            ),
+        )
+        .with_crop(fm_compositor::CropRect::new(
+            crop[0], crop[1], crop[2], crop[3],
+        ));
+        for effect in effects {
+            layer = layer.with_effect(CompositorEffect::new(
+                effect.name.clone(),
+                effect.parameters.clone(),
+            ));
+        }
+        scene.push_layer(layer);
         let (composition, _) = compile_scene(&scene, OutputTarget::Program)
             .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
         let sources = [NativeSourceFrame::new(SourceId::new(0), texture)];
