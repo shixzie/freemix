@@ -12837,8 +12837,8 @@ mod tests {
             rgba16f_components(&block_on(runtime.diagnostic_readback(&frame)).unwrap().bytes)
         };
 
-        let red = read(&playback);
-        assert!(red[0] > 0.5 && red[2] < 0.1, "the live seed is red");
+        let seeded = read(&playback);
+        assert!(seeded[0] > 0.5 && seeded[2] < 0.1, "the live seed is red");
         playback.set_input_freeze(source, true, ClockTime::ZERO);
         runtime
             .ingest_live_video_frame_blocking(
