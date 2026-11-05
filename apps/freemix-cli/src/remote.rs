@@ -2862,6 +2862,7 @@ impl CommandCompletion {
             | CommandPayload::RemoveInput { .. }
             | CommandPayload::InputLifecycle(_)
             | CommandPayload::SetTitleFields { .. }
+            | CommandPayload::SetTitleRow { .. }
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetNetworkStream { .. }
