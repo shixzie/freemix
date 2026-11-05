@@ -3186,7 +3186,11 @@ rejects unknown inputs and oversized delays, `EngineCommand::SetInputVideoDelay`
 is an undoable project edit, and the daemon folds it back into the project on
 save. Protocol 2.160 carries the list in every snapshot, sets one with
 `set_input_video_delay`, and announces an edit (or its undo or redo) with
-`input_video_delay_changed`; the client model replicates it. Remaining gaps:
+`input_video_delay_changed`; the client model replicates it. The CLI sets the
+delay locally with `input-video-delay <show> <input> <frames>` and remotely
+with `remote-input-video-delay <address> <input> <frames>`, and both save and
+restore paths now preserve and fold every related setting (logical outputs,
+secondary mixes, and video delays) instead of dropping them. Remaining gaps:
 no daemon applies the requested delay to decoded or simulated frames, no UI
 editor, no loop, freeze integration, or clip save; `SampleDelay` can change its
 delay live within the one-second bound while preserving history (growing
