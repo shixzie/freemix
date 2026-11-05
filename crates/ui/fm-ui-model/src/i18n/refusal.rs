@@ -102,6 +102,7 @@ pub const fn input_use_advice(usage: InputUse) -> Msg {
         InputUse::SceneOnAir => Msg::AdviceSceneOffAir,
         InputUse::ReplaySource => Msg::AdviceReplaySource,
         InputUse::SceneAudioSource { .. } | InputUse::AliasTarget { .. } => Msg::AdviceOffline,
+        InputUse::SecondaryMix { .. } => Msg::AdviceSecondaryMix,
     }
 }
 
@@ -155,6 +156,9 @@ pub fn input_use_sentence(
                 ("list", Arg::Str(&list.to_string())),
             ],
         ),
+        InputUse::SecondaryMix { mix } => {
+            numbered(Msg::InUseSecondaryMix, "mix", &mix.to_string())
+        }
     }
 }
 

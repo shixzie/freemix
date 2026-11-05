@@ -1298,6 +1298,8 @@ messages! {
     AdviceSceneOffAir => t("Take that scene off air first."),
     InUseReplaySource => t("\"{name}\" is recorded for replay."),
     AdviceReplaySource => t("Stop recording it for replay first."),
+    InUseSecondaryMix => t("\"{name}\" is a Program or Preview source of mix {mix}."),
+    AdviceSecondaryMix => t("Reassign that mix first."),
 
     // Typed command refusals (Protocol 2.45).
     CommandRefused => t("Command refused: {reason}"),
