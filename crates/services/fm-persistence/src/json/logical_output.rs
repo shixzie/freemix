@@ -167,7 +167,7 @@ fn parse_source(value: Value) -> Result<LogicalOutputSource, DecodeError> {
             let source = if let Some(input) = object.take_optional("input") {
                 LogicalOutputSource::Input(InputId::new(nonzero(&input, "logical output input")?))
             } else if let Some(mix) = object.take_optional("mix") {
-                LogicalOutputSource::Mix(mix_number(mix)?)
+                LogicalOutputSource::Mix(mix_number(&mix)?)
             } else if let Some(cells) = object.take_optional("multiview") {
                 LogicalOutputSource::MultiView(parse_array(cells, "multiview", parse_cell)?)
             } else {
@@ -196,7 +196,7 @@ fn parse_cell(value: Value) -> Result<LogicalMultiViewCell, DecodeError> {
             let cell = if let Some(input) = object.take_optional("input") {
                 LogicalMultiViewCell::Input(InputId::new(nonzero(&input, "multiview input")?))
             } else if let Some(mix) = object.take_optional("mix") {
-                LogicalMultiViewCell::Mix(mix_number(mix)?)
+                LogicalMultiViewCell::Mix(mix_number(&mix)?)
             } else if let Some(slot) = object.take_optional("output") {
                 let slot = u8_value(&slot, "multiview output")?;
                 LogicalMultiViewCell::Output(LogicalOutputSlot::new(slot).ok_or_else(|| {
@@ -259,7 +259,7 @@ fn parse_audio(value: Value) -> Result<LogicalAudioMap, DecodeError> {
     }
 }
 
-fn mix_number(value: Value) -> Result<u8, DecodeError> {
+fn mix_number(value: &Value) -> Result<u8, DecodeError> {
     let mix = u8_value(&value, "mix")?;
     if !(1..=fm_model::MAX_LOGICAL_MIX_NUMBER).contains(&mix) {
         return Err(syntax(format!(
