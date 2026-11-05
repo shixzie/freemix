@@ -215,6 +215,10 @@ pub enum StudioIntent {
     RenameInput { input: InputId, name: String },
     /// Freezes or resumes one input's picture (SW-016, Protocol 2.161).
     SetInputFreeze { input: InputId, frozen: bool },
+    /// Exports one frozen input's latched picture as a PNG (SW-016,
+    /// Protocol 2.164); the answer updates
+    /// [`StudioUiState::frozen_still`].
+    CaptureFrozenStill { input: InputId },
     /// Delays one input's video in frames (IN-022, Protocol 2.160); a
     /// padlocked, undoable project edit.
     SetInputVideoDelay { input: InputId, frames: u32 },
@@ -773,6 +777,17 @@ pub struct RecorderTrackMapView {
     pub channels: u16,
 }
 
+/// One frozen input's exported PNG (SW-016, Protocol 2.164): the daemon
+/// wrote it into its bundle and named it by asset URI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrozenStillCapture {
+    pub input: InputId,
+    pub width: u32,
+    pub height: u32,
+    pub asset_uri: String,
+    pub path: String,
+}
+
 /// Owned render input for one studio frame.
 #[allow(clippy::struct_excessive_bools)] // each bool is a distinct operator permission gate
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -833,6 +848,10 @@ pub struct StudioUiState {
     /// The latest clock refusal or request failure the clocks window
     /// shows, if any.
     pub clocks_error: Option<String>,
+    /// The latest frozen-input PNG the daemon exported (SW-016).
+    pub frozen_still: Option<FrozenStillCapture>,
+    /// The latest frozen-still request refusal, if any.
+    pub frozen_still_error: Option<String>,
     /// The latest title animation phases (`title_phases`, Protocol 2.90):
     /// what the TITLES timeline strip's playhead follows. `None` until the
     /// daemon sends one.
@@ -959,6 +978,8 @@ impl StudioUiState {
             health: None,
             clocks: Vec::new(),
             clocks_error: None,
+            frozen_still: None,
+            frozen_still_error: None,
             title_phases: None,
             replay: None,
             reels: Vec::new(),

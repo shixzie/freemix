@@ -11,15 +11,16 @@ use fm_client::{
     Client, ConnectionState, ReconnectBackoff, SessionEvent, TcpSession, TcpSessionError,
 };
 use fm_protocol::{
-    AudioPluginStatusRequest, CommandMessage, CommandPayload, HeartbeatMessage,
-    ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
+    AudioPluginStatusRequest, CommandMessage, CommandPayload, FrozenStillRequest,
+    FrozenStillResponse, HeartbeatMessage, ReplayPreviewRequest, ScenePreviewRequest,
+    TitlePreviewRequest,
 };
 use fm_record_doc::{BextLoudness, RecordBus, RecorderTrackMap, TrackLimits};
 use fm_ui_egui::{
-    DisplayOutputAnswer, RecorderTrackBus, RecorderTrackFileState, RecorderTrackFileView,
-    RecorderTrackLayout, RecorderTrackLimitsView, RecorderTrackLoudnessView, RecorderTrackMapView,
-    RecorderTrackRecordingState, RecorderTrackSource, RecorderTrackStatusView, RecorderTrackView,
-    TitleAnimationRefusal, TitleUpdate,
+    DisplayOutputAnswer, FrozenStillCapture, RecorderTrackBus, RecorderTrackFileState,
+    RecorderTrackFileView, RecorderTrackLayout, RecorderTrackLimitsView, RecorderTrackLoudnessView,
+    RecorderTrackMapView, RecorderTrackRecordingState, RecorderTrackSource,
+    RecorderTrackStatusView, RecorderTrackView, TitleAnimationRefusal, TitleUpdate,
 };
 
 use crate::titles::TitleRelay;
@@ -157,6 +158,12 @@ pub struct StudioRuntime {
     clocks_request: Option<(String, std::time::Instant)>,
     /// The latest clock refusal or request failure the window shows.
     clocks_error: Option<String>,
+    /// The latest frozen-input PNG the daemon exported (SW-016).
+    frozen_still: Option<FrozenStillCapture>,
+    /// The frozen-still request ID awaiting an answer, if any.
+    still_request: Option<String>,
+    /// The latest frozen-still refusal or request failure.
+    still_error: Option<String>,
     /// The supervised project bundle, when Studio owns the daemon.
     project_bundle: Option<PathBuf>,
     /// Each recorder slot's authored track map, read from the bundle.
@@ -253,6 +260,9 @@ impl StudioRuntime {
             clocks: Vec::new(),
             clocks_request: None,
             clocks_error: None,
+            frozen_still: None,
+            still_request: None,
+            still_error: None,
             project_bundle,
             record_track_maps,
             record_track_documents,
@@ -789,6 +799,80 @@ impl StudioRuntime {
         {
             Ok(index) => self.clocks[index] = reading.clone(),
             Err(index) => self.clocks.insert(index, reading.clone()),
+        }
+    }
+
+    /// The latest frozen-input PNG the daemon exported (SW-016).
+    #[must_use]
+    pub(crate) fn frozen_still(&self) -> Option<&FrozenStillCapture> {
+        self.frozen_still.as_ref()
+    }
+
+    /// The latest frozen-still refusal or request failure, if any.
+    #[must_use]
+    pub(crate) fn frozen_still_error(&self) -> Option<&str> {
+        self.still_error.as_deref()
+    }
+
+    /// Asks the daemon to export frozen `input`'s latched picture as a PNG
+    /// (SW-016, Protocol 2.164) without blocking; the answer arrives as
+    /// [`SessionEvent::FrozenStillResponse`].
+    pub(crate) fn request_frozen_still(&mut self, input: fm_types::InputId) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        if !self.session.is_connected() {
+            self.still_error = Some("the control connection is not ready".to_owned());
+            return false;
+        }
+        if self.still_request.is_some() {
+            return false;
+        }
+        let request_id = format!(
+            "studio-frozen-still-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let sent = self.transport == ControlTransport::Tcp
+            && self
+                .session
+                .send_frozen_still_request(FrozenStillRequest {
+                    protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                    request_id: request_id.clone(),
+                    input: fm_protocol::WireInputId::from_domain(input),
+                })
+                .is_ok();
+        if sent {
+            self.still_request = Some(request_id);
+            self.still_error = None;
+        } else {
+            self.still_error = Some("the frozen-still request could not be sent".to_owned());
+        }
+        sent
+    }
+
+    /// Applies the daemon's answer to one frozen-still request.
+    pub(crate) fn apply_frozen_still_response(&mut self, response: &FrozenStillResponse) {
+        if self
+            .still_request
+            .as_ref()
+            .is_some_and(|request_id| request_id == &response.request_id)
+        {
+            self.still_request = None;
+        }
+        self.frozen_still = Some(FrozenStillCapture {
+            input: response.input.to_domain(),
+            width: response.width,
+            height: response.height,
+            asset_uri: response.asset_uri.clone(),
+            path: response.path.clone(),
+        });
+        self.still_error = None;
+    }
+
+    /// Records a frozen-still refusal naming `request_id`, when it is the
+    /// request this runtime awaits.
+    pub(crate) fn apply_frozen_still_error(&mut self, request_id: &str, message: String) {
+        if self.still_request.as_deref() == Some(request_id) {
+            self.still_request = None;
+            self.still_error = Some(message);
         }
     }
 

@@ -418,6 +418,11 @@ pub enum SessionEvent {
     ClockControlResponse {
         response: fm_protocol::ClockControlResponse,
     },
+    /// The daemon answered one frozen-still export request (SW-016,
+    /// Protocol 2.164).
+    FrozenStillResponse {
+        response: fm_protocol::FrozenStillResponse,
+    },
     /// The daemon answered a display inventory request (Protocol 2.42).
     /// The inventory is also in the replicated model.
     DisplayInventory {
@@ -573,6 +578,8 @@ pub struct TcpSession {
     pending_diagnostics: Option<String>,
     /// The production-clock control request IDs awaiting an answer.
     pending_clock_requests: VecDeque<String>,
+    /// The frozen-still request IDs awaiting an answer.
+    pending_frozen_stills: VecDeque<String>,
     last_audio_meter_sequence: Option<u64>,
     latest_audio_meters: Option<AudioMetersMessage>,
     last_stream_status_sequence: Option<u64>,
@@ -732,6 +739,7 @@ impl TcpSession {
             sent_commands: VecDeque::new(),
             pending_diagnostics: None,
             pending_clock_requests: VecDeque::new(),
+            pending_frozen_stills: VecDeque::new(),
             last_audio_meter_sequence: None,
             latest_audio_meters: None,
             last_stream_status_sequence: None,
@@ -1725,6 +1733,54 @@ impl TcpSession {
         result
     }
 
+    /// Sends one frozen-still export request (SW-016, Protocol 2.164) and
+    /// returns at once; the answer arrives as
+    /// [`SessionEvent::FrozenStillResponse`] from [`Self::receive`], or as a
+    /// [`SessionEvent::ServerError`] naming the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected, the request ID is already
+    /// pending or invalid, or encoding or writing the request fails.
+    pub fn send_frozen_still_request(
+        &mut self,
+        request: fm_protocol::FrozenStillRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        let request_id = request.request_id.clone();
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(TcpSessionError::Client(ClientError::InvalidConfig(
+                "frozen still request ID must be 1-128 ASCII graphic bytes",
+            )));
+        }
+        if self
+            .pending_frozen_stills
+            .iter()
+            .any(|pending| pending == &request_id)
+        {
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        if request.protocol != CURRENT_PROTOCOL_VERSION {
+            return Err(TcpSessionError::Client(ClientError::InvalidConfig(
+                "frozen still protocol must be the current version",
+            )));
+        }
+        self.pending_frozen_stills.push_back(request_id.clone());
+        let result = self
+            .send_wire_wait(&WireMessage::FrozenStillRequest(request), None)
+            .and_then(|()| self.flush_wire_wait(None));
+        if result.is_err() {
+            self.pending_frozen_stills
+                .retain(|pending| pending != &request_id);
+        }
+        result
+    }
+
     /// Sends one diagnostics request and waits for its matching response.
     /// Valid durable and runtime events, command results, and heartbeat
     /// acknowledgements may arrive while waiting; they are reconciled into the
@@ -1834,6 +1890,21 @@ impl TcpSession {
                             return Err(TcpSessionError::UnexpectedMessage);
                         }
                         self.pending_clock_requests
+                            .retain(|pending| pending != &response.request_id);
+                    }
+                    // A still answer can race a diagnostics wait; it is
+                    // validated and consumed so it never disconnects.
+                    WireMessage::FrozenStillResponse(response) => {
+                        if response.protocol != CURRENT_PROTOCOL_VERSION
+                            || !self
+                                .pending_frozen_stills
+                                .iter()
+                                .any(|pending| pending == &response.request_id)
+                        {
+                            self.transition_disconnect();
+                            return Err(TcpSessionError::UnexpectedMessage);
+                        }
+                        self.pending_frozen_stills
                             .retain(|pending| pending != &response.request_id);
                     }
                     WireMessage::StreamStatus(status) => {
@@ -2010,6 +2081,20 @@ impl TcpSession {
                     .retain(|pending| pending != &response.request_id);
                 Ok(SessionEvent::ClockControlResponse { response })
             }
+            WireMessage::FrozenStillResponse(response) => {
+                if response.protocol != CURRENT_PROTOCOL_VERSION
+                    || !self
+                        .pending_frozen_stills
+                        .iter()
+                        .any(|pending| pending == &response.request_id)
+                {
+                    self.transition_disconnect();
+                    return Err(TcpSessionError::UnexpectedMessage);
+                }
+                self.pending_frozen_stills
+                    .retain(|pending| pending != &response.request_id);
+                Ok(SessionEvent::FrozenStillResponse { response })
+            }
             WireMessage::MonitorFrame(frame) => {
                 let complete = self.validate_monitor_frame(&frame)?;
                 Ok(SessionEvent::MonitorFrame {
@@ -2121,7 +2206,6 @@ impl TcpSession {
             | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::ReplayStatusRequest(_)
             | WireMessage::FrozenStillRequest(_)
-            | WireMessage::FrozenStillResponse(_)
             | WireMessage::AudioPluginStatusRequest(_)
             | WireMessage::ReelStatusRequest(_)
             | WireMessage::HealthAlertRequest(_) => {

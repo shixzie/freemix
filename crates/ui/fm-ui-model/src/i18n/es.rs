@@ -1212,6 +1212,25 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::TileFreezeHover,
         t("Mantener la imagen actual de esta entrada"),
     ),
+    (Msg::CaptureStill, t("Capturar fotograma")),
+    (
+        Msg::TileCaptureStillHover,
+        t(
+            "Guardar la imagen congelada en el paquete del proyecto como PNG y mostrar su URI de recurso",
+        ),
+    ),
+    (Msg::StillAssetLabel, t("Fotograma:")),
+    (
+        Msg::StillAssetHover,
+        t(
+            "El PNG capturado está guardado en el paquete del proyecto; usa este URI de recurso para añadirlo como entrada de imagen",
+        ),
+    ),
+    (Msg::StillFailedLabel, t("Error al capturar:")),
+    (
+        Msg::StillFailedHover,
+        t("El servidor rechazó la solicitud de fotograma congelado"),
+    ),
     (
         Msg::TileUnfreezeHover,
         t("Reanudar la imagen en vivo de esta entrada"),

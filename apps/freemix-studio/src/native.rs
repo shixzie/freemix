@@ -1502,6 +1502,7 @@ fn run_worker(
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::RequestClocks
+                | StudioIntent::CaptureFrozenStill { .. }
                 | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::SaveRecorderTrackMap { .. }
                 | StudioIntent::SaveRecorderTrackLimits { .. }
@@ -1571,6 +1572,22 @@ fn run_worker(
                     runtime.apply_clock_control_response(&response);
                     true
                 }
+                Ok(Some(SessionEvent::FrozenStillResponse { response })) => {
+                    runtime.apply_frozen_still_response(&response);
+                    true
+                }
+                Ok(Some(SessionEvent::ServerError(error)))
+                    if error
+                        .request_id
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("studio-frozen-still-")) =>
+                {
+                    runtime.apply_frozen_still_error(
+                        error.request_id.as_deref().unwrap_or_default(),
+                        error.error.message.clone(),
+                    );
+                    true
+                }
                 Ok(Some(SessionEvent::ServerError(error)))
                     if animation::preview_error_id(&error).is_some() =>
                 {
@@ -1625,6 +1642,7 @@ fn run_worker(
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::RequestClocks
+                | StudioIntent::CaptureFrozenStill { .. }
                 | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::SaveRecorderTrackMap { .. }
                 | StudioIntent::SaveRecorderTrackLimits { .. }
@@ -1750,6 +1768,15 @@ fn handle_preview_request(
     if let StudioIntent::PagedPage(request) = request {
         if !recovery.active() {
             runtime.request_paged_page(request);
+        }
+        return true;
+    }
+    // A frozen input's PNG export (SW-016, Protocol 2.164) goes out only
+    // while connected; the daemon writes it into its bundle and answers with
+    // the asset URI.
+    if let StudioIntent::CaptureFrozenStill { input } = request {
+        if !recovery.active() {
+            runtime.request_frozen_still(input);
         }
         return true;
     }
@@ -2211,6 +2238,22 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::TitlePreview { complete, .. }
                         | SessionEvent::ScenePreview { complete, .. }
                         | SessionEvent::ReplayPreview { complete, .. } => Some(*complete),
+                        SessionEvent::FrozenStillResponse { response } => {
+                            runtime.apply_frozen_still_response(response);
+                            Some(true)
+                        }
+                        SessionEvent::ServerError(error)
+                            if error
+                                .request_id
+                                .as_deref()
+                                .is_some_and(|id| id.starts_with("studio-frozen-still-")) =>
+                        {
+                            runtime.apply_frozen_still_error(
+                                error.request_id.as_deref().unwrap_or_default(),
+                                error.error.message.clone(),
+                            );
+                            Some(true)
+                        }
                         SessionEvent::ServerError(error)
                             if animation::preview_error_id(error).is_some() =>
                         {
@@ -3302,6 +3345,9 @@ fn intent_payload(
         StudioIntent::RequestClocks => {
             return Err("A clock readings request is not a command".to_owned());
         }
+        StudioIntent::CaptureFrozenStill { .. } => {
+            return Err("A frozen-still capture is not a command".to_owned());
+        }
         StudioIntent::RefreshRecorderTracks => {
             return Err("A recorder track map refresh is not a command".to_owned());
         }
@@ -3710,6 +3756,8 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                 .map(Box::new);
             state.clocks = runtime.clocks().to_vec();
             state.clocks_error = runtime.clocks_error().map(str::to_owned);
+            state.frozen_still = runtime.frozen_still().cloned();
+            state.frozen_still_error = runtime.frozen_still_error().map(str::to_owned);
             state.recording_desired = recording_desired_slots(view);
         }
         state.view = view;
