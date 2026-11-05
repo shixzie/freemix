@@ -3066,18 +3066,19 @@ one mix as an undoable project edit, the show state validates it, and the
 daemon folds the routing back into the project on save. Protocol 2.158 carries
 the list in every snapshot, sets or clears one with `secondary_mix_set` /
 `secondary_mix_clear`, and announces an edit (or its undo or redo) with
-`secondary_mix_changed`; the client model replicates it. The engine resolves
-the configured mixes into a static bank frame each tick and feeds it to
-logical-output resolution, so a `Mix(n)` output source and multiview mix cells
-resolve against the project's Program/Preview routing. Native realization now
-composes a logical output's secondary-mix background: a single input, black, a
-nested mix, or a running transition, followed by the mix's full-frame overlay
+`secondary_mix_changed`; the client model replicates it. The engine owns a
+live `MixBank` for Main plus the configured mixes, advances it once per frame
+(so a mix-to-mix read sees the previous frame), follows the realized Main
+Program/Preview, exposes the bank frame as `FrameResult.secondary_mixes`, and
+resolves logical outputs against it; `cut_secondary_mix` and
+`transition_secondary_mix` move a mix. Native realization now composes a
+logical output's secondary-mix background: a single input, black, a nested
+mix, or a running transition, followed by the mix's full-frame overlay
 channels; a Program background still reads the shared Program transition.
-Remaining gaps: no live `MixBank` frame loop (mixes have no cuts, transitions,
-or one-frame delayed reads in the engine yet), no Studio or CLI editor and no
-audio path, and stinger effects still do not check slot readiness or fallback;
-overlay fades, mix-sourced overlays, T-bar, and Fade-to-Black inside a mix are
-absent. `IN-023` remains planned.
+Remaining gaps: no protocol, Studio, or CLI surface for live mix cuts and
+transitions and no audio path, and stinger effects still do not check slot
+readiness or fallback; overlay fades, mix-sourced overlays, T-bar, and
+Fade-to-Black inside a mix are absent. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
