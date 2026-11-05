@@ -120,6 +120,41 @@ impl GridLayout {
         }
     }
 
+    /// The smallest square-ish grid that holds `cells` positions, with at
+    /// most [`MAX_MULTIVIEW_COLUMNS`] columns and [`MAX_MULTIVIEW_ROWS`] rows.
+    ///
+    /// One cell is 1x1, two are 2x1, three or four are 2x2, five or six are
+    /// 3x2, seven through nine are 3x3, ten through twelve are 4x3, and
+    /// thirteen through sixteen are 4x4.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultiviewError::EmptyPlan`] for zero cells or
+    /// [`MultiviewError::TooManyCells`] above [`MAX_MULTIVIEW_CELLS`].
+    pub fn for_cells(cells: usize) -> Result<Self, MultiviewError> {
+        if cells == 0 {
+            return Err(MultiviewError::EmptyPlan);
+        }
+        if cells > MAX_MULTIVIEW_CELLS {
+            return Err(MultiviewError::TooManyCells {
+                actual: cells,
+                maximum: MAX_MULTIVIEW_CELLS,
+            });
+        }
+        let mut columns = 1_u8;
+        while columns < MAX_MULTIVIEW_COLUMNS
+            && usize::from(columns) * usize::from(columns) < cells
+        {
+            columns += 1;
+        }
+        let rows = cells.div_ceil(usize::from(columns));
+        let rows = u8::try_from(rows).map_err(|_| MultiviewError::TooManyCells {
+            actual: cells,
+            maximum: MAX_MULTIVIEW_CELLS,
+        })?;
+        Self::new(columns, rows)
+    }
+
     #[must_use]
     pub const fn columns(self) -> u8 {
         self.columns
@@ -386,6 +421,143 @@ impl MultiviewPlan {
     }
 }
 
+/// One grid cell with exact integer canvas geometry, before a source is
+/// chosen. Cell bounds are half-open: the cell covers `x..x + width` and
+/// `y..y + height`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GridCell {
+    pub row: u8,
+    pub column: u8,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl GridCell {
+    /// Reports whether the half-open cell rectangle contains `(x, y)`.
+    #[must_use]
+    pub const fn contains(&self, x: u32, y: u32) -> bool {
+        x >= self.x
+            && y >= self.y
+            && x < self.x.saturating_add(self.width)
+            && y < self.y.saturating_add(self.height)
+    }
+}
+
+/// A source-agnostic grid plan with cells in row-major order.
+///
+/// This is the geometry shared by project multiviews and logical-output
+/// multiviews; callers pair each cell with their own feed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GridPlan {
+    cells: Vec<GridCell>,
+}
+
+impl GridPlan {
+    #[must_use]
+    pub fn cells(&self) -> &[GridCell] {
+        &self.cells
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    #[must_use]
+    pub fn cell(&self, index: usize) -> Option<&GridCell> {
+        self.cells.get(index)
+    }
+
+    /// Returns the index of the cell containing the exact pixel `(x, y)`.
+    #[must_use]
+    pub fn hit_test(&self, x: u32, y: u32) -> Option<usize> {
+        self.cells.iter().position(|cell| cell.contains(x, y))
+    }
+}
+
+/// Plans `cells` positions into a `layout` grid over the canvas.
+///
+/// Each column receives `canvas_width / columns` pixels, and each of the first
+/// `canvas_width % columns` columns receives one extra pixel; rows follow the
+/// same rule topmost-first. Cells are emitted in row-major order for the first
+/// `cells` grid positions. A fully populated grid tiles the canvas exactly with
+/// no gaps or overlaps.
+///
+/// # Errors
+///
+/// Returns a typed error for a zero canvas dimension, a canvas smaller than
+/// the grid, or a cell count outside `1..=`[`GridLayout::capacity`].
+pub fn plan_grid(
+    canvas_width: u32,
+    canvas_height: u32,
+    layout: GridLayout,
+    cells: usize,
+) -> Result<GridPlan, MultiviewError> {
+    if canvas_width == 0 {
+        return Err(MultiviewError::ZeroCanvasWidth);
+    }
+    if canvas_height == 0 {
+        return Err(MultiviewError::ZeroCanvasHeight);
+    }
+    if cells == 0 {
+        return Err(MultiviewError::EmptyPlan);
+    }
+    let capacity = layout.capacity();
+    if cells > capacity {
+        return Err(MultiviewError::GridCapacityExceeded {
+            cells,
+            maximum: capacity,
+        });
+    }
+    let columns = layout.columns();
+    let rows = layout.rows();
+    if canvas_width < u32::from(columns) || canvas_height < u32::from(rows) {
+        return Err(MultiviewError::CanvasSmallerThanGrid {
+            width: canvas_width,
+            height: canvas_height,
+            columns,
+            rows,
+        });
+    }
+
+    let column_base = canvas_width / u32::from(columns);
+    let column_remainder = canvas_width % u32::from(columns);
+    let row_base = canvas_height / u32::from(rows);
+    let row_remainder = canvas_height % u32::from(rows);
+
+    let mut planned = Vec::with_capacity(cells);
+    let mut y = 0_u32;
+    'cells: for row in 0..rows {
+        let height = row_base + u32::from(u32::from(row) < row_remainder);
+        let mut x = 0_u32;
+        for column in 0..columns {
+            let index = usize::from(row) * usize::from(columns) + usize::from(column);
+            if index >= cells {
+                break 'cells;
+            }
+            let width = column_base + u32::from(u32::from(column) < column_remainder);
+            planned.push(GridCell {
+                row,
+                column,
+                x,
+                y,
+                width,
+                height,
+            });
+            x += width;
+        }
+        y += height;
+    }
+    Ok(GridPlan { cells: planned })
+}
+
 /// Plans one multiview definition into exact integer cell rectangles.
 ///
 /// Each column receives `canvas_width / columns` pixels, and each of the first
@@ -405,52 +577,26 @@ pub fn plan_multiview(
     definition: &MultiviewDefinition,
 ) -> Result<MultiviewPlan, MultiviewError> {
     definition.validate()?;
-    if canvas_width == 0 {
-        return Err(MultiviewError::ZeroCanvasWidth);
-    }
-    if canvas_height == 0 {
-        return Err(MultiviewError::ZeroCanvasHeight);
-    }
-    let columns = definition.layout.columns();
-    let rows = definition.layout.rows();
-    if canvas_width < u32::from(columns) || canvas_height < u32::from(rows) {
-        return Err(MultiviewError::CanvasSmallerThanGrid {
-            width: canvas_width,
-            height: canvas_height,
-            columns,
-            rows,
-        });
-    }
-
-    let column_base = canvas_width / u32::from(columns);
-    let column_remainder = canvas_width % u32::from(columns);
-    let row_base = canvas_height / u32::from(rows);
-    let row_remainder = canvas_height % u32::from(rows);
-
-    let mut cells = Vec::with_capacity(definition.sources.len());
-    let mut y = 0_u32;
-    'cells: for row in 0..rows {
-        let height = row_base + u32::from(u32::from(row) < row_remainder);
-        let mut x = 0_u32;
-        for column in 0..columns {
-            let index = usize::from(row) * usize::from(columns) + usize::from(column);
-            if index >= definition.sources.len() {
-                break 'cells;
-            }
-            let width = column_base + u32::from(u32::from(column) < column_remainder);
-            cells.push(MultiviewCell {
-                source: definition.sources[index],
-                row,
-                column,
-                x,
-                y,
-                width,
-                height,
-            });
-            x += width;
-        }
-        y += height;
-    }
+    let grid = plan_grid(
+        canvas_width,
+        canvas_height,
+        definition.layout,
+        definition.sources.len(),
+    )?;
+    let cells = grid
+        .cells()
+        .iter()
+        .zip(&definition.sources)
+        .map(|(cell, source)| MultiviewCell {
+            source: *source,
+            row: cell.row,
+            column: cell.column,
+            x: cell.x,
+            y: cell.y,
+            width: cell.width,
+            height: cell.height,
+        })
+        .collect();
     Ok(MultiviewPlan { cells })
 }
 
@@ -480,16 +626,16 @@ pub fn compile_multiview_scene(
     border_width: u32,
     resolve: impl Fn(MultiviewSource) -> Option<SourceId>,
 ) -> Result<Scene, MultiviewError> {
+    let cells = grid_cells(&plan.cells);
     compile_cells(
-        plan,
+        &cells,
         canvas_width,
         canvas_height,
         background,
         border_width,
         |index, cell| {
-            let source = resolve(cell.source).ok_or(MultiviewError::UnresolvedSource {
-                source: cell.source,
-            })?;
+            let source = plan.cells[index].source;
+            let source = resolve(source).ok_or(MultiviewError::UnresolvedSource { source })?;
             let x = i32::try_from(cell.x)
                 .map_err(|_| MultiviewError::CellPositionOutOfRange { cell: index })?;
             let y = i32::try_from(cell.y)
@@ -546,16 +692,16 @@ pub fn compile_multiview_scene_fitted(
     policy: FitPolicy,
     resolve: impl Fn(MultiviewSource) -> Option<MultiviewSourceFrame>,
 ) -> Result<Scene, MultiviewError> {
+    let cells = grid_cells(&plan.cells);
     compile_cells(
-        plan,
+        &cells,
         canvas_width,
         canvas_height,
         background,
         border_width,
         |index, cell| {
-            let frame = resolve(cell.source).ok_or(MultiviewError::UnresolvedSource {
-                source: cell.source,
-            })?;
+            let source = plan.cells[index].source;
+            let frame = resolve(source).ok_or(MultiviewError::UnresolvedSource { source })?;
             let placement = place_source(
                 frame.width,
                 frame.height,
@@ -570,15 +716,74 @@ pub fn compile_multiview_scene_fitted(
     )
 }
 
-type CellLayer = (SourceId, Option<CropRect>, Transform);
-
-fn compile_cells(
-    plan: &MultiviewPlan,
+/// Compiles one source-agnostic [`GridPlan`] into a [`Scene`], placing each
+/// cell's source inside it by `policy`.
+///
+/// This is [`compile_multiview_scene_fitted`] for callers whose cell feeds are
+/// not [`MultiviewSource`]s, such as logical outputs whose cells may show other
+/// logical outputs (SW-012). `resolve` reports each cell's source identifier
+/// and frame size; cells that resolve to the same identifier share one source.
+///
+/// # Errors
+///
+/// Returns the errors of [`compile_multiview_scene`], or
+/// [`MultiviewError::UnresolvedGridCell`] when a cell's feed cannot be
+/// resolved, or [`MultiviewError::Placement`] when it cannot be placed.
+pub fn compile_grid_scene_fitted(
+    plan: &GridPlan,
     canvas_width: u32,
     canvas_height: u32,
     background: Rgba8,
     border_width: u32,
-    cell_layer: impl Fn(usize, &MultiviewCell) -> Result<CellLayer, MultiviewError>,
+    policy: FitPolicy,
+    resolve: impl Fn(usize, &GridCell) -> Option<MultiviewSourceFrame>,
+) -> Result<Scene, MultiviewError> {
+    compile_cells(
+        &plan.cells,
+        canvas_width,
+        canvas_height,
+        background,
+        border_width,
+        |index, cell| {
+            let frame = resolve(index, cell)
+                .ok_or(MultiviewError::UnresolvedGridCell { cell: index })?;
+            let placement = place_source(
+                frame.width,
+                frame.height,
+                None,
+                CanvasRect::new(cell.x, cell.y, cell.width, cell.height),
+                Rotation::Deg0,
+                policy,
+            )
+            .map_err(|error| MultiviewError::Placement { cell: index, error })?;
+            Ok((frame.source, placement.crop(), placement.transform()))
+        },
+    )
+}
+
+fn grid_cells(cells: &[MultiviewCell]) -> Vec<GridCell> {
+    cells
+        .iter()
+        .map(|cell| GridCell {
+            row: cell.row,
+            column: cell.column,
+            x: cell.x,
+            y: cell.y,
+            width: cell.width,
+            height: cell.height,
+        })
+        .collect()
+}
+
+type CellLayer = (SourceId, Option<CropRect>, Transform);
+
+fn compile_cells(
+    cells: &[GridCell],
+    canvas_width: u32,
+    canvas_height: u32,
+    background: Rgba8,
+    border_width: u32,
+    cell_layer: impl Fn(usize, &GridCell) -> Result<CellLayer, MultiviewError>,
 ) -> Result<Scene, MultiviewError> {
     if canvas_width == 0 {
         return Err(MultiviewError::ZeroCanvasWidth);
@@ -586,16 +791,16 @@ fn compile_cells(
     if canvas_height == 0 {
         return Err(MultiviewError::ZeroCanvasHeight);
     }
-    if plan.cells.is_empty() {
+    if cells.is_empty() {
         return Err(MultiviewError::EmptyPlan);
     }
-    if plan.cells.len() > MAX_MULTIVIEW_CELLS {
+    if cells.len() > MAX_MULTIVIEW_CELLS {
         return Err(MultiviewError::TooManyCells {
-            actual: plan.cells.len(),
+            actual: cells.len(),
             maximum: MAX_MULTIVIEW_CELLS,
         });
     }
-    for (index, cell) in plan.cells.iter().enumerate() {
+    for (index, cell) in cells.iter().enumerate() {
         let fits = cell.width > 0
             && cell.height > 0
             && cell
@@ -612,10 +817,10 @@ fn compile_cells(
     }
 
     let mut scene = Scene::new(canvas_width, canvas_height, background)?;
-    for (index, cell) in plan.cells.iter().enumerate() {
+    for (index, cell) in cells.iter().enumerate() {
         let (source, crop, transform) = cell_layer(index, cell)?;
         let z = i32::try_from(index).map_err(|_| MultiviewError::TooManyCells {
-            actual: plan.cells.len(),
+            actual: cells.len(),
             maximum: MAX_MULTIVIEW_CELLS,
         })?;
         let mut layer = SourceLayer::new(source, z, transform);
@@ -692,6 +897,9 @@ pub enum MultiviewError {
     },
     UnresolvedSource {
         source: MultiviewSource,
+    },
+    UnresolvedGridCell {
+        cell: usize,
     },
     Placement {
         cell: usize,
@@ -775,6 +983,9 @@ impl fmt::Display for MultiviewError {
                 formatter,
                 "multiview cell source {source:?} could not be resolved"
             ),
+            Self::UnresolvedGridCell { cell } => {
+                write!(formatter, "grid plan cell {cell} could not be resolved")
+            }
             Self::Placement { cell, error } => write!(
                 formatter,
                 "multiview cell {cell} source cannot be placed: {error}"

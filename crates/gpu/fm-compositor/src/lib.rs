@@ -42,10 +42,11 @@ pub use keying::{
     MAX_EDGE_SOFTNESS, MAX_LIGHT_WRAP_WIDTH, chroma_cb_cr, chroma_distance, sample_auto_key,
 };
 pub use multiview::{
-    ConfidenceMode, GridLayout, MAX_MULTIVIEW_CELLS, MAX_MULTIVIEW_COLUMNS,
+    ConfidenceMode, GridCell, GridLayout, GridPlan, MAX_MULTIVIEW_CELLS, MAX_MULTIVIEW_COLUMNS,
     MAX_MULTIVIEW_NAME_BYTES, MAX_MULTIVIEW_ROWS, MultiviewCell, MultiviewDefinition,
     MultiviewError, MultiviewOverlays, MultiviewPlan, MultiviewSource, MultiviewSourceFrame,
-    compile_multiview_scene, compile_multiview_scene_fitted, plan_multiview,
+    compile_grid_scene_fitted, compile_multiview_scene, compile_multiview_scene_fitted, plan_grid,
+    plan_multiview,
 };
 #[cfg(feature = "native-wgpu")]
 pub use native::{

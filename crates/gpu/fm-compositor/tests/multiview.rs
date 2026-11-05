@@ -1,10 +1,11 @@
 use core::num::NonZeroU128;
 
 use fm_compositor::{
-    ConfidenceMode, CpuSourceFrame, GridLayout, MAX_MULTIVIEW_CELLS, MAX_MULTIVIEW_COLUMNS,
-    MAX_MULTIVIEW_NAME_BYTES, MAX_MULTIVIEW_ROWS, MultiviewCell, MultiviewDefinition,
-    MultiviewError, MultiviewOverlays, MultiviewPlan, MultiviewSource, OutputTarget, Rgba8, Scene,
-    SceneError, SourceId, SourceLayer, compile_multiview_scene, compile_scene, execute_cpu,
+    ConfidenceMode, CpuSourceFrame, FitPolicy, GridLayout, MAX_MULTIVIEW_CELLS,
+    MAX_MULTIVIEW_COLUMNS, MAX_MULTIVIEW_NAME_BYTES, MAX_MULTIVIEW_ROWS, MultiviewCell,
+    MultiviewDefinition, MultiviewError, MultiviewOverlays, MultiviewPlan, MultiviewSource,
+    MultiviewSourceFrame, OutputTarget, Rgba8, Scene, SceneError, SourceId, SourceLayer,
+    compile_grid_scene_fitted, compile_multiview_scene, compile_scene, execute_cpu, plan_grid,
     plan_multiview,
 };
 use fm_types::InputId;
@@ -860,7 +861,134 @@ fn input_ids_preserve_the_full_128_bit_value() {
 }
 
 #[test]
-fn overlay_flags_are_independent_placement_intent() {
+fn cell_count_layouts_are_deterministic_and_bounded() {
+    assert_eq!(GridLayout::for_cells(0), Err(MultiviewError::EmptyPlan));
+    assert_eq!(
+        GridLayout::for_cells(MAX_MULTIVIEW_CELLS + 1),
+        Err(MultiviewError::TooManyCells {
+            actual: MAX_MULTIVIEW_CELLS + 1,
+            maximum: MAX_MULTIVIEW_CELLS,
+        })
+    );
+    for (cells, columns, rows) in [
+        (1, 1, 1),
+        (2, 2, 1),
+        (3, 2, 2),
+        (4, 2, 2),
+        (5, 3, 2),
+        (6, 3, 2),
+        (7, 3, 3),
+        (9, 3, 3),
+        (10, 4, 3),
+        (12, 4, 3),
+        (13, 4, 4),
+        (16, 4, 4),
+    ] {
+        let layout = GridLayout::for_cells(cells).unwrap();
+        assert_eq!(
+            (layout.columns(), layout.rows()),
+            (columns, rows),
+            "{cells} cells"
+        );
+        assert!(layout.capacity() >= cells);
+        assert!(layout.capacity() < cells + usize::from(columns), "{cells} cells");
+    }
+}
+
+#[test]
+fn grid_plans_tile_a_partial_grid_and_compile_cell_feeds() {
+    let layout = GridLayout::for_cells(3).unwrap();
+    let plan = plan_grid(4, 4, layout, 3).unwrap();
+    assert_eq!(plan.len(), 3);
+    for index in 0..3 {
+        let cell = plan.cell(index).unwrap();
+        assert_eq!((cell.width, cell.height), (2, 2));
+    }
+    assert_eq!(
+        plan.cells()
+            .iter()
+            .map(|cell| (cell.row, cell.column))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (0, 1), (1, 0)]
+    );
+    assert_eq!(plan.hit_test(0, 0), Some(0));
+    assert_eq!(plan.hit_test(3, 0), Some(1));
+    assert_eq!(plan.hit_test(0, 3), Some(2));
+    assert_eq!(plan.hit_test(3, 3), None);
+
+    let colors = [
+        Rgba8::new(10, 0, 0, 255),
+        Rgba8::new(0, 20, 0, 255),
+        Rgba8::new(0, 0, 30, 255),
+    ];
+    let frames = colors.map(|color| frame(2, 2, &[color; 4]));
+    let scene = compile_grid_scene_fitted(
+        &plan,
+        4,
+        4,
+        BACKGROUND,
+        0,
+        FitPolicy::Fill,
+        |index, _cell| {
+            Some(MultiviewSourceFrame::new(
+                source(u64::try_from(index).unwrap() + 1),
+                2,
+                2,
+            ))
+        },
+    )
+    .unwrap();
+    assert_eq!(scene.layers().len(), 3);
+    let sources = [
+        CpuSourceFrame::new(source(1), &frames[0]),
+        CpuSourceFrame::new(source(2), &frames[1]),
+        CpuSourceFrame::new(source(3), &frames[2]),
+    ];
+    let output = render(&scene, &sources);
+    for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        assert_eq!(output.pixel(x, y), Some(colors[0]));
+    }
+    for (x, y) in [(2, 0), (3, 0), (2, 1), (3, 1)] {
+        assert_eq!(output.pixel(x, y), Some(colors[1]));
+    }
+    for (x, y) in [(0, 2), (1, 2), (0, 3), (1, 3)] {
+        assert_eq!(output.pixel(x, y), Some(colors[2]));
+    }
+    for (x, y) in [(2, 2), (3, 2), (2, 3), (3, 3)] {
+        assert_eq!(output.pixel(x, y), Some(BACKGROUND));
+    }
+}
+
+#[test]
+fn grid_plans_reject_zero_canvas_and_overflowing_cell_counts() {
+    let layout = GridLayout::two_by_two();
+    assert_eq!(
+        plan_grid(0, 4, layout, 1),
+        Err(MultiviewError::ZeroCanvasWidth)
+    );
+    assert_eq!(
+        plan_grid(4, 0, layout, 1),
+        Err(MultiviewError::ZeroCanvasHeight)
+    );
+    assert_eq!(plan_grid(4, 4, layout, 0), Err(MultiviewError::EmptyPlan));
+    assert_eq!(
+        plan_grid(4, 4, layout, 5),
+        Err(MultiviewError::GridCapacityExceeded {
+            cells: 5,
+            maximum: 4,
+        })
+    );
+    assert_eq!(
+        plan_grid(1, 1, layout, 1),
+        Err(MultiviewError::CanvasSmallerThanGrid {
+            width: 1,
+            height: 1,
+            columns: 2,
+            rows: 2,
+        })
+    );
+}
+
     let overlays = MultiviewOverlays::none()
         .with_labels(true)
         .with_tally(true)
