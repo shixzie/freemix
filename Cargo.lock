@@ -2435,6 +2435,7 @@ dependencies = [
  "fm-daemon-statistics",
  "fm-daemon-status",
  "fm-daemon-web",
+ "fm-data",
  "fm-engine",
  "fm-frame",
  "fm-gpu",
