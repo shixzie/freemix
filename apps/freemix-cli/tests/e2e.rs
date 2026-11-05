@@ -172,6 +172,14 @@ impl FakeRemoteServer {
         Self { address, worker }
     }
 
+    /// Serves one frozen-still request with a real 4x3 PNG (SW-016).
+    fn start_frozen_still() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || serve_frozen_still(&listener));
+        Self { address, worker }
+    }
+
     /// Serves one remote command, its durable event, and its realization.
     fn start_edit(edit: RemoteEdit) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1217,6 +1225,42 @@ fn serve_edit(listener: &TcpListener, edit: &RemoteEdit) {
             },
         }),
     );
+}
+
+fn serve_frozen_still(listener: &TcpListener) {
+    let engine = EngineIdentity {
+        engine_id: "project-42".into(),
+        state_epoch: 1,
+        log_id: "fake-remote-log".into(),
+    };
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_role(read_message(&mut reader), Role::Viewer);
+    write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+    let WireMessage::FrozenStillRequest(request) = read_message(&mut reader) else {
+        panic!("expected a frozen_still_request");
+    };
+    let frame = fm_video::ImageFrame::new(
+        4,
+        3,
+        16,
+        (0..12).flat_map(|_| [10, 20, 30, 255]).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let png = fm_video::encode_png_rgba8(&frame).unwrap();
+    for part in fm_protocol::frozen_still_parts(
+        CURRENT_PROTOCOL_VERSION,
+        &request.request_id,
+        request.input,
+        4,
+        3,
+        &png,
+    )
+    .unwrap()
+    {
+        write_message(&mut writer, &WireMessage::FrozenStillResponse(part));
+    }
 }
 
 fn serve_title_snapshot(listener: &TcpListener) {
@@ -8360,6 +8404,32 @@ fn remote_input_freeze_sends_the_exact_edit() {
     ]);
     assert_success(&output);
     server.finish();
+}
+
+/// SW-016, Protocol 2.164: the CLI joins the daemon's PNG parts and writes
+/// the exact still.
+#[test]
+fn remote_frozen_still_writes_the_joined_png() {
+    let context = ContractContext::new();
+    let output = context.root.join("frozen.png");
+    let server = FakeRemoteServer::start_frozen_still();
+    let result = invoke(&[
+        "remote-frozen-still",
+        &server.address(),
+        "1",
+        output.to_str().unwrap(),
+    ]);
+    assert_success(&result);
+    assert!(
+        stdout(&result).contains("frozen-still: input=1 4x3 bytes="),
+        "{}\n{}",
+        stdout(&result),
+        stderr(&result)
+    );
+    let png = fs::read(&output).unwrap();
+    assert!(png.starts_with(&fm_video::PNG_SIGNATURE), "{png:?}");
+    server.finish();
+    fs::remove_dir_all(context.root).unwrap();
 }
 
 /// IN-024, Protocol 2.162: alias authoring sends the exact source payload.
