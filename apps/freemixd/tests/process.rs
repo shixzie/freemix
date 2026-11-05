@@ -6727,6 +6727,7 @@ fn a_live_layer_drawing_an_alias_of_its_own_scene_is_a_refused_cycle() {
             kind: InputKind::Alias {
                 target: domain_input(4),
                 crop: None,
+                effects: Vec::new(),
             },
             required_capabilities: Vec::new(),
         });
