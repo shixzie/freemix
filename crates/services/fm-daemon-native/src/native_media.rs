@@ -8188,10 +8188,25 @@ impl NativeMediaRuntime {
         &self,
         project: &NativeProjectPlan,
         inputs: &[InputId],
+        execution: &NativeSceneExecution,
         feeds: NativeFeedFrames<'_>,
         graded: &mut BTreeMap<InputId, NativeTexture>,
     ) -> Result<(), NativeSourceRenderError> {
-        for input in inputs {
+        let mut feed_inputs = inputs.to_vec();
+        for scene in project
+            .scenes
+            .iter()
+            .filter(|scene| execution.required.contains(&scene.id))
+        {
+            for (_, source) in &scene.sources {
+                if let NativeSceneSource::Feed { input, .. } = source {
+                    feed_inputs.push(*input);
+                }
+            }
+        }
+        feed_inputs.sort_unstable();
+        feed_inputs.dedup();
+        for input in &feed_inputs {
             if graded.contains_key(input) {
                 continue;
             }
@@ -9896,7 +9911,7 @@ impl NativeMediaRuntime {
         let mut graded = self
             .grade_project_leaves(registry, project, &leaf_inputs, &execution, frame.deadline)
             .await?;
-        self.grade_feed_inputs(project, &leaf_inputs, feeds, &mut graded)
+        self.grade_feed_inputs(project, &leaf_inputs, &execution, feeds, &mut graded)
             .await?;
         let (program, scene_outputs) = self
             .render_project_base_with_stingers(
