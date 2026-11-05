@@ -11825,7 +11825,7 @@ mod tests {
                 NativeSourceLimits::default(),
             )
             .unwrap();
-        let mut project = native_plan_project(2, 2);
+        let mut project = native_plan_project(1, 1);
         add_leaf(&mut project, program);
         project.add_input(Input {
             id: feed,
