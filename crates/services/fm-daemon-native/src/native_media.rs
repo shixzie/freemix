@@ -11903,6 +11903,91 @@ mod tests {
     }
 
     #[test]
+    fn native_scene_layers_show_committed_feed_pictures() {
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(82).unwrap());
+        let program = input(1);
+        let feed = input(2);
+        let scene_input = input(3);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: program,
+                    frame: solid_retained_frame(clock_domain, [255, 0, 0, 255], 4, 2),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, program);
+        project.add_input(Input {
+            id: feed,
+            name: "program feed".into(),
+            kind: InputKind::MixFeed(fm_model::MixFeed::Program),
+            required_capabilities: Vec::new(),
+        });
+        add_scene_input(&mut project, scene_input, scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(feed), 0)],
+        );
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+
+        let first = runtime
+            .render_project_frame_result_blocking(
+                playback.registry(),
+                &plan,
+                &frame_result(0, program, None),
+            )
+            .unwrap();
+        let committed = runtime
+            .copy_feed_texture_blocking(plan.dimensions(), &first)
+            .unwrap();
+
+        let layered = runtime
+            .render_project_frame_result_with_stingers_and_feeds_blocking(
+                playback.registry(),
+                playback.registry(),
+                &plan,
+                &frame_result(1, scene_input, None),
+                NativeFeedFrames {
+                    program: Some(&committed),
+                    preview: None,
+                },
+            )
+            .unwrap();
+        let layered_pixels = rgba16f_components(
+            &block_on(runtime.diagnostic_readback(&layered))
+                .unwrap()
+                .bytes,
+        );
+        assert!(
+            layered_pixels[0] > 0.5 && layered_pixels[0] > layered_pixels[2] * 2.0,
+            "the scene layer repeats the committed red picture"
+        );
+
+        let black = runtime
+            .render_project_frame_result_blocking(
+                playback.registry(),
+                &plan,
+                &frame_result(1, scene_input, None),
+            )
+            .unwrap();
+        let black_pixels =
+            rgba16f_components(&block_on(runtime.diagnostic_readback(&black)).unwrap().bytes);
+        assert!(
+            black_pixels.iter().take(3).all(|channel| *channel < 0.05),
+            "a feed layer with no committed picture is black"
+        );
+    }
+
+    #[test]
     fn native_project_plan_routes_aliases_and_draws_feeds_black() {
         let mut project = native_plan_project(4, 2);
         add_leaf(&mut project, input(1));
@@ -11959,12 +12044,14 @@ mod tests {
                 .iter()
                 .any(|(_, source)| *source == NativeSceneSource::Leaf(input(1)))
         );
-        assert!(
-            scene_plan
-                .sources
-                .iter()
-                .any(|(_, source)| *source == NativeSceneSource::Scene(black))
-        );
+        assert!(scene_plan.sources.iter().any(|(_, source)| {
+            *source
+                == NativeSceneSource::Feed {
+                    input: input(4),
+                    feed: fm_model::MixFeed::Program,
+                }
+        }));
+        assert_eq!(scene_plan.black_scene, Some(black));
 
         // A cropped alias is refused instead of drawing the uncropped source.
         let mut cropped = native_plan_project(4, 2);
