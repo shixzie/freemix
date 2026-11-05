@@ -518,6 +518,40 @@ impl ThumbnailRenderer {
     /// daemon.
     #[allow(clippy::too_many_lines)] // one arm per input kind
     fn picture(&mut self, input: &Input, work: &ThumbnailWork, now: Instant) -> Option<ImageFrame> {
+        // An alias shows its concrete target's picture under its own crop and
+        // grade; intermediate alias crops are ignored, as in the resolver.
+        let mut resolved = input;
+        let mut alias_crop = None;
+        let mut hops = 0;
+        while let InputKind::Alias { target, crop } = &resolved.kind {
+            if hops == 0 {
+                alias_crop = *crop;
+            }
+            hops += 1;
+            if hops > work.project.inputs().len() {
+                return None;
+            }
+            resolved = work
+                .project
+                .inputs()
+                .iter()
+                .find(|candidate| candidate.id == *target)?;
+        }
+        if resolved.id != input.id {
+            let mut picture = self.picture(resolved, work, now)?;
+            if let Some(crop) = alias_crop {
+                picture = fm_video::crop(
+                    &picture,
+                    fm_video::CropRect::new(crop.x, crop.y, crop.width, crop.height),
+                )
+                .ok()?;
+            }
+            let graded = match work.grades.input(input.id) {
+                Some(grade) => fm_compositor::apply_grade(&picture, grade).ok()?,
+                None => picture,
+            };
+            return Some(over_black(&graded));
+        }
         let id = input.id;
         let pipeline = self
             .pipeline
@@ -548,6 +582,7 @@ impl ThumbnailRenderer {
                 }
                 Some(frames) => {
                     live = SampledSources {
+                        project: &work.project,
                         live: frames,
                         simulated: pipeline,
                     };
@@ -785,12 +820,38 @@ fn taken_frame_of(titles: &[(InputId, AnimSample, Option<u64>)], input: InputId)
 /// sampled straight onto the grid (never copied whole), and the simulated
 /// pipeline for a simulated input the snapshot lacks.
 struct SampledSources<'a> {
+    project: &'a Project,
     live: &'a LiveSourceFrames,
     simulated: &'a SimulatedPipeline,
 }
 
+impl SampledSources<'_> {
+    /// Follows an alias chain to the input that draws the picture.
+    fn concrete<'a>(&'a self, input: &'a Input) -> &'a Input {
+        let mut current = input;
+        let mut hops = 0;
+        while let InputKind::Alias { target, .. } = &current.kind {
+            hops += 1;
+            if hops > self.project.inputs().len() {
+                break;
+            }
+            let Some(next) = self
+                .project
+                .inputs()
+                .iter()
+                .find(|candidate| candidate.id == *target)
+            else {
+                break;
+            };
+            current = next;
+        }
+        current
+    }
+}
+
 impl SceneSources for SampledSources<'_> {
     fn draws(&self, input: &Input) -> bool {
+        let input = self.concrete(input);
         self.live.holds(input.id) || self.simulated.draws(input)
     }
 
@@ -801,6 +862,7 @@ impl SceneSources for SampledSources<'_> {
         width: u32,
         height: u32,
     ) -> Option<ImageFrame> {
+        let input = self.concrete(input);
         if self.live.holds(input.id) {
             self.live.sampled(input.id, width, height)
         } else {
