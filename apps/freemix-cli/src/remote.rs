@@ -2769,6 +2769,7 @@ impl CommandCompletion {
             | CommandPayload::RemoveStreamTarget { .. }
             | CommandPayload::SetLiveLan { .. }
             | CommandPayload::SetAlertRule(_)
+            | CommandPayload::SetInputVideoDelay { .. }
             | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
