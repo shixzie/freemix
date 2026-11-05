@@ -9,6 +9,7 @@ rust-version.workspace = true
 fm-automation = { path = "../../features/fm-automation" }
 fm-clock = { path = "../../media/fm-clock" }
 fm-command = { path = "../../foundation/fm-command" }
+fm-data = { path = "../../features/fm-data" }
 fm-frame = { path = "../../media/fm-frame" }
 fm-grade = { path = "../../foundation/fm-grade" }
 fm-model = { path = "../../foundation/fm-model" }

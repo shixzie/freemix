@@ -386,6 +386,16 @@ pub enum EngineCommand {
         require: TitleAirRequirement,
         fields: Vec<(FieldId, FieldValue)>,
     },
+    /// Maps raw data-row strings onto the title's template fields and sets
+    /// them atomically (GX-005). The values are keyed by template field name;
+    /// `keep_live` skips a failed field instead of refusing the row.
+    SetTitleRow {
+        input: InputId,
+        base_revision: u64,
+        require: TitleAirRequirement,
+        values: Vec<(String, String)>,
+        keep_live: bool,
+    },
     /// Applies field values to an off-air title and takes it onto an overlay
     /// channel. The fields change at acceptance, before the overlay realizes,
     /// so the first frame on air already shows them.
@@ -6610,6 +6620,7 @@ fn apply_title_mutation(
     } = mutation;
     let input = match &command {
         EngineCommand::SetTitleFields { input, .. }
+        | EngineCommand::SetTitleRow { input, .. }
         | EngineCommand::TakeTitle { input, .. }
         | EngineCommand::TitleOffAir { input } => *input,
         _ => unreachable!("only title commands are delegated"),
@@ -6629,16 +6640,23 @@ fn apply_title_mutation(
             fields,
             ..
         } => {
-            match (require, on_air) {
-                (TitleAirRequirement::OffAir, true) => {
-                    return Err(TitleRejection::OnAir(input).into_rejection());
-                }
-                (TitleAirRequirement::OnAir, false) => {
-                    return Err(TitleRejection::OffAir(input).into_rejection());
-                }
-                _ => {}
-            }
+            check_title_air(input, *require, on_air)?;
             let revision = update_title_fields(state, input, *base_revision, fields)?;
+            events.push(EngineEvent::TitleFieldsChanged { input, revision });
+        }
+        EngineCommand::SetTitleRow {
+            base_revision,
+            require,
+            values,
+            keep_live,
+            ..
+        } => {
+            check_title_air(input, *require, on_air)?;
+            let title = state
+                .title(input)
+                .expect("the title was checked before the command match");
+            let fields = map_title_row(title, values, *keep_live)?;
+            let revision = update_title_fields(state, input, *base_revision, &fields)?;
             events.push(EngineEvent::TitleFieldsChanged { input, revision });
         }
         EngineCommand::TakeTitle {
@@ -6687,6 +6705,120 @@ fn update_title_fields(
         .fields
         .update(base_revision, fields)
         .map_err(|error| TitleRejection::from(error).into_rejection())
+}
+
+fn check_title_air(
+    input: InputId,
+    require: TitleAirRequirement,
+    on_air: bool,
+) -> Result<(), Rejection> {
+    match (require, on_air) {
+        (TitleAirRequirement::OffAir, true) => Err(TitleRejection::OnAir(input).into_rejection()),
+        (TitleAirRequirement::OnAir, false) => Err(TitleRejection::OffAir(input).into_rejection()),
+        _ => Ok(()),
+    }
+}
+
+/// Maps raw row strings onto `title`'s template fields by name (GX-005).
+fn map_title_row(
+    title: &EngineTitle,
+    values: &[(String, String)],
+    keep_live: bool,
+) -> Result<Vec<(FieldId, FieldValue)>, Rejection> {
+    if values.len() > fm_titles::MAX_TITLE_FIELDS {
+        return Err(Rejection::new(
+            RejectionCode::InvalidCommand,
+            format!(
+                "a title row carries at most {} fields",
+                fm_titles::MAX_TITLE_FIELDS
+            ),
+        ));
+    }
+    let mut row = std::collections::BTreeMap::new();
+    let mut bindings = Vec::new();
+    for (name, value) in values {
+        if row
+            .insert(name.clone(), fm_data::DataValue::String(value.clone()))
+            .is_some()
+        {
+            return Err(Rejection::new(
+                RejectionCode::InvalidCommand,
+                format!("title field {name:?} appears more than once"),
+            )
+            .with_reason(fm_command::RefusalReason::DuplicateName));
+        }
+        let Some(definition) = title
+            .fields
+            .definitions()
+            .iter()
+            .find(|definition| definition.name == *name)
+        else {
+            return Err(Rejection::new(
+                RejectionCode::NotFound,
+                format!("title {} has no field named {name:?}", title.name),
+            ));
+        };
+        let kind = match definition.field_type() {
+            fm_titles::FieldType::Text => fm_data::TitleFieldKind::Text,
+            fm_titles::FieldType::Number => fm_data::TitleFieldKind::Number,
+            fm_titles::FieldType::Color => fm_data::TitleFieldKind::Color,
+            fm_titles::FieldType::Image => fm_data::TitleFieldKind::Image,
+        };
+        bindings.push(fm_data::TitleFieldBinding::new(
+            name.clone(),
+            fm_data::DataPath::root().field(name.clone()),
+            kind,
+        ));
+    }
+    let mapper = fm_data::TitleMapper::new(bindings, fm_data::CoercionPolicy::default())
+        .map_err(|error| Rejection::new(RejectionCode::InvalidCommand, error.to_string()))?;
+    let report = mapper.map_row(&fm_data::DataValue::Object(row));
+    let mut fields = Vec::new();
+    for entry in &report.fields {
+        if entry.status.is_error() {
+            if keep_live {
+                continue;
+            }
+            let status = match &entry.status {
+                fm_data::TitleFieldStatus::Missing => "missing".to_owned(),
+                fm_data::TitleFieldStatus::Path(error) => error.to_string(),
+                fm_data::TitleFieldStatus::Transform(error) => error.to_string(),
+                fm_data::TitleFieldStatus::Coercion(error) => error.to_string(),
+                fm_data::TitleFieldStatus::Mapped | fm_data::TitleFieldStatus::Omitted => {
+                    "unmapped".to_owned()
+                }
+            };
+            return Err(Rejection::new(
+                RejectionCode::InvalidCommand,
+                format!("title field {:?}: {status}", entry.field),
+            )
+            .with_field(FieldIssue::new("values", "invalid_title_row", status)));
+        }
+        let Some(value) = report.values.get(&entry.field) else {
+            continue;
+        };
+        let definition = title
+            .fields
+            .definitions()
+            .iter()
+            .find(|definition| definition.name == entry.field)
+            .expect("the mapper only names template fields");
+        fields.push((definition.id, title_row_field_value(value)));
+    }
+    Ok(fields)
+}
+
+fn title_row_field_value(value: &fm_data::TitleFieldValue) -> FieldValue {
+    match value {
+        fm_data::TitleFieldValue::Text(text) => FieldValue::Text(text.clone()),
+        fm_data::TitleFieldValue::Number(number) => FieldValue::Number(*number),
+        fm_data::TitleFieldValue::Color(color) => {
+            FieldValue::Color(fm_titles::Color::new(color.r, color.g, color.b, color.a))
+        }
+        fm_data::TitleFieldValue::Image(asset) => {
+            FieldValue::Image(fm_titles::ImageSource::new(asset.clone()))
+        }
+    }
 }
 
 fn rename_input_rejection(error: RenameInputError) -> Rejection {
