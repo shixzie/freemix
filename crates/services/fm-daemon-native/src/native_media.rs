@@ -1642,7 +1642,7 @@ const fn mix_feed_layer(layer: fm_switcher::MixLayer) -> FeedLayer {
     }
 }
 
-/// The identity of one logical-output MultiView cell feed (SW-012), used to
+/// The identity of one logical-output `MultiView` cell feed (SW-012), used to
 /// bind one GPU source per distinct texture.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum LogicalCellFeed {
@@ -2387,12 +2387,12 @@ pub enum NativeSourceRenderError {
     MissingSecondaryMix(fm_switcher::MixId),
     /// A secondary mix (transitively) reads itself in one frame (IN-023).
     SecondaryMixCycle(fm_switcher::MixId),
-    /// A logical output's MultiView read an output texture that was not
+    /// A logical output's `MultiView` read an output texture that was not
     /// rendered first.
     MissingOutputTexture {
         output: OutputId,
     },
-    /// A logical output's MultiView grid could not be compiled.
+    /// A logical output's `MultiView` grid could not be compiled.
     InvalidOutputComposition(PlanError),
     UnsupportedTransition(SwitcherTransitionKind),
     InvalidMix(TransitionError),
@@ -9486,6 +9486,7 @@ impl NativeMediaRuntime {
             .collect()
     }
 
+    #[allow(clippy::too_many_lines)] // one pass over the project outputs
     async fn render_project_output_set_with_stingers(
         &self,
         registry: &NativeSourceRegistry,
@@ -9603,31 +9604,30 @@ impl NativeMediaRuntime {
         }
         let mut rendered = Vec::with_capacity(outputs.len());
         for (index, output) in outputs.iter().enumerate() {
-            let texture = match plans[index] {
-                Some(plan) => logical_outputs.remove(&plan.output).ok_or(
+            let texture = if let Some(plan) = plans[index] {
+                logical_outputs.remove(&plan.output).ok_or(
                     NativeSourceRenderError::MissingOutputTexture {
                         output: plan.output,
                     },
-                )?,
-                None => {
-                    // An output without logical routing keeps showing Program.
-                    let overlays = output.map_or_else(Vec::new, |output| {
-                        NativeProjectPlan::program_overlays(frame, output)
-                    });
-                    self.finish_project_output(
-                        registry,
-                        &graded,
-                        project,
-                        &scene_outputs,
-                        frame,
-                        output.map_or(frame.fade_to_black, |output| {
-                            frame.fade_to_black_for(output)
-                        }),
-                        &program,
-                        &overlays,
-                    )
-                    .await?
-                }
+                )?
+            } else {
+                // An output without logical routing keeps showing Program.
+                let overlays = output.map_or_else(Vec::new, |output| {
+                    NativeProjectPlan::program_overlays(frame, output)
+                });
+                self.finish_project_output(
+                    registry,
+                    &graded,
+                    project,
+                    &scene_outputs,
+                    frame,
+                    output.map_or(frame.fade_to_black, |output| {
+                        frame.fade_to_black_for(output)
+                    }),
+                    &program,
+                    &overlays,
+                )
+                .await?
             };
             rendered.push((*output, texture));
         }
@@ -9636,7 +9636,7 @@ impl NativeMediaRuntime {
     }
 
     /// Renders one enabled logical output's plan (SW-012): its background or
-    /// MultiView, its overlay layers, the program grade, and Fade to Black.
+    /// `MultiView`, its overlay layers, the program grade, and Fade to Black.
     #[allow(clippy::too_many_arguments)]
     async fn render_logical_output(
         &self,
@@ -9717,7 +9717,7 @@ impl NativeMediaRuntime {
         }
     }
 
-    /// Composes one logical output's MultiView grid (SW-012), reading Program,
+    /// Composes one logical output's `MultiView` grid (SW-012), reading Program,
     /// settled inputs, and already-rendered logical outputs.
     #[allow(clippy::too_many_arguments)]
     async fn compose_output_multiview(
@@ -9786,7 +9786,7 @@ impl NativeMediaRuntime {
         )
         .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
         let (composition, _) = compile_scene(&scene, OutputTarget::Program)
-            .map_err(|error| NativeSourceRenderError::InvalidOutputComposition(error))?;
+            .map_err(NativeSourceRenderError::InvalidOutputComposition)?;
         let sources = unique
             .iter()
             .enumerate()
@@ -9794,7 +9794,7 @@ impl NativeMediaRuntime {
                 let source = u64::try_from(index + 1)
                     .map(SourceId::new)
                     .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
-                Ok(NativeSourceFrame::new(source, *texture))
+                Ok(NativeSourceFrame::new(source, texture))
             })
             .collect::<Result<Vec<_>, NativeSourceRenderError>>()?;
         let composed = self
@@ -9806,7 +9806,7 @@ impl NativeMediaRuntime {
         Ok(composed)
     }
 
-    /// Resolves one logical-output MultiView cell to its texture and feed
+    /// Resolves one logical-output `MultiView` cell to its texture and feed
     /// identity (SW-012). Referenced logical outputs were rendered earlier in
     /// [`OutputRoutingFrame::render_order`](fm_switcher::OutputRoutingFrame).
     #[allow(clippy::too_many_arguments)]

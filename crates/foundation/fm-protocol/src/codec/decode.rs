@@ -4278,13 +4278,12 @@ fn decode_clock_control_request(
             }
         })
         .transpose()?;
-    let operation =
-        crate::ClockControlOperation::from_parts(&operation, value_ns).ok_or(
-            CodecError::InvalidField {
-                field: "operation",
-                value: operation,
-            },
-        )?;
+    let operation = crate::ClockControlOperation::from_parts(&operation, value_ns).ok_or(
+        CodecError::InvalidField {
+            field: "operation",
+            value: operation,
+        },
+    )?;
     Ok(crate::ClockControlRequest {
         protocol: parse_version(&protocol).ok_or(CodecError::InvalidField {
             field: "protocol",
