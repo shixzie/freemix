@@ -1556,7 +1556,6 @@ impl NativeProjectPlan {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Either a borrowed Program/input texture or a texture this pass owns.
 enum LogicalBase<'a> {
     Borrowed(&'a NativeTexture),
@@ -1617,6 +1616,14 @@ const fn feed_input(layer: FeedLayer) -> Option<InputId> {
     match layer {
         FeedLayer::Input(input) => Some(input),
         FeedLayer::Mix { .. } | FeedLayer::Black => None,
+    }
+}
+
+const fn mix_feed_layer(layer: fm_switcher::MixLayer) -> FeedLayer {
+    match layer {
+        fm_switcher::MixLayer::Input(input) => FeedLayer::Input(input),
+        fm_switcher::MixLayer::Mix { mix, frame } => FeedLayer::Mix { mix, frame },
+        fm_switcher::MixLayer::Black => FeedLayer::Black,
     }
 }
 
@@ -9847,7 +9854,7 @@ impl NativeMediaRuntime {
                 scene_outputs,
                 frame,
                 program,
-                mix_frame.primary,
+                mix_feed_layer(mix_frame.primary),
                 seen,
             )
             .await?;
@@ -9861,7 +9868,7 @@ impl NativeMediaRuntime {
                         scene_outputs,
                         frame,
                         program,
-                        secondary,
+                        mix_feed_layer(secondary),
                         seen,
                     )
                     .await?;
