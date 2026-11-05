@@ -810,7 +810,7 @@ fn a_title_data_row_maps_strings_by_field_name_and_keeps_live_on_request() {
     );
 
     // A row naming a field the template does not define is refused.
-    let unknown = run(&mut engine, "row-unknown", row(&[("nope", "1")], true));
+    let unknown = run(&mut engine, "row-unknown", row(&[("nope", "1")], true, 2));
     assert_eq!(rejection(&unknown).code, RejectionCode::NotFound);
 }
 
