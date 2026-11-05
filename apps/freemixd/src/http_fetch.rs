@@ -1,12 +1,13 @@
 //! Bounded HTTP title-data fetching (GX-005).
 //!
 //! One `GET` with connect/read timeouts, a response-size cap, at most three
-//! redirects, and no request body. `http://` is supported; `https://` is
-//! refused until a TLS trust store is wired in. The caller parses the bytes;
-//! this module only owns the network bounds.
+//! redirects, and no request body. `http://` and `https://` are supported;
+//! HTTPS uses rustls with the Mozilla root store from `webpki-roots`. The
+//! caller parses the bytes; this module only owns the network bounds.
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Largest response body accepted.
@@ -38,6 +39,7 @@ pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, String> {
 }
 
 struct ParsedUrl {
+    tls: bool,
     host: String,
     port: u16,
     path: String,
@@ -45,10 +47,11 @@ struct ParsedUrl {
 
 impl ParsedUrl {
     fn parse(url: &str) -> Result<Self, String> {
-        let Some(rest) = url.strip_prefix("http://") else {
-            if url.starts_with("https://") {
-                return Err("https title sources are not supported yet".to_owned());
-            }
+        let (tls, rest) = if let Some(rest) = url.strip_prefix("http://") {
+            (false, rest)
+        } else if let Some(rest) = url.strip_prefix("https://") {
+            (true, rest)
+        } else {
             return Err("URL source must start with http:// or https://".to_owned());
         };
         let (authority, path) = match rest.split_once('/') {
@@ -64,10 +67,15 @@ impl ParsedUrl {
                 port.parse::<u16>()
                     .map_err(|_| format!("invalid port in {url}"))?,
             ),
-            _ => (authority.to_owned(), 80),
+            _ => (authority.to_owned(), if tls { 443 } else { 80 }),
         };
         let path = path.split('#').next().unwrap_or("/").to_owned();
-        Ok(Self { host, port, path })
+        Ok(Self {
+            tls,
+            host,
+            port,
+            path,
+        })
     }
 
     fn resolve(&self, location: &str) -> String {
@@ -75,11 +83,18 @@ impl ParsedUrl {
             return location.to_owned();
         }
         if location.starts_with('/') {
-            return format!("http://{}:{}{}", self.host, self.port, location);
+            return format!(
+                "{}://{}:{}{}",
+                if self.tls { "https" } else { "http" },
+                self.host,
+                self.port,
+                location
+            );
         }
         let base = self.path.rsplit_once('/').map_or("/", |(base, _)| base);
         format!(
-            "http://{}:{}{}/{}",
+            "{}://{}:{}{}/{}",
+            if self.tls { "https" } else { "http" },
             self.host,
             self.port,
             base.trim_end_matches('/'),
@@ -108,6 +123,11 @@ fn get(url: &ParsedUrl) -> Result<(Vec<u8>, Option<String>), String> {
         .set_read_timeout(Some(IO_TIMEOUT))
         .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
         .map_err(|error| error.to_string())?;
+    let mut stream: Box<dyn ReadWrite> = if url.tls {
+        Box::new(tls_stream(stream, &url.host)?)
+    } else {
+        Box::new(stream)
+    };
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: application/json, text/csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.oasis.opendocument.spreadsheet, */*\r\n\r\n",
         url.path, url.host
@@ -115,8 +135,7 @@ fn get(url: &ParsedUrl) -> Result<(Vec<u8>, Option<String>), String> {
     stream
         .write_all(request.as_bytes())
         .map_err(|error| error.to_string())?;
-
-    let mut reader = stream.take((MAX_RESPONSE_BYTES + MAX_HEADER_BYTES) as u64);
+    let mut reader = (&mut stream).take((MAX_RESPONSE_BYTES + MAX_HEADER_BYTES) as u64);
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 8192];
     loop {
@@ -172,6 +191,38 @@ fn get(url: &ParsedUrl) -> Result<(Vec<u8>, Option<String>), String> {
     } else {
         Ok((body.to_vec(), None))
     }
+}
+
+trait ReadWrite: Read + Write {}
+impl<T: Read + Write> ReadWrite for T {}
+
+fn tls_config() -> Result<&'static Arc<rustls::ClientConfig>, String> {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    if let Some(config) = CONFIG.get() {
+        return Ok(config);
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+    let _ = CONFIG.set(Arc::clone(&config));
+    CONFIG
+        .get()
+        .ok_or_else(|| "TLS trust store could not be installed".to_owned())
+}
+
+fn tls_stream(
+    stream: TcpStream,
+    host: &str,
+) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, String> {
+    let name = rustls::pki_types::ServerName::try_from(host.to_owned())
+        .map_err(|_| format!("invalid TLS server name {host:?}"))?;
+    let connection = rustls::ClientConnection::new(Arc::clone(tls_config()?), name)
+        .map_err(|error| error.to_string())?;
+    Ok(rustls::StreamOwned::new(connection, stream))
 }
 
 fn find_headers_end(buffer: &[u8]) -> Option<usize> {
