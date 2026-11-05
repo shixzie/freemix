@@ -512,6 +512,8 @@ pub(crate) struct AddInputDraft {
     pub(crate) alias_crop_y: u32,
     pub(crate) alias_crop_width: u32,
     pub(crate) alias_crop_height: u32,
+    /// Space-separated alias effect tokens (IN-024).
+    pub(crate) alias_effects: String,
     /// Whether a feed shows Program (`true`) or Preview (IN-025).
     pub(crate) feed_program: bool,
     /// The name field takes keyboard focus once, when the dialog opens.
@@ -531,6 +533,38 @@ pub(crate) const COLOUR_PRESETS: [(Msg, Color32); 8] = [
     (Msg::ColourAmber, Color32::from_rgb(240, 168, 40)),
     (Msg::ColourMagenta, Color32::from_rgb(170, 40, 150)),
 ];
+
+/// Parses space-separated `name:parameter,parameter` alias effect tokens.
+fn parse_alias_effects(value: &str) -> Result<Vec<fm_protocol::WireLayerEffect>, Msg> {
+    let mut effects = Vec::new();
+    for token in value.split_whitespace() {
+        if effects.len() == fm_protocol::MAX_SCENE_LAYER_EFFECTS {
+            return Err(Msg::AddInputAliasEffectsInvalid);
+        }
+        let (name, parameters) = token.split_once(':').unwrap_or((token, ""));
+        let parameters = if parameters.is_empty() {
+            Vec::new()
+        } else {
+            parameters
+                .split(',')
+                .map(|parameter| {
+                    parameter
+                        .parse::<i32>()
+                        .map_err(|_| Msg::AddInputAliasEffectsInvalid)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let effect = fm_protocol::WireLayerEffect {
+            name: name.to_owned(),
+            parameters,
+        };
+        if !effect.is_valid() {
+            return Err(Msg::AddInputAliasEffectsInvalid);
+        }
+        effects.push(effect);
+    }
+    Ok(effects)
+}
 
 impl AddInputDraft {
     pub(crate) fn new(state: &StudioUiState, tracker: &CatalogueTracker) -> Self {
@@ -623,6 +657,7 @@ impl AddInputDraft {
                         self.alias_target.ok_or(Msg::AddInputAliasRequired.en())?,
                     ),
                     crop,
+                    effects: parse_alias_effects(&self.alias_effects)?,
                 }
             }
             NewInputKind::MixFeed if self.feed_program => LiveInputSource::ProgramFeed,
@@ -660,6 +695,13 @@ impl AddInputDraft {
                             prompt: false,
                         });
                     }
+                }
+                if parse_alias_effects(&self.alias_effects).is_err() {
+                    return Some(FieldProblem {
+                        field: Msg::AddInputAliasEffects,
+                        reason: Msg::AddInputAliasEffectsInvalid.en(),
+                        prompt: false,
+                    });
                 }
                 return None;
             }
@@ -1465,6 +1507,15 @@ impl StudioShell {
                                     .hint(l.text(Msg::AddInputAliasCropHover), "");
                                 });
                             }
+                        }
+                        if draft.kind == NewInputKind::Alias {
+                            ui.add_space(6.0);
+                            crate::theme::form_section(ui, l.text(Msg::AddInputAliasEffects));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut draft.alias_effects)
+                                    .hint_text(l.text(Msg::AddInputAliasEffectsHint)),
+                            )
+                            .on_hover_text(l.text(Msg::AddInputAliasEffectsHint));
                         }
                         if draft.kind == NewInputKind::MixFeed {
                             ui.add_space(6.0);
