@@ -185,12 +185,14 @@ impl FakeRemoteServer {
         edit: RemoteEdit,
         states: Vec<fm_protocol::TitleStateMessage>,
         extra_inputs: Vec<fm_protocol::InputStatus>,
+        program: Option<fm_protocol::WireInputId>,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let worker = thread::spawn(move || {
             SNAPSHOT_TITLE_STATES.with(|cell| *cell.borrow_mut() = states);
             SNAPSHOT_EXTRA_INPUTS.with(|cell| *cell.borrow_mut() = extra_inputs);
+            SNAPSHOT_PROGRAM.with(|cell| *cell.borrow_mut() = program);
             serve_title_row(&listener, &edit);
         });
         Self { address, worker }
@@ -1929,6 +1931,10 @@ std::thread_local! {
     /// the default two (GX-005).
     static SNAPSHOT_EXTRA_INPUTS: std::cell::RefCell<Vec<fm_protocol::InputStatus>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// The Program input the fake daemon's snapshot shows on this thread,
+    /// instead of input 1 (GX-005).
+    static SNAPSHOT_PROGRAM: std::cell::RefCell<Option<fm_protocol::WireInputId>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// [`serve_edit`] with scene layouts in the snapshot, so a
@@ -1973,6 +1979,7 @@ fn write_handshake_snapshot(
         }),
     );
     let preview = if revision == 0 { input(2) } else { input(1) };
+    let program = SNAPSHOT_PROGRAM.with(|cell| cell.borrow().unwrap_or_else(|| input(1)));
     write_message(
         writer,
         &WireMessage::Snapshot(SnapshotMessage {
@@ -2003,9 +2010,9 @@ fn write_handshake_snapshot(
             },
             outputs: output_statuses(),
             input_audio_strips: input_audio_strips(),
-            desired_program: input(1),
+            desired_program: program,
             desired_preview: preview,
-            realized_program: input(1),
+            realized_program: program,
             realized_preview: preview,
             desired_manual_transition: manual_transition,
             realized_manual_transition: manual_transition,
@@ -8413,6 +8420,7 @@ fn remote_title_apply_row_maps_fields_and_sends_the_exact_edit() {
         },
         vec![title_row_state(fm_protocol::TitlePhase::Idle)],
         vec![title_row_input()],
+        None,
     );
     let output = invoke(&[
         "remote-title-apply-row",
@@ -8460,6 +8468,7 @@ fn remote_title_apply_row_maps_fields_and_sends_the_exact_edit() {
         },
         vec![title_row_state(fm_protocol::TitlePhase::Hold)],
         vec![title_row_input()],
+        Some(input(9)),
     );
     fs::write(&row, r##"{"Score": 12, "Bar color": "#112233"}"##).unwrap();
     let output = invoke(&[
