@@ -11532,6 +11532,112 @@ mod tests {
     }
 
     #[test]
+    fn native_project_plan_routes_aliases_and_draws_feeds_black() {
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, input(1));
+        add_leaf(&mut project, input(2));
+        project.add_input(Input {
+            id: input(3),
+            name: "alias".into(),
+            kind: InputKind::Alias {
+                target: input(1),
+                crop: None,
+            },
+            required_capabilities: Vec::new(),
+        });
+        project.add_input(Input {
+            id: input(4),
+            name: "feed".into(),
+            kind: InputKind::MixFeed(fm_model::MixFeed::Program),
+            required_capabilities: Vec::new(),
+        });
+
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        assert_eq!(
+            plan.video_route(input(3)),
+            Some(NativeVideoRoute::Leaf(input(1)))
+        );
+        let Some(NativeVideoRoute::Scene(black)) = plan.video_route(input(4)) else {
+            panic!("a feed routes to the synthetic black scene");
+        };
+        assert!(plan.scenes.iter().any(|scene| {
+            scene.id == black && scene.sources.is_empty() && scene.layer_tokens.is_empty()
+        }));
+
+        // Scene layers naming the alias and the feed compile to the concrete
+        // leaf and the black scene.
+        add_scene_input(&mut project, input(5), scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![
+                layer(SourceRef::Input(input(3)), 0),
+                layer(SourceRef::Input(input(4)), 1),
+            ],
+        );
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let scene_plan = plan
+            .scenes
+            .iter()
+            .find(|scene| scene.id == scene(10))
+            .unwrap();
+        assert!(
+            scene_plan
+                .sources
+                .iter()
+                .any(|(_, source)| *source == NativeSceneSource::Leaf(input(1)))
+        );
+        assert!(
+            scene_plan
+                .sources
+                .iter()
+                .any(|(_, source)| *source == NativeSceneSource::Scene(black))
+        );
+
+        // A cropped alias is refused instead of drawing the uncropped source.
+        let mut cropped = native_plan_project(4, 2);
+        add_leaf(&mut cropped, input(1));
+        cropped.add_input(Input {
+            id: input(3),
+            name: "cropped".into(),
+            kind: InputKind::Alias {
+                target: input(1),
+                crop: Some(fm_model::CropRect::new(0, 0, 2, 1)),
+            },
+            required_capabilities: Vec::new(),
+        });
+        assert_eq!(
+            NativeProjectPlan::compile(&cropped, NativeProjectLimits::default()),
+            Err(NativeProjectPlanError::AliasCropUnsupported { input: input(3) })
+        );
+
+        // An alias cycle is refused rather than followed forever.
+        let mut cyclic = native_plan_project(4, 2);
+        cyclic.add_input(Input {
+            id: input(1),
+            name: "a".into(),
+            kind: InputKind::Alias {
+                target: input(2),
+                crop: None,
+            },
+            required_capabilities: Vec::new(),
+        });
+        cyclic.add_input(Input {
+            id: input(2),
+            name: "b".into(),
+            kind: InputKind::Alias {
+                target: input(1),
+                crop: None,
+            },
+            required_capabilities: Vec::new(),
+        });
+        assert!(matches!(
+            NativeProjectPlan::compile(&cyclic, NativeProjectLimits::default()),
+            Err(NativeProjectPlanError::AliasCycle { .. })
+        ));
+    }
+
+    #[test]
     fn native_project_plan_preserves_output_order_routing_and_exact_target_charge() {
         let clean = output(10);
         let dirty = output(11);
