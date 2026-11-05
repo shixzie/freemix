@@ -3285,8 +3285,10 @@ follows a cropped alias of a scene. The CLI scene renderer composes cropped alia
 way: the alias crop is applied to the rendered source, a layer crop inside that region is translated, and a mask, key, or
 layer crop reaching outside the alias crop is refused by layer number rather
 than drawing a wrong picture. Input and scene thumbnails follow alias chains
-(and a scene thumbnail draws alias layers), but a feed input's own thumbnail
-has no composed CPU picture and still shows no source image. Protocol 2.162
+(and a scene thumbnail draws alias layers), and a feed input's own thumbnail
+shows the composed Program or Preview tap: both monitor taps retain their
+latest SDR readback at monitor size, and the thumbnail worker scales it to
+the bank size and applies the feed input's grade. Protocol 2.162
 adds live authoring: `input_add` carries `kind=alias` (with `target` and an
 optional project-pixel crop) or `kind=program_feed`/`kind=preview_feed`, the
 engine adds the virtual input while keeping it out of the replaceable-source
