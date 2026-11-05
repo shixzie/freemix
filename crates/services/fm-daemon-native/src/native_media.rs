@@ -157,7 +157,7 @@ enum NativeSceneSource {
     Alias {
         input: InputId,
         source: NativeAliasSource,
-        crop: fm_model::CropRect,
+        crop: [u32; 4],
     },
 }
 
@@ -172,7 +172,7 @@ enum NativeAliasSource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeAliasCrop {
     source: NativeAliasSource,
-    crop: fm_model::CropRect,
+    crop: [u32; 4],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -788,7 +788,13 @@ impl NativeProjectPlan {
                     InputKind::MixFeed(feed) => NativeAliasSource::Feed(*feed),
                     _ => NativeAliasSource::Leaf(concrete.id),
                 };
-                alias_crops.insert(input.id, NativeAliasCrop { source, crop });
+                alias_crops.insert(
+                    input.id,
+                    NativeAliasCrop {
+                        source,
+                        crop: [crop.x, crop.y, crop.width, crop.height],
+                    },
+                );
             }
         }
         let black_scene = (!feeds.is_empty())
@@ -2051,17 +2057,29 @@ fn resolve_scene_source(
 ) -> Result<NativeSceneSource, NativeProjectPlanError> {
     match source {
         SourceRef::Input(input) => {
-            let model = resolve_alias_target(input, inputs)?;
-            match &model.kind {
+            let (model, crop) = resolve_alias_target(input, inputs)?;
+            let source = match &model.kind {
                 InputKind::Scene { scene_id, .. } => {
                     if !scenes.contains_key(scene_id) {
                         return Err(NativeProjectPlanError::MissingScene(*scene_id));
                     }
-                    Ok(NativeSceneSource::Scene(*scene_id))
+                    NativeAliasSource::Scene(*scene_id)
                 }
-                InputKind::MixFeed(feed) => Ok(NativeSceneSource::Feed { input, feed: *feed }),
-                _ => Ok(NativeSceneSource::Leaf(model.id)),
-            }
+                InputKind::MixFeed(feed) => NativeAliasSource::Feed(*feed),
+                _ => NativeAliasSource::Leaf(model.id),
+            };
+            Ok(match crop {
+                Some(crop) => NativeSceneSource::Alias {
+                    input,
+                    source,
+                    crop: [crop.x, crop.y, crop.width, crop.height],
+                },
+                None => match source {
+                    NativeAliasSource::Leaf(leaf) => NativeSceneSource::Leaf(leaf),
+                    NativeAliasSource::Scene(scene) => NativeSceneSource::Scene(scene),
+                    NativeAliasSource::Feed(feed) => NativeSceneSource::Feed { input, feed },
+                },
+            })
         }
         SourceRef::Scene(scene) => {
             if !scenes.contains_key(&scene) {
