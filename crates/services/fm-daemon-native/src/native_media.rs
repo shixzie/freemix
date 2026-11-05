@@ -8598,12 +8598,10 @@ impl NativeMediaRuntime {
         let retained_before = playback.registry.retained_rgba16f_bytes;
         // Only a delayed live source needs history; an undelayed one holds
         // just its newest picture, as before.
-        let history_frames = usize::try_from(
-            playback.registry.effective_input_video_delay(input),
-        )
-        .unwrap_or(0)
-        .saturating_add(1)
-        .min(maximum_frames);
+        let history_frames = usize::try_from(playback.registry.effective_input_video_delay(input))
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(maximum_frames);
         let prefix = playback
             .registry
             .sources
