@@ -160,8 +160,9 @@ pub struct StudioRuntime {
     clocks_error: Option<String>,
     /// The latest frozen-input PNG the daemon exported (SW-016).
     frozen_still: Option<FrozenStillCapture>,
-    /// The frozen-still request ID awaiting an answer, if any.
-    still_request: Option<String>,
+    /// The frozen-still request ID awaiting an answer, and when it was sent,
+    /// if one is in flight.
+    still_request: Option<(String, std::time::Instant)>,
     /// The latest frozen-still refusal or request failure.
     still_error: Option<String>,
     /// The supervised project bundle, when Studio owns the daemon.
@@ -823,8 +824,12 @@ impl StudioRuntime {
             self.still_error = Some("the control connection is not ready".to_owned());
             return false;
         }
-        if self.still_request.is_some() {
-            return false;
+        if let Some((_, sent_at)) = &self.still_request {
+            if sent_at.elapsed() < std::time::Duration::from_secs(5) {
+                return false;
+            }
+            // A lost answer must not wedge every later capture.
+            self.still_request = None;
         }
         let request_id = format!(
             "studio-frozen-still-{}",
@@ -840,7 +845,7 @@ impl StudioRuntime {
                 })
                 .is_ok();
         if sent {
-            self.still_request = Some(request_id);
+            self.still_request = Some((request_id, std::time::Instant::now()));
             self.still_error = None;
         } else {
             self.still_error = Some("the frozen-still request could not be sent".to_owned());
@@ -853,7 +858,7 @@ impl StudioRuntime {
         if self
             .still_request
             .as_ref()
-            .is_some_and(|request_id| request_id == &response.request_id)
+            .is_some_and(|(request_id, _)| request_id == &response.request_id)
         {
             self.still_request = None;
         }
@@ -870,7 +875,11 @@ impl StudioRuntime {
     /// Records a frozen-still refusal naming `request_id`, when it is the
     /// request this runtime awaits.
     pub(crate) fn apply_frozen_still_error(&mut self, request_id: &str, message: String) {
-        if self.still_request.as_deref() == Some(request_id) {
+        if self
+            .still_request
+            .as_ref()
+            .is_some_and(|(pending, _)| pending == request_id)
+        {
             self.still_request = None;
             self.still_error = Some(message);
         }
