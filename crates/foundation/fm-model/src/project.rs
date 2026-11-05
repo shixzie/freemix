@@ -66,6 +66,8 @@ pub enum InputReference {
     ReplaySource,
     /// The recorded angle of a highlight reel clip (OR-013).
     ReelClip { reel: u64 },
+    /// A Program or Preview source of a secondary mix (IN-023).
+    SecondaryMix(crate::MixNumber),
 }
 
 impl std::fmt::Display for InputReference {
@@ -83,6 +85,9 @@ impl std::fmt::Display for InputReference {
             Self::CueAction { list, cue } => write!(formatter, "cue {cue} of cue list {list}"),
             Self::ReplaySource => formatter.write_str("a replay source"),
             Self::ReelClip { reel } => write!(formatter, "a clip of reel {reel}"),
+            Self::SecondaryMix(number) => {
+                write!(formatter, "a Program or Preview source of {number}")
+            }
         }
     }
 }
@@ -1097,6 +1102,8 @@ pub struct Project {
     audio_buses: Vec<AudioBus>,
     outputs: Vec<Output>,
     logical_outputs: Vec<crate::LogicalOutputConfig>,
+    /// Secondary mixes (IN-023), ascending by number.
+    secondary_mixes: Vec<crate::SecondaryMixConfig>,
     stream_targets: Vec<StreamTarget>,
     main_mix: Option<MainMix>,
     recording_desired: [bool; RECORDER_SLOT_COUNT],
@@ -1175,6 +1182,7 @@ impl Project {
             audio_buses: Vec::new(),
             outputs: Vec::new(),
             logical_outputs: Vec::new(),
+            secondary_mixes: Vec::new(),
             stream_targets: Vec::new(),
             main_mix: None,
             recording_desired: [false; RECORDER_SLOT_COUNT],
@@ -2069,6 +2077,85 @@ impl Project {
         crate::validate_logical_outputs(&self.logical_outputs, &outputs, &inputs, Some(&buses))
     }
 
+    /// The secondary mixes, ascending by number (IN-023).
+    #[must_use]
+    pub fn secondary_mixes(&self) -> &[crate::SecondaryMixConfig] {
+        &self.secondary_mixes
+    }
+
+    /// One secondary mix by number.
+    #[must_use]
+    pub fn secondary_mix(&self, number: crate::MixNumber) -> Option<&crate::SecondaryMixConfig> {
+        self.secondary_mixes
+            .iter()
+            .find(|config| config.number == number)
+    }
+
+    /// Configures or replaces one secondary mix atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`crate::SecondaryMixError`] for Main, a malformed name, a
+    /// missing or self-referential source, a Preview that conflicts with the
+    /// mode, or a cycle. Nothing changes on error.
+    pub fn set_secondary_mix(
+        &mut self,
+        config: crate::SecondaryMixConfig,
+    ) -> Result<(), crate::SecondaryMixError> {
+        let previous = self.secondary_mixes.clone();
+        self.secondary_mixes
+            .retain(|candidate| candidate.number != config.number);
+        self.secondary_mixes.push(config);
+        self.secondary_mixes.sort_by_key(|config| config.number);
+        if let Err(error) = self.validate_secondary_mixes() {
+            self.secondary_mixes = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Removes one secondary mix atomically; sources that reference it must be
+    /// changed first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::SecondaryMixError::UnknownMix`] when the mix is not
+    /// configured, or a reference error when another mix still reads it.
+    /// Nothing changes on error.
+    pub fn remove_secondary_mix(
+        &mut self,
+        number: crate::MixNumber,
+    ) -> Result<(), crate::SecondaryMixError> {
+        let previous = self.secondary_mixes.clone();
+        self.secondary_mixes
+            .retain(|candidate| candidate.number != number);
+        if self.secondary_mixes.len() == previous.len() {
+            return Err(crate::SecondaryMixError::UnknownMix(number));
+        }
+        if let Err(error) = self.validate_secondary_mixes() {
+            self.secondary_mixes = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Restores persisted secondary mixes without checking them; problems are
+    /// reported by [`Self::validate`].
+    pub fn restore_secondary_mixes(&mut self, configs: Vec<crate::SecondaryMixConfig>) {
+        self.secondary_mixes = configs;
+    }
+
+    /// Checks the secondary mixes against the project's inputs and each
+    /// other.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`crate::SecondaryMixError`].
+    pub fn validate_secondary_mixes(&self) -> Result<(), crate::SecondaryMixError> {
+        let inputs = self.inputs.iter().map(|input| input.id).collect::<Vec<_>>();
+        crate::validate_secondary_mixes(&self.secondary_mixes, &inputs)
+    }
+
     #[must_use]
     pub fn stream_targets(&self) -> &[StreamTarget] {
         &self.stream_targets
@@ -2777,6 +2864,15 @@ impl Project {
         }
         if self.replay.sources.contains(&input) {
             return Some(InputReference::ReplaySource);
+        }
+        if let Some(mix) = self.secondary_mixes.iter().find(|mix| {
+            crate::SecondaryMixSource::Input(candidate) = mix.program
+                && candidate == input
+                || mix.preview.is_some_and(|preview| {
+                    matches!(preview, crate::SecondaryMixSource::Input(candidate) if candidate == input)
+                })
+        }) {
+            return Some(InputReference::SecondaryMix(mix.number));
         }
         if let Some(reel) = self
             .reels

@@ -79,6 +79,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_buses(project, &mut errors);
     validate_outputs(project, &mut errors);
     validate_logical_outputs(project, &mut errors);
+    validate_secondary_mixes(project, &mut errors);
     validate_stream_targets(project, &mut errors);
     mark_scene_cycles(project, &mut errors);
     mark_alias_cycles(project, &mut errors);
@@ -1883,6 +1884,58 @@ fn validate_logical_outputs(project: &Project, errors: &mut Vec<ValidationError>
         | crate::LogicalOutputError::InvalidOverlayChannel(_)
         | crate::LogicalOutputError::DuplicateOverlayChannel(_) => {
             (None, "logical_outputs", ValidationErrorKind::OutOfRange)
+        }
+    };
+    errors.push(ValidationError {
+        entity,
+        field,
+        kind,
+    });
+}
+
+/// Re-checks the secondary-mix routing against the project's inputs.
+fn validate_secondary_mixes(project: &Project, errors: &mut Vec<ValidationError>) {
+    let Err(error) = project.validate_secondary_mixes() else {
+        return;
+    };
+    let (entity, field, kind) = match &error {
+        crate::SecondaryMixError::DuplicateNumber(_) => (
+            None,
+            "secondary_mixes.number",
+            ValidationErrorKind::DuplicateId,
+        ),
+        crate::SecondaryMixError::UnknownInput(input) => (
+            None,
+            "secondary_mixes.source",
+            ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+        ),
+        crate::SecondaryMixError::UnknownMix(_) => (
+            None,
+            "secondary_mixes.source",
+            ValidationErrorKind::OutOfRange,
+        ),
+        crate::SecondaryMixError::SelfReference(_) => (
+            None,
+            "secondary_mixes.source",
+            ValidationErrorKind::SelfReference,
+        ),
+        crate::SecondaryMixError::Cycle => {
+            (None, "secondary_mixes.source", ValidationErrorKind::Cycle)
+        }
+        crate::SecondaryMixError::PreviewRequired(_)
+        | crate::SecondaryMixError::PreviewNotAllowed(_)
+        | crate::SecondaryMixError::PreviewEqualsProgram(_) => (
+            None,
+            "secondary_mixes.preview",
+            ValidationErrorKind::OutOfRange,
+        ),
+        crate::SecondaryMixError::TooManyMixes { .. }
+        | crate::SecondaryMixError::OutOfOrder
+        | crate::SecondaryMixError::MainNotSecondary
+        | crate::SecondaryMixError::EmptyName
+        | crate::SecondaryMixError::NameTooLong { .. }
+        | crate::SecondaryMixError::ControlCharacterInName { .. } => {
+            (None, "secondary_mixes", ValidationErrorKind::OutOfRange)
         }
     };
     errors.push(ValidationError {

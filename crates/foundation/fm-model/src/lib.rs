@@ -16,6 +16,7 @@ mod resolve;
 mod scene_animation;
 mod scene_layer_edit;
 mod script;
+mod secondary_mix;
 mod shortcut;
 mod stream;
 mod title;
@@ -79,6 +80,11 @@ pub use logical_output::{
     LogicalOutputError, LogicalOutputSlot, LogicalOutputSource, LogicalOverlayChannels,
     LogicalOverlayPolicy, MAX_LOGICAL_MIX_NUMBER, MAX_LOGICAL_OUTPUT_MULTIVIEW_CELLS,
     MAX_LOGICAL_OUTPUTS, validate_logical_outputs,
+};
+pub use secondary_mix::{
+    MAIN_MIX_NUMBER, MAX_MIX_NUMBER, MAX_SECONDARY_MIXES, MAX_SECONDARY_MIX_NAME_BYTES, MixNumber,
+    SecondaryMixConfig, SecondaryMixError, SecondaryMixMode, SecondaryMixSource,
+    validate_secondary_mixes,
 };
 pub use media_list::{
     DEFAULT_MEDIA_LIST_TRANSITION_FRAMES, M3uEntry, MAX_M3U_BYTES, MAX_MEDIA_LIST_ITEM_ID,
