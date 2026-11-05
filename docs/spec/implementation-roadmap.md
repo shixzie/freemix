@@ -3224,10 +3224,13 @@ a mix feed draws black before any tick is committed, and scene layers resolve
 aliases and feeds while refusing an alias whose crop cannot be composed into
 the layer's own crop. The native plan follows alias chains to their concrete
 leaf or scene in every route and scene layer, including live scene refreshes;
-a feed input or feed layer draws a synthetic black scene (black before the
-first commit, not yet the previous tick's frame); a cropped alias is refused
-natively instead of drawing the uncropped source. Remaining gaps: the native
-feeds do not show committed frames, cropped aliases and cropped alias layers
+a feed input on Program or Preview shows the previous tick's committed bus
+picture, which the video realizer retains as a GPU copy and falls back to the
+plan's synthetic black scene before the first commit, while a feed scene layer
+draws the synthetic black scene; a Preview feed keeps the Preview composite
+running even when no display asks for it. A cropped alias is refused natively
+instead of drawing the uncropped source. Remaining gaps: scene-layer feeds do
+not read the retained pictures yet, cropped aliases and cropped alias layers
 are refused, monitor taps do not paint their own alias/feed resolution, there
 is no protocol or Studio authoring, feedback ignores the second input of an
 active transition, and aliases do not yet carry independent effects,
