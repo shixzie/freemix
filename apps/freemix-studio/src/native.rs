@@ -4764,6 +4764,84 @@ mod tests {
     }
 
     #[test]
+    fn frozen_still_request_round_trips_through_the_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut peer = HeartbeatPeer::accept(&listener);
+            peer.handshake_request();
+            peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+                HandshakeOutcome::Snapshot {
+                    reason: SnapshotReason::NoCursor,
+                },
+            )));
+            peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+            let request = loop {
+                match peer.receive() {
+                    WireMessage::FrozenStillRequest(request) => break request,
+                    WireMessage::Heartbeat(heartbeat) => {
+                        peer.send(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        ));
+                    }
+                    other => panic!("expected the frozen-still request, got {other:?}"),
+                }
+            };
+            assert_eq!(request.protocol, CURRENT_PROTOCOL_VERSION);
+            assert!(request.request_id.starts_with("studio-frozen-still-"));
+            peer.send(&WireMessage::FrozenStillResponse(
+                fm_protocol::FrozenStillResponse {
+                    protocol: CURRENT_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    input: request.input,
+                    width: 1920,
+                    height: 1080,
+                    asset_uri: "asset://frozen-2.png".into(),
+                    path: "assets/frozen-2.png".into(),
+                },
+            ));
+            peer.acknowledge_heartbeats_until_eof();
+        });
+        let project = ProjectId::new(NonZeroU128::new(1).unwrap());
+        let mut runtime = StudioRuntime::new(StudioConfig {
+            connection: ConnectionConfig::Existing(ExistingConfig {
+                address,
+                expected_project_id: project,
+            }),
+            client_id: "frozen-still-test".to_owned(),
+            desired_role: Role::Operator,
+            restart_policy: RestartPolicy {
+                maximum_restarts: 0,
+            },
+            osc_listen: None,
+            transport: crate::ControlTransport::Tcp,
+            ui: crate::UiPreferences::default(),
+        })
+        .unwrap();
+        runtime.connect(HEARTBEAT_TEST_TIMEOUT).unwrap();
+        let input = WireInputId::new(NonZeroU128::new(2).unwrap()).to_domain();
+        assert!(runtime.request_frozen_still(input));
+        let event = runtime
+            .receive_timeout(HEARTBEAT_TEST_TIMEOUT)
+            .unwrap()
+            .expect("the still answer arrives");
+        let SessionEvent::FrozenStillResponse { response } = event else {
+            panic!("expected a frozen-still response, got {event:?}");
+        };
+        runtime.apply_frozen_still_response(&response);
+        let capture = runtime.frozen_still().expect("the capture is retained");
+        assert_eq!(capture.input, input);
+        assert_eq!((capture.width, capture.height), (1920, 1080));
+        assert_eq!(capture.asset_uri, "asset://frozen-2.png");
+        assert_eq!(capture.path, "assets/frozen-2.png");
+        server.join().unwrap();
+    }
+
+    #[test]
     fn recovery_publication_preserves_terminal_uncertainties_and_deferred_fifo() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
