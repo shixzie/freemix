@@ -73,13 +73,17 @@ pub(super) fn wire_states(frame: &fm_switcher::MixBankFrame) -> Vec<WireSecondar
         .mixes
         .iter()
         .map(|mix| WireSecondaryMixState {
-            number: wire_number(mix.mix),
+            number: wire_mix_id(mix.mix),
             program: wire_layer(mix.primary),
-            preview: mix.preview.map(wire_layer),
+            preview: mix.preview.and_then(wire_layer),
             numerator: mix.mix_numerator,
             denominator: mix.mix_denominator,
         })
         .collect()
+}
+
+fn wire_mix_id(mix: fm_switcher::MixId) -> WireMixNumber {
+    WireMixNumber::new(mix.number()).expect("a bank mix number is in range")
 }
 
 fn wire_layer(layer: fm_switcher::MixLayer) -> Option<WireSecondaryMixSource> {
@@ -87,7 +91,9 @@ fn wire_layer(layer: fm_switcher::MixLayer) -> Option<WireSecondaryMixSource> {
         fm_switcher::MixLayer::Input(input) => Some(WireSecondaryMixSource::Input(
             fm_protocol::WireInputId::from_domain(input),
         )),
-        fm_switcher::MixLayer::Mix(number) => Some(WireSecondaryMixSource::Mix(wire_number(number))),
+        fm_switcher::MixLayer::Mix { mix, .. } => {
+            Some(WireSecondaryMixSource::Mix(wire_mix_id(mix)))
+        }
         fm_switcher::MixLayer::Black => None,
     }
 }
