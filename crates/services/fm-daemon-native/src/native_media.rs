@@ -153,6 +153,26 @@ enum NativeSceneSource {
         input: InputId,
         feed: fm_model::MixFeed,
     },
+    /// An alias's concrete picture, cropped in project pixels (IN-024).
+    Alias {
+        input: InputId,
+        source: NativeAliasSource,
+        crop: fm_model::CropRect,
+    },
+}
+
+/// Where a cropped alias's picture comes from.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum NativeAliasSource {
+    Leaf(InputId),
+    Scene(SceneId),
+    Feed(fm_model::MixFeed),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeAliasCrop {
+    source: NativeAliasSource,
+    crop: fm_model::CropRect,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -447,6 +467,11 @@ impl NativeScenePlan {
         self.sources.iter().filter_map(|(_, source)| match source {
             NativeSceneSource::Scene(scene) => Some(*scene),
             NativeSceneSource::Feed { .. } => self.black_scene,
+            NativeSceneSource::Alias { source, .. } => match source {
+                NativeAliasSource::Scene(scene) => Some(*scene),
+                NativeAliasSource::Feed(_) => self.black_scene,
+                NativeAliasSource::Leaf(_) => None,
+            },
             NativeSceneSource::Leaf(_) => None,
         })
     }
@@ -628,6 +653,8 @@ pub struct NativeProjectPlan {
     /// Every Program/Preview feed input, including aliases of one, and the
     /// bus it shows (IN-025).
     feeds: BTreeMap<InputId, fm_model::MixFeed>,
+    /// Every cropped alias and the concrete picture its crop selects (IN-024).
+    alias_crops: BTreeMap<InputId, NativeAliasCrop>,
     peak_rgba16f_targets: usize,
     transient_rgba16f_bytes: u64,
     grades: NativeProjectGrades,
@@ -748,26 +775,32 @@ impl NativeProjectPlan {
             .iter()
             .map(|scene| (scene.id, scene))
             .collect::<BTreeMap<_, _>>();
-        let black_scene = project
-            .inputs()
-            .iter()
-            .any(|input| matches!(input.kind, InputKind::MixFeed(_)))
-            .then(|| synthetic_black_scene_id(&scene_models))
-            .transpose()?;
         let mut feeds = BTreeMap::new();
+        let mut alias_crops = BTreeMap::new();
         for input in project.inputs() {
-            let concrete = resolve_alias_target(input.id, &inputs)?;
+            let (concrete, crop) = resolve_alias_target(input.id, &inputs)?;
             if let InputKind::MixFeed(feed) = &concrete.kind {
                 feeds.insert(input.id, *feed);
             }
+            if let Some(crop) = crop {
+                let source = match &concrete.kind {
+                    InputKind::Scene { scene_id, .. } => NativeAliasSource::Scene(*scene_id),
+                    InputKind::MixFeed(feed) => NativeAliasSource::Feed(*feed),
+                    _ => NativeAliasSource::Leaf(concrete.id),
+                };
+                alias_crops.insert(input.id, NativeAliasCrop { source, crop });
+            }
         }
+        let black_scene = (!feeds.is_empty())
+            .then(|| synthetic_black_scene_id(&scene_models))
+            .transpose()?;
         let video_routes = project
             .inputs()
             .iter()
             .map(|input| {
                 let route = match &input.kind {
                     InputKind::Alias { .. } => {
-                        let concrete = resolve_alias_target(input.id, &inputs)?;
+                        let (concrete, _) = resolve_alias_target(input.id, &inputs)?;
                         match &concrete.kind {
                             InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(*scene_id),
                             InputKind::MixFeed(_) => NativeVideoRoute::Scene(
@@ -1066,6 +1099,7 @@ impl NativeProjectPlan {
             video_routes,
             black_scene,
             feeds,
+            alias_crops,
             audio_routes,
             audio_strips: project
                 .input_audio_strips()
@@ -1965,7 +1999,17 @@ fn native_execution_peak(
 fn resolve_alias_target<'a>(
     input: InputId,
     inputs: &BTreeMap<InputId, &'a fm_model::Input>,
-) -> Result<&'a fm_model::Input, NativeProjectPlanError> {
+) -> Result<(&'a fm_model::Input, Option<fm_model::CropRect>), NativeProjectPlanError> {
+    // Only the requested alias's own crop applies; crops on intermediate
+    // aliases are ignored, matching `fm_model::SourceResolver`.
+    let requested = inputs
+        .get(&input)
+        .copied()
+        .ok_or(NativeProjectPlanError::MissingInput(input))?;
+    let crop = match &requested.kind {
+        InputKind::Alias { crop, .. } => *crop,
+        _ => None,
+    };
     let mut current = input;
     let mut seen = BTreeSet::new();
     loop {
@@ -1977,13 +2021,8 @@ fn resolve_alias_target<'a>(
             .copied()
             .ok_or(NativeProjectPlanError::MissingInput(current))?;
         match &model.kind {
-            InputKind::Alias { target, crop } => {
-                if crop.is_some() {
-                    return Err(NativeProjectPlanError::AliasCropUnsupported { input: current });
-                }
-                current = *target;
-            }
-            _ => return Ok(model),
+            InputKind::Alias { target, .. } => current = *target,
+            _ => return Ok((model, crop)),
         }
     }
 }
