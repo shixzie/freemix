@@ -665,11 +665,9 @@ impl VideoRealizer {
                                         NativeVideoFrame::Outputs(outputs) => outputs
                                             .first()
                                             .map(NativeOutputFrame::texture)
-                                            .ok_or_else(|| {
-                                                VideoError::Render(
-                                                    NativeSourceRenderError::ResourceBounds,
-                                                )
-                                            })?,
+                                            .ok_or(VideoError::Render(
+                                                NativeSourceRenderError::ResourceBounds,
+                                            ))?,
                                     };
                                     self.feed_program = Some(
                                         self.runtime
