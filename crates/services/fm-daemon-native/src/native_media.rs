@@ -9583,9 +9583,10 @@ impl NativeMediaRuntime {
                                 })?
                                 .1
                         }
-                        NativeSceneSource::Feed { input, feed } => match feeds.get(*feed) {
-                            Some(texture) => texture,
-                            None => {
+                        NativeSceneSource::Feed { input, feed } => {
+                            if let Some(texture) = feeds.get(*feed) {
+                                texture
+                            } else {
                                 let black = scene.black_scene.ok_or(
                                     NativeSourceRenderError::MissingSource { input: *input },
                                 )?;
@@ -9596,7 +9597,7 @@ impl NativeMediaRuntime {
                                     })?
                                     .1
                             }
-                        },
+                        }
                     };
                     Ok(NativeSourceFrame::new(*token, texture))
                 })
