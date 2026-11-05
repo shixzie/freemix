@@ -11834,6 +11834,7 @@ mod tests {
             required_capabilities: Vec::new(),
         });
         let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        assert_eq!(plan.feed(feed), Some(fm_model::MixFeed::Program));
 
         let first = runtime
             .render_project_frame_result_blocking(
