@@ -2078,6 +2078,14 @@ name = "fm-record"
 version = "0.1.0"
 dependencies = [
  "fm-frame",
+ "fm-record-doc",
+ "fm-types",
+]
+
+[[package]]
+name = "fm-record-doc"
+version = "0.1.0"
+dependencies = [
  "fm-types",
 ]
 
@@ -2377,7 +2385,7 @@ dependencies = [
  "fm-io-omt",
  "fm-preset-file",
  "fm-protocol",
- "fm-record",
+ "fm-record-doc",
  "fm-sim",
  "fm-types",
  "fm-ui-egui",
