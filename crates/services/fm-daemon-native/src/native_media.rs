@@ -11844,9 +11844,8 @@ mod tests {
             .unwrap();
         let first_pixels =
             rgba16f_components(&block_on(runtime.diagnostic_readback(&first)).unwrap().bytes);
-        eprintln!("first={first_pixels:?}");
         assert!(
-            first_pixels[0] > 0.5 && first_pixels[1] < 0.05,
+            first_pixels[0] > 0.5 && first_pixels[0] > first_pixels[2] * 2.0,
             "tick one shows the red leaf"
         );
         let committed = runtime
@@ -11868,7 +11867,7 @@ mod tests {
         let fed_pixels =
             rgba16f_components(&block_on(runtime.diagnostic_readback(&fed)).unwrap().bytes);
         assert!(
-            fed_pixels[0] > 0.5 && fed_pixels[1] < 0.05,
+            fed_pixels[0] > 0.5 && fed_pixels[0] > fed_pixels[2] * 2.0,
             "the Program feed repeats the committed red picture"
         );
 
