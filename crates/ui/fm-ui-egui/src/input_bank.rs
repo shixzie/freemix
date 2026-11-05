@@ -568,6 +568,10 @@ impl StudioShell {
             status.push_str(" · ");
             status.push_str(&crate::screen_capture_ui::screen_capture_details(l, entry));
         }
+        if frozen {
+            status.push_str(" · ");
+            status.push_str(l.text(Msg::TileFrozenNote));
+        }
         let mut hover = format!(
             "{status}\n{}\n{source}\n{}",
             tally.operator_label(l),
@@ -576,10 +580,6 @@ impl StudioShell {
         if self.selected_input == Some(input) {
             hover.push('\n');
             hover.push_str(l.text(Msg::TileSelectedNote));
-        }
-        if frozen {
-            hover.push('\n');
-            hover.push_str(l.text(Msg::TileFrozenNote));
         }
         if video_delay > 0 {
             hover.push('\n');
