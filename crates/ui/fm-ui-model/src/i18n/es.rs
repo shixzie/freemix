@@ -3354,42 +3354,40 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::TitleMine, t("MÍO")),
     (Msg::TitleTheirs, t("SUYO")),
     (Msg::TitleFieldRemovedValue, t("eliminado del título")),
+    (Msg::TitleRowSection, t("Fila de datos")),
     (
-        (Msg::TitleRowSection, t("Fila de datos")),
-        (
-            Msg::TitleRowHint,
-            t(
-                "Un Nombre=valor por línea; el servidor asigna los nombres a la plantilla del título",
-            ),
+        Msg::TitleRowHint,
+        t("Un Nombre=valor por línea; el servidor asigna los nombres a la plantilla del título"),
+    ),
+    (Msg::TitleRowPreview, t("Previsualizar fila")),
+    (
+        Msg::TitleRowPreviewHover,
+        t(
+            "Mostrar qué campos de la plantilla nombra esta fila y sus valores actuales sin cambiar nada",
         ),
-        (Msg::TitleRowPreview, t("Previsualizar fila")),
-        (
-            Msg::TitleRowPreviewHover,
-            t(
-                "Mostrar qué campos de la plantilla nombra esta fila y sus valores actuales sin cambiar nada",
-            ),
+    ),
+    (Msg::TitleRowApply, t("Aplicar fila")),
+    (
+        Msg::TitleRowApplyHover,
+        t(
+            "Asignar esta fila a la plantilla del título en el servidor y aplicarla de forma atómica",
         ),
-        (Msg::TitleRowApply, t("Aplicar fila")),
-        (
-            Msg::TitleRowApplyHover,
-            t(
-                "Asignar esta fila a la plantilla del título en el servidor y aplicarla de forma atómica",
-            ),
-        ),
-        (Msg::TitleRowKeepLive, t("Mantener campos fallidos")),
-        (
-            Msg::TitleRowKeepLiveHover,
-            t("Aplicar los campos válidos y dejar el valor actual de cualquier campo que falle"),
-        ),
-        (
-            Msg::TitleRowEmpty,
-            t("Introduce al menos una línea Nombre=valor"),
-        ),
-        (Msg::TitleRowUnknown, t("campo desconocido")),
-        (
-            Msg::TitleRowPreviewHeading,
-            t("Previsualización de la fila"),
-        ),
+    ),
+    (Msg::TitleRowKeepLive, t("Mantener campos fallidos")),
+    (
+        Msg::TitleRowKeepLiveHover,
+        t("Aplicar los campos válidos y dejar el valor actual de cualquier campo que falle"),
+    ),
+    (
+        Msg::TitleRowEmpty,
+        t("Introduce al menos una línea Nombre=valor"),
+    ),
+    (Msg::TitleRowUnknown, t("campo desconocido")),
+    (
+        Msg::TitleRowPreviewHeading,
+        t("Previsualización de la fila"),
+    ),
+    (
         Msg::TitleConflictBanner,
         t(
             "Otro operador cambió este título. Compare los valores y luego Rebase para conservar sus ediciones sobre las suyas, o Descarte las propias.",
