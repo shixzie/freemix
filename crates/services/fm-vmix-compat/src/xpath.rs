@@ -202,6 +202,7 @@ impl Comparison {
 
 /// A location step's axis.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names)] // `SelfAxis` mirrors the XPath axis name
 enum Axis {
     /// `/` (and the implicit leading step): children.
     Child,
@@ -264,7 +265,7 @@ impl CompatState {
                 continue;
             };
             let position = order
-                .get(&(node as *const Node))
+                .get(&std::ptr::from_ref(node))
                 .copied()
                 .unwrap_or(usize::MAX);
             if best
@@ -277,16 +278,16 @@ impl CompatState {
             }
         }
         let (_, _, node, attribute) = best.ok_or(XPathError::NotFound)?;
-        match attribute {
-            Some(value) => Ok(value.to_owned()),
-            None => {
-                let mut value = String::new();
-                node.string_value(&mut value);
-                Ok(value)
-            }
+        if let Some(value) = attribute {
+            Ok(value.to_owned())
+        } else {
+            let mut value = String::new();
+            node.string_value(&mut value);
+            Ok(value)
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one branch per project input kind
     fn document(&self) -> Node {
         let inputs = self
             .inputs
@@ -463,14 +464,14 @@ fn step_candidates<'a>(
         }
         Axis::SelfAxis => vec![node],
         Axis::Parent => parents
-            .get(&(node as *const Node))
+            .get(&std::ptr::from_ref(node))
             .copied()
             .into_iter()
             .collect(),
         Axis::Ancestor => {
             let mut ancestors = Vec::new();
             let mut current = node;
-            while let Some(parent) = parents.get(&(current as *const Node)).copied() {
+            while let Some(parent) = parents.get(&std::ptr::from_ref(current)).copied() {
                 ancestors.push(parent);
                 current = parent;
             }
@@ -486,7 +487,7 @@ fn sibling_candidates<'a>(
     parents: &std::collections::HashMap<*const Node, &'a Node>,
     following: bool,
 ) -> Vec<&'a Node> {
-    let Some(parent) = parents.get(&(node as *const Node)).copied() else {
+    let Some(parent) = parents.get(&std::ptr::from_ref(node)).copied() else {
         return Vec::new();
     };
     let Some(index) = parent
@@ -506,7 +507,7 @@ fn sibling_candidates<'a>(
 fn parent_map(document: &Node) -> std::collections::HashMap<*const Node, &Node> {
     fn visit<'a>(node: &'a Node, map: &mut std::collections::HashMap<*const Node, &'a Node>) {
         for child in &node.children {
-            map.insert(child as *const Node, node);
+            map.insert(std::ptr::from_ref(child), node);
             visit(child, map);
         }
     }
@@ -522,7 +523,7 @@ fn document_order(document: &Node) -> std::collections::HashMap<*const Node, usi
         next: &mut usize,
         order: &mut std::collections::HashMap<*const Node, usize>,
     ) {
-        order.insert(node as *const Node, *next);
+        order.insert(std::ptr::from_ref(node), *next);
         *next += 1;
         for child in &node.children {
             visit(child, next, order);

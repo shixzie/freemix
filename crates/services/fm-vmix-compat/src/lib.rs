@@ -79,7 +79,7 @@ pub struct CompatInput {
     pub id: WireInputId,
     /// Case-sensitive vMix input title.
     pub title: String,
-    /// vMix-style input type label, such as `Camera` or `GT`.
+    /// `vMix`-style input type label, such as `Camera` or `GT`.
     pub kind: String,
     /// Title text fields, in deterministic `SelectedIndex` order.
     pub text_fields: Vec<CompatTextField>,
@@ -281,8 +281,10 @@ impl CompatState {
             .filter(|index| *index < OVERLAY_CHANNELS)
             .ok_or(StateError::InvalidOverlayChannel)?;
         let previous = self.previous_overlays[index];
-        self.previous_overlays[index] = self.overlays[index];
-        self.overlays[index] = previous;
+        std::mem::swap(
+            &mut self.previous_overlays[index],
+            &mut self.overlays[index],
+        );
         Ok(previous)
     }
 
