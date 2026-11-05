@@ -3174,12 +3174,12 @@ output paths read the same latched picture. Studio's input-bank menu offers
 Freeze or Unfreeze, marks a frozen tile in its hover text, and sends the
 2.161 command, and the replicated view carries the frozen set. Protocol 2.164
 exports the latched picture: `frozen_still_request` names one frozen input,
-and the daemon answers with `frozen_still_response` parts carrying a lossless
-PNG (32 KiB chunks, strictly ordered and reassembled); `remote-frozen-still
-<address> <input> <output.png>` joins them and writes the file. A native
-daemon reads the GPU-latched source texture back through the sRGB output
-transform, so the still matches the Program picture; a simulated daemon
-renders the input's current simulated picture. Remaining gaps: there is no
+the daemon writes a lossless PNG into the project bundle's `assets/`, and
+`frozen_still_response` returns its dimensions, `asset://` URI, and
+bundle-relative path; `remote-frozen-still <address> <input>` sends the
+request and prints them. A native daemon reads the GPU-latched source texture
+back through the sRGB output transform, so the still matches the Program
+picture; a simulated daemon renders the input's current simulated picture. Remaining gaps: there is no
 dedicated freeze button or always-visible badge beyond the menu and hover
 note, no Studio capture action, no audio freeze/alignment, timestamps are
 still bare ticks rather than `fm-frame` timing types, and stills carry no
