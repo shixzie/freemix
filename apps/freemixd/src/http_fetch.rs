@@ -18,12 +18,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 
-/// Fetches `url`, following bounded `http://` redirects.
+/// Fetches `url`, following bounded `http://` or `https://` redirects.
 ///
 /// # Errors
 ///
-/// Returns a message naming the URL parse, connection, timeout, status,
-/// redirect, or size bound failure. `https://` is refused explicitly.
+/// Returns a message naming the URL parse, non-public address, connection,
+/// TLS, timeout, status, redirect, or size bound failure.
 pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, String> {
     fetch_with(url, None, false)
 }

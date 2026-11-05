@@ -25,6 +25,11 @@ fn title_source_requests_and_responses_round_trip() {
             interval_ms: 1_000,
             keep_live: false,
         },
+        TitleRowSourceOperation::Start {
+            path: "https://example.test/scores.csv".into(),
+            interval_ms: 60_000,
+            keep_live: true,
+        },
         TitleRowSourceOperation::Status,
     ];
     for operation in requests {

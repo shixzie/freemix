@@ -2286,10 +2286,6 @@ impl TitleRowSources {
                 return sources;
             };
             let is_url = source_path.starts_with("http://") || source_path.starts_with("https://");
-            if source_path.starts_with("https://") {
-                eprintln!("FREEMIXD_TITLE_SOURCES\tstate=https_unsupported\tpath={source_path}");
-                continue;
-            }
             let (resolved, format, url) = if is_url {
                 let extension = url_path_extension(source_path);
                 let Some(format) = source_format(extension.as_deref()) else {
@@ -2399,16 +2395,6 @@ impl TitleRowSources {
                 keep_live,
             } => {
                 let is_url = path.starts_with("http://") || path.starts_with("https://");
-                if path.starts_with("https://") {
-                    return response(
-                        false,
-                        Some(path),
-                        Some(interval_ms),
-                        keep_live,
-                        0,
-                        Some("https title sources are not supported yet".to_owned()),
-                    );
-                }
                 let (resolved, format, url) = if is_url {
                     let extension = url_path_extension(&path);
                     let Some(format) = source_format(extension.as_deref()) else {
