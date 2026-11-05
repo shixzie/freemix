@@ -226,6 +226,7 @@ impl EngineCommand {
             | Self::TakeNextOverlay { .. }
             | Self::Wipe { .. }
             | Self::FadeToBlack { .. }
+            | Self::SetInputFreeze { .. }
             | Self::StartManualTransition { .. }
             | Self::SetManualTransitionPosition { .. }
             | Self::CommitManualTransition

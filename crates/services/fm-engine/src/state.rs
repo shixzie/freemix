@@ -202,6 +202,8 @@ pub struct ShowState {
     audio_buses: Vec<fm_types::BusId>,
     /// Per-input video delays in frames (IN-022), ascending.
     input_video_delays: BTreeMap<InputId, u32>,
+    /// Every frozen input (SW-016), ascending. Runtime state, never persisted.
+    frozen_inputs: BTreeSet<InputId>,
     input_audio_strips: BTreeMap<InputId, EngineInputAudioStripState>,
     desired_switcher: SwitcherState,
     project_locked: bool,
@@ -349,6 +351,7 @@ impl ShowState {
             secondary_mixes: BTreeMap::new(),
             audio_buses: Vec::new(),
             input_video_delays: BTreeMap::new(),
+            frozen_inputs: BTreeSet::new(),
             desired_switcher,
             project_locked: false,
             locked_inputs: BTreeSet::new(),
@@ -491,6 +494,34 @@ impl ShowState {
     #[must_use]
     pub fn input_video_delay(&self, input: InputId) -> u32 {
         self.input_video_delays.get(&input).copied().unwrap_or(0)
+    }
+
+    /// Whether `input` is frozen (SW-016).
+    #[must_use]
+    pub fn is_input_frozen(&self, input: InputId) -> bool {
+        self.frozen_inputs.contains(&input)
+    }
+
+    /// Every frozen input, ascending (SW-016).
+    pub fn frozen_inputs(&self) -> impl Iterator<Item = InputId> + '_ {
+        self.frozen_inputs.iter().copied()
+    }
+
+    /// Freezes or resumes one input's picture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] when the input does not exist.
+    pub fn set_input_frozen(&mut self, input: InputId, frozen: bool) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        if frozen {
+            self.frozen_inputs.insert(input);
+        } else {
+            self.frozen_inputs.remove(&input);
+        }
+        Ok(())
     }
 
     /// Sets one input's video delay, or clears it with zero.

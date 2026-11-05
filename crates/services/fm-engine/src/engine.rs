@@ -530,6 +530,12 @@ pub enum EngineCommand {
         input: InputId,
         frames: u32,
     },
+    /// Freezes or resumes one input's picture (SW-016). A live operation: it
+    /// is not undoable and is not persisted.
+    SetInputFreeze {
+        input: InputId,
+        frozen: bool,
+    },
     /// Replaces the `LiveLAN` viewer stream's configuration (OR-017), its PIN
     /// already resolved to the exact one it will hold. A project edit,
     /// undone by restoring the previous configuration; the daemon realizes
@@ -4593,6 +4599,15 @@ impl EngineMutation {
                     Rejection::new(RejectionCode::InvalidCommand, error.to_string())
                 })?;
             events.push(EngineEvent::InputVideoDelayChanged { input, frames });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
+        if let EngineCommand::SetInputFreeze { input, frozen } = self.command {
+            state.set_input_frozen(input, frozen).map_err(|error| {
+                Rejection::new(RejectionCode::InvalidCommand, error.to_string())
+            })?;
+            events.push(EngineEvent::InputFreezeChanged { input, frozen });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
             });
