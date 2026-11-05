@@ -3056,11 +3056,25 @@ changes. Mix-to-mix routing refuses cycles through program, preview, or a
 running transition and follows one timing rule: a read of another mix sees
 that mix's previous frame, frame zero reads black, and delays accumulate along
 a chain. Overlay and stinger effects target one or several mixes and apply all
-or nothing at the next frame boundary. Remaining gaps: the bank is not wired
-to `fm-engine`, the protocol, persistence, the compositor, or Studio, so no
-secondary-mix output renders; stinger effects do not check slot readiness or
-fallback; and overlay fades, mix-sourced overlays, T-bar, Fade-to-Black, and
-audio are absent. `IN-023` remains planned.
+or nothing at the next frame boundary. The project model now owns up to
+fifteen secondary mixes (schema 108): each carries a number, name,
+Preview/Program or output-only mode, and Program and optional Preview sources;
+validation rejects Main, duplicate or out-of-order numbers, unknown inputs or
+mixes, a Preview that conflicts with the mode or equals Program, and direct or
+chained self-reference. `EngineCommand::SetSecondaryMix` configures or clears
+one mix as an undoable project edit, the show state validates it, and the
+daemon folds the routing back into the project on save. Protocol 2.158 carries
+the list in every snapshot, sets or clears one with `secondary_mix_set` /
+`secondary_mix_clear`, and announces an edit (or its undo or redo) with
+`secondary_mix_changed`; the client model replicates it. The engine resolves
+the configured mixes into a static bank frame each tick and feeds it to
+logical-output resolution, so a `Mix(n)` output source and multiview mix cells
+resolve against the project's Program/Preview routing. Remaining gaps: no live
+`MixBank` frame loop (mixes have no cuts, transitions, or one-frame delayed
+reads in the engine yet), no native compositor renders a mix background, no
+Studio or CLI editor and no audio path, and stinger effects still do not check
+slot readiness or fallback; overlay fades, mix-sourced overlays, T-bar, and
+Fade-to-Black inside a mix are absent. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
