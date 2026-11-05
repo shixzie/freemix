@@ -2866,8 +2866,7 @@ impl Project {
             return Some(InputReference::ReplaySource);
         }
         if let Some(mix) = self.secondary_mixes.iter().find(|mix| {
-            crate::SecondaryMixSource::Input(candidate) = mix.program
-                && candidate == input
+            matches!(mix.program, crate::SecondaryMixSource::Input(candidate) if candidate == input)
                 || mix.preview.is_some_and(|preview| {
                     matches!(preview, crate::SecondaryMixSource::Input(candidate) if candidate == input)
                 })
