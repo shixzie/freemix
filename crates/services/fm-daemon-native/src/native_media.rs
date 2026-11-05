@@ -11358,6 +11358,59 @@ mod tests {
         })
     }
 
+    fn rgba16f_pixel(bytes: &[u8], width: u32, x: u32, y: u32) -> [f32; 4] {
+        let offset = usize::try_from((y * width + x) * 8).unwrap();
+        rgba16f_components(&bytes[offset..offset + 8])
+    }
+
+    /// A frame whose left half is `left` and right half is `right`.
+    fn split_retained_frame(
+        clock_domain: ClockDomainId,
+        left: [u8; 4],
+        right: [u8; 4],
+        width: u32,
+        height: u32,
+    ) -> CpuVideoFrame {
+        let timing = MediaTiming::new(
+            OriginalTimestamp::new(
+                MediaTimestamp::new(0),
+                TimeBase::new(1, 1_000_000_000).unwrap(),
+            ),
+            NormalizedTimestamp::from_nanos(0),
+            NormalizedDuration::from_nanos(1).unwrap(),
+            clock_domain,
+            SequenceNumber::new(0),
+        )
+        .unwrap();
+        let width_usize = usize::try_from(width).unwrap();
+        let height_usize = usize::try_from(height).unwrap();
+        let mut bytes = Vec::with_capacity(width_usize * height_usize * 4);
+        for y in 0..height_usize {
+            for x in 0..width_usize {
+                let _ = y;
+                bytes.extend_from_slice(if x < width_usize / 2 { &left } else { &right });
+            }
+        }
+        let payload = CpuVideoPayload::new(
+            PixelFormat::Rgba8,
+            VideoDimensions::new(width, height).unwrap(),
+            vec![CpuVideoPlane::new(width_usize * 4, bytes).unwrap()],
+        )
+        .unwrap();
+        CpuVideoFrame::new(timing, payload)
+            .with_metadata(VideoFrameMetadata::new(
+                ColorMetadata {
+                    primaries: ColorPrimaries::Bt709,
+                    transfer: TransferFunction::Srgb,
+                    matrix: MatrixCoefficients::Identity,
+                    range: SignalRange::Full,
+                    chroma_location: ChromaLocation::Center,
+                },
+                Some(AlphaMode::Straight),
+            ))
+            .unwrap()
+    }
+
     #[cfg(target_os = "macos")]
     fn create_local_stinger_fixture(directory: &std::path::Path) -> std::path::PathBuf {
         let raw = directory.join("stinger.rgba");
@@ -11986,6 +12039,127 @@ mod tests {
             black_pixels.iter().take(3).all(|channel| *channel < 0.05),
             "a feed layer with no committed picture is black"
         );
+    }
+
+    #[test]
+    fn native_feed_scene_layers_take_their_crop_and_grade() {
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(83).unwrap());
+        let program = input(1);
+        let feed = input(2);
+        let cropped_scene_input = input(3);
+        let graded_scene_input = input(4);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: program,
+                    frame: split_retained_frame(
+                        clock_domain,
+                        [255, 0, 0, 255],
+                        [0, 0, 255, 255],
+                        4,
+                        2,
+                    ),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, program);
+        project.add_input(Input {
+            id: feed,
+            name: "program feed".into(),
+            kind: InputKind::MixFeed(fm_model::MixFeed::Program),
+            required_capabilities: Vec::new(),
+        });
+
+        let mut cropped_layer = layer(SourceRef::Input(feed), 0);
+        cropped_layer.crop = Some(fm_model::CropRect::new(0, 0, 2, 2));
+        add_scene_input(&mut project, cropped_scene_input, scene(10), None);
+        add_scene(&mut project, scene(10), vec![cropped_layer]);
+
+        let graded_layer = layer(SourceRef::Input(feed), 0);
+        let graded_layer_id = graded_layer.id;
+        add_scene_input(&mut project, graded_scene_input, scene(11), None);
+        add_scene(&mut project, scene(11), vec![graded_layer]);
+
+        let mut plan =
+            NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let first = runtime
+            .render_project_frame_result_blocking(
+                playback.registry(),
+                &plan,
+                &frame_result(0, program, None),
+            )
+            .unwrap();
+        let committed = runtime
+            .copy_feed_texture_blocking(plan.dimensions(), &first)
+            .unwrap();
+        let feeds = NativeFeedFrames {
+            program: Some(&committed),
+            preview: None,
+        };
+
+        // The layer's crop selects the committed picture's left half and
+        // stretches it across the layer's geometry.
+        let cropped = runtime
+            .render_project_frame_result_with_stingers_and_feeds_blocking(
+                playback.registry(),
+                playback.registry(),
+                &plan,
+                &frame_result(1, cropped_scene_input, None),
+                feeds,
+            )
+            .unwrap();
+        let cropped = block_on(runtime.diagnostic_readback(&cropped)).unwrap();
+        let left = rgba16f_pixel(&cropped.bytes, 4, 0, 0);
+        let right = rgba16f_pixel(&cropped.bytes, 4, 3, 0);
+        assert!(
+            left[0] > 0.5 && right[0] > 0.5 && right[2] < 0.1,
+            "the left-half crop fills the layer with red"
+        );
+
+        // The layer's own grade desaturates both halves of the committed
+        // picture.
+        let mut grading = fm_model::ProjectGrading::default();
+        grading
+            .set_layer(
+                SceneLayerRef::new(scene(11), graded_layer_id),
+                Some(fm_model::GradeSource::Inline(Box::new(fm_grade::Grade {
+                    saturation_permille: 0,
+                    ..fm_grade::Grade::IDENTITY
+                }))),
+            )
+            .unwrap();
+        let compiled =
+            fm_engine::CompiledProjectGrades::compile_grading(&grading, &BTreeMap::new()).unwrap();
+        plan.set_grades(
+            runtime
+                .prepare_project_grades_blocking(1, &compiled)
+                .unwrap(),
+        );
+        let graded = runtime
+            .render_project_frame_result_with_stingers_and_feeds_blocking(
+                playback.registry(),
+                playback.registry(),
+                &plan,
+                &frame_result(1, graded_scene_input, None),
+                feeds,
+            )
+            .unwrap();
+        let graded = block_on(runtime.diagnostic_readback(&graded)).unwrap();
+        for x in [0_u32, 3] {
+            let pixel = rgba16f_pixel(&graded.bytes, 4, x, 0);
+            assert!(
+                (pixel[0] - pixel[1]).abs() < 0.05 && (pixel[1] - pixel[2]).abs() < 0.05,
+                "layer grade desaturates the committed picture at x={x}: {pixel:?}"
+            );
+        }
     }
 
     #[test]
