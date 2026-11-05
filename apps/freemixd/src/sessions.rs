@@ -2253,7 +2253,7 @@ impl TitleRowSources {
                 eprintln!("FREEMIXD_TITLE_SOURCES\tstate=malformed\tline={line}");
                 return sources;
             };
-            let Some(input) = NonZeroU128::new(input).map(fm_types::InputId::new) else {
+            let Some(input) = std::num::NonZeroU128::new(input).map(fm_types::InputId::new) else {
                 continue;
             };
             let Ok(interval_ms) = interval.parse::<u32>() else {
