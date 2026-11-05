@@ -180,6 +180,37 @@ impl FakeRemoteServer {
         Self { address, worker }
     }
 
+    /// Serves the read-only title state, then one remote edit (GX-005).
+    fn start_title_row(
+        edit: RemoteEdit,
+        states: Vec<fm_protocol::TitleStateMessage>,
+        extra_inputs: Vec<fm_protocol::InputStatus>,
+    ) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            SNAPSHOT_TITLE_STATES.with(|cell| *cell.borrow_mut() = states);
+            SNAPSHOT_EXTRA_INPUTS.with(|cell| *cell.borrow_mut() = extra_inputs);
+            serve_title_row(&listener, &edit);
+        });
+        Self { address, worker }
+    }
+
+    /// Serves only the snapshot and its title states, for a preview.
+    fn start_title_snapshot(
+        states: Vec<fm_protocol::TitleStateMessage>,
+        extra_inputs: Vec<fm_protocol::InputStatus>,
+    ) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            SNAPSHOT_TITLE_STATES.with(|cell| *cell.borrow_mut() = states);
+            SNAPSHOT_EXTRA_INPUTS.with(|cell| *cell.borrow_mut() = extra_inputs);
+            serve_title_snapshot(&listener);
+        });
+        Self { address, worker }
+    }
+
     fn start_stinger() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1186,6 +1217,78 @@ fn serve_edit(listener: &TcpListener, edit: &RemoteEdit) {
     );
 }
 
+fn serve_title_snapshot(listener: &TcpListener) {
+    let engine = EngineIdentity {
+        engine_id: "project-42".into(),
+        state_epoch: 1,
+        log_id: "fake-remote-log".into(),
+    };
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_role(read_message(&mut reader), Role::Viewer);
+    write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+}
+
+fn serve_title_row(listener: &TcpListener, edit: &RemoteEdit) {
+    let engine = EngineIdentity {
+        engine_id: "project-42".into(),
+        state_epoch: 1,
+        log_id: "fake-remote-log".into(),
+    };
+    // The command reads the live title's revision and air state first.
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_role(read_message(&mut reader), Role::Viewer);
+    write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+    drop(reader);
+    drop(writer);
+
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_role(read_message(&mut reader), edit.role);
+    write_handshake_role(&mut writer, &engine, 0, edit.role);
+    let WireMessage::Command(command) = read_message(&mut reader) else {
+        panic!("expected remote {} command", edit.key);
+    };
+    assert_command(&command, &edit.payload, edit.key, 0);
+    write_message(
+        &mut writer,
+        &WireMessage::CommandResult(CommandResult::Accepted {
+            id: command.id,
+            revision: 1,
+            scheduled_frame: Some(1),
+        }),
+    );
+    write_message(
+        &mut writer,
+        &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            cursor: EventCursor {
+                engine: engine.clone(),
+                revision: 1,
+            },
+            payload: edit.event.clone(),
+        }),
+    );
+    write_message(
+        &mut writer,
+        &WireMessage::RuntimeEvent(RuntimeEventMessage {
+            server: server_identity(&engine),
+            revision: 1,
+            generation: 1,
+            sequence: 1,
+            event: RuntimeLifecycleEvent::Realized {
+                domain: edit.domain.into(),
+                manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
+                fade_to_black: live_fade_to_black(),
+            },
+        }),
+    );
+}
+
 fn serve_stinger(listener: &TcpListener) {
     serve_automatic_transition(
         listener,
@@ -1817,6 +1920,15 @@ std::thread_local! {
     /// thread (OR-006).
     static SNAPSHOT_STREAMS: std::cell::RefCell<Vec<fm_protocol::StreamStatus>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Title states the fake daemon's snapshot announces on this thread
+    /// (GX-005): one title summary per state and the matching
+    /// `title_state` after the snapshot.
+    static SNAPSHOT_TITLE_STATES: std::cell::RefCell<Vec<fm_protocol::TitleStateMessage>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Extra inputs the fake daemon's snapshot lists on this thread, after
+    /// the default two (GX-005).
+    static SNAPSHOT_EXTRA_INPUTS: std::cell::RefCell<Vec<fm_protocol::InputStatus>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// [`serve_edit`] with scene layouts in the snapshot, so a
@@ -1884,7 +1996,11 @@ fn write_handshake_snapshot(
             engine: engine.clone(),
             revision,
             show_name: "Remote Contract".into(),
-            inputs: input_statuses(),
+            inputs: {
+                let mut inputs = input_statuses();
+                inputs.extend(SNAPSHOT_EXTRA_INPUTS.with(|cell| cell.borrow().clone()));
+                inputs
+            },
             outputs: output_statuses(),
             input_audio_strips: input_audio_strips(),
             desired_program: input(1),
@@ -1902,7 +2018,15 @@ fn write_handshake_snapshot(
             realized_overlays: OverlayStatus::empty_channels(),
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
-            titles: Vec::new(),
+            titles: SNAPSHOT_TITLE_STATES.with(|cell| {
+                cell.borrow()
+                    .iter()
+                    .map(|state| fm_protocol::TitleSummary {
+                        input: state.input,
+                        field_revision: state.field_revision,
+                    })
+                    .collect()
+            }),
             scenes: Vec::new(),
             layout_scenes: SNAPSHOT_LAYOUTS
                 .with(|cell| cell.borrow().iter().map(|(scene, _)| *scene).collect()),
@@ -1929,6 +2053,9 @@ fn write_handshake_snapshot(
             transitions_in_flight: Vec::new(),
         }),
     );
+    for state in SNAPSHOT_TITLE_STATES.with(|cell| cell.borrow().clone()) {
+        write_message(writer, &WireMessage::TitleState(state));
+    }
     for (scene, layout) in SNAPSHOT_LAYOUTS.with(|cell| cell.borrow().clone()) {
         write_message(
             writer,
@@ -8131,6 +8258,263 @@ fn remote_input_freeze_sends_the_exact_edit() {
     ]);
     assert_success(&output);
     server.finish();
+}
+
+/// The title state the fake daemon announces for `remote-title-apply-row`:
+/// two fields at field revision 7, off air.
+fn title_row_state(phase: fm_protocol::TitlePhase) -> fm_protocol::TitleStateMessage {
+    let field =
+        |id: u128, name: &str, value: fm_protocol::TitleFieldValue| fm_protocol::TitleFieldStatus {
+            field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(id).unwrap()),
+            name: name.into(),
+            value,
+            exposed: true,
+            revision: 7,
+        };
+    fm_protocol::TitleStateMessage {
+        revision: 0,
+        input: input(9),
+        name: "Score bar".into(),
+        field_revision: 7,
+        phase,
+        phase_frame: 0,
+        phase_frames: 0,
+        timeline: None,
+        fields: vec![
+            field(1, "Score", fm_protocol::TitleFieldValue::Number(-4)),
+            field(
+                2,
+                "Bar color",
+                fm_protocol::TitleFieldValue::Color {
+                    red: 0x11,
+                    green: 0x22,
+                    blue: 0x33,
+                    alpha: 0xff,
+                },
+            ),
+        ],
+    }
+}
+
+fn title_row_input() -> fm_protocol::InputStatus {
+    fm_protocol::InputStatus {
+        input: input(9),
+        name: "Score bar".into(),
+        lifecycle: fm_protocol::InputLifecycleStatus::default(),
+    }
+}
+
+/// GX-005, Protocol 2.96: the remote title-row command maps the row against
+/// the local template, reads the title's field revision and air state from
+/// the daemon, and sends the exact live field edit.
+#[test]
+#[allow(clippy::too_many_lines)] // save, preview, and keep-live in one contract
+fn remote_title_apply_row_maps_fields_and_sends_the_exact_edit() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let source = context.root.join("score-bar.fmtitle");
+    fs::write(&source, SHAPE_TITLE_SOURCE).unwrap();
+    assert_success(&invoke(&[
+        "title-input-add",
+        context.project_path(),
+        "--id",
+        "9",
+        "--name",
+        "Score bar",
+        "--template",
+        source.to_str().unwrap(),
+    ]));
+    let row = context.root.join("row.json");
+    fs::write(&row, r##"{"Score": "12", "Bar color": "#ABCDEF"}"##).unwrap();
+
+    let server = FakeRemoteServer::start_title_row(
+        RemoteEdit {
+            role: Role::Graphics,
+            key: "remote-title-apply-row",
+            payload: CommandPayload::SetTitleFields {
+                input: input(9),
+                base_revision: 7,
+                require: fm_protocol::TitleAirRequirement::OffAir,
+                fields: vec![
+                    fm_protocol::TitleFieldUpdate {
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                        value: fm_protocol::TitleFieldValue::Number(12),
+                    },
+                    fm_protocol::TitleFieldUpdate {
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                        value: fm_protocol::TitleFieldValue::Color {
+                            red: 0xab,
+                            green: 0xcd,
+                            blue: 0xef,
+                            alpha: 0xff,
+                        },
+                    },
+                ],
+            },
+            event: EventPayload::TitleChanged {
+                input: input(9),
+                field_revision: 8,
+                fields: vec![
+                    fm_protocol::TitleFieldUpdate {
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                        value: fm_protocol::TitleFieldValue::Number(12),
+                    },
+                    fm_protocol::TitleFieldUpdate {
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                        value: fm_protocol::TitleFieldValue::Color {
+                            red: 0xab,
+                            green: 0xcd,
+                            blue: 0xef,
+                            alpha: 0xff,
+                        },
+                    },
+                ],
+                overlays: OverlayStatus::empty_channels(),
+            },
+            domain: "project",
+        },
+        vec![title_row_state(fm_protocol::TitlePhase::Idle)],
+        vec![title_row_input()],
+    );
+    let output = invoke(&[
+        "remote-title-apply-row",
+        &server.address(),
+        context.project_path(),
+        "9",
+        row.to_str().unwrap(),
+        "--key",
+        "remote-title-apply-row",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("require=off_air"),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+
+    // An on-air title is updated live instead of being refused as on air.
+    let server = FakeRemoteServer::start_title_row(
+        RemoteEdit {
+            role: Role::Graphics,
+            key: "remote-title-apply-row",
+            payload: CommandPayload::SetTitleFields {
+                input: input(9),
+                base_revision: 7,
+                require: fm_protocol::TitleAirRequirement::OnAir,
+                fields: vec![fm_protocol::TitleFieldUpdate {
+                    field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                    value: fm_protocol::TitleFieldValue::Number(12),
+                }],
+            },
+            event: EventPayload::TitleChanged {
+                input: input(9),
+                field_revision: 8,
+                fields: vec![fm_protocol::TitleFieldUpdate {
+                    field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                    value: fm_protocol::TitleFieldValue::Number(12),
+                }],
+                overlays: OverlayStatus::empty_channels(),
+            },
+            domain: "project",
+        },
+        vec![title_row_state(fm_protocol::TitlePhase::Hold)],
+        vec![title_row_input()],
+    );
+    fs::write(&row, r#"{"Score": 12}"#).unwrap();
+    let output = invoke(&[
+        "remote-title-apply-row",
+        &server.address(),
+        context.project_path(),
+        "9",
+        row.to_str().unwrap(),
+        "--key",
+        "remote-title-apply-row",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("require=on_air"),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+
+    // --preview reports the remote changes and sends nothing.
+    let server = FakeRemoteServer::start_title_snapshot(
+        vec![title_row_state(fm_protocol::TitlePhase::Idle)],
+        vec![title_row_input()],
+    );
+    let output = invoke(&[
+        "remote-title-apply-row",
+        &server.address(),
+        context.project_path(),
+        "9",
+        row.to_str().unwrap(),
+        "--preview",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains(r#"would-change "Score""#),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("title-apply-row: input=9 preview"),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+
+    // --keep-live omits a failed field and reports the mapped one.
+    let server = FakeRemoteServer::start_title_snapshot(
+        vec![title_row_state(fm_protocol::TitlePhase::Idle)],
+        vec![title_row_input()],
+    );
+    fs::write(&row, r##"{"Score": "twelve", "Bar color": "#010203"}"##).unwrap();
+    let output = invoke(&[
+        "remote-title-apply-row",
+        &server.address(),
+        context.project_path(),
+        "9",
+        row.to_str().unwrap(),
+        "--keep-live",
+        "--preview",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains(r#"failed "Score" coercion-error"#),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains(r#"would-change "Bar color""#),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+
+    // A row naming a field the remote title does not define is refused.
+    let server = FakeRemoteServer::start_title_snapshot(
+        vec![title_row_state(fm_protocol::TitlePhase::Idle)],
+        vec![title_row_input()],
+    );
+    fs::write(&row, r#"{"Nope": 1}"#).unwrap();
+    let output = invoke(&[
+        "remote-title-apply-row",
+        &server.address(),
+        context.project_path(),
+        "9",
+        row.to_str().unwrap(),
+        "--preview",
+    ]);
+    assert!(!output.status.success());
+    server.finish();
+
+    fs::remove_dir_all(context.root).unwrap();
 }
 
 /// OR-017: the local `LiveLAN` settings are a validated, persisted project

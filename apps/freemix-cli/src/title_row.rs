@@ -149,7 +149,7 @@ pub fn remote_apply_row(
     let stored = load_stored_project(path)?;
     let input = input_id(input)?;
     let MappedRow {
-        template: stored_template,
+        template: _,
         template_uri,
         report,
     } = mapped_row(path, &stored, input, row_path, row_number)?;
