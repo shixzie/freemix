@@ -162,8 +162,7 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 }
                 crate::TitleRowSourceOperation::Stop => record.field("action", "stop")?,
                 crate::TitleRowSourceOperation::Status => record.field("action", "status")?,
-            }
-            Ok(())
+            }?;
         }
         WireMessage::TitleRowSourceResponse(message) => {
             validate_request_id(&message.request_id)?;
@@ -183,7 +182,6 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             if let Some(error) = &message.error {
                 record.field_str("error", error)?;
             }
-            Ok(())
         }
         WireMessage::FrozenStillRequest(message) => {
             validate_request_id(&message.request_id)?;
