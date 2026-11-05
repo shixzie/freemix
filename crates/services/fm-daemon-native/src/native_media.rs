@@ -2617,8 +2617,7 @@ impl NativeSourceRegistry {
     #[must_use]
     pub fn effective_input_video_delay(&self, input: InputId) -> u32 {
         let maximum = self.limits.max_video_frames_per_source.get();
-        self.input_video_delay(input)
-            .min(maximum.saturating_sub(1))
+        self.input_video_delay(input).min(maximum.saturating_sub(1))
     }
 
     /// The presentation time `input` reads at `deadline`, before its delay.
@@ -8592,14 +8591,9 @@ impl NativeMediaRuntime {
             .await
             .map_err(|error| NativeSourcePlaybackError::Normalize { input, error })?;
         let frame_bytes = rgba16f_frame_bytes(input, expected_width, expected_height)?;
-        let maximum_frames = usize::try_from(
-            playback
-                .registry
-                .limits
-                .max_video_frames_per_source
-                .get(),
-        )
-        .unwrap_or(usize::MAX);
+        let maximum_frames =
+            usize::try_from(playback.registry.limits.max_video_frames_per_source.get())
+                .unwrap_or(usize::MAX);
         let maximum_bytes = playback.registry.limits.max_retained_rgba16f_bytes;
         let retained_before = playback.registry.retained_rgba16f_bytes;
         let prefix = playback
@@ -8611,7 +8605,11 @@ impl NativeMediaRuntime {
         // can count back from the newest one (IN-022). Both the source's ring
         // and the registry's retained bytes bound the history; the newest
         // picture always stays.
-        let mut remove = prefix.frames.len().saturating_add(1).saturating_sub(maximum_frames);
+        let mut remove = prefix
+            .frames
+            .len()
+            .saturating_add(1)
+            .saturating_sub(maximum_frames);
         let retained = retained_before.saturating_add(frame_bytes);
         if retained > maximum_bytes {
             let byte_remove = usize::try_from(
@@ -8622,9 +8620,8 @@ impl NativeMediaRuntime {
             .unwrap_or(usize::MAX);
             remove = remove.max(byte_remove).min(prefix.frames.len());
         }
-        let retained_after = retained.saturating_sub(
-            frame_bytes.saturating_mul(u64::try_from(remove).unwrap_or(u64::MAX)),
-        );
+        let retained_after = retained
+            .saturating_sub(frame_bytes.saturating_mul(u64::try_from(remove).unwrap_or(u64::MAX)));
         if retained_after > maximum_bytes {
             return Err(NativeSourceError::RetainedBytesExceeded {
                 required: frame_bytes,
