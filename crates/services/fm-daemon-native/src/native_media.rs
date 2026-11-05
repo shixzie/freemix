@@ -11525,7 +11525,7 @@ impl NativeMediaRuntime {
         let frame = fm_video::ImageFrame::new(
             readback.width,
             readback.height,
-            readback.stride,
+            readback.stride as usize,
             readback.rgba,
         )
         .map_err(|error| error.to_string())?;

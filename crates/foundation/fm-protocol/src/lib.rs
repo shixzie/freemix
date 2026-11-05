@@ -207,7 +207,8 @@ pub use media_list::{
 };
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,
-    decode_qoi_rgba, encode_qoi_rgb, encode_qoi_rgba, monitor_frame_parts, title_preview_parts,
+    decode_qoi_rgba, encode_qoi_rgb, encode_qoi_rgba, frozen_still_parts, monitor_frame_parts,
+    title_preview_parts,
 };
 pub use network_stream::{
     AudioChannels, GiveUp, ListenEndpoint, ListenTransport, MAX_NETWORK_STREAM_INPUTS,
