@@ -12710,6 +12710,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // alias, feed, crop, and cycle routes in one contract
     fn native_project_plan_routes_aliases_and_draws_feeds_black() {
         let mut project = native_plan_project(4, 2);
         add_leaf(&mut project, input(1));
