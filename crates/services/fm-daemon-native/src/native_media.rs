@@ -43,14 +43,15 @@ use fm_color::{
 };
 use fm_compositor::{
     CompiledGrade, CompositionPlan, Effect as CompositorEffect, FadeToBlackPlan,
-    FadeToBlackPlanError, FadeToBlackPosition as CompositorFadeToBlackPosition,
-    NativeCompositionError, NativeCompositionRenderer, NativeFadeToBlackError,
-    NativeFadeToBlackRenderer, NativeGradeError, NativeGradeLut, NativeGradeRenderer,
-    NativeSourceFrame, NativeStingerError, NativeStingerRenderer, NativeTransitionError,
-    NativeTransitionRenderer, OutputTarget, PlanError, RectMask as CompositorRectMask,
-    Rgba8 as CompositorRgba8, Rotation as CompositorRotation, Scene as CompositorScene, SourceId,
-    SourceLayer, StingerFramePlan, StingerPlanError, Transform, TransitionError, TransitionKind,
-    TransitionPlan, compile_scene,
+    FadeToBlackPlanError, FadeToBlackPosition as CompositorFadeToBlackPosition, FitPolicy,
+    GridLayout, MultiviewSourceFrame, NativeCompositionError, NativeCompositionRenderer,
+    NativeFadeToBlackError, NativeFadeToBlackRenderer, NativeGradeError, NativeGradeLut,
+    NativeGradeRenderer, NativeSourceFrame, NativeStingerError, NativeStingerRenderer,
+    NativeTransitionError, NativeTransitionRenderer, OutputTarget, PlanError,
+    RectMask as CompositorRectMask, Rgba8 as CompositorRgba8, Rotation as CompositorRotation,
+    Scene as CompositorScene, SourceId, SourceLayer, StingerFramePlan, StingerPlanError,
+    Transform, TransitionError, TransitionKind, TransitionPlan, compile_grid_scene_fitted,
+    compile_scene, plan_grid,
 };
 use fm_engine::{CompiledProjectGrades, FrameResult};
 use fm_frame::{
@@ -68,7 +69,7 @@ use fm_model::{
 use fm_plugin_host_api::{ReferenceError, ReferenceRack};
 use fm_sim::{CollectingAudioSink, OverflowPolicy, SinkConfigError, SinkTelemetry};
 use fm_switcher::{
-    BackgroundPlan, FadeToBlackFrame, FeedLayer, OutputRenderPlan, OutputVideo,
+    BackgroundPlan, CellFeed, FadeToBlackFrame, FeedLayer, OutputRenderPlan, OutputVideo,
     OverlayBorderPreset, OverlayPositionPreset, ProgramFrame,
     TransitionKind as SwitcherTransitionKind,
 };
@@ -1603,6 +1604,59 @@ const fn feed_input(layer: FeedLayer) -> Option<InputId> {
     }
 }
 
+/// The identity of one logical-output MultiView cell feed (SW-012), used to
+/// bind one GPU source per distinct texture.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum LogicalCellFeed {
+    Program,
+    Input(InputId),
+    Output(OutputId),
+}
+
+/// Resolves one logical-output MultiView cell to its shared texture and feed
+/// identity. Referenced logical outputs were rendered earlier in
+/// [`OutputRoutingFrame::render_order`](fm_switcher::OutputRoutingFrame).
+#[allow(clippy::too_many_arguments)]
+fn logical_cell_texture<'a>(
+    feed: CellFeed,
+    output: OutputId,
+    frame: &FrameResult,
+    program: &'a NativeTexture,
+    logical_outputs: &'a BTreeMap<OutputId, NativeTexture>,
+    registry: &'a NativeSourceRegistry,
+    graded: &'a BTreeMap<InputId, NativeTexture>,
+    project: &NativeProjectPlan,
+    scene_outputs: &'a BTreeMap<SceneId, (SourceId, NativeTexture)>,
+) -> Result<(LogicalCellFeed, &'a NativeTexture), NativeSourceRenderError> {
+    match feed {
+        CellFeed::Background(background) => {
+            if is_program_background(&background, frame.program) {
+                Ok((LogicalCellFeed::Program, program))
+            } else if let Some(input) = settled_input(&background) {
+                Ok((
+                    LogicalCellFeed::Input(input),
+                    project_texture(registry, graded, project, scene_outputs, input, frame.deadline)?,
+                ))
+            } else {
+                Err(NativeSourceRenderError::UnsupportedOutputFeed {
+                    output: Some(output),
+                })
+            }
+        }
+        CellFeed::Output(slot) => {
+            let Some(Ok(plan)) = frame.logical_outputs.output(slot) else {
+                return Err(NativeSourceRenderError::ResourceBounds);
+            };
+            let texture = logical_outputs.get(&plan.output).ok_or(
+                NativeSourceRenderError::MissingOutputTexture {
+                    output: plan.output,
+                },
+            )?;
+            Ok((LogicalCellFeed::Output(plan.output), texture))
+        }
+    }
+}
+
 /// The compositor transition that moves an overlay layer; `None` for Cut
 /// and Fade, which are opacity changes rather than motion.
 const fn overlay_motion_kind(kind: fm_switcher::OverlayTransitionKind) -> Option<TransitionKind> {
@@ -2316,10 +2370,13 @@ pub enum NativeSourceRenderError {
     UnsupportedOutputFeed {
         output: Option<OutputId>,
     },
-    /// A logical output selects a MultiView the native path cannot render yet.
-    UnsupportedOutputMultiView {
+    /// A logical output's MultiView read an output texture that was not
+    /// rendered first.
+    MissingOutputTexture {
         output: OutputId,
     },
+    /// A logical output's MultiView grid could not be compiled.
+    InvalidOutputComposition(PlanError),
     UnsupportedTransition(SwitcherTransitionKind),
     InvalidMix(TransitionError),
     InvalidStinger(StingerPlanError),
@@ -2373,10 +2430,13 @@ impl fmt::Display for NativeSourceRenderError {
                     "native unbound output selects a logical-output feed that is not realized yet",
                 ),
             },
-            Self::UnsupportedOutputMultiView { output } => write!(
+            Self::MissingOutputTexture { output } => write!(
                 formatter,
-                "native project output {output} selects a logical-output MultiView that is not realized yet"
+                "native logical output {output} was not rendered before its MultiView reader"
             ),
+            Self::InvalidOutputComposition(error) => {
+                write!(formatter, "native logical-output MultiView composition failed: {error}")
+            }
             Self::UnsupportedTransition(kind) => {
                 write!(formatter, "native transition {kind:?} is not supported")
             }
@@ -2414,6 +2474,7 @@ impl Error for NativeSourceRenderError {
         match self {
             Self::InvalidMix(error) => Some(error),
             Self::InvalidStinger(error) => Some(error),
+            Self::InvalidOutputComposition(error) => Some(error),
             Self::Completion(error) => Some(error),
             Self::SceneCompositor(error) => Some(error),
             Self::Compositor(error) => Some(error),
@@ -2427,7 +2488,7 @@ impl Error for NativeSourceRenderError {
             | Self::MissingStingerConfiguration(_)
             | Self::StingerSourceNotPreloaded { .. }
             | Self::UnsupportedOutputFeed { .. }
-            | Self::UnsupportedOutputMultiView { .. }
+            | Self::MissingOutputTexture { .. }
             | Self::ResourceBounds
             | Self::ConcurrentProjectRender
             | Self::UnsupportedTransition(_) => None,
@@ -9266,7 +9327,10 @@ impl NativeMediaRuntime {
             NativeProjectMixPlan::Transition(_) => program_inputs.clone(),
         };
         let mut extra_inputs = Vec::new();
-        for plan in plans.iter().flatten() {
+        for slot in frame.logical_outputs.render_order.iter().copied() {
+            let Some(Ok(plan)) = frame.logical_outputs.output(slot) else {
+                continue;
+            };
             match &plan.video {
                 OutputVideo::Background(background) => {
                     if !is_program_background(background, frame.program)
@@ -9275,7 +9339,16 @@ impl NativeMediaRuntime {
                         extra_inputs.push(input);
                     }
                 }
-                OutputVideo::MultiView(_) => {}
+                OutputVideo::MultiView(cells) => {
+                    for cell in cells {
+                        if let CellFeed::Background(background) = cell.feed
+                            && !is_program_background(&background, frame.program)
+                            && let Some(input) = settled_input(&background)
+                        {
+                            extra_inputs.push(input);
+                        }
+                    }
+                }
             }
             extra_inputs.extend(plan.overlays.iter().map(|layer| layer.source));
         }
@@ -9307,71 +9380,273 @@ impl NativeMediaRuntime {
                 &mut execution,
             )
             .await?;
-        let mut rendered = Vec::with_capacity(outputs.len());
-        for ((&output, plan), overlays) in outputs
-            .iter()
-            .zip(plans.iter().copied())
-            .zip(&overlay_sets)
-        {
-            let base = match plan.map(|plan| &plan.video) {
-                None => &program,
-                Some(OutputVideo::Background(background))
-                    if is_program_background(background, frame.program) =>
-                {
-                    &program
-                }
-                Some(OutputVideo::Background(background)) => {
-                    let input = settled_input(background).ok_or(
-                        NativeSourceRenderError::UnsupportedOutputFeed { output },
-                    )?;
-                    project_texture(
-                        registry,
-                        &graded,
-                        project,
-                        &scene_outputs,
-                        input,
-                        frame.deadline,
-                    )?
-                }
-                Some(OutputVideo::MultiView(_)) => {
-                    let output = output.ok_or(NativeSourceRenderError::ResourceBounds)?;
-                    return Err(NativeSourceRenderError::UnsupportedOutputMultiView { output });
-                }
+        // Render every logical output in dependency order so a MultiView can
+        // read another output's finished texture, then render outputs that
+        // keep the legacy Program-only behavior.
+        let mut logical_outputs: BTreeMap<OutputId, NativeTexture> = BTreeMap::new();
+        for slot in frame.logical_outputs.render_order.iter().copied() {
+            let Some(Ok(plan)) = frame.logical_outputs.output(slot) else {
+                continue;
             };
-            let composed = self
-                .render_project_overlays(
+            let texture = self
+                .render_logical_output(
                     registry,
                     &graded,
                     project,
                     &scene_outputs,
-                    frame.deadline,
-                    base,
-                    overlays,
+                    frame,
+                    plan,
+                    &program,
+                    &logical_outputs,
                 )
                 .await?;
-            // The program grade colours each composed output before FTB.
-            let composed = match &project.grades.program {
-                Some(lut) => self
-                    .grade_renderer
-                    .apply(&self.context, lut, &composed)
-                    .await
-                    .map_err(NativeSourceRenderError::Grade)?,
-                None => composed,
+            logical_outputs.insert(plan.output, texture);
+        }
+        let mut rendered = Vec::with_capacity(outputs.len());
+        for (index, output) in outputs.iter().enumerate() {
+            let texture = match plans[index] {
+                Some(plan) => logical_outputs.remove(&plan.output).ok_or(
+                    NativeSourceRenderError::MissingOutputTexture {
+                        output: plan.output,
+                    },
+                )?,
+                None => {
+                    // An output without logical routing keeps showing Program.
+                    let overlays = output.map_or_else(Vec::new, |output| {
+                        NativeProjectPlan::program_overlays(frame, output)
+                    });
+                    self.finish_project_output(
+                        registry,
+                        &graded,
+                        project,
+                        &scene_outputs,
+                        frame,
+                        *output,
+                        &program,
+                        &overlays,
+                    )
+                    .await?
+                }
             };
-            // Fade to Black fades only the outputs it affects (SW-004).
-            let fade_to_black =
-                native_fade_to_black_plan(output.map_or(frame.fade_to_black, |output| {
-                    frame.fade_to_black_for(output)
-                }))?;
-            let texture = self
-                .fade_to_black_renderer
-                .render(&self.context, fade_to_black, &composed)
-                .await
-                .map_err(NativeSourceRenderError::FadeToBlack)?;
-            rendered.push((output, texture));
+            rendered.push((*output, texture));
         }
         self.finish_project_frame()?;
         Ok(rendered)
+    }
+
+    /// Renders one enabled logical output's plan (SW-012): its background or
+    /// MultiView, its overlay layers, the program grade, and Fade to Black.
+    #[allow(clippy::too_many_arguments)]
+    async fn render_logical_output(
+        &self,
+        registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
+        project: &NativeProjectPlan,
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        frame: &FrameResult,
+        plan: &OutputRenderPlan,
+        program: &NativeTexture,
+        logical_outputs: &BTreeMap<OutputId, NativeTexture>,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        let overlays = plan
+            .overlays
+            .iter()
+            .map(plan_overlay)
+            .collect::<Vec<_>>();
+        match &plan.video {
+            OutputVideo::MultiView(cells) => {
+                let base = self
+                    .compose_output_multiview(
+                        registry,
+                        graded,
+                        project,
+                        scene_outputs,
+                        frame,
+                        plan,
+                        program,
+                        logical_outputs,
+                        cells,
+                    )
+                    .await?;
+                self.finish_project_output(
+                    registry,
+                    graded,
+                    project,
+                    scene_outputs,
+                    frame,
+                    Some(plan.output),
+                    &base,
+                    &overlays,
+                )
+                .await
+            }
+            OutputVideo::Background(background) => {
+                let base = if is_program_background(background, frame.program) {
+                    program
+                } else {
+                    let input = settled_input(background).ok_or(
+                        NativeSourceRenderError::UnsupportedOutputFeed {
+                            output: Some(plan.output),
+                        },
+                    )?;
+                    project_texture(
+                        registry,
+                        graded,
+                        project,
+                        scene_outputs,
+                        input,
+                        frame.deadline,
+                    )?
+                };
+                self.finish_project_output(
+                    registry,
+                    graded,
+                    project,
+                    scene_outputs,
+                    frame,
+                    Some(plan.output),
+                    base,
+                    &overlays,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Composes one logical output's MultiView grid (SW-012), reading Program,
+    /// settled inputs, and already-rendered logical outputs.
+    #[allow(clippy::too_many_arguments)]
+    async fn compose_output_multiview(
+        &self,
+        registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
+        project: &NativeProjectPlan,
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        frame: &FrameResult,
+        plan: &OutputRenderPlan,
+        program: &NativeTexture,
+        logical_outputs: &BTreeMap<OutputId, NativeTexture>,
+        cells: &[fm_switcher::MultiViewCellPlan],
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        let layout =
+            GridLayout::for_cells(cells.len()).map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        let grid = plan_grid(
+            project.dimensions.width(),
+            project.dimensions.height(),
+            layout,
+            cells.len(),
+        )
+        .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        let feeds = cells
+            .iter()
+            .map(|cell| {
+                logical_cell_texture(
+                    cell.feed,
+                    plan.output,
+                    frame,
+                    program,
+                    logical_outputs,
+                    registry,
+                    graded,
+                    project,
+                    scene_outputs,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut unique: Vec<(LogicalCellFeed, &NativeTexture)> = Vec::new();
+        for (feed, texture) in &feeds {
+            if !unique.iter().any(|(known, _)| known == feed) {
+                unique.push((*feed, *texture));
+            }
+        }
+        let scene = compile_grid_scene_fitted(
+            &grid,
+            project.dimensions.width(),
+            project.dimensions.height(),
+            CompositorRgba8::new(0, 0, 0, u8::MAX),
+            0,
+            FitPolicy::Fit,
+            |index, _cell| {
+                let (feed, texture) = feeds[index];
+                let source = unique
+                    .iter()
+                    .position(|(known, _)| *known == feed)
+                    .and_then(|position| u64::try_from(position + 1).ok())
+                    .map(SourceId::new)?;
+                Some(MultiviewSourceFrame::new(
+                    source,
+                    texture.width(),
+                    texture.height(),
+                ))
+            },
+        )
+        .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        let (composition, _) =
+            compile_scene(&scene, OutputTarget::Program).map_err(|error| {
+                NativeSourceRenderError::InvalidOutputComposition(error)
+            })?;
+        let sources = unique
+            .iter()
+            .enumerate()
+            .map(|(index, (_, texture))| {
+                let source = u64::try_from(index + 1)
+                    .map(SourceId::new)
+                    .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+                Ok(NativeSourceFrame::new(source, *texture))
+            })
+            .collect::<Result<Vec<_>, NativeSourceRenderError>>()?;
+        let composed = self
+            .composition_renderer
+            .render(&self.context, &composition, &sources)
+            .await
+            .map_err(NativeSourceRenderError::SceneCompositor)?;
+        drop(sources);
+        Ok(composed)
+    }
+
+    /// Applies one output's overlay layers, the program grade, and its
+    /// Fade-to-Black state to `base`.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_project_output(
+        &self,
+        registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
+        project: &NativeProjectPlan,
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        frame: &FrameResult,
+        output: Option<OutputId>,
+        base: &NativeTexture,
+        overlays: &[NativeProgramOverlay],
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        let composed = self
+            .render_project_overlays(
+                registry,
+                graded,
+                project,
+                scene_outputs,
+                frame.deadline,
+                base,
+                overlays,
+            )
+            .await?;
+        // The program grade colours each composed output before FTB.
+        let composed = match &project.grades.program {
+            Some(lut) => self
+                .grade_renderer
+                .apply(&self.context, lut, &composed)
+                .await
+                .map_err(NativeSourceRenderError::Grade)?,
+            None => composed,
+        };
+        // Fade to Black fades only the outputs it affects (SW-004).
+        let fade_to_black =
+            native_fade_to_black_plan(output.map_or(frame.fade_to_black, |output| {
+                frame.fade_to_black_for(output)
+            }))?;
+        self.fade_to_black_renderer
+            .render(&self.context, fade_to_black, &composed)
+            .await
+            .map_err(NativeSourceRenderError::FadeToBlack)
     }
 
     /// Renders the frame's scenes, grades each Scene input among `inputs`
