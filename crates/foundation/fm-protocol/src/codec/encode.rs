@@ -155,6 +155,11 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             record.field_str("asset_uri", &message.asset_uri)?;
             record.field_str("path", &message.path)?;
         }
+        WireMessage::InputThumbnailSubscription(message) => {
+            record.kind("input_thumbnail_subscription");
+            record.field_str("enabled", if message.enabled { "1" } else { "0" })?;
+        }
+        WireMessage::InputThumbnail(message) => encode_input_thumbnail(&mut record, message)?,
         WireMessage::CapabilityReport(message) => encode_capability_report(&mut record, message)?,
         WireMessage::DiagnosticsRequest(message) => {
             encode_diagnostics_request(&mut record, message)?;

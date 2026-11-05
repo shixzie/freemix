@@ -205,6 +205,10 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 path: fields.required("path")?,
             })
         }
+        "title_phases" => WireMessage::TitlePhases(crate::TitlePhasesMessage {
+            frame: fields.canonical_required("frame")?,
+            titles: decode_title_phases(&fields.required("titles")?)?,
+        }),
         "playlist_state" => WireMessage::PlaylistState(decode_playlist_state_record(&mut fields)?),
         "grade_state" => WireMessage::GradeState(decode_grade_state(&mut fields)?),
         "title_animation_state" => {

@@ -103,7 +103,6 @@ pub use dto::{
     FrozenStillResponse, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
     HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters, InputAudioStripStatus,
     InputStatus, LiveInputSource, MAX_AUDIO_METER_CHANNELS, MAX_EDIT_HISTORY_DEPTH,
-    MAX_FROZEN_STILL_BYTES, MAX_FROZEN_STILL_PART_BYTES, MAX_FROZEN_STILL_PARTS,
     MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS,
     MAX_MONITOR_FRAME_WIDTH, MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_FRAMES,
     MAX_PLAYLIST_TRANSITION_FRAMES, MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELD_NAMES_BYTES,
@@ -207,8 +206,7 @@ pub use media_list::{
 };
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,
-    decode_qoi_rgba, encode_qoi_rgb, encode_qoi_rgba, frozen_still_parts, monitor_frame_parts,
-    title_preview_parts,
+    decode_qoi_rgba, encode_qoi_rgb, encode_qoi_rgba, monitor_frame_parts, title_preview_parts,
 };
 pub use network_stream::{
     AudioChannels, GiveUp, ListenEndpoint, ListenTransport, MAX_NETWORK_STREAM_INPUTS,

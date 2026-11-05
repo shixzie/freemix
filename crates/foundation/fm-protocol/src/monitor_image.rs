@@ -12,10 +12,9 @@ use core::fmt;
 use std::sync::Arc;
 
 use crate::{
-    FrozenStillResponse, MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES,
-    MAX_MONITOR_FRAME_PARTS, MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin,
-    MonitorImage, MonitorTap, ServerIdentity, TitlePreviewFrameMessage, TitlePreviewImage,
-    WireInputId,
+    MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS,
+    MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin, MonitorImage, MonitorTap,
+    ServerIdentity, TitlePreviewFrameMessage, TitlePreviewImage, WireInputId,
 };
 
 const QOI_MAGIC: [u8; 4] = *b"qoif";
