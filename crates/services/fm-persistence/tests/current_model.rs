@@ -1935,6 +1935,7 @@ fn virtual_input_project() -> Project {
             InputKind::Alias {
                 target: input_id(1),
                 crop: Some(CropRect::new(10, 20, 640, 360)),
+                effects: Vec::new(),
             },
         ),
         (
@@ -1943,6 +1944,7 @@ fn virtual_input_project() -> Project {
             InputKind::Alias {
                 target: input_id(3),
                 crop: None,
+                effects: Vec::new(),
             },
         ),
         (5, "Program feed", InputKind::MixFeed(MixFeed::Program)),

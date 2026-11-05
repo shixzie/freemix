@@ -931,6 +931,7 @@ fn append_remaps_alias_targets_and_keeps_mix_feeds() {
         kind: InputKind::Alias {
             target: input_id(1),
             crop: Some(fm_model::CropRect::new(1, 2, 3, 4)),
+            effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
         },
         required_capabilities: Vec::new(),
     });
@@ -959,6 +960,7 @@ fn append_remaps_alias_targets_and_keeps_mix_feeds() {
         InputKind::Alias {
             target: input_id(4),
             crop: Some(fm_model::CropRect::new(1, 2, 3, 4)),
+            effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
         }
     );
     assert_eq!(
