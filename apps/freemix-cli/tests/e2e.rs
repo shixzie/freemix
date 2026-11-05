@@ -8544,7 +8544,7 @@ fn remote_title_apply_row_maps_fields_and_sends_the_exact_edit() {
     ]);
     assert_success(&output);
     assert!(
-        stdout(&output).contains(r#"failed "Score" coercion-error"#),
+        stdout(&output).contains(r#"field "Score" coercion-error"#),
         "{}",
         stdout(&output)
     );
