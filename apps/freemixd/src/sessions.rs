@@ -2299,7 +2299,7 @@ impl TitleRowSources {
                 input,
                 TitleRowSource {
                     input,
-                    path: relative.to_owned(),
+                    path: (*relative).to_owned(),
                     interval,
                     keep_live: *keep_live == "1",
                     source,
