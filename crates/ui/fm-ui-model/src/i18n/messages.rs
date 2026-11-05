@@ -587,7 +587,7 @@ messages! {
     TileFrozenNote => t("Frozen: holding its current picture"),
     CaptureStill => t("Capture still"),
     TileCaptureStillHover => t("Write the frozen picture to the project bundle as a PNG and show its asset URI"),
-    StillAssetLabel => t("Still:"),
+    StillAssetLabel => t("Still: {asset}"),
     StillAssetHover => t("The captured PNG is stored in the project bundle; use this asset URI to add it as a picture input"),
     StillFailedLabel => t("Still failed:"),
     StillFailedHover => t("The daemon refused the frozen-still request"),

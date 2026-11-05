@@ -1219,7 +1219,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Guardar la imagen congelada en el paquete del proyecto como PNG y mostrar su URI de recurso",
         ),
     ),
-    (Msg::StillAssetLabel, t("Fotograma:")),
+    (Msg::StillAssetLabel, t("Fotograma: {asset}")),
     (
         Msg::StillAssetHover,
         t(
