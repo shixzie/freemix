@@ -513,9 +513,6 @@ pub enum NativeProjectPlanError {
     AliasCycle {
         input: InputId,
     },
-    AliasCropUnsupported {
-        input: InputId,
-    },
     TooManyReachableScenes {
         actual: usize,
         maximum: usize,
@@ -564,10 +561,6 @@ impl fmt::Display for NativeProjectPlanError {
             Self::AliasCycle { input } => {
                 write!(formatter, "native input alias cycle reaches input {input}")
             }
-            Self::AliasCropUnsupported { input } => write!(
-                formatter,
-                "native input {input} is a cropped alias, which the native renderer does not support yet"
-            ),
             Self::TooManyReachableScenes { actual, maximum } => write!(
                 formatter,
                 "native project has {actual} reachable scenes; maximum is {maximum}"
@@ -932,7 +925,12 @@ impl NativeProjectPlan {
                     .and_then(|input| {
                         resolve_scene_source(SourceRef::Input(input), &inputs, &scene_models).ok()
                     })
-                    .filter(|source| matches!(source, NativeSceneSource::Leaf(_)));
+                    .filter(|source| {
+                        matches!(
+                            source,
+                            NativeSceneSource::Leaf(_) | NativeSceneSource::Alias { .. }
+                        )
+                    });
                 let key_token = match key_source {
                     Some(source) => Some(if let Some(token) = tokens.get(&source) {
                         *token
@@ -1659,9 +1657,21 @@ impl NativeProjectPlan {
                     .key
                     .and_then(fm_model::LayerKey::key_input)
                     .filter(|_| layer.enabled);
-                let source = key_input.and_then(|input| match self.video_routes.get(&input) {
-                    Some(NativeVideoRoute::Leaf(leaf)) => Some(NativeSceneSource::Leaf(*leaf)),
-                    Some(NativeVideoRoute::Scene(_)) | None => None,
+                let source = key_input.and_then(|input| {
+                    if let Some(alias) = self.alias_crops.get(&input) {
+                        Some(NativeSceneSource::Alias {
+                            input,
+                            source: alias.source,
+                            crop: alias.crop,
+                        })
+                    } else {
+                        match self.video_routes.get(&input) {
+                            Some(NativeVideoRoute::Leaf(leaf)) => {
+                                Some(NativeSceneSource::Leaf(*leaf))
+                            }
+                            Some(NativeVideoRoute::Scene(_)) | None => None,
+                        }
+                    }
                 });
                 let Some(source) = source else {
                     key_tokens.push(None);
