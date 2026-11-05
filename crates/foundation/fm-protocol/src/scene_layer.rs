@@ -53,6 +53,10 @@ pub const SCENE_LAYER_EFFECT_KINDS: [(&str, &[(i32, i32)]); 6] = [
     ("deinterlace", &[(0, 2)]),
 ];
 
+/// The largest source frame an alias crop may address, in pixels on either
+/// side. Mirrors the project model's source-crop bound.
+pub const MAX_SOURCE_CROP_SIDE: u32 = 16_384;
+
 /// A layer's source crop in canvas pixels: nonempty and inside the canvas.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WireLayerCrop {
@@ -60,6 +64,23 @@ pub struct WireLayerCrop {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+impl WireLayerCrop {
+    /// Whether the crop is nonempty and inside the source-crop bound.
+    #[must_use]
+    pub fn fits_source(self) -> bool {
+        self.width != 0
+            && self.height != 0
+            && self
+                .x
+                .checked_add(self.width)
+                .is_some_and(|right| right <= MAX_SOURCE_CROP_SIDE)
+            && self
+                .y
+                .checked_add(self.height)
+                .is_some_and(|bottom| bottom <= MAX_SOURCE_CROP_SIDE)
+    }
 }
 
 /// A layer's hard-edged rectangular mask in post-crop source pixels:

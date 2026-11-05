@@ -505,6 +505,12 @@ pub(crate) struct AddInputDraft {
     pub(crate) screen_capture: crate::screen_capture_ui::ScreenCaptureDraft,
     /// The input an alias shows (IN-024).
     pub(crate) alias_target: Option<fm_types::InputId>,
+    /// Whether the alias crops its target, and the project-pixel crop.
+    pub(crate) alias_crop: bool,
+    pub(crate) alias_crop_x: u32,
+    pub(crate) alias_crop_y: u32,
+    pub(crate) alias_crop_width: u32,
+    pub(crate) alias_crop_height: u32,
     /// Whether a feed shows Program (`true`) or Preview (IN-025).
     pub(crate) feed_program: bool,
     /// The name field takes keyboard focus once, when the dialog opens.
@@ -554,6 +560,11 @@ impl AddInputDraft {
                 .view
                 .as_ref()
                 .and_then(|view| view.inputs.first().copied()),
+            alias_crop: false,
+            alias_crop_x: 0,
+            alias_crop_y: 0,
+            alias_crop_width: 1_920,
+            alias_crop_height: 1_080,
             feed_program: true,
             focus_pending: true,
             locale: tracker.locale,
@@ -596,12 +607,23 @@ impl AddInputDraft {
                 LiveInputSource::ScreenCapture(Box::new(self.screen_capture.config()?))
             }
             NewInputKind::Replay => LiveInputSource::Replay,
-            NewInputKind::Alias => LiveInputSource::Alias {
-                target: fm_protocol::WireInputId::from_domain(
-                    self.alias_target.ok_or(Msg::AddInputAliasRequired.en())?,
-                ),
-                crop: None,
-            },
+            NewInputKind::Alias => {
+                let crop = self.alias_crop.then(|| fm_protocol::WireLayerCrop {
+                    x: self.alias_crop_x,
+                    y: self.alias_crop_y,
+                    width: self.alias_crop_width,
+                    height: self.alias_crop_height,
+                });
+                if crop.is_some_and(|crop| !crop.fits_source()) {
+                    return Err(Msg::AddInputAliasCropInvalid.en());
+                }
+                LiveInputSource::Alias {
+                    target: fm_protocol::WireInputId::from_domain(
+                        self.alias_target.ok_or(Msg::AddInputAliasRequired.en())?,
+                    ),
+                    crop,
+                }
+            }
             NewInputKind::MixFeed if self.feed_program => LiveInputSource::ProgramFeed,
             NewInputKind::MixFeed => LiveInputSource::PreviewFeed,
         })
@@ -616,14 +638,29 @@ impl AddInputDraft {
             | NewInputKind::Replay
             | NewInputKind::MixFeed => return None,
             NewInputKind::Alias => {
-                if self.alias_target.is_some() {
-                    return None;
+                if self.alias_target.is_none() {
+                    return Some(FieldProblem {
+                        field: Msg::AddInputAliasTarget,
+                        reason: Msg::AddInputAliasRequired.en(),
+                        prompt: true,
+                    });
                 }
-                return Some(FieldProblem {
-                    field: Msg::AddInputAliasTarget,
-                    reason: Msg::AddInputAliasRequired.en(),
-                    prompt: true,
-                });
+                if self.alias_crop
+                    && !fm_protocol::WireLayerCrop {
+                        x: self.alias_crop_x,
+                        y: self.alias_crop_y,
+                        width: self.alias_crop_width,
+                        height: self.alias_crop_height,
+                    }
+                    .fits_source()
+                {
+                    return Some(FieldProblem {
+                        field: Msg::AddInputAliasCropWidth,
+                        reason: Msg::AddInputAliasCropInvalid.en(),
+                        prompt: false,
+                    });
+                }
+                return None;
             }
             NewInputKind::Network => {
                 let problem = self.stream.checked().err()?;
@@ -1388,6 +1425,45 @@ impl StudioShell {
                                 })
                                 .response
                                 .hint(l.text(Msg::AddInputAliasTargetHover), "");
+                        }
+                        if draft.kind == NewInputKind::Alias {
+                            ui.add_space(6.0);
+                            ui.checkbox(
+                                &mut draft.alias_crop,
+                                l.text(Msg::AddInputAliasCropEnable),
+                            )
+                            .on_hover_text(l.text(Msg::AddInputAliasCropEnableHover));
+                            if draft.alias_crop {
+                                let max = fm_protocol::MAX_SOURCE_CROP_SIDE;
+                                ui.horizontal(|ui| {
+                                    ui.label(l.text(Msg::AddInputAliasCropX));
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.alias_crop_x)
+                                            .range(0..=max),
+                                    )
+                                    .hint(l.text(Msg::AddInputAliasCropHover), "");
+                                    ui.label(l.text(Msg::AddInputAliasCropY));
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.alias_crop_y)
+                                            .range(0..=max),
+                                    )
+                                    .hint(l.text(Msg::AddInputAliasCropHover), "");
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label(l.text(Msg::AddInputAliasCropWidth));
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.alias_crop_width)
+                                            .range(0..=max),
+                                    )
+                                    .hint(l.text(Msg::AddInputAliasCropHover), "");
+                                    ui.label(l.text(Msg::AddInputAliasCropHeight));
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.alias_crop_height)
+                                            .range(0..=max),
+                                    )
+                                    .hint(l.text(Msg::AddInputAliasCropHover), "");
+                                });
+                            }
                         }
                         if draft.kind == NewInputKind::MixFeed {
                             ui.add_space(6.0);

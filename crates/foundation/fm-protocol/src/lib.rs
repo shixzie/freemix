@@ -257,10 +257,11 @@ pub use replay::{
 };
 pub use scene_layer::{MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS, MAX_KEY_LIGHT_WRAP_WIDTH};
 pub use scene_layer::{
-    MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MIN_SCENE_LAYER_TILT_MILLIDEGREES,
-    SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit,
-    SceneLayerOperation, WireChromaKey, WireFillKey, WireKeyDespill, WireKeyRefinement,
-    WireLayerCrop, WireLayerEffect, WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey,
+    MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MAX_SOURCE_CROP_SIDE,
+    MIN_SCENE_LAYER_TILT_MILLIDEGREES, SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX,
+    SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireFillKey,
+    WireKeyDespill, WireKeyRefinement, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
+    WireLayerKey, WireLayerMask, WireLumaKey,
 };
 pub use screen_capture::{
     DEFAULT_SCREEN_CAPTURE_FPS, MAX_SCREEN_CAPTURE_APP_BYTES, MAX_SCREEN_CAPTURE_CROP,

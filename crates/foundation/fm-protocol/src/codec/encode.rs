@@ -1068,6 +1068,14 @@ fn encode_input_catalogue_command(
                 LiveInputSource::ProgramFeed => record.field("kind", "program_feed"),
                 LiveInputSource::PreviewFeed => record.field("kind", "preview_feed"),
                 LiveInputSource::Alias { target, crop } => {
+                    if let Some(crop) = crop
+                        && !crop.fits_source()
+                    {
+                        return Err(CodecError::InvalidField {
+                            field: "crop_width",
+                            value: format!("{}x{}", crop.width, crop.height),
+                        });
+                    }
                     record.field("kind", "alias")?;
                     record.field("target", target)?;
                     if let Some(crop) = crop {

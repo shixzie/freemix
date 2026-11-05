@@ -1735,18 +1735,19 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
                     let y = crop_dimension("crop_y", y)?;
                     let width = crop_dimension("crop_width", width)?;
                     let height = crop_dimension("crop_height", height)?;
-                    if width == 0 || height == 0 {
+                    let crop = crate::WireLayerCrop {
+                        x,
+                        y,
+                        width,
+                        height,
+                    };
+                    if !crop.fits_source() {
                         return Err(CodecError::InvalidField {
                             field: "crop_width",
                             value: format!("{width}x{height}"),
                         });
                     }
-                    Some(crate::WireLayerCrop {
-                        x,
-                        y,
-                        width,
-                        height,
-                    })
+                    Some(crop)
                 }
                 _ => {
                     return Err(CodecError::InvalidField {
