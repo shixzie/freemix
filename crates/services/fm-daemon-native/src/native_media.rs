@@ -119,6 +119,23 @@ pub enum NativeVideoRoute {
     Scene(SceneId),
 }
 
+/// The textures a mix feed shows this tick: the Program and Preview frames
+/// committed by the previous tick (IN-025).
+#[derive(Clone, Copy, Default)]
+pub struct NativeFeedFrames<'a> {
+    pub program: Option<&'a NativeTexture>,
+    pub preview: Option<&'a NativeTexture>,
+}
+
+impl NativeFeedFrames<'_> {
+    fn get(&self, feed: fm_model::MixFeed) -> Option<&NativeTexture> {
+        match feed {
+            fm_model::MixFeed::Program => self.program,
+            fm_model::MixFeed::Preview => self.preview,
+        }
+    }
+}
+
 /// A schema input's recursively resolved native audio terminal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeAudioRoute {
@@ -598,6 +615,9 @@ pub struct NativeProjectPlan {
     /// The synthetic black scene behind mix feeds, when the project has any
     /// (IN-025).
     black_scene: Option<SceneId>,
+    /// Every Program/Preview feed input, including aliases of one, and the
+    /// bus it shows (IN-025).
+    feeds: BTreeMap<InputId, fm_model::MixFeed>,
     peak_rgba16f_targets: usize,
     transient_rgba16f_bytes: u64,
     grades: NativeProjectGrades,
@@ -724,6 +744,13 @@ impl NativeProjectPlan {
             .any(|input| matches!(input.kind, InputKind::MixFeed(_)))
             .then(|| synthetic_black_scene_id(&scene_models))
             .transpose()?;
+        let mut feeds = BTreeMap::new();
+        for input in project.inputs() {
+            let concrete = resolve_alias_target(input.id, &inputs)?;
+            if let InputKind::MixFeed(feed) = &concrete.kind {
+                feeds.insert(input.id, *feed);
+            }
+        }
         let video_routes = project
             .inputs()
             .iter()
@@ -1029,6 +1056,7 @@ impl NativeProjectPlan {
         Ok(Self {
             video_routes,
             black_scene,
+            feeds,
             audio_routes,
             audio_strips: project
                 .input_audio_strips()
@@ -1099,6 +1127,19 @@ impl NativeProjectPlan {
     #[must_use]
     pub fn video_route(&self, input: InputId) -> Option<NativeVideoRoute> {
         self.video_routes.get(&input).copied()
+    }
+
+    /// The bus `input` re-enters as a one-frame feed, when it is one or an
+    /// alias of one (IN-025).
+    #[must_use]
+    pub fn feed(&self, input: InputId) -> Option<fm_model::MixFeed> {
+        self.feeds.get(&input).copied()
+    }
+
+    /// Whether any input re-enters a committed bus.
+    #[must_use]
+    pub fn has_feeds(&self) -> bool {
+        !self.feeds.is_empty()
     }
 
     #[must_use]
@@ -7859,9 +7900,15 @@ fn project_texture<'a>(
     graded: &'a BTreeMap<InputId, NativeTexture>,
     project: &NativeProjectPlan,
     scene_outputs: &'a BTreeMap<SceneId, (SourceId, NativeTexture)>,
+    feeds: NativeFeedFrames<'a>,
     input: InputId,
     deadline: ClockTime,
 ) -> Result<&'a NativeTexture, NativeSourceRenderError> {
+    if let Some(feed) = project.feed(input) {
+        return feeds
+            .get(feed)
+            .ok_or(NativeSourceRenderError::MissingSource { input });
+    }
     match project.video_route(input) {
         Some(NativeVideoRoute::Leaf(leaf)) => leaf_texture(registry, graded, leaf, deadline),
         // A graded Scene input shows its scene with its grade.
@@ -9654,6 +9701,7 @@ impl NativeMediaRuntime {
         project: &NativeProjectPlan,
         frame: &FrameResult,
         outputs: &[Option<OutputId>],
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<Vec<(Option<OutputId>, NativeTexture)>, NativeSourceRenderError> {
         if outputs.is_empty() {
             return Err(NativeSourceRenderError::ResourceBounds);
@@ -9808,6 +9856,7 @@ impl NativeMediaRuntime {
         plan: &OutputRenderPlan,
         program: &NativeTexture,
         logical_outputs: &BTreeMap<OutputId, NativeTexture>,
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let overlays = plan.overlays.iter().map(plan_overlay).collect::<Vec<_>>();
         match &plan.video {
@@ -9845,6 +9894,7 @@ impl NativeMediaRuntime {
                         graded,
                         project,
                         scene_outputs,
+                        feeds,
                         input,
                         frame.deadline,
                     )?)
@@ -9890,6 +9940,7 @@ impl NativeMediaRuntime {
         program: &NativeTexture,
         logical_outputs: &BTreeMap<OutputId, NativeTexture>,
         cells: &[fm_switcher::MultiViewCellPlan],
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let layout = GridLayout::for_cells(cells.len())
             .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
@@ -9981,6 +10032,7 @@ impl NativeMediaRuntime {
         graded: &'a BTreeMap<InputId, NativeTexture>,
         project: &NativeProjectPlan,
         scene_outputs: &'a BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        feeds: NativeFeedFrames<'a>,
     ) -> Result<(LogicalCellFeed, LogicalCellTexture<'a>), NativeSourceRenderError> {
         match feed {
             CellFeed::Background(background) => {
@@ -10058,6 +10110,7 @@ impl NativeMediaRuntime {
         fade_to_black: FadeToBlackFrame,
         base: &NativeTexture,
         overlays: &[NativeProgramOverlay],
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let composed = self
             .render_project_overlays(
@@ -10099,6 +10152,7 @@ impl NativeMediaRuntime {
         frame: &FrameResult,
         background: &BackgroundPlan,
         program: &NativeTexture,
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let mut seen = Vec::new();
         let primary = self
@@ -10152,6 +10206,7 @@ impl NativeMediaRuntime {
         program: &NativeTexture,
         feed: FeedLayer,
         seen: &mut Vec<MixId>,
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         match feed {
             FeedLayer::Input(input) => {
@@ -10160,6 +10215,7 @@ impl NativeMediaRuntime {
                     graded,
                     project,
                     scene_outputs,
+                    feeds,
                     input,
                     frame.deadline,
                 )?;
@@ -10212,6 +10268,7 @@ impl NativeMediaRuntime {
         program: &NativeTexture,
         mix: MixId,
         seen: &mut Vec<MixId>,
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         if mix.is_main() {
             return self
@@ -10310,6 +10367,7 @@ impl NativeMediaRuntime {
         scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
         deadline: ClockTime,
         texture: &NativeTexture,
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         self.render_project_overlays(
             registry,
@@ -10337,6 +10395,7 @@ impl NativeMediaRuntime {
         frame: &FrameResult,
         plan: NativeProjectMixPlan,
         execution: &mut NativeSceneExecution,
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<
         (NativeTexture, BTreeMap<SceneId, (SourceId, NativeTexture)>),
         NativeSourceRenderError,
@@ -10354,6 +10413,7 @@ impl NativeMediaRuntime {
                     graded,
                     project,
                     &scene_outputs,
+                    feeds,
                     plan.primary,
                     frame.deadline,
                 )?;
@@ -10362,6 +10422,7 @@ impl NativeMediaRuntime {
                     graded,
                     project,
                     &scene_outputs,
+                    feeds,
                     plan.secondary,
                     frame.deadline,
                 )?;
@@ -10376,6 +10437,7 @@ impl NativeMediaRuntime {
                     graded,
                     project,
                     &scene_outputs,
+                    feeds,
                     plan.program,
                     frame.deadline,
                 )?;
@@ -10384,6 +10446,7 @@ impl NativeMediaRuntime {
                     graded,
                     project,
                     &scene_outputs,
+                    feeds,
                     plan.preview,
                     frame.deadline,
                 )?;
@@ -10435,6 +10498,7 @@ impl NativeMediaRuntime {
         deadline: ClockTime,
         program: &NativeTexture,
         overlays: &[NativeProgramOverlay],
+        feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let mut scene = CompositorScene::new(
             project.dimensions.width(),
@@ -10483,6 +10547,7 @@ impl NativeMediaRuntime {
                         graded,
                         project,
                         scene_outputs,
+                        feeds,
                         overlay.input,
                         deadline,
                     )?;
@@ -10505,6 +10570,7 @@ impl NativeMediaRuntime {
                 graded,
                 project,
                 scene_outputs,
+                feeds,
                 overlay.input,
                 deadline,
             )?;
