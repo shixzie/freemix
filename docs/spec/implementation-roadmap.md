@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.165 / schema 109 (2026-11-05).
+(2026-10-19); items refreshed through protocol 2.166 / schema 109 (2026-11-05).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -5152,8 +5152,13 @@ coerces them with `fm-data`, and applies the values atomically at the title's
 base revision and air requirement; `keep_live` skips failed fields.
 `freemix-cli remote-title-row <address> <input> <row>` reads a JSON, CSV/TSV,
 `.xlsx`, or `.ods` row and sends those raw values, so the daemon's template is
-the only one needed. Remaining gaps: no daemon or Studio periodically polls a
-file or URL and applies rows on a schedule; the UI has no row preview; there
+the only one needed. Protocol 2.166 adds `title_row_source_request/response`:
+a daemon keeps a runtime, per-title scheduled source for a bundle-relative
+`.json`, `.csv`, `.xlsx`, or `.ods` file (250 ms to one hour), polls it through
+`fm-data`'s bounded file source, and applies each changed row as an authority
+`set_title_row`; `remote-title-source` starts, stops, or reports one. Remaining gaps: no URL source is fetched (files only), the source is runtime
+state and not persisted across a daemon restart, and the UI has no row
+preview; there
 is no time-zone database or localization; image URIs are never fetched; and
 preview state is in memory only. `GX-005` remains planned. Preview state now
 round-trips through a strict, versioned text document (`PreviewSnapshot`) and
