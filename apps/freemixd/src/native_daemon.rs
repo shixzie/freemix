@@ -2996,6 +2996,7 @@ impl NativeDaemon {
         let aux_bus_omt = &mut self.aux_bus_omt;
         let project_plan = &mut self.project_plan;
         let applied_audio_strips = &mut self.applied_audio_strips;
+        let applied_frozen_inputs = &self.applied_frozen_inputs;
         let projected_frame = self.projected_frame.as_ref();
         let mut fade_to_black_excluded = Vec::new();
         let monitor_interval = self.monitor_interval;
@@ -3101,6 +3102,7 @@ impl NativeDaemon {
                     },
                     mixer_updates: frame.audio_mixer_updates.clone(),
                     replay_inputs: replay_inputs.clone(),
+                    frozen_inputs: applied_frozen_inputs.clone(),
                 })
                 .map_err(NativeRealizationError::RealizerThread)?;
             video

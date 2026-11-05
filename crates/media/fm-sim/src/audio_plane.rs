@@ -415,6 +415,9 @@ pub struct SimulatedAudioPlane {
     dynamics: Vec<(Option<InputId>, DspDynamicsReading)>,
     loudness: Vec<(Option<InputId>, LoudnessReading)>,
     monitor_solo: bool,
+    /// Inputs whose audio is silenced while their picture is frozen
+    /// (SW-016), restored from the strip state on unfreeze.
+    frozen_inputs: BTreeSet<InputId>,
     frame: u64,
     start_sample: u64,
     end_sample: u64,
@@ -476,6 +479,7 @@ impl SimulatedAudioPlane {
             dynamics: Vec::new(),
             loudness: Vec::new(),
             monitor_solo: false,
+            frozen_inputs: BTreeSet::new(),
             frame: 0,
             start_sample: 0,
             end_sample: 0,
@@ -486,6 +490,14 @@ impl SimulatedAudioPlane {
     #[must_use]
     pub const fn config(&self) -> &SimulatedAudioConfig {
         &self.config
+    }
+
+    /// Silences `inputs` while their pictures are frozen (SW-016). The
+    /// strip's fader, mute, and delay are untouched, so unfreezing restores
+    /// the live mix at the same instant as the live picture.
+    pub fn set_frozen_inputs(&mut self, inputs: impl IntoIterator<Item = InputId>) {
+        self.frozen_inputs.clear();
+        self.frozen_inputs.extend(inputs);
     }
 
     /// The rendered Program PCM of the last frame; the first
@@ -622,6 +634,13 @@ impl SimulatedAudioPlane {
                 .get_mut(&input)
                 .ok_or(SimulatedAudioError::UnknownInput(input))?;
             generator.fill(planes, samples)?;
+        }
+        for input in &self.frozen_inputs {
+            if let Some(planes) = self.source_planes.get_mut(input) {
+                for plane in planes {
+                    plane[..samples].fill(0.0);
+                }
+            }
         }
         let timing = output_audio_timing(
             frame,

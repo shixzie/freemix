@@ -4188,6 +4188,9 @@ pub struct NativeMasterRuntime {
     /// The last rendered block before Fade to Black, kept only while Fade
     /// to Black is fading and some output is excluded from it (SW-004).
     live_audio: Option<AudioBlock>,
+    /// Inputs whose audio is silenced while their picture is frozen
+    /// (SW-016); their strip state and delay line are untouched.
+    frozen_inputs: BTreeSet<InputId>,
     /// This frame's mix for every output fading over its own duration on a
     /// different trajectory (SW-004).
     override_audio: Vec<(OutputId, AudioBlock)>,
@@ -4594,6 +4597,7 @@ impl NativeMasterRuntime {
             failed: false,
             live_audio: None,
             override_audio: Vec::new(),
+            frozen_inputs: BTreeSet::new(),
         })
     }
 
@@ -5251,6 +5255,14 @@ impl NativeMasterRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Silences `inputs` while their pictures are frozen (SW-016). The
+    /// strip state, delay line, and user mute are untouched; unfreezing
+    /// restores the live mix at the same instant as the live picture.
+    pub fn set_frozen_inputs(&mut self, inputs: impl IntoIterator<Item = InputId>) {
+        self.frozen_inputs.clear();
+        self.frozen_inputs.extend(inputs);
     }
 
     /// Applies one scheduled strip update to the ordinary and clip-local
@@ -6076,10 +6088,22 @@ impl NativeMasterRuntime {
             synchronizer.render_planned_planes(render_plan, output, output_offset)?;
             self.scratch.plans.push((input, render_plan));
         }
+        // A frozen input contributes silence to Program, aux buses, and
+        // monitor without changing its strip or delay line (SW-016).
+        for &input in &self.frozen_inputs {
+            if let Some(planes) = self.scratch.rendered.get_mut(&input) {
+                for plane in planes {
+                    plane[..samples].fill(0.0);
+                }
+            }
+        }
         // Every strip's plugin chain processes its rendered block before the
         // mixer reads it (AU-006). A failed render leaves the scratch to be
         // refilled next frame, so processors never see stale samples twice.
         for (input, rack) in &mut self.plugin_racks {
+            if self.frozen_inputs.contains(input) {
+                continue;
+            }
             if let Some(planes) = self.scratch.rendered.get_mut(input) {
                 rack.process(planes, samples);
             }
@@ -12281,6 +12305,7 @@ mod tests {
         NativeMasterRuntime {
             live_audio: None,
             override_audio: Vec::new(),
+            frozen_inputs: BTreeSet::new(),
             format,
             frame_rate: FrameRate::new(25, 1).unwrap(),
             clock_domain: ClockDomainId::new(NonZeroU128::new(9).unwrap()),
@@ -12330,6 +12355,7 @@ mod tests {
         NativeMasterRuntime {
             live_audio: None,
             override_audio: Vec::new(),
+            frozen_inputs: BTreeSet::new(),
             format,
             frame_rate: FrameRate::new(25, 1).unwrap(),
             clock_domain: ClockDomainId::new(NonZeroU128::new(9).unwrap()),

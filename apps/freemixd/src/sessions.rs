@@ -1542,6 +1542,7 @@ pub(super) fn run(
             let program = control.realized_program_frame();
             let revision = control.revision();
             let resets = control.take_loudness_resets();
+            audio.set_frozen_inputs(control.show().frozen_inputs());
             drop(control);
             if let Some(meters) = audio.poll(
                 durable.project(),

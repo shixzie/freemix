@@ -80,6 +80,8 @@ pub(crate) struct AudioRenderJob {
     pub strip_updates: Vec<(InputId, fm_engine::EngineInputAudioStripState)>,
     pub mixer_updates: Vec<fm_engine::EngineAudioMixerUpdate>,
     pub replay_inputs: Vec<InputId>,
+    /// Inputs whose pictures are frozen (SW-016); their audio is silenced.
+    pub frozen_inputs: std::collections::BTreeSet<InputId>,
 }
 
 /// The audio thread's owned copy of one frame's meters.
@@ -407,6 +409,7 @@ fn render(
     for update in &job.mixer_updates {
         master.apply_audio_mixer_update(update)?;
     }
+    master.set_frozen_inputs(job.frozen_inputs.iter().copied());
     let block = master.render_project_frame_audio(&job.frame, &job.plan)?;
     let live = master.take_live_audio();
     let overrides = master.take_override_audio();

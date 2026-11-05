@@ -79,6 +79,11 @@ impl SimulatedAudioRuntime {
         })
     }
 
+    /// Silences `inputs` while their pictures are frozen (SW-016).
+    pub fn set_frozen_inputs(&mut self, inputs: impl IntoIterator<Item = fm_types::InputId>) {
+        self.plane.set_frozen_inputs(inputs);
+    }
+
     /// Renders every show frame the wall clock has reached while `demand`
     /// holds, and returns the last rendered frame's meters.
     ///
