@@ -2205,6 +2205,7 @@ struct TitleRowSources {
 
 impl TitleRowSources {
     /// Configures one source from a request and returns its status.
+    #[allow(clippy::too_many_lines)] // one arm per source operation
     fn configure(
         &mut self,
         request: fm_protocol::TitleRowSourceRequest,
