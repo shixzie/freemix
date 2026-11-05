@@ -6996,13 +6996,6 @@ impl ResolvedRenderer<'_> {
     }
 }
 
-fn is_scene_input(project: &Project, input: InputId) -> bool {
-    project
-        .inputs()
-        .iter()
-        .any(|candidate| candidate.id == input && matches!(candidate.kind, InputKind::Scene { .. }))
-}
-
 /// Writes a rendered frame atomically as an RGBA8 PNG when `output` ends in
 /// `.png`, otherwise as a binary PPM.
 pub(crate) fn write_title_frame(output: &Path, frame: &ImageFrame) -> io::Result<()> {

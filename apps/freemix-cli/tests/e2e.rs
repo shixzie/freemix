@@ -4479,6 +4479,120 @@ fn local_input_add_persists_default_simulated_strip() {
 }
 
 #[test]
+fn local_alias_and_mix_feed_inputs_render_through_the_resolver() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+
+    // An alias renders its target's picture under its own id (IN-024).
+    assert_success(&invoke(&[
+        "alias-input-add",
+        context.project_path(),
+        "3",
+        "Alias A",
+        "1",
+    ]));
+    assert_success(&invoke(&["preview", context.project_path(), "3"]));
+    assert_success(&invoke(&["cut", context.project_path()]));
+    let image = context.root.join("alias.ppm");
+    assert_success(&invoke_bounded(&[
+        "render",
+        context.project_path(),
+        image.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "3",
+    ]));
+    assert_solid_ppm(&image, 4, 3, [73, 151, 199]);
+
+    // The alias's own crop applies in project pixels before the output scale.
+    assert_success(&invoke(&[
+        "alias-input-add",
+        context.project_path(),
+        "4",
+        "Alias B",
+        "2",
+        "--crop",
+        "0,0,1,1",
+    ]));
+    assert_success(&invoke(&["preview", context.project_path(), "4"]));
+    assert_success(&invoke(&["cut", context.project_path()]));
+    let cropped = context.root.join("alias-crop.ppm");
+    assert_success(&invoke_bounded(&[
+        "render",
+        context.project_path(),
+        cropped.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "3",
+    ]));
+    assert_solid_ppm(&cropped, 4, 3, [146, 46, 142]);
+
+    // A Program feed is black before any tick is committed (IN-025).
+    assert_success(&invoke(&[
+        "mix-feed-input-add",
+        context.project_path(),
+        "5",
+        "Program Feed",
+        "program",
+    ]));
+    assert_success(&invoke(&["preview", context.project_path(), "5"]));
+    assert_success(&invoke(&["cut", context.project_path()]));
+    let feed = context.root.join("program-feed.ppm");
+    assert_success(&invoke_bounded(&[
+        "render",
+        context.project_path(),
+        feed.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "3",
+    ]));
+    assert_solid_ppm(&feed, 4, 3, [0, 0, 0]);
+
+    // Missing targets, self cycles, and malformed crops save nothing.
+    let manifest = fs::read(context.project.join("project.json")).unwrap();
+    let journal = journal_bytes(&ProjectStore::new(&context.project).unwrap());
+    assert_failure_contains(
+        &invoke(&[
+            "alias-input-add",
+            context.project_path(),
+            "6",
+            "Missing",
+            "99",
+        ]),
+        "project cannot take the new input",
+    );
+    assert_failure_contains(
+        &invoke(&["alias-input-add", context.project_path(), "6", "Self", "6"]),
+        "project cannot take the new input",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "alias-input-add",
+            context.project_path(),
+            "6",
+            "Bad crop",
+            "1",
+            "--crop",
+            "0,0,0,1",
+        ]),
+        "invalid alias crop",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest
+    );
+    assert_eq!(
+        journal_bytes(&ProjectStore::new(&context.project).unwrap()),
+        journal
+    );
+
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+#[test]
 fn local_simulated_solid_input_add_persists_exact_rgba() {
     let context = ContractContext::new();
     assert_success(&invoke(&["new", context.project_path()]));
