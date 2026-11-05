@@ -3257,11 +3257,11 @@ requested alias's crop applies, as in the model resolver, and scene ordering
 follows a cropped alias of a scene. The CLI scene renderer composes cropped aliases the same
 way: the alias crop is applied to the rendered source, a layer crop inside that region is translated, and a mask, key, or
 layer crop reaching outside the alias crop is refused by layer number rather
-than drawing a wrong picture. Remaining gaps: monitor taps do not paint their
-own alias/feed resolution, there is no protocol or Studio authoring, feedback
-ignores the second input of an active transition, and aliases do not yet carry
-independent effects, shortcuts, or layer state. `IN-024` and `IN-025` remain
-planned.
+than drawing a wrong picture. Input and scene thumbnails follow alias chains
+(and a scene thumbnail draws alias layers), but a feed input's own thumbnail
+has no composed CPU picture and still shows no source image; there is no
+protocol or Studio authoring, and aliases do not yet carry independent
+effects, shortcuts, or layer state. `IN-024` and `IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
