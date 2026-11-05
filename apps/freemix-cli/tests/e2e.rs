@@ -7878,6 +7878,50 @@ fn local_display_output_slots_persist_and_refuse_conflicts() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// IN-022: a local input video delay is validated, persisted, and cleared
+/// with zero.
+#[test]
+fn local_input_video_delays_persist_and_are_bounded() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    assert_success(&invoke_bounded(&[
+        "input-video-delay",
+        context.project_path(),
+        "1",
+        "5",
+    ]));
+    let text = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(
+        text.contains("\"input_video_delays\": [\n      {\"input\": 1, \"frames\": 5}\n    ]"),
+        "{text}"
+    );
+
+    assert_failure_contains(
+        &invoke_bounded(&["input-video-delay", context.project_path(), "1", "601"]),
+        "600",
+    );
+    assert_failure_contains(
+        &invoke_bounded(&["input-video-delay", context.project_path(), "99", "1"]),
+        "99",
+    );
+    // The failed edits leave the stored delay unchanged.
+    let text = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(
+        text.contains("\"input_video_delays\": [\n      {\"input\": 1, \"frames\": 5}\n    ]"),
+        "{text}"
+    );
+
+    assert_success(&invoke_bounded(&[
+        "input-video-delay",
+        context.project_path(),
+        "1",
+        "0",
+    ]));
+    let text = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(!text.contains("\"input_video_delays\""), "{text}");
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 /// OR-017: the local `LiveLAN` settings are a validated, persisted project
 /// edit; absent options keep their value, the PIN is stored but never
 /// printed, and a streamed output cannot be removed.
