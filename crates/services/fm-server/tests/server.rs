@@ -69,6 +69,7 @@ fn input_statuses() -> Vec<fm_protocol::InputStatus> {
         .collect()
 }
 
+#[allow(clippy::too_many_lines)] // one field per snapshot member
 fn control() -> FakeControl {
     let engine = engine();
     let snapshot = SnapshotMessage {
