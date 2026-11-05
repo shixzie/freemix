@@ -566,6 +566,25 @@ pub enum Command {
         target: u128,
         crop: Option<CropRect>,
     },
+    /// Adds an alias on the daemon (IN-024, Protocol 2.162).
+    RemoteAliasInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        target: u128,
+        crop: Option<CropRect>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Adds a Program or Preview feed on the daemon (IN-025, Protocol 2.162).
+    RemoteMixFeedInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        feed: MixFeed,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Adds the Program or Preview bus as a one-frame-delayed input (IN-025).
     MixFeedInputAdd {
         path: PathBuf,
@@ -2506,6 +2525,72 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "scene-input-add" => parse_scene_input_add(arguments),
         "alias-input-add" => parse_alias_input_add(arguments),
         "mix-feed-input-add" => parse_mix_feed_input_add(arguments),
+        "remote-alias-input-add" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let name = nonblank(&mut arguments, "input name")?;
+            let target = number(&required(&mut arguments, "target input")?, "target input")?;
+            let mut crop = None;
+            let mut key = None;
+            let mut expected_revision = None;
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--crop" => {
+                        if crop.is_some() {
+                            return Err(ArgsError::DuplicateOption("--crop"));
+                        }
+                        crop = Some(alias_crop(&required(&mut arguments, "crop")?)?);
+                    }
+                    "--key" => {
+                        let value = required(&mut arguments, "idempotency key")?;
+                        if value.trim().is_empty() {
+                            return Err(ArgsError::BlankValue("idempotency key"));
+                        }
+                        key = Some(value);
+                    }
+                    "--expect" => {
+                        expected_revision = Some(number(
+                            &required(&mut arguments, "expected revision")?,
+                            "expected revision",
+                        )?);
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::RemoteAliasInputAdd {
+                address,
+                input,
+                name,
+                target,
+                crop,
+                key,
+                expected_revision,
+            })
+        }
+        "remote-mix-feed-input-add" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let name = nonblank(&mut arguments, "input name")?;
+            let feed = match required(&mut arguments, "feed")?.as_str() {
+                "program" => MixFeed::Program,
+                "preview" => MixFeed::Preview,
+                other => {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "feed",
+                        value: other.to_owned(),
+                    });
+                }
+            };
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::RemoteMixFeedInputAdd {
+                address,
+                input,
+                name,
+                feed,
+                key,
+                expected_revision,
+            })
+        }
         "scene-input-duplicate" => parse_scene_input_duplicate(arguments),
         "scene-input-audio-source" => parse_scene_input_audio_source(arguments),
         "scene-input-audio-source-clear" => parse_scene_input_audio_source_clear(arguments),

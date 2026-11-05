@@ -234,6 +234,52 @@ pub fn run(command: Command) -> AppResult<()> {
             name,
             feed,
         } => add_mix_feed_input(&path, input_id(input)?, name, feed)?,
+        Command::RemoteAliasInputAdd {
+            address,
+            input,
+            name,
+            target,
+            crop,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                name,
+                source: fm_protocol::LiveInputSource::Alias {
+                    target: fm_protocol::WireInputId::from_domain(input_id(target)?),
+                    crop: crop.map(|crop| fm_protocol::WireLayerCrop {
+                        x: crop.x,
+                        y: crop.y,
+                        width: crop.width,
+                        height: crop.height,
+                    }),
+                },
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteMixFeedInputAdd {
+            address,
+            input,
+            name,
+            feed,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                name,
+                source: match feed {
+                    MixFeed::Program => fm_protocol::LiveInputSource::ProgramFeed,
+                    MixFeed::Preview => fm_protocol::LiveInputSource::PreviewFeed,
+                },
+            },
+            key,
+            expected_revision,
+        )?,
         Command::SceneInputDuplicate {
             path,
             source_scene,
@@ -7850,7 +7896,9 @@ Usage:
       --rung.
   freemix-cli scene-input-add <show.freemix> <nonzero-input-id> <nonzero-scene-id> <name>
   freemix-cli alias-input-add <show.freemix> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height]
+  freemix-cli remote-alias-input-add <address> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height] [--key <idempotency-key>] [--expect <revision>]
   freemix-cli mix-feed-input-add <show.freemix> <nonzero-input-id> <name> program|preview
+  freemix-cli remote-mix-feed-input-add <address> <nonzero-input-id> <name> program|preview [--key <idempotency-key>] [--expect <revision>]
   freemix-cli scene-input-duplicate <show.freemix> <source-scene-id> <new-scene-id> <new-input-id> <scene-name> <input-name>
   freemix-cli scene-input-audio-source <show.freemix> <scene-input-id> <source-input-id>
   freemix-cli scene-input-audio-source-clear <show.freemix> <scene-input-id>
