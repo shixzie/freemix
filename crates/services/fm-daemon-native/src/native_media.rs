@@ -12621,6 +12621,94 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one contract over leaf and scene targets
+    fn native_cropped_aliases_select_their_project_region() {
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(85).unwrap());
+        let leaf = input(1);
+        let leaf_alias = input(2);
+        let leaf_scene_input = input(3);
+        let scene_input = input(5);
+        let scene_alias = input(6);
+        let scene_layer_input = input(7);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: leaf,
+                    frame: split_retained_frame(
+                        clock_domain,
+                        [255, 0, 0, 255],
+                        [0, 0, 255, 255],
+                        4,
+                        2,
+                    ),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, leaf);
+        project.add_input(Input {
+            id: leaf_alias,
+            name: "leaf alias".into(),
+            kind: InputKind::Alias {
+                target: leaf,
+                crop: Some(fm_model::CropRect::new(0, 0, 2, 2)),
+            },
+            required_capabilities: Vec::new(),
+        });
+        add_scene_input(&mut project, leaf_scene_input, scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(leaf_alias), 0)],
+        );
+        add_scene_input(&mut project, scene_input, scene(12), None);
+        add_scene(
+            &mut project,
+            scene(12),
+            vec![layer(SourceRef::Input(leaf), 0)],
+        );
+        project.add_input(Input {
+            id: scene_alias,
+            name: "scene alias".into(),
+            kind: InputKind::Alias {
+                target: scene_input,
+                crop: Some(fm_model::CropRect::new(0, 0, 2, 2)),
+            },
+            required_capabilities: Vec::new(),
+        });
+        add_scene_input(&mut project, scene_layer_input, scene(13), None);
+        add_scene(
+            &mut project,
+            scene(13),
+            vec![layer(SourceRef::Input(scene_alias), 0)],
+        );
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+
+        for program in [leaf_alias, leaf_scene_input, scene_alias, scene_layer_input] {
+            let frame = runtime
+                .render_project_frame_result_blocking(
+                    playback.registry(),
+                    &plan,
+                    &frame_result(0, program, None),
+                )
+                .unwrap();
+            let frame = block_on(runtime.diagnostic_readback(&frame)).unwrap();
+            let pixel = rgba16f_pixel(&frame.bytes, 4, 3, 0);
+            assert!(
+                pixel[0] > 0.5 && pixel[2] < 0.1,
+                "cropped alias {program} selects the red left half: {pixel:?}"
+            );
+        }
+    }
+
+    #[test]
     fn native_project_plan_routes_aliases_and_draws_feeds_black() {
         let mut project = native_plan_project(4, 2);
         add_leaf(&mut project, input(1));
