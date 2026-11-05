@@ -1211,6 +1211,62 @@ pub fn script(
     Ok(())
 }
 
+/// Authorizes or inspects one scheduled title data source (GX-005).
+pub fn title_source(
+    address: SocketAddr,
+    input: InputId,
+    operation: fm_protocol::TitleRowSourceOperation,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let request_id = format!("cli-title-source-{}", unique_client_id()?);
+    remote.write(&WireMessage::TitleRowSourceRequest(
+        fm_protocol::TitleRowSourceRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            input: fm_protocol::WireInputId::from_domain(input),
+            operation,
+        },
+    ))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::TitleRowSourceResponse(response) => {
+                if response.request_id != request_id
+                    || response.protocol != CURRENT_PROTOCOL_VERSION
+                {
+                    return Err(RemoteFailure(
+                        "title-source response does not match the request".into(),
+                    )
+                    .into());
+                }
+                println!(
+                    "title-source: input={input} active={} applied={} path={} interval_ms={} error={}",
+                    response.active,
+                    response.applied_rows,
+                    response.path.as_deref().unwrap_or("-"),
+                    response
+                        .interval_ms
+                        .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                    response.error.as_deref().unwrap_or("-")
+                );
+                return Ok(());
+            }
+            WireMessage::Event(event) => {
+                remote.client.intake(WireMessage::Event(event))?;
+            }
+            WireMessage::RuntimeEvent(event) => {
+                remote.client.intake(WireMessage::RuntimeEvent(event))?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            _ => {
+                return Err(
+                    RemoteFailure("expected title_row_source_response from daemon".into()).into(),
+                );
+            }
+        }
+    }
+}
+
 /// Asks the daemon to write one frozen input's latched picture as a PNG
 /// into its project bundle (SW-016), and prints the asset URI it returned.
 pub fn frozen_still(address: SocketAddr, input: InputId) -> RemoteResult<()> {

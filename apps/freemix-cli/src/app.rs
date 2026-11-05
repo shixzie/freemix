@@ -1206,6 +1206,11 @@ pub fn run(command: Command) -> AppResult<()> {
             keep_live,
             preview,
         } => crate::title_row::apply_row(&path, input, &row, row_number, keep_live, preview)?,
+        Command::RemoteTitleSource {
+            address,
+            input,
+            operation,
+        } => remote::title_source(address, input_id(input)?, operation)?,
         Command::RemoteTitleRow {
             address,
             input,
@@ -8016,6 +8021,7 @@ Usage:
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli crawl-apply-table <show.freemix> <input-id> <table.(csv|tsv|xlsx|ods)> --field <column>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.(json|csv|tsv|xlsx|ods)> [--row <n>] [--keep-live] [--preview]
+  freemix-cli remote-title-source <address> <input-id> start <bundle-relative.json|csv|xlsx|ods> [--every <ms>] [--keep-live] | stop | status
   freemix-cli remote-title-row <address> <input-id> <row.(json|csv|tsv|xlsx|ods)> [--row <n>] [--keep-live] [--key <idempotency-key>] [--expect <revision>]
       Sends a raw data row to the daemon, which maps its values onto the
       title's own template fields and applies them atomically.

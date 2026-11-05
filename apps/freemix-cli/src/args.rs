@@ -1164,6 +1164,13 @@ pub enum Command {
         /// Print the per-field changes without saving anything.
         preview: bool,
     },
+    /// `remote-title-source <address> <input> start|stop|status`: author a
+    /// scheduled project-bundle title data source (GX-005).
+    RemoteTitleSource {
+        address: SocketAddr,
+        input: u128,
+        operation: fm_protocol::TitleRowSourceOperation,
+    },
     /// `remote-title-row <address> <input> <row>`: send one raw data row for
     /// the daemon to map onto its own title template (GX-005).
     RemoteTitleRow {
@@ -2892,6 +2899,48 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 row_number,
                 keep_live,
                 preview,
+            })
+        }
+        "remote-title-source" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let operation = match required(&mut arguments, "operation")?.as_str() {
+                "start" => {
+                    let path = required(&mut arguments, "source path")?;
+                    let mut interval_ms = 1_000;
+                    let mut keep_live = false;
+                    while let Some(option) = arguments.next() {
+                        match option.as_str() {
+                            "--every" => {
+                                interval_ms = number(
+                                    &required(&mut arguments, "interval milliseconds")?,
+                                    "interval milliseconds",
+                                )?;
+                            }
+                            "--keep-live" => keep_live = true,
+                            _ => return Err(ArgsError::UnknownOption(option)),
+                        }
+                    }
+                    fm_protocol::TitleRowSourceOperation::Start {
+                        path,
+                        interval_ms,
+                        keep_live,
+                    }
+                }
+                "stop" => fm_protocol::TitleRowSourceOperation::Stop,
+                "status" => fm_protocol::TitleRowSourceOperation::Status,
+                other => {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "operation",
+                        value: other.to_owned(),
+                    });
+                }
+            };
+            reject_extra(&mut arguments)?;
+            Ok(Command::RemoteTitleSource {
+                address,
+                input,
+                operation,
             })
         }
         "remote-title-row" => {

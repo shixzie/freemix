@@ -2211,7 +2211,7 @@ impl TitleRowSources {
         bundle_root: &std::path::Path,
     ) -> fm_protocol::TitleRowSourceResponse {
         let input = request.input.to_domain();
-        let mut response = |active, path, interval_ms, keep_live, applied_rows, error| {
+        let response = |active, path, interval_ms, keep_live, applied_rows, error| {
             fm_protocol::TitleRowSourceResponse {
                 protocol: request.protocol,
                 request_id: request.request_id.clone(),
