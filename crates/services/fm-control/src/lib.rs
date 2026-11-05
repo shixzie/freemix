@@ -4296,9 +4296,19 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
         LiveInputSource::Slideshow(config) => EngineInputSource::Slideshow(config.clone()),
         LiveInputSource::ScreenCapture(config) => EngineInputSource::ScreenCapture(config.clone()),
         LiveInputSource::Replay => EngineInputSource::Replay,
-        LiveInputSource::Alias { target, crop } => EngineInputSource::Alias {
+        LiveInputSource::Alias {
+            target,
+            crop,
+            effects,
+        } => EngineInputSource::Alias {
             target: target.to_domain(),
             crop: crop.map(|crop| fm_model::CropRect::new(crop.x, crop.y, crop.width, crop.height)),
+            effects: effects
+                .iter()
+                .map(|effect| {
+                    fm_model::LayerEffect::new(effect.name.clone(), effect.parameters.clone())
+                })
+                .collect(),
         },
         LiveInputSource::ProgramFeed => EngineInputSource::MixFeed(fm_model::MixFeed::Program),
         LiveInputSource::PreviewFeed => EngineInputSource::MixFeed(fm_model::MixFeed::Preview),
@@ -4326,7 +4336,11 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
         EngineInputSource::Slideshow(config) => LiveInputSource::Slideshow(config.clone()),
         EngineInputSource::ScreenCapture(config) => LiveInputSource::ScreenCapture(config.clone()),
         EngineInputSource::Replay => LiveInputSource::Replay,
-        EngineInputSource::Alias { target, crop } => LiveInputSource::Alias {
+        EngineInputSource::Alias {
+            target,
+            crop,
+            effects,
+        } => LiveInputSource::Alias {
             target: WireInputId::from_domain(*target),
             crop: crop.map(|crop| fm_protocol::WireLayerCrop {
                 x: crop.x,
@@ -4334,6 +4348,13 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
                 width: crop.width,
                 height: crop.height,
             }),
+            effects: effects
+                .iter()
+                .map(|effect| fm_protocol::WireLayerEffect {
+                    name: effect.name.clone(),
+                    parameters: effect.parameters.clone(),
+                })
+                .collect(),
         },
         EngineInputSource::MixFeed(fm_model::MixFeed::Program) => LiveInputSource::ProgramFeed,
         EngineInputSource::MixFeed(fm_model::MixFeed::Preview) => LiveInputSource::PreviewFeed,
