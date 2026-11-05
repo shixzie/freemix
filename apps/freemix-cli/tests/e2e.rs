@@ -8231,6 +8231,43 @@ fn local_input_video_delays_persist_and_are_bounded() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// IN-022: the simulated render path holds a delayed input black until the
+/// delay has filled, then shows its picture.
+#[test]
+fn local_video_delay_holds_the_simulated_picture_at_startup() {
+    let context = ContractContext::new();
+    let path = context.project_path();
+    assert_success(&invoke(&["new", path]));
+    // The command's own tick puts the cursor at frame one, before the delay.
+    assert_success(&invoke(&["input-video-delay", path, "1", "2"]));
+    let held = context.root.join("delay-held.ppm");
+    assert_success(&invoke_bounded(&[
+        "render",
+        path,
+        held.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "3",
+    ]));
+    assert_solid_ppm(&held, 4, 3, [0, 0, 0]);
+
+    // One more tick reaches the delay, so the input's picture appears.
+    assert_success(&invoke(&["preview", path, "1"]));
+    let shown = context.root.join("delay-shown.ppm");
+    assert_success(&invoke_bounded(&[
+        "render",
+        path,
+        shown.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "3",
+    ]));
+    assert_solid_ppm(&shown, 4, 3, [73, 151, 199]);
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 /// IN-022, Protocol 2.161: the remote delay command sends the exact project
 /// edit and accepts the daemon's realization.
 #[test]
