@@ -267,6 +267,9 @@ fn public_address(address: std::net::IpAddr) -> bool {
                 && address.octets()[0] != 0
         }
         std::net::IpAddr::V6(address) => {
+            if let Some(mapped) = address.to_ipv4_mapped() {
+                return public_address(std::net::IpAddr::V4(mapped));
+            }
             !address.is_loopback()
                 && !address.is_unspecified()
                 && !address.is_multicast()
@@ -423,6 +426,7 @@ mod tests {
         assert!(fetch("http://169.254.169.254/latest/meta-data").is_err());
         assert!(fetch("http://10.0.0.1/data.json").is_err());
         assert!(fetch("http://[::1]/data.json").is_err());
+        assert!(fetch("http://[::ffff:127.0.0.1]/data.json").is_err());
         assert!(fetch_with(&url, None, true).is_ok());
     }
 }
