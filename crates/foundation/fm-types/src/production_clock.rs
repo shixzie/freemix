@@ -367,10 +367,8 @@ impl ProjectDurationFormat {
             Self::HoursMinutesSecondsDropFrame {
                 numerator,
                 denominator,
-            } => {
-                if !matches!((numerator, denominator), (30_000, 1_001) | (60_000, 1_001)) {
-                    return Err(ProjectClockError::InvalidFrameRate(name.to_owned()));
-                }
+            } if !matches!((numerator, denominator), (30_000 | 60_000, 1_001)) => {
+                return Err(ProjectClockError::InvalidFrameRate(name.to_owned()));
             }
             _ => {}
         }

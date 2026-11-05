@@ -237,6 +237,8 @@ impl EngineCommand {
             | Self::SetTitleFields { .. }
             | Self::TakeTitle { .. }
             | Self::TitleOffAir { .. }
+            | Self::SecondaryMixCut { .. }
+            | Self::SecondaryMixTransition { .. }
             | Self::PlaylistControl(_)
             | Self::PlaylistAdvance { .. }
             | Self::RealizePlaylistCue(_)

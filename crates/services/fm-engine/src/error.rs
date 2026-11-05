@@ -455,6 +455,8 @@ pub enum EngineError {
     CounterExhausted,
     Snapshot(SnapshotError),
     ProductionClock(crate::EngineProductionClockError),
+    /// A live secondary-mix operation was refused (IN-023).
+    MixBank(fm_switcher::MixBankError),
     StalePreparation,
 }
 
@@ -468,6 +470,7 @@ impl fmt::Display for EngineError {
             Self::CounterExhausted => formatter.write_str("engine runtime generation exhausted"),
             Self::Snapshot(error) => error.fmt(formatter),
             Self::ProductionClock(error) => error.fmt(formatter),
+            Self::MixBank(error) => error.fmt(formatter),
             Self::StalePreparation => {
                 formatter.write_str("prepared engine execution was based on stale authority")
             }

@@ -512,6 +512,16 @@ pub enum EngineCommand {
         number: fm_model::MixNumber,
         config: Option<Box<fm_model::SecondaryMixConfig>>,
     },
+    /// Cuts secondary mix `number` from its Program to its Preview (IN-023).
+    /// A live operation realized on acceptance.
+    SecondaryMixCut { number: fm_model::MixNumber },
+    /// Starts a timed transition of secondary mix `number` toward its Preview
+    /// (IN-023). A live operation realized on acceptance.
+    SecondaryMixTransition {
+        number: fm_model::MixNumber,
+        kind: fm_switcher::TransitionKind,
+        duration_frames: u32,
+    },
     /// Replaces the `LiveLAN` viewer stream's configuration (OR-017), its PIN
     /// already resolved to the exact one it will hold. A project edit,
     /// undone by restoring the previous configuration; the daemon realizes
@@ -3027,6 +3037,21 @@ impl Engine {
             ) {
                 self.mix_bank = crate::logical_output::bank(self.commands.state());
             }
+            match &command {
+                EngineCommand::SecondaryMixCut { number } => {
+                    self.cut_secondary_mix(*number)
+                        .map_err(crate::EngineError::MixBank)?;
+                }
+                EngineCommand::SecondaryMixTransition {
+                    number,
+                    kind,
+                    duration_frames,
+                } => {
+                    self.transition_secondary_mix(*number, *kind, *duration_frames)
+                        .map_err(crate::EngineError::MixBank)?;
+                }
+                _ => {}
+            }
             if let Some(kind) = runtime_transition_kind(self.commands.state(), &command)
                 .or(playlist_transition)
                 .or(cue_transition)
@@ -5045,6 +5070,8 @@ impl EngineMutation {
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
+            | EngineCommand::SecondaryMixCut { .. }
+            | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -5699,6 +5726,8 @@ fn apply_runtime(
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
+            | EngineCommand::SecondaryMixCut { .. }
+            | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -5900,6 +5929,8 @@ fn apply_runtime(
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
+        | EngineCommand::SecondaryMixCut { .. }
+        | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -6104,6 +6135,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
+        | EngineCommand::SecondaryMixCut { .. }
+        | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -6149,6 +6182,8 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
         && !matches!(command, EngineCommand::SetLogicalOutput { .. })
         && !matches!(command, EngineCommand::SetSecondaryMix { .. })
+        && !matches!(command, EngineCommand::SecondaryMixCut { .. })
+        && !matches!(command, EngineCommand::SecondaryMixTransition { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
         && !matches!(command, EngineCommand::SetAlertRule(_))
         && !matches!(command, EngineCommand::Replay(_))
