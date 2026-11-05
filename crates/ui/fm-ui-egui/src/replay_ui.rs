@@ -1353,7 +1353,7 @@ fn draw_list(
             if ui
                 .add_enabled(
                     block.is_none(),
-                    small_button(&l.format(Msg::ReplayListApplyOn, [("name", Arg::Str(&name))])),
+                    small_button(l.format(Msg::ReplayListApplyOn, &[("name", Arg::Str(&name))])),
                 )
                 .hint(l.text(Msg::ReplayListApplyHover), reason)
                 .clicked()
