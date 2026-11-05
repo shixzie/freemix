@@ -1,6 +1,7 @@
 use crate::{PipelineConfigError, RegistryError, RenderError, SimulatedSource, SourcePattern};
 use fm_switcher::{ProgramFrame, TransitionKind};
 use fm_types::InputId;
+use fm_video::Rgba8;
 use fm_video::{
     FrameError, ImageFrame, TransitionShape, crossfade, render_test_signal_rgba8,
     render_transition, solid_color,
@@ -13,6 +14,8 @@ pub struct SimulatedPipeline {
     width: u32,
     height: u32,
     sources: BTreeMap<InputId, SimulatedSource>,
+    /// Per-input video delays in frames (IN-022), ascending.
+    video_delays: BTreeMap<InputId, u32>,
     /// The bars picture at the pipeline size, rendered on first use. The
     /// size never changes, so steady renders only copy it.
     bars: OnceLock<ImageFrame>,
@@ -21,6 +24,9 @@ pub struct SimulatedPipeline {
 impl SimulatedPipeline {
     /// Longest side of a landscape bound; a portrait pipeline swaps the axes.
     pub const MAX_WIDTH: u32 = 7_680;
+    /// Most frames a simulated input may delay its picture. Equals the
+    /// project model's video-delay bound.
+    pub const MAX_VIDEO_DELAY_FRAMES: u32 = 600;
     /// Shortest side of a landscape bound; a portrait pipeline swaps the axes.
     pub const MAX_HEIGHT: u32 = 4_320;
 
@@ -59,6 +65,7 @@ impl SimulatedPipeline {
             width,
             height,
             sources: BTreeMap::new(),
+            video_delays: BTreeMap::new(),
             bars: OnceLock::new(),
         })
     }
@@ -93,6 +100,31 @@ impl SimulatedPipeline {
     #[must_use]
     pub fn source(&self, input: InputId) -> Option<&SimulatedSource> {
         self.sources.get(&input)
+    }
+
+    /// Applies `input`'s video delay in frames (IN-022), clamped to
+    /// [`Self::MAX_VIDEO_DELAY_FRAMES`]; zero clears it.
+    pub fn set_video_delay(&mut self, input: InputId, frames: u32) {
+        let frames = frames.min(Self::MAX_VIDEO_DELAY_FRAMES);
+        if frames == 0 {
+            self.video_delays.remove(&input);
+        } else {
+            self.video_delays.insert(input, frames);
+        }
+    }
+
+    /// The delay `input` was given, in frames.
+    #[must_use]
+    pub fn video_delay(&self, input: InputId) -> u32 {
+        self.video_delays.get(&input).copied().unwrap_or(0)
+    }
+
+    /// The source frame `input` presents at output `frame_number`: the frame
+    /// `delay` intervals earlier, or `None` while the delay has not filled,
+    /// which holds the input black during startup.
+    #[must_use]
+    pub fn presented_frame(&self, input: InputId, frame_number: u64) -> Option<u64> {
+        frame_number.checked_sub(u64::from(self.video_delay(input)))
     }
 
     pub fn inputs(&self) -> impl ExactSizeIterator<Item = InputId> + '_ {
@@ -143,11 +175,13 @@ impl SimulatedPipeline {
         mix_frames(&program, primary, secondary)
     }
 
-    /// Renders a registered source for a frame number.
+    /// Renders a registered source for a frame number, applying its video
+    /// delay (IN-022).
     ///
-    /// Simulated pictures are static, so `frame_number` does not change the
-    /// pixels; it is kept so callers address a frame of the program timeline.
-    /// Bars are rendered once per pipeline and copied afterwards.
+    /// Simulated pictures are static, so the delayed frame is normally the
+    /// same pixels; the delay is visible during startup, when the input holds
+    /// black until `frame_number` reaches it. Bars are rendered once per
+    /// pipeline and copied afterwards.
     ///
     /// # Errors
     ///
@@ -158,11 +192,19 @@ impl SimulatedPipeline {
         input: InputId,
         frame_number: u64,
     ) -> Result<ImageFrame, RenderError> {
-        let _ = frame_number;
         let source = self
             .sources
             .get(&input)
             .ok_or(RenderError::MissingSource { input })?;
+        let Some(presented) = self.presented_frame(input, frame_number) else {
+            // The delayed instant has not reached the source's first picture.
+            return Ok(solid_color(
+                self.width,
+                self.height,
+                Rgba8::new(0, 0, 0, u8::MAX),
+            )?);
+        };
+        let _ = presented;
         Ok(match source.pattern() {
             SourcePattern::Bars => self.bars()?,
             SourcePattern::Solid(color) => solid_color(self.width, self.height, color)?,

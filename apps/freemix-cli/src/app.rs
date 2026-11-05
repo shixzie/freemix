@@ -6934,6 +6934,9 @@ pub(crate) fn simulated_pipeline(
             pipeline.register(SimulatedSource::new(input.id, source_pattern(input)?))?;
         }
     }
+    for (&input, &frames) in project.input_video_delays() {
+        pipeline.set_video_delay(input, frames);
+    }
     Ok(pipeline)
 }
 
