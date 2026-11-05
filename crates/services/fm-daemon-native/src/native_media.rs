@@ -2624,14 +2624,17 @@ impl NativeSourceRegistry {
     /// The presentation time `input` reads at `deadline`, before its delay.
     #[must_use]
     fn presentation_deadline(&self, input: InputId, deadline: ClockTime) -> ClockTime {
+        ClockTime::from_nanos(deadline.as_nanos().saturating_sub(self.delay_nanos(input)))
+    }
+
+    fn delay_nanos(&self, input: InputId) -> u64 {
         let Some(frame_rate) = self.frame_rate else {
-            return deadline;
+            return 0;
         };
         let frames = u64::from(self.effective_input_video_delay(input));
         let nanos = (u128::from(frames) * 1_000_000_000 * u128::from(frame_rate.denominator()))
             / u128::from(frame_rate.numerator());
-        let nanos = u64::try_from(nanos).unwrap_or(u64::MAX);
-        ClockTime::from_nanos(deadline.as_nanos().saturating_sub(nanos))
+        u64::try_from(nanos).unwrap_or(u64::MAX)
     }
 
     fn frame_at_deadline(
@@ -2647,12 +2650,12 @@ impl NativeSourceRegistry {
         if prefix.kind == NativeVideoSourceKind::Live {
             return prefix.frame_at_deadline(deadline, delay);
         }
-        let presentation = self.presentation_deadline(input, deadline);
         // Startup holds black until the delayed instant reaches the
         // source's first picture instead of showing it early.
-        (presentation.as_nanos() < deadline.as_nanos())
-            .then(|| prefix.frame_at_deadline(presentation, 0))
-            .flatten()
+        if deadline.as_nanos() < self.delay_nanos(input) {
+            return None;
+        }
+        prefix.frame_at_deadline(self.presentation_deadline(input, deadline), 0)
     }
 
     /// Iterates full-width source IDs in deterministic map order.
