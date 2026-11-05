@@ -1990,6 +1990,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
         InputKind::Alias {
             target: input_id(1),
             crop: Some(CropRect::new(10, 20, 640, 360)),
+            effects: Vec::new(),
         }
     );
     assert_eq!(
