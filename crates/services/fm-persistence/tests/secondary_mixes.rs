@@ -209,9 +209,10 @@ fn setting_and_removing_a_secondary_mix_is_atomic() {
     );
     assert_eq!(project, before);
 
+    assert!(project.remove_secondary_mix(number(3)).is_ok());
     assert!(project.remove_secondary_mix(number(2)).is_ok());
     assert!(project.secondary_mix(number(2)).is_none());
-    // Mix 3 still reads mix 2, so removing 2 first is refused.
+    // Mix 3 reads mix 2, so removing 2 first is refused.
     let mut project = configured();
     assert!(project.remove_secondary_mix(number(2)).is_err());
     assert!(project.secondary_mix(number(2)).is_some());
