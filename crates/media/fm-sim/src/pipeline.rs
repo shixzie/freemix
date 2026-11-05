@@ -196,15 +196,14 @@ impl SimulatedPipeline {
             .sources
             .get(&input)
             .ok_or(RenderError::MissingSource { input })?;
-        let Some(presented) = self.presented_frame(input, frame_number) else {
+        if self.presented_frame(input, frame_number).is_none() {
             // The delayed instant has not reached the source's first picture.
             return Ok(solid_color(
                 self.width,
                 self.height,
                 Rgba8::new(0, 0, 0, u8::MAX),
             )?);
-        };
-        let _ = presented;
+        }
         Ok(match source.pattern() {
             SourcePattern::Bars => self.bars()?,
             SourcePattern::Solid(color) => solid_color(self.width, self.height, color)?,
