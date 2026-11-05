@@ -124,6 +124,7 @@ fn write_project_runtime(output: &mut String, project: &fm_model::Project) {
     super::input_lifecycle::write_input_lifecycle(output, project);
     super::audio_mixer::write_audio_mixer(output, project);
     super::logical_output::write_logical_outputs(output, project);
+    super::secondary_mix::write_secondary_mixes(output, project);
     super::display_output::write_display_outputs(output, project);
     super::live_lan::write_live_lan(output, project);
     super::script::write_scripts(output, project.scripts());

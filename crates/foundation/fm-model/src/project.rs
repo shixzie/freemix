@@ -1048,7 +1048,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(107);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(108);
 
 /// Maximum stored scoreboard documents on one project (GX-003).
 pub const MAX_SCOREBOARDS: usize = 256;

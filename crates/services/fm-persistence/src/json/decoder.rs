@@ -65,6 +65,7 @@ struct ProjectDto {
     audio_buses: Vec<AudioBus>,
     outputs: Vec<Output>,
     logical_outputs: Vec<fm_model::LogicalOutputConfig>,
+    secondary_mixes: Vec<fm_model::SecondaryMixConfig>,
     stream_targets: Vec<StreamTarget>,
     main_mix: Option<MainMix>,
     recording_desired: [bool; RECORDER_SLOT_COUNT],
@@ -135,6 +136,7 @@ impl ProjectDto {
             audio_buses: parse_array(object.take("audio_buses")?, "audio_buses", parse_bus)?,
             outputs: parse_array(object.take("outputs")?, "outputs", parse_output)?,
             logical_outputs: super::logical_output::parse_logical_outputs(&mut object)?,
+            secondary_mixes: super::secondary_mix::parse_secondary_mixes(&mut object)?,
             stream_targets: parse_array(
                 object.take("stream_targets")?,
                 "stream_targets",
@@ -262,6 +264,7 @@ impl ProjectDto {
             project.add_output(output);
         }
         project.restore_logical_outputs(self.logical_outputs);
+        project.restore_secondary_mixes(self.secondary_mixes);
         for target in self.stream_targets {
             project.add_stream_target(target);
         }

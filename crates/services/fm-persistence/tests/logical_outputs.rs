@@ -207,7 +207,7 @@ fn logical_outputs_round_trip_exactly_and_strictly() {
     assert_eq!(loaded.project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 107"), "{text}");
+    assert!(text.contains("\"schema_version\": 108"), "{text}");
     let first = "{\"slot\": 1, \"output\": 40, \"source\": \"program\", \"overlays\": \"all\", \"audio\": \"master\"}";
     let second = "{\"slot\": 2, \"output\": 41, \"source\": {\"input\": 10}, \"overlays\": {\"channels\": [1, 3]}, \"audio\": {\"bus\": 31}}";
     let third = "{\"slot\": 3, \"output\": 42, \"source\": {\"multiview\": [\"program\", {\"input\": 11}, {\"mix\": 2}, {\"output\": 1}]}, \"overlays\": \"routed\", \"audio\": \"follow_video\"}";

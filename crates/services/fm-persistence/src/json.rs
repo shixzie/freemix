@@ -26,6 +26,7 @@ mod scoreboard;
 mod screen_capture;
 mod screen_capture_tokens;
 mod script;
+mod secondary_mix;
 mod shortcut;
 mod still;
 mod strip_dsp;
