@@ -131,6 +131,60 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             }
         }
         WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,
+        WireMessage::TitleRowSourceRequest(message) => {
+            validate_request_id(&message.request_id)?;
+            record.kind("title_row_source_request");
+            record.field("protocol", message.protocol)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+            match &message.operation {
+                crate::TitleRowSourceOperation::Start {
+                    path,
+                    interval_ms,
+                    keep_live,
+                } => {
+                    if path.is_empty() || path.len() > 512 || path.chars().any(char::is_control) {
+                        return Err(CodecError::InvalidField {
+                            field: "path",
+                            value: path.clone(),
+                        });
+                    }
+                    if !(250..=3_600_000).contains(interval_ms) {
+                        return Err(CodecError::InvalidField {
+                            field: "interval_ms",
+                            value: interval_ms.to_string(),
+                        });
+                    }
+                    record.field("action", "start")?;
+                    record.field_str("path", path)?;
+                    record.field("interval_ms", interval_ms)?;
+                    record.field("keep_live", u8::from(*keep_live))?;
+                }
+                crate::TitleRowSourceOperation::Stop => record.field("action", "stop")?,
+                crate::TitleRowSourceOperation::Status => record.field("action", "status")?,
+            }
+            Ok(())
+        }
+        WireMessage::TitleRowSourceResponse(message) => {
+            validate_request_id(&message.request_id)?;
+            record.kind("title_row_source_response");
+            record.field("protocol", message.protocol)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+            record.field("active", u8::from(message.active))?;
+            if let Some(path) = &message.path {
+                record.field_str("path", path)?;
+            }
+            if let Some(interval_ms) = message.interval_ms {
+                record.field("interval_ms", interval_ms)?;
+            }
+            record.field("keep_live", u8::from(message.keep_live))?;
+            record.field("applied_rows", message.applied_rows)?;
+            if let Some(error) = &message.error {
+                record.field_str("error", error)?;
+            }
+            Ok(())
+        }
         WireMessage::FrozenStillRequest(message) => {
             validate_request_id(&message.request_id)?;
             record.kind("frozen_still_request");

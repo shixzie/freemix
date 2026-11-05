@@ -149,8 +149,9 @@ pub use dto::{
     MAX_TITLE_PREVIEW_PART_BYTES, MAX_TITLE_PREVIEW_PARTS, MAX_TITLE_PREVIEW_WIDTH,
     MAX_WEB_TITLE_PREVIEW_HEIGHT, MAX_WEB_TITLE_PREVIEW_WIDTH, TitleAnimationStateMessage,
     TitleLayoutStateMessage, TitlePreviewFrameMessage, TitlePreviewImage, TitlePreviewRequest,
-    TitlePreviewSample, WireTitleClip, WireTitleElementId, WireTitleElementKind,
-    WireTitleElementOutline, WireTitleLayout,
+    TitlePreviewSample, TitleRowSourceOperation, TitleRowSourceRequest, TitleRowSourceResponse,
+    WireTitleClip, WireTitleElementId, WireTitleElementKind, WireTitleElementOutline,
+    WireTitleLayout,
 };
 pub use fm_command::{
     FaultDetail, IdKind, InputUse, MAX_FAULT_MESSAGE_BYTES, MAX_REFUSAL_FIELD_BYTES, RefusalReason,

@@ -164,6 +164,83 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             WireMessage::PtzPresetsResponse(decode_ptz_presets_response(&mut fields)?)
         }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
+        "title_row_source_request" => {
+            let protocol = fields.required("protocol")?;
+            let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+                field: "protocol",
+                value: protocol,
+            })?;
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            let input = fields.canonical_input("input")?;
+            let action = fields.required("action")?;
+            let operation = match action.as_str() {
+                "start" => {
+                    let path = fields.required("path")?;
+                    if path.is_empty() || path.len() > 512 || path.chars().any(char::is_control) {
+                        return Err(CodecError::InvalidField {
+                            field: "path",
+                            value: path,
+                        });
+                    }
+                    let interval_ms: u32 = fields.parse_required("interval_ms")?;
+                    if !(250..=3_600_000).contains(&interval_ms) {
+                        return Err(CodecError::InvalidField {
+                            field: "interval_ms",
+                            value: interval_ms.to_string(),
+                        });
+                    }
+                    crate::TitleRowSourceOperation::Start {
+                        path,
+                        interval_ms,
+                        keep_live: fields.boolean("keep_live")?,
+                    }
+                }
+                "stop" => crate::TitleRowSourceOperation::Stop,
+                "status" => crate::TitleRowSourceOperation::Status,
+                _ => {
+                    return Err(CodecError::InvalidField {
+                        field: "action",
+                        value: action,
+                    });
+                }
+            };
+            WireMessage::TitleRowSourceRequest(crate::TitleRowSourceRequest {
+                protocol,
+                request_id,
+                input,
+                operation,
+            })
+        }
+        "title_row_source_response" => {
+            let protocol = fields.required("protocol")?;
+            let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+                field: "protocol",
+                value: protocol,
+            })?;
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            let input = fields.canonical_input("input")?;
+            WireMessage::TitleRowSourceResponse(crate::TitleRowSourceResponse {
+                protocol,
+                request_id,
+                input,
+                active: fields.boolean("active")?,
+                path: fields.optional("path"),
+                interval_ms: fields
+                    .optional("interval_ms")
+                    .map(|value| {
+                        value.parse::<u32>().map_err(|_| CodecError::InvalidField {
+                            field: "interval_ms",
+                            value: value.clone(),
+                        })
+                    })
+                    .transpose()?,
+                keep_live: fields.boolean("keep_live")?,
+                applied_rows: fields.parse_required("applied_rows")?,
+                error: fields.optional("error"),
+            })
+        }
         "frozen_still_request" => {
             let protocol = fields.required("protocol")?;
             let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {

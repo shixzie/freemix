@@ -1545,6 +1545,42 @@ pub struct TitleFieldUpdate {
     pub value: TitleFieldValue,
 }
 
+/// One scheduled title data source operation (GX-005, Protocol 2.166).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TitleRowSourceOperation {
+    /// Poll a project-bundle file at `interval_ms` and apply each new row.
+    Start {
+        path: String,
+        interval_ms: u32,
+        keep_live: bool,
+    },
+    Stop,
+    Status,
+}
+
+/// A request to start, stop, or inspect one title's scheduled file source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleRowSourceRequest {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub input: WireInputId,
+    pub operation: TitleRowSourceOperation,
+}
+
+/// The daemon's answer to a [`TitleRowSourceRequest`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleRowSourceResponse {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub input: WireInputId,
+    pub active: bool,
+    pub path: Option<String>,
+    pub interval_ms: Option<u32>,
+    pub keep_live: bool,
+    pub applied_rows: u64,
+    pub error: Option<String>,
+}
+
 /// Whether a `title_fields` edit requires its title to be off air (prepare)
 /// or on air (live update). Wire encoding: `require=off_air|on_air`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3624,6 +3660,10 @@ pub enum WireMessage {
     /// 2.109).
     HealthAlertRequest(crate::HealthAlertRequest),
     MonitorFrame(MonitorFrameMessage),
+    /// A client's scheduled title file source (GX-005, Protocol 2.166).
+    TitleRowSourceRequest(TitleRowSourceRequest),
+    /// The daemon's answer to a [`TitleRowSourceRequest`].
+    TitleRowSourceResponse(TitleRowSourceResponse),
     /// A client's request for one frozen input's PNG (SW-016, Protocol
     /// 2.164).
     FrozenStillRequest(FrozenStillRequest),
