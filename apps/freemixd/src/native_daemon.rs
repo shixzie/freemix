@@ -7,8 +7,6 @@
 #[allow(clippy::wildcard_imports)] // the binary's items and imports
 use super::*;
 
-#[cfg(feature = "native-media")]
-#[allow(clippy::struct_excessive_bools)] // each bool is a distinct native-mode operator or media option
 /// One frozen input's captured PNG, shared by both daemon builds.
 pub(crate) struct CapturedStill {
     pub(crate) width: u32,
@@ -16,6 +14,8 @@ pub(crate) struct CapturedStill {
     pub(crate) png: Vec<u8>,
 }
 
+#[cfg(feature = "native-media")]
+#[allow(clippy::struct_excessive_bools)] // each bool is a distinct native-mode operator or media option
 pub(crate) struct NativeDaemon {
     pub(crate) pacer: FramePacer,
     pub(crate) pacer_start_offset: Duration,
