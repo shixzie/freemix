@@ -484,6 +484,23 @@ impl SimulatedMonitorTap {
         self
     }
 
+    /// The latest composed Program and Preview pictures, for feed-input
+    /// thumbnails (IN-025).
+    #[must_use]
+    pub fn composed_feed_frames(&self) -> BTreeMap<MixFeed, Arc<ImageFrame>> {
+        let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut frames = BTreeMap::new();
+        for (tap, feed) in [
+            (MonitorTap::Program, MixFeed::Program),
+            (MonitorTap::Preview, MixFeed::Preview),
+        ] {
+            if let Some(image) = &latest[tap.index()] {
+                frames.insert(feed, Arc::clone(image));
+            }
+        }
+        frames
+    }
+
     /// Cadence and rendering against an explicit realized state. Takes the
     /// state by value so tests can build it inline.
     #[cfg(test)]
@@ -2340,6 +2357,25 @@ mod tests {
         assert_eq!(fit_monitor(1, 4320), Some((1, 360)));
         assert_eq!(fit_monitor(0, 1080), None);
         assert_eq!(fit_within(100, 100, 10, 20), Some((10, 10)));
+    }
+
+    #[test]
+    fn simulated_monitor_retains_composed_feed_pictures() {
+        let project = project(320, 180);
+        let mut tap = SimulatedMonitorTap::with_titles(Arc::default());
+        tap.poll_state_into(
+            &state(1, 1, 2),
+            &project,
+            &server(),
+            Instant::now(),
+            true,
+            &mut |_, _| {},
+        );
+        let feeds = tap.composed_feed_frames();
+        let program = feeds.get(&MixFeed::Program).expect("Program tap picture");
+        let preview = feeds.get(&MixFeed::Preview).expect("Preview tap picture");
+        assert_eq!((program.width(), program.height()), (320, 180));
+        assert_eq!((preview.width(), preview.height()), (320, 180));
     }
 
     #[test]

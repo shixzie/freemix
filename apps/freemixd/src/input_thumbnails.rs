@@ -1525,6 +1525,29 @@ mod tests {
         assert_eq!(&image.rgba[..4], &[200, 0, 0, 255]);
     }
 
+    /// IN-025: a feed input's own thumbnail is the composed Program or
+    /// Preview tap, fitted and graded like any other input picture.
+    #[test]
+    fn feed_inputs_thumbnail_their_composed_tap() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
+        let feed = input(1, InputKind::MixFeed(MixFeed::Program));
+        let mut work = work(project(vec![feed]), 1);
+        let mut composed = ImageFrame::packed(4, 2).unwrap();
+        for pixel in composed.pixels_mut().as_chunks_mut::<4>().0 {
+            pixel.copy_from_slice(&[12, 200, 34, 255]);
+        }
+        work.feed_pictures
+            .insert(MixFeed::Program, Arc::new(composed));
+
+        let sent = step(&mut renderer, &work, start, false);
+        assert_eq!(sent.len(), 1);
+        let image = decode_input_thumbnail(&sent[0].1).unwrap();
+        assert_eq!((image.width, image.height), (4, 2));
+        assert_eq!(&image.rgba[..4], &[12, 200, 34, 255]);
+        assert_eq!(sent[0].1.origin, MonitorFrameOrigin::Native);
+    }
+
     #[test]
     fn a_scene_thumbnail_draws_an_alias_layer() {
         let start = Instant::now();
