@@ -558,6 +558,16 @@ impl OutputRoutingFrame {
     ) -> Option<&Result<OutputRenderPlan, OutputRoutingError>> {
         self.outputs[slot.index()].as_ref()
     }
+
+    /// The resolved plan whose project output is `output`, if that output is
+    /// enabled and resolved this frame.
+    #[must_use]
+    pub fn plan_for(&self, output: OutputId) -> Option<&OutputRenderPlan> {
+        self.render_order.iter().find_map(|slot| match self.output(*slot) {
+            Some(Ok(plan)) if plan.output == output => Some(plan),
+            _ => None,
+        })
+    }
 }
 
 type Slots = [Option<LogicalOutputConfig>; LOGICAL_OUTPUT_COUNT];

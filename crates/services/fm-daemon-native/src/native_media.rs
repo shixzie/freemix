@@ -68,7 +68,8 @@ use fm_model::{
 use fm_plugin_host_api::{ReferenceError, ReferenceRack};
 use fm_sim::{CollectingAudioSink, OverflowPolicy, SinkConfigError, SinkTelemetry};
 use fm_switcher::{
-    FadeToBlackFrame, OverlayBorderPreset, OverlayPositionPreset, ProgramFrame,
+    BackgroundPlan, FadeToBlackFrame, FeedLayer, OutputRenderPlan, OutputVideo,
+    OverlayBorderPreset, OverlayPositionPreset, ProgramFrame,
     TransitionKind as SwitcherTransitionKind,
 };
 use fm_types::{
@@ -1565,6 +1566,43 @@ struct NativeProgramOverlay {
     motion: Option<fm_switcher::OverlayMotion>,
 }
 
+/// One overlay layer resolved for a logical output (SW-012).
+const fn plan_overlay(layer: &fm_switcher::OverlayLayer) -> NativeProgramOverlay {
+    NativeProgramOverlay {
+        input: layer.source,
+        opacity: layer.opacity,
+        position: layer.position,
+        border: layer.border,
+        motion: layer.motion,
+    }
+}
+
+/// Whether `background` is exactly the frame's Program transition, which the
+/// shared Program base already renders.
+fn is_program_background(background: &BackgroundPlan, program: ProgramFrame) -> bool {
+    feed_input(background.primary) == Some(program.primary)
+        && background.secondary.and_then(feed_input) == program.secondary
+        && background.transition_kind == program.transition_kind
+        && background.mix_numerator == program.mix_numerator
+        && background.mix_denominator == program.mix_denominator
+}
+
+/// The single settled input a logical output shows, if its background is one
+/// unfaded, untransitioned input layer.
+const fn settled_input(background: &BackgroundPlan) -> Option<InputId> {
+    if background.secondary.is_some() || background.transition_kind.is_some() {
+        return None;
+    }
+    feed_input(background.primary)
+}
+
+const fn feed_input(layer: FeedLayer) -> Option<InputId> {
+    match layer {
+        FeedLayer::Input(input) => Some(input),
+        FeedLayer::Mix { .. } | FeedLayer::Black => None,
+    }
+}
+
 /// The compositor transition that moves an overlay layer; `None` for Cut
 /// and Fade, which are opacity changes rather than motion.
 const fn overlay_motion_kind(kind: fm_switcher::OverlayTransitionKind) -> Option<TransitionKind> {
@@ -2274,6 +2312,14 @@ pub enum NativeSourceRenderError {
     StingerSourceNotPreloaded {
         input: InputId,
     },
+    /// A logical output selects a feed the native path cannot render yet.
+    UnsupportedOutputFeed {
+        output: Option<OutputId>,
+    },
+    /// A logical output selects a MultiView the native path cannot render yet.
+    UnsupportedOutputMultiView {
+        output: OutputId,
+    },
     UnsupportedTransition(SwitcherTransitionKind),
     InvalidMix(TransitionError),
     InvalidStinger(StingerPlanError),
@@ -2318,6 +2364,19 @@ impl fmt::Display for NativeSourceRenderError {
                     "native Stinger source {input} is not pinned for clip-local playback"
                 )
             }
+            Self::UnsupportedOutputFeed { output } => match output {
+                Some(output) => write!(
+                    formatter,
+                    "native project output {output} selects a logical-output feed that is not realized yet"
+                ),
+                None => formatter.write_str(
+                    "native unbound output selects a logical-output feed that is not realized yet",
+                ),
+            },
+            Self::UnsupportedOutputMultiView { output } => write!(
+                formatter,
+                "native project output {output} selects a logical-output MultiView that is not realized yet"
+            ),
             Self::UnsupportedTransition(kind) => {
                 write!(formatter, "native transition {kind:?} is not supported")
             }
@@ -9176,37 +9235,61 @@ impl NativeMediaRuntime {
         if outputs.is_empty() {
             return Err(NativeSourceRenderError::ResourceBounds);
         }
-        let plan = native_project_mix_plan(project, frame.program)?;
+        // An enabled logical output replaces Program with its own feed,
+        // overlay policy, and audio map (SW-012); an output without routing
+        // keeps the Program-only behavior.
+        let plans = outputs
+            .iter()
+            .map(|output| output.and_then(|output| frame.logical_outputs.plan_for(output)))
+            .collect::<Vec<_>>();
         let overlay_sets = outputs
             .iter()
-            .map(|output| {
-                output.map_or_else(Vec::new, |output| {
+            .zip(plans.iter().copied())
+            .map(|(output, plan)| match plan {
+                Some(plan) => plan.overlays.iter().map(plan_overlay).collect(),
+                None => output.map_or_else(Vec::new, |output| {
                     NativeProjectPlan::program_overlays(frame, output)
-                })
+                }),
             })
             .collect::<Vec<_>>();
-        let mut inputs = match plan {
+        let plan = native_project_mix_plan(project, frame.program)?;
+        let program_inputs = match plan {
             NativeProjectMixPlan::Transition(plan) => {
                 vec![plan.primary, plan.secondary, plan.primary]
             }
             NativeProjectMixPlan::Stinger(plan) => vec![plan.program, plan.preview, plan.media],
         };
-        inputs.extend(overlay_sets.iter().flatten().map(|overlay| overlay.input));
+        let program_leaf_inputs = match plan {
+            NativeProjectMixPlan::Stinger(plan) => vec![plan.program, plan.preview],
+            NativeProjectMixPlan::Transition(_) => program_inputs.clone(),
+        };
+        let mut extra_inputs = Vec::new();
+        for plan in plans.iter().flatten() {
+            match &plan.video {
+                OutputVideo::Background(background) => {
+                    if !is_program_background(background, frame.program)
+                        && let Some(input) = settled_input(background)
+                    {
+                        extra_inputs.push(input);
+                    }
+                }
+                OutputVideo::MultiView(_) => {}
+            }
+            extra_inputs.extend(plan.overlays.iter().map(|layer| layer.source));
+        }
+        extra_inputs.extend(overlay_sets.iter().flatten().map(|overlay| overlay.input));
+        let mut inputs = program_inputs;
+        inputs.extend(extra_inputs.iter().copied());
+        inputs.sort_unstable();
+        inputs.dedup();
+        let mut leaf_inputs = program_leaf_inputs;
+        leaf_inputs.extend(extra_inputs);
+        leaf_inputs.sort_unstable();
+        leaf_inputs.dedup();
         let mut execution = project
             .scene_execution(&inputs)
             .ok_or(NativeSourceRenderError::ResourceBounds)?;
         let _frame_slot = self.begin_project_frame()?;
-        // Stinger media plays from its own clip-local registry and is graded
-        // there; grading its show-timeline frame too would be wasted work.
-        let leaf_inputs = match plan {
-            NativeProjectMixPlan::Stinger(_) => inputs
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| *index != 2)
-                .map(|(_, input)| *input)
-                .collect::<Vec<_>>(),
-            NativeProjectMixPlan::Transition(_) => inputs.clone(),
-        };
         let mut graded = self
             .grade_project_leaves(registry, project, &leaf_inputs, &execution, frame.deadline)
             .await?;
@@ -9223,7 +9306,36 @@ impl NativeMediaRuntime {
             )
             .await?;
         let mut rendered = Vec::with_capacity(outputs.len());
-        for (&output, overlays) in outputs.iter().zip(&overlay_sets) {
+        for ((&output, plan), overlays) in outputs
+            .iter()
+            .zip(plans.iter().copied())
+            .zip(&overlay_sets)
+        {
+            let base = match plan.map(|plan| &plan.video) {
+                None => &program,
+                Some(OutputVideo::Background(background))
+                    if is_program_background(background, frame.program) =>
+                {
+                    &program
+                }
+                Some(OutputVideo::Background(background)) => {
+                    let input = settled_input(background).ok_or(
+                        NativeSourceRenderError::UnsupportedOutputFeed { output },
+                    )?;
+                    project_texture(
+                        registry,
+                        &graded,
+                        project,
+                        &scene_outputs,
+                        input,
+                        frame.deadline,
+                    )?
+                }
+                Some(OutputVideo::MultiView(_)) => {
+                    let output = output.ok_or(NativeSourceRenderError::ResourceBounds)?;
+                    return Err(NativeSourceRenderError::UnsupportedOutputMultiView { output });
+                }
+            };
             let composed = self
                 .render_project_overlays(
                     registry,
@@ -9231,7 +9343,7 @@ impl NativeMediaRuntime {
                     project,
                     &scene_outputs,
                     frame.deadline,
-                    &program,
+                    base,
                     overlays,
                 )
                 .await?;
