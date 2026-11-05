@@ -45,6 +45,9 @@ pub(crate) struct NativeDaemon {
     pub(crate) video: native_video_realizer::NativeVideoHandle,
     /// A shared handle to the realizer's newest CPU source pictures.
     pub(crate) latest_frames: freemixd::native_media::NativeLatestFrames,
+    /// The per-input video delays the video realizer currently applies
+    /// (IN-022); the frame loop sends changes only.
+    pub(crate) applied_video_delays: Option<BTreeMap<InputId, u32>>,
     /// A frame submitted to the audio and video realizers, waiting for the
     /// pass's peer work to finish before its consumers run.
     pub(crate) pending_frame: Option<PendingFrame>,
@@ -419,6 +422,15 @@ impl NativeDaemon {
             &resolved_sources,
             stored,
         )?;
+        // The persisted delays apply from the first frame (IN-022).
+        let applied_video_delays = stored.project().input_video_delays().clone();
+        let mut playback = playback;
+        playback.set_input_video_delays(
+            stored.project().settings().frame_rate,
+            applied_video_delays
+                .iter()
+                .map(|(&input, &frames)| (input, frames)),
+        );
         // Stream runtimes compile after video/audio preflight so a destination
         // problem is reported against an otherwise healthy show. Starting one
         // is deferred to readiness; failures there latch per target.
@@ -477,6 +489,7 @@ impl NativeDaemon {
             grade_cache: grading::GradeCache::default(),
             video,
             latest_frames,
+            applied_video_delays: Some(applied_video_delays),
             pending_frame: None,
             pending_preview_render: false,
             projected_frame: None,
@@ -2754,14 +2767,32 @@ impl NativeDaemon {
                     .map_err(AppFailure)?;
             }
         }
+        if self.projected_frame.is_none() {
+            self.projected_frame = Some(control.project_next_frame()?);
+        }
+        // A delay edit changes the projected show at the next engine
+        // revision; the realizer gets the new map before it services the
+        // frame (IN-022).
+        if let Some(projected) = self.projected_frame.as_ref() {
+            let delays = projected.show().input_video_delays();
+            if self.applied_video_delays.as_ref() != Some(delays) {
+                self.video
+                    .set_input_video_delays(
+                        self.pacer.frame_rate(),
+                        delays
+                            .iter()
+                            .map(|(&input, &frames)| (input, frames))
+                            .collect(),
+                    )
+                    .map_err(|error| AppFailure(format!("native playback: {error}")))?;
+                self.applied_video_delays = Some(delays.clone());
+            }
+        }
         let deadline = control.next_frame_deadline()?;
         let video_covered = self
             .video
             .service_playback(deadline)
             .map_err(|error| AppFailure(format!("native playback: {error}")))?;
-        if self.projected_frame.is_none() {
-            self.projected_frame = Some(control.project_next_frame()?);
-        }
         let replay_deadline = self.next_deadline()?;
         let Some(projected) = self.projected_frame.as_ref() else {
             return Err(AppFailure("next frame projection was initialized".into()).into());

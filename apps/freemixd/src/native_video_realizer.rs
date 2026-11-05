@@ -166,6 +166,10 @@ enum VideoCommand {
     RemoveSource {
         input: InputId,
     },
+    SetInputVideoDelays {
+        frame_rate: fm_types::FrameRate,
+        delays: Vec<(InputId, u32)>,
+    },
     SetRetainedByteLimit {
         limit: u64,
     },
@@ -337,6 +341,21 @@ impl NativeVideoHandle {
     pub(crate) fn remove_source(&mut self, input: InputId) -> Result<(), String> {
         self.commands
             .send(VideoCommand::RemoveSource { input })
+            .map_err(|_| "the video thread stopped".to_owned())
+    }
+
+    /// Applies the project's per-input video delays (IN-022).
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn set_input_video_delays(
+        &mut self,
+        frame_rate: fm_types::FrameRate,
+        delays: Vec<(InputId, u32)>,
+    ) -> Result<(), String> {
+        self.commands
+            .send(VideoCommand::SetInputVideoDelays { frame_rate, delays })
             .map_err(|_| "the video thread stopped".to_owned())
     }
 
@@ -742,6 +761,9 @@ impl VideoRealizer {
                 }
                 VideoCommand::RemoveSource { input } => {
                     let _ = self.playback.remove_source(input);
+                }
+                VideoCommand::SetInputVideoDelays { frame_rate, delays } => {
+                    self.playback.set_input_video_delays(frame_rate, delays);
                 }
                 VideoCommand::SetRetainedByteLimit { limit } => {
                     self.playback.set_retained_byte_limit(limit);

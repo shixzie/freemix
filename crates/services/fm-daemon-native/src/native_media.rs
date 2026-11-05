@@ -2553,6 +2553,11 @@ pub struct NativeSourceRegistry {
     dimensions: Option<(u32, u32)>,
     retained_rgba16f_bytes: u64,
     limits: NativeSourceLimits,
+    /// Requested per-input video delays in frames (IN-022), from the project.
+    video_delays: BTreeMap<InputId, u32>,
+    /// The show's frame rate, which turns a requested delay in frames into
+    /// presentation time for decoded sources.
+    frame_rate: Option<FrameRate>,
 }
 
 impl NativeSourceRegistry {
@@ -2582,6 +2587,74 @@ impl NativeSourceRegistry {
         self.limits
     }
 
+    /// Applies the project's per-input video delays (IN-022).
+    ///
+    /// `frame_rate` converts a delay in frames into presentation time for
+    /// decoded sources; live sources hold recent pictures instead. A delay
+    /// larger than the ring can retain is clamped by
+    /// [`Self::effective_input_video_delay`]. A delay only affects frame
+    /// selection and eviction, never decoding or upload.
+    pub fn set_input_video_delays(
+        &mut self,
+        frame_rate: FrameRate,
+        delays: impl IntoIterator<Item = (InputId, u32)>,
+    ) {
+        self.frame_rate = Some(frame_rate);
+        self.video_delays = delays
+            .into_iter()
+            .filter(|(_, frames)| *frames > 0)
+            .collect();
+    }
+
+    /// The delay `input` requested, in frames.
+    #[must_use]
+    pub fn input_video_delay(&self, input: InputId) -> u32 {
+        self.video_delays.get(&input).copied().unwrap_or(0)
+    }
+
+    /// The delay `input` is actually given, in frames: the requested delay
+    /// clamped to what one source ring can retain.
+    #[must_use]
+    pub fn effective_input_video_delay(&self, input: InputId) -> u32 {
+        let maximum = self.limits.max_video_frames_per_source.get();
+        self.input_video_delay(input)
+            .min(maximum.saturating_sub(1))
+    }
+
+    /// The presentation time `input` reads at `deadline`, before its delay.
+    #[must_use]
+    fn presentation_deadline(&self, input: InputId, deadline: ClockTime) -> ClockTime {
+        let Some(frame_rate) = self.frame_rate else {
+            return deadline;
+        };
+        let frames = u64::from(self.effective_input_video_delay(input));
+        let nanos = (u128::from(frames) * 1_000_000_000 * u128::from(frame_rate.denominator()))
+            / u128::from(frame_rate.numerator());
+        let nanos = u64::try_from(nanos).unwrap_or(u64::MAX);
+        ClockTime::from_nanos(deadline.as_nanos().saturating_sub(nanos))
+    }
+
+    fn frame_at_deadline(
+        &self,
+        input: InputId,
+        deadline: ClockTime,
+    ) -> Option<&NativeWorkingFrame> {
+        let prefix = self.sources.get(&input)?;
+        let delay = self.effective_input_video_delay(input);
+        if delay == 0 {
+            return prefix.frame_at_deadline(deadline, 0);
+        }
+        if prefix.kind == NativeVideoSourceKind::Live {
+            return prefix.frame_at_deadline(deadline, delay);
+        }
+        let presentation = self.presentation_deadline(input, deadline);
+        // Startup holds black until the delayed instant reaches the
+        // source's first picture instead of showing it early.
+        (presentation.as_nanos() < deadline.as_nanos())
+            .then(|| prefix.frame_at_deadline(presentation, 0))
+            .flatten()
+    }
+
     /// Iterates full-width source IDs in deterministic map order.
     #[must_use]
     pub fn inputs(&self) -> impl ExactSizeIterator<Item = InputId> + '_ {
@@ -2591,9 +2664,7 @@ impl NativeSourceRegistry {
     /// Returns selected source timing without exposing its texture.
     #[must_use]
     pub fn timing_at_deadline(&self, input: InputId, deadline: ClockTime) -> Option<MediaTiming> {
-        self.sources
-            .get(&input)
-            .and_then(|prefix| prefix.frame_at_deadline(deadline))
+        self.frame_at_deadline(input, deadline)
             .map(NativeWorkingFrame::timing)
     }
 
@@ -2604,9 +2675,21 @@ impl NativeSourceRegistry {
 }
 
 impl NativeVideoPrefix {
-    fn frame_at_deadline(&self, deadline: ClockTime) -> Option<&NativeWorkingFrame> {
+    fn frame_at_deadline(
+        &self,
+        deadline: ClockTime,
+        live_frames_back: u32,
+    ) -> Option<&NativeWorkingFrame> {
         if self.kind == NativeVideoSourceKind::Live {
-            return self.frames.last();
+            // A live source keeps its recent pictures (IN-022); the delay
+            // counts back from the newest one and holds black until enough
+            // pictures arrived.
+            let back = usize::try_from(live_frames_back).ok()?;
+            return self
+                .frames
+                .len()
+                .checked_sub(1 + back)
+                .and_then(|index| self.frames.get(index));
         }
         if !source_covers_deadline(
             self.offsets_ns.last().copied(),
@@ -2790,6 +2873,16 @@ impl NativeSourcePlayback {
     #[must_use]
     pub const fn registry(&self) -> &NativeSourceRegistry {
         &self.registry
+    }
+
+    /// Applies the project's per-input video delays (IN-022); see
+    /// [`NativeSourceRegistry::set_input_video_delays`].
+    pub fn set_input_video_delays(
+        &mut self,
+        frame_rate: FrameRate,
+        delays: impl IntoIterator<Item = (InputId, u32)>,
+    ) {
+        self.registry.set_input_video_delays(frame_rate, delays);
     }
 
     /// Verifies that the current ring can continue under a lower aggregate
@@ -7512,9 +7605,9 @@ fn registry_frame(
     input: InputId,
     deadline: ClockTime,
 ) -> Result<&NativeWorkingFrame, NativeSourceRenderError> {
-    let prefix = registered_source(&registry.sources, input)?;
-    let frame = prefix
-        .frame_at_deadline(deadline)
+    registered_source(&registry.sources, input)?;
+    let frame = registry
+        .frame_at_deadline(input, deadline)
         .ok_or(NativeSourceRenderError::MissingSource { input })?;
     if let Some((expected_width, expected_height)) = registry.dimensions {
         let actual_width = frame.texture().width();
@@ -8282,6 +8375,8 @@ impl NativeMediaRuntime {
                 dimensions,
                 retained_rgba16f_bytes,
                 limits,
+                video_delays: BTreeMap::new(),
+                frame_rate: None,
             },
             worker,
             failed: false,
@@ -8493,17 +8588,54 @@ impl NativeMediaRuntime {
             .normalize(&self.context, &frame)
             .await
             .map_err(|error| NativeSourcePlaybackError::Normalize { input, error })?;
+        let frame_bytes = rgba16f_frame_bytes(input, expected_width, expected_height)?;
+        let maximum_frames = usize::try_from(
+            playback
+                .registry
+                .limits
+                .max_video_frames_per_source
+                .get(),
+        )
+        .unwrap_or(usize::MAX);
+        let maximum_bytes = playback.registry.limits.max_retained_rgba16f_bytes;
+        let retained_before = playback.registry.retained_rgba16f_bytes;
         let prefix = playback
             .registry
             .sources
             .get_mut(&input)
             .ok_or(NativeSourcePlaybackError::SourceNotLive { input })?;
-        prefix.frames.clear();
+        // A live source retains recent pictures so a delayed presentation
+        // can count back from the newest one (IN-022). Both the source's ring
+        // and the registry's retained bytes bound the history; the newest
+        // picture always stays.
+        let mut remove = prefix.frames.len().saturating_add(1).saturating_sub(maximum_frames);
+        let retained = retained_before.saturating_add(frame_bytes);
+        if retained > maximum_bytes {
+            let byte_remove = usize::try_from(
+                retained
+                    .saturating_sub(maximum_bytes)
+                    .div_ceil(frame_bytes.max(1)),
+            )
+            .unwrap_or(usize::MAX);
+            remove = remove.max(byte_remove).min(prefix.frames.len());
+        }
+        let retained_after = retained.saturating_sub(
+            frame_bytes.saturating_mul(u64::try_from(remove).unwrap_or(u64::MAX)),
+        );
+        if retained_after > maximum_bytes {
+            return Err(NativeSourceError::RetainedBytesExceeded {
+                required: frame_bytes,
+                maximum: maximum_bytes,
+            }
+            .into());
+        }
+        prefix.frames.drain(..remove);
         prefix.frames.push(normalized);
-        prefix.offsets_ns.clear();
+        prefix.offsets_ns.drain(..remove);
         prefix.offsets_ns.push(0);
         prefix.last_source_pts = timing.presentation_timestamp().as_nanos();
         prefix.last_sequence = timing.sequence().get();
+        playback.registry.retained_rgba16f_bytes = retained_after;
         playback.latest.store(input, frame);
         Ok(())
     }
@@ -8617,6 +8749,7 @@ impl NativeMediaRuntime {
         if prefix.kind != NativeVideoSourceKind::Live {
             return Err(NativeSourceRenderError::MissingSource { input });
         }
+        let retained_history = prefix.frames.len().saturating_sub(1);
         let frame = prefix
             .frames
             .last()
@@ -8624,6 +8757,16 @@ impl NativeMediaRuntime {
             .with_texture(texture);
         prefix.frames.clear();
         prefix.frames.push(frame);
+        if retained_history > 0 {
+            // The composed picture replaces the source's live history, so
+            // its dropped textures release their retained-byte charge.
+            let dropped = rgba16f_frame_bytes(input, width, height)?
+                .saturating_mul(u64::try_from(retained_history).unwrap_or(u64::MAX));
+            playback.registry.retained_rgba16f_bytes = playback
+                .registry
+                .retained_rgba16f_bytes
+                .saturating_sub(dropped);
+        }
         if let Some(picture) = picture {
             playback.latest.store_shared(input, picture);
         }
@@ -8928,12 +9071,32 @@ impl NativeMediaRuntime {
                 return Ok(true);
             };
             let frame_bytes = rgba16f_frame_bytes(accounting_input, width, height)?;
+            let eviction_deadlines = playback
+                .registry
+                .sources
+                .keys()
+                .map(|input| {
+                    (
+                        *input,
+                        playback.registry.presentation_deadline(*input, deadline),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
             for (input, prefix) in &mut playback.registry.sources {
                 if only_input.is_some_and(|selected| selected != *input) {
                     continue;
                 }
-                let remove =
-                    source_eviction_count(&prefix.offsets_ns, prefix.pinned_for_stinger, deadline);
+                if prefix.kind == NativeVideoSourceKind::Live {
+                    // Live history is a picture-count ring maintained on
+                    // ingest, not a deadline window (IN-022).
+                    continue;
+                }
+                let eviction_deadline = eviction_deadlines.get(input).copied().unwrap_or(deadline);
+                let remove = source_eviction_count(
+                    &prefix.offsets_ns,
+                    prefix.pinned_for_stinger,
+                    eviction_deadline,
+                );
                 prefix.frames.drain(..remove);
                 prefix.offsets_ns.drain(..remove);
                 let removed_bytes = frame_bytes
@@ -13233,12 +13396,52 @@ mod tests {
                 dimensions: None,
                 retained_rgba16f_bytes: 0,
                 limits: NativeSourceLimits::default(),
+                video_delays: BTreeMap::new(),
+                frame_rate: None,
             },
             worker: NativeDecodeWorker::spawn(BTreeMap::new()).unwrap(),
             failed: false,
             latest: NativeLatestFrames::default(),
             orphaned: Vec::new(),
         }
+    }
+
+    #[test]
+    fn video_delays_clamp_to_the_ring_and_shift_presentation_time() {
+        let mut playback = source_playback_for_pin_test(NativeVideoSourceKind::Decoded, true);
+        let frame_rate = FrameRate::new(30, 1).unwrap();
+        playback.set_input_video_delays(frame_rate, [(input(1), 5)]);
+        let registry = playback.registry();
+        assert_eq!(registry.input_video_delay(input(1)), 5);
+        assert_eq!(registry.effective_input_video_delay(input(1)), 5);
+        // Five frames at 30 fps are 166_666_666 ns.
+        assert_eq!(
+            registry
+                .presentation_deadline(input(1), ClockTime::from_nanos(1_000_000_000))
+                .as_nanos(),
+            833_333_334
+        );
+        // Startup holds black until the delayed instant reaches the source.
+        assert!(
+            registry
+                .frame_at_deadline(input(1), ClockTime::from_nanos(100_000_000))
+                .is_none()
+        );
+
+        // The source ring keeps at most `max_video_frames_per_source`
+        // pictures, so a larger request is clamped to the newest delay it
+        // can present.
+        let maximum = playback
+            .registry()
+            .limits()
+            .max_video_frames_per_source
+            .get();
+        playback.set_input_video_delays(frame_rate, [(input(1), 600)]);
+        assert_eq!(playback.registry().input_video_delay(input(1)), 600);
+        assert_eq!(
+            playback.registry().effective_input_video_delay(input(1)),
+            maximum - 1
+        );
     }
 
     #[test]
