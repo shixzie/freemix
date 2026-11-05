@@ -8555,22 +8555,18 @@ fn remote_title_apply_row_maps_fields_and_sends_the_exact_edit() {
     );
     server.finish();
 
-    // A row naming a field the remote title does not define is refused.
-    let server = FakeRemoteServer::start_title_snapshot(
-        vec![title_row_state(fm_protocol::TitlePhase::Idle)],
-        vec![title_row_input()],
-    );
+    // A row naming a field the local template does not define is refused
+    // before any connection.
     fs::write(&row, r#"{"Nope": 1}"#).unwrap();
     let output = invoke(&[
         "remote-title-apply-row",
-        &server.address(),
+        "127.0.0.1:1",
         context.project_path(),
         "9",
         row.to_str().unwrap(),
         "--preview",
     ]);
-    assert!(!output.status.success());
-    server.finish();
+    assert_failure_contains(&output, "does not define");
 
     fs::remove_dir_all(context.root).unwrap();
 }
