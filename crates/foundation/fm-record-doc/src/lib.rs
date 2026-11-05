@@ -9,6 +9,7 @@
 pub mod track_limits;
 pub mod track_loudness;
 pub mod track_map;
+pub mod track_map_document;
 
 pub use track_limits::{
     MAX_TRACK_SEGMENT_BYTES, MAX_TRACK_SEGMENT_SECONDS, TRACK_LIMITS_FILE_NAME,
@@ -24,6 +25,7 @@ pub use track_map::{
     RecordTrack, RecorderTrackMap, TrackLayout, TrackMapError, TrackMapLayout, TrackSource,
     split_track_file_name,
 };
+pub use track_map_document::TrackMapDocumentError;
 
 /// Broadcast Wave Format `bext` loudness fields (version 2), all in
 /// hundredths: LUFS for integrated, momentary, and short-term loudness, LU

@@ -21,7 +21,6 @@ mod resilient;
 mod resilient_wav;
 mod session;
 mod space;
-mod track_map_document;
 mod track_wav;
 mod types;
 mod wav;
@@ -30,7 +29,7 @@ pub use coordinator::{
     DurableWriter, ReconciliationFailure, ReconciliationReport, RecorderCoordinator,
     StdWriterFactory, WriterFactory, repair_recording,
 };
-pub use fm_record_doc::{track_limits, track_loudness, track_map};
+pub use fm_record_doc::{track_limits, track_loudness, track_map, track_map_document};
 pub use fmp4::{
     Fmp4Error, Fmp4Fragment, Fmp4Integrity, Fmp4Movie, Fmp4Repair, Fmp4Scan, Fmp4Splitter,
     Fmp4Track, Fmp4TrackRun, Fmp4TrackSpan, Fmp4Unit, MAX_FMP4_INDEX_FRAGMENTS,
