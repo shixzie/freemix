@@ -260,7 +260,7 @@ fn parse_audio(value: Value) -> Result<LogicalAudioMap, DecodeError> {
 }
 
 fn mix_number(value: &Value) -> Result<u8, DecodeError> {
-    let mix = u8_value(&value, "mix")?;
+    let mix = u8_value(value, "mix")?;
     if !(1..=fm_model::MAX_LOGICAL_MIX_NUMBER).contains(&mix) {
         return Err(syntax(format!(
             "mix must be 1 through {}",
