@@ -63,7 +63,7 @@ pub(crate) fn title_state(address: SocketAddr, input: InputId) -> RemoteResult<R
         field_revision: title.field_revision,
         fields: title.fields.clone(),
         phase: title.phase,
-        on_air: remote_title_on_air(&state, input),
+        on_air: remote_title_on_air(state, input),
     })
 }
 
