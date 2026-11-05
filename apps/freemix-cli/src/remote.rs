@@ -821,6 +821,7 @@ pub(crate) fn print_replay_settings(settings: &fm_protocol::ReplaySettings) {
 
 /// Prints the replay status: the settings, one line per recorded source,
 /// event, and Replay input.
+#[allow(clippy::too_many_lines)] // one line per replay field
 pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
     let frame = |frame: Option<u64>| frame.map_or_else(|| "none".to_owned(), |f| f.to_string());
     print_replay_settings(&status.settings);
