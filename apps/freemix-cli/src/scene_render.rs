@@ -52,6 +52,7 @@ pub(crate) enum SceneRenderError {
 }
 
 impl fmt::Display for SceneRenderError {
+    #[allow(clippy::match_same_arms)] // distinct error types share one Display
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownScene(scene) => write!(formatter, "scene {scene} does not exist"),
@@ -124,6 +125,7 @@ impl std::error::Error for SceneRenderError {}
 /// `pose` is the point of the scene's animation drawn
 /// ([`fm_model::Scene::posed`] with the pipeline size as the canvas).
 #[allow(clippy::too_many_arguments)] // one render: scene, pose, sources, size
+#[allow(clippy::too_many_lines)] // one pass over the scene graph
 pub(crate) fn render_scene(
     project: &Project,
     scene: SceneId,
@@ -177,13 +179,13 @@ pub(crate) fn render_scene(
         let Some(context) = context.as_ref() else {
             return Err(SceneRenderError::UnknownInput(input));
         };
-        let resolved = context
+        let chosen = context
             .resolve_input(input)
             .map_err(SceneRenderError::Resolve)?;
-        if resolved.crop.is_some() {
+        if chosen.crop.is_some() {
             return Err(SceneRenderError::AliasCropUnsupported { input });
         }
-        Ok(match &resolved.source {
+        Ok(match &chosen.source {
             RenderSource::Input(concrete) => (*concrete, Some(*concrete)),
             RenderSource::Scene(scene) => return Err(SceneRenderError::SceneSource(*scene)),
             RenderSource::PreviousFrame { .. } | RenderSource::Black { .. } => (input, None),
