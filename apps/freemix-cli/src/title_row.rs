@@ -193,6 +193,9 @@ pub fn remote_apply_row(
             value,
         });
     }
+    // The wire requires fields strictly ascending by id; a template lists
+    // them in its own order (here, by name).
+    updates.sort_by_key(|update| update.field);
 
     let require = if remote.on_air {
         TitleAirRequirement::OnAir
