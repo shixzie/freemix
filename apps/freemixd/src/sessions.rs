@@ -2318,12 +2318,14 @@ impl TitleRowSources {
         let mut text = format!("version={TITLE_ROW_SOURCES_VERSION}\n");
         for source in self.sources.values() {
             let interval_ms = u32::try_from(source.interval.as_millis()).unwrap_or(u32::MAX);
-            text.push_str(&format!(
+            use std::fmt::Write as _;
+            let _ = write!(
+                text,
                 "{}\t{interval_ms}\t{}\t{}\n",
                 source.input.get().get(),
                 u8::from(source.keep_live),
                 source.path
-            ));
+            );
         }
         let path = bundle_root.join(TITLE_ROW_SOURCES_FILE);
         let temporary = bundle_root.join(format!("{TITLE_ROW_SOURCES_FILE}.tmp"));
