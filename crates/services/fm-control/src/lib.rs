@@ -1058,6 +1058,12 @@ pub struct MediaListEnd {
 }
 
 impl<A: AuthorizationHook> ControlService<A> {
+    /// The committed show, for the daemon's native planes (IN-022).
+    #[must_use]
+    pub const fn show(&self) -> &ShowState {
+        self.engine.show()
+    }
+
     #[must_use]
     pub fn new(
         mut engine: Engine,

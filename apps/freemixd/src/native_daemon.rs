@@ -47,7 +47,7 @@ pub(crate) struct NativeDaemon {
     pub(crate) latest_frames: freemixd::native_media::NativeLatestFrames,
     /// The per-input video delays the video realizer currently applies
     /// (IN-022); the frame loop sends changes only.
-    pub(crate) applied_video_delays: Option<BTreeMap<InputId, u32>>,
+    pub(crate) applied_video_delays: Option<std::collections::BTreeMap<InputId, u32>>,
     /// A frame submitted to the audio and video realizers, waiting for the
     /// pass's peer work to finish before its consumers run.
     pub(crate) pending_frame: Option<PendingFrame>,
@@ -2773,8 +2773,8 @@ impl NativeDaemon {
         // A delay edit changes the projected show at the next engine
         // revision; the realizer gets the new map before it services the
         // frame (IN-022).
-        if let Some(projected) = self.projected_frame.as_ref() {
-            let delays = projected.show().input_video_delays();
+        {
+            let delays = control.show().input_video_delays();
             if self.applied_video_delays.as_ref() != Some(delays) {
                 self.video
                     .set_input_video_delays(
