@@ -12,7 +12,7 @@ use fm_model::{
     SimulatedVideo, SourceRef, SourceResolver,
 };
 use fm_types::{InputId, SceneId};
-use fm_video::{CropRect, FrameError, ImageFrame, Rgba8, scale_nearest, solid_color};
+use fm_video::{CropError, CropRect, FrameError, ImageFrame, Rgba8, scale_nearest, solid_color};
 
 #[derive(Debug)]
 pub(crate) enum SceneRenderError {
@@ -27,6 +27,7 @@ pub(crate) enum SceneRenderError {
         input: InputId,
     },
     Frame(FrameError),
+    Crop(CropError),
     CropBoundsOverflow {
         layer: usize,
     },
@@ -64,6 +65,7 @@ impl fmt::Display for SceneRenderError {
                 "layer {layer} cannot combine an alias crop with its own mask, key, or an outside crop"
             ),
             Self::Frame(error) => error.fmt(formatter),
+            Self::Crop(error) => error.fmt(formatter),
             Self::UnsupportedInput { input } => {
                 write!(
                     formatter,
