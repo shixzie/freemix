@@ -3224,17 +3224,19 @@ a mix feed draws black before any tick is committed, and scene layers resolve
 aliases and feeds while refusing an alias whose crop cannot be composed into
 the layer's own crop. The native plan follows alias chains to their concrete
 leaf or scene in every route and scene layer, including live scene refreshes;
-a feed input on Program or Preview shows the previous tick's committed bus
-picture, which the video realizer retains as a GPU copy and falls back to the
-plan's synthetic black scene before the first commit, while a feed scene layer
-draws the synthetic black scene; a Preview feed keeps the Preview composite
-running even when no display asks for it. A cropped alias is refused natively
-instead of drawing the uncropped source. Remaining gaps: scene-layer feeds do
-not read the retained pictures yet, cropped aliases and cropped alias layers
-are refused, monitor taps do not paint their own alias/feed resolution, there
-is no protocol or Studio authoring, feedback ignores the second input of an
-active transition, and aliases do not yet carry independent effects,
-shortcuts, or layer state. `IN-024` and `IN-025` remain planned.
+a feed input on Program or Preview, and a feed used as a scene layer, shows
+the previous tick's committed bus picture, which the video realizer retains as
+a GPU copy and falls back to the plan's synthetic black scene before the first
+commit; the fallback scene renders before its consumers and is released after
+their last use, and a Preview feed keeps the Preview composite running even
+when no display asks for it. A cropped alias is refused natively instead of
+drawing the uncropped source. Remaining gaps: cropped aliases and cropped
+alias layers are refused, a feed layer does not take a scene layer's own grade
+or crop (it draws the committed picture as-is), monitor taps do not paint
+their own alias/feed resolution, there is no protocol or Studio authoring,
+feedback ignores the second input of an active transition, and aliases do not
+yet carry independent effects, shortcuts, or layer state. `IN-024` and
+`IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
