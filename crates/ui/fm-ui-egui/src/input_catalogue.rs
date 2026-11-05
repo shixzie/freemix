@@ -616,8 +616,14 @@ impl AddInputDraft {
             | NewInputKind::Replay
             | NewInputKind::MixFeed => return None,
             NewInputKind::Alias => {
-                self.alias_target?;
-                return None;
+                if self.alias_target.is_some() {
+                    return None;
+                }
+                return Some(FieldProblem {
+                    field: Msg::AddInputAliasTarget,
+                    reason: Msg::AddInputAliasRequired.en(),
+                    prompt: true,
+                });
             }
             NewInputKind::Network => {
                 let problem = self.stream.checked().err()?;
