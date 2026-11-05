@@ -4045,6 +4045,47 @@ mod tests {
     use super::io::{discard_unstarted_lossy_records, write_peer};
     use super::*;
 
+    #[test]
+    fn title_row_sources_persist_and_resume() {
+        let root = std::env::temp_dir().join(format!(
+            "freemix-title-sources-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let input = fm_types::InputId::new(core::num::NonZeroU128::new(7).unwrap());
+        let mut sources = TitleRowSources::default();
+        let response = sources.configure(
+            fm_protocol::TitleRowSourceRequest {
+                protocol: CURRENT_PROTOCOL_VERSION,
+                request_id: "source-7".into(),
+                input: fm_protocol::WireInputId::from_domain(input),
+                operation: fm_protocol::TitleRowSourceOperation::Start {
+                    path: "data/scores.json".into(),
+                    interval_ms: 1_500,
+                    keep_live: true,
+                },
+            },
+            &root,
+        );
+        assert!(response.active, "{response:?}");
+        let document = std::fs::read_to_string(root.join("title-data-sources.v1")).unwrap();
+        assert!(
+            document.starts_with("version=1\n7\t1500\t1\tdata/scores.json"),
+            "{document}"
+        );
+
+        let restored = TitleRowSources::load(&root);
+        let source = restored.sources.get(&input).expect("the source resumes");
+        assert_eq!(source.path, "data/scores.json");
+        assert_eq!(source.interval, Duration::from_millis(1_500));
+        assert!(source.keep_live);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn identity() -> ServerIdentity {
         ServerIdentity {
             engine_id: "engine".to_owned(),

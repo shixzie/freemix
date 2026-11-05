@@ -5156,8 +5156,9 @@ the only one needed. Protocol 2.166 adds `title_row_source_request/response`:
 a daemon keeps a runtime, per-title scheduled source for a bundle-relative
 `.json`, `.csv`, `.xlsx`, or `.ods` file (250 ms to one hour), polls it through
 `fm-data`'s bounded file source, and applies each changed row as an authority
-`set_title_row`; `remote-title-source` starts, stops, or reports one. Remaining gaps: no URL source is fetched (files only), the source is runtime
-state and not persisted across a daemon restart; Studio's title editor has
+`set_title_row`; `remote-title-source` starts, stops, or reports one. Each source spec is stored in the bundle as
+`title-data-sources.v1` and restored (and its poller resumed) when the daemon
+restarts. Remaining gaps: no URL source is fetched (files only); Studio's title editor has
 a data-row section with a `Name=value` draft, a local preview against the
 replicated field names and values, a keep-failed-fields toggle, and one
 atomic `set_title_row` action; there
