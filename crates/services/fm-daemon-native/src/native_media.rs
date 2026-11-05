@@ -147,6 +147,12 @@ pub enum NativeAudioRoute {
 enum NativeSceneSource {
     Leaf(InputId),
     Scene(SceneId),
+    /// A Program or Preview feed's committed picture, falling back to the
+    /// plan's synthetic black scene before the first commit (IN-025).
+    Feed {
+        input: InputId,
+        feed: fm_model::MixFeed,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -169,6 +175,9 @@ struct NativeScenePlan {
     /// Every Scene input showing this scene, ascending.
     inputs: Vec<InputId>,
     sources: Vec<(SourceId, NativeSceneSource)>,
+    /// The synthetic black scene a feed layer falls back to, when the
+    /// project has feeds (IN-025).
+    black_scene: Option<SceneId>,
     /// The last engine model a refresh declined to follow, with the other
     /// scenes' drawn-layer count it was checked against: the same model
     /// under the same budget is not rebuilt (and rejected) again each frame.
@@ -437,6 +446,7 @@ impl NativeScenePlan {
     fn scene_dependencies(&self) -> impl Iterator<Item = SceneId> + '_ {
         self.sources.iter().filter_map(|(_, source)| match source {
             NativeSceneSource::Scene(scene) => Some(*scene),
+            NativeSceneSource::Feed { .. } => self.black_scene,
             NativeSceneSource::Leaf(_) => None,
         })
     }
@@ -792,7 +802,6 @@ impl NativeProjectPlan {
                 root,
                 &inputs,
                 &scene_models,
-                black_scene,
                 &mut visiting,
                 &mut visited,
                 &mut order,
@@ -859,8 +868,7 @@ impl NativeProjectPlan {
                     });
                 }
                 let token = if layer.enabled {
-                    let source =
-                        resolve_scene_source(layer.source, &inputs, &scene_models, black_scene)?;
+                    let source = resolve_scene_source(layer.source, &inputs, &scene_models)?;
                     if let Some(token) = tokens.get(&source) {
                         *token
                     } else {
@@ -940,6 +948,7 @@ impl NativeProjectPlan {
                     .into_iter()
                     .map(|(source, token)| (token, source))
                     .collect(),
+                black_scene,
                 rejected: None,
             });
         }
@@ -982,6 +991,7 @@ impl NativeProjectPlan {
                     .map(|(input, _)| *input)
                     .collect(),
                 sources: Vec::new(),
+                black_scene: None,
                 rejected: None,
             });
         }
@@ -1998,7 +2008,6 @@ fn resolve_scene_source(
     source: SourceRef,
     inputs: &BTreeMap<InputId, &fm_model::Input>,
     scenes: &BTreeMap<SceneId, &fm_model::Scene>,
-    black_scene: Option<SceneId>,
 ) -> Result<NativeSceneSource, NativeProjectPlanError> {
     match source {
         SourceRef::Input(input) => {
@@ -2010,9 +2019,7 @@ fn resolve_scene_source(
                     }
                     Ok(NativeSceneSource::Scene(*scene_id))
                 }
-                InputKind::MixFeed(_) => black_scene
-                    .map(NativeSceneSource::Scene)
-                    .ok_or(NativeProjectPlanError::MissingInput(input)),
+                InputKind::MixFeed(feed) => Ok(NativeSceneSource::Feed { input, feed: *feed }),
                 _ => Ok(NativeSceneSource::Leaf(model.id)),
             }
         }
@@ -2029,7 +2036,6 @@ fn visit_native_scene(
     scene: SceneId,
     inputs: &BTreeMap<InputId, &fm_model::Input>,
     scenes: &BTreeMap<SceneId, &fm_model::Scene>,
-    black_scene: Option<SceneId>,
     visiting: &mut BTreeSet<SceneId>,
     visited: &mut BTreeSet<SceneId>,
     order: &mut Vec<SceneId>,
@@ -2047,22 +2053,11 @@ fn visit_native_scene(
         .layers
         .iter()
         .filter(|layer| layer.enabled)
-        .map(|layer| resolve_scene_source(layer.source, inputs, scenes, black_scene))
+        .map(|layer| resolve_scene_source(layer.source, inputs, scenes))
         .collect::<Result<BTreeSet<_>, _>>()?;
     for dependency in dependencies {
         if let NativeSceneSource::Scene(dependency) = dependency {
-            if Some(dependency) == black_scene {
-                continue;
-            }
-            visit_native_scene(
-                dependency,
-                inputs,
-                scenes,
-                black_scene,
-                visiting,
-                visited,
-                order,
-            )?;
+            visit_native_scene(dependency, inputs, scenes, visiting, visited, order)?;
         }
     }
     visiting.remove(&scene);
