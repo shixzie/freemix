@@ -9798,7 +9798,7 @@ impl NativeMediaRuntime {
                     .map_err(NativeSourceRenderError::FadeToBlack)
             }
             FeedLayer::Mix { mix, .. } => {
-                self.render_mix_texture(
+                Box::pin(self.render_mix_texture(
                     registry,
                     graded,
                     project,
@@ -9807,7 +9807,7 @@ impl NativeMediaRuntime {
                     program,
                     mix,
                     seen,
-                )
+                ))
                 .await
             }
         }
