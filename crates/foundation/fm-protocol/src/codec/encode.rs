@@ -143,7 +143,15 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                     interval_ms,
                     keep_live,
                 } => {
-                    if path.is_empty() || path.len() > 512 || path.chars().any(char::is_control) {
+                    let relative = std::path::Path::new(path);
+                    if path.is_empty()
+                        || path.len() > 512
+                        || path.chars().any(char::is_control)
+                        || relative.is_absolute()
+                        || relative
+                            .components()
+                            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                    {
                         return Err(CodecError::InvalidField {
                             field: "path",
                             value: path.clone(),
