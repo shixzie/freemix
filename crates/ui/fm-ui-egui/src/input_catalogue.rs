@@ -483,6 +483,7 @@ pub(crate) fn add_input_intent(
 
 /// Add input dialog state.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // independent form options and focus flags
 pub(crate) struct AddInputDraft {
     pub(crate) kind: NewInputKind,
     pub(crate) name: String,
@@ -608,7 +609,7 @@ impl AddInputDraft {
             }
             NewInputKind::Replay => LiveInputSource::Replay,
             NewInputKind::Alias => {
-                let crop = self.alias_crop.then(|| fm_protocol::WireLayerCrop {
+                let crop = self.alias_crop.then_some(fm_protocol::WireLayerCrop {
                     x: self.alias_crop_x,
                     y: self.alias_crop_y,
                     width: self.alias_crop_width,
