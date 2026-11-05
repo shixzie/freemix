@@ -51,6 +51,80 @@ fn config() -> SecondaryMixConfig {
     SecondaryMixConfig::output_only(mix(2), "Clean", SecondaryMixSource::Input(input(2)))
 }
 
+fn preview_config() -> SecondaryMixConfig {
+    SecondaryMixConfig::preview_program(
+        mix(2),
+        "Clean",
+        SecondaryMixSource::Input(input(1)),
+        SecondaryMixSource::Input(input(2)),
+    )
+}
+
+fn mix_frame(frame: &fm_engine::FrameResult) -> &fm_switcher::MixFrame {
+    frame
+        .secondary_mixes
+        .mix(fm_switcher::MixId::new(2).unwrap())
+        .expect("mix 2 is configured")
+}
+
+#[test]
+fn a_cut_moves_a_live_secondary_mix() {
+    use fm_switcher::MixLayer;
+
+    let mut engine = engine();
+    assert!(execute(
+        &mut engine,
+        "set",
+        EngineCommand::SetSecondaryMix {
+            number: mix(2),
+            config: Some(Box::new(preview_config())),
+        },
+    ));
+    let first = engine.tick().unwrap();
+    assert_eq!(mix_frame(&first).primary, MixLayer::Input(input(1)));
+    assert_eq!(
+        mix_frame(&first).preview,
+        Some(MixLayer::Input(input(2)))
+    );
+
+    engine.cut_secondary_mix(mix(2)).unwrap();
+    let second = engine.tick().unwrap();
+    assert_eq!(mix_frame(&second).primary, MixLayer::Input(input(2)));
+    assert_eq!(
+        mix_frame(&second).preview,
+        Some(MixLayer::Input(input(1)))
+    );
+}
+
+#[test]
+fn a_timed_secondary_mix_transition_completes() {
+    use fm_switcher::{MixLayer, TransitionKind};
+
+    let mut engine = engine();
+    assert!(execute(
+        &mut engine,
+        "set",
+        EngineCommand::SetSecondaryMix {
+            number: mix(2),
+            config: Some(Box::new(preview_config())),
+        },
+    ));
+    engine.tick().unwrap();
+    engine
+        .transition_secondary_mix(mix(2), TransitionKind::Fade, 2)
+        .unwrap();
+
+    let mut program = MixLayer::Input(input(1));
+    for _ in 0..6 {
+        let frame = engine.tick().unwrap();
+        program = mix_frame(&frame).primary;
+        if program == MixLayer::Input(input(2)) {
+            break;
+        }
+    }
+    assert_eq!(program, MixLayer::Input(input(2)));
+}
+
 #[test]
 fn a_secondary_mix_is_a_project_edit_that_undoes_to_nothing() {
     assert_eq!(

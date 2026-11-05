@@ -229,6 +229,66 @@ fn a_frame_resolves_configured_secondary_mixes_and_follow_video_audio() {
 }
 
 #[test]
+fn a_logical_output_follows_a_live_secondary_mix() {
+    use fm_model::{MixNumber, SecondaryMixConfig, SecondaryMixSource};
+    use fm_switcher::{FeedLayer, OutputVideo};
+
+    let mut engine = engine();
+    let mix = MixNumber::new(2).unwrap();
+    assert!(execute(
+        &mut engine,
+        "set-live-mix",
+        EngineCommand::SetSecondaryMix {
+            number: mix,
+            config: Some(Box::new(SecondaryMixConfig::preview_program(
+                mix,
+                "Clean",
+                SecondaryMixSource::Input(input(1)),
+                SecondaryMixSource::Input(input(3)),
+            ))),
+        },
+    ));
+    assert!(execute(
+        &mut engine,
+        "set-live-output",
+        EngineCommand::SetLogicalOutput {
+            slot: slot(1),
+            config: Some(Box::new(LogicalOutputConfig {
+                slot: slot(1),
+                output: output(40),
+                source: LogicalOutputSource::Mix(2),
+                overlays: LogicalOverlayPolicy::All,
+                audio: LogicalAudioMap::FollowVideo,
+            })),
+        },
+    ));
+    let first = engine.tick().unwrap();
+    let plan = first
+        .logical_outputs
+        .output(fm_switcher::LogicalOutputSlot::new(1).unwrap())
+        .expect("enabled")
+        .as_ref()
+        .expect("resolved");
+    let OutputVideo::Background(background) = &plan.video else {
+        panic!("a background plan");
+    };
+    assert_eq!(background.primary, FeedLayer::Input(input(1)));
+
+    engine.cut_secondary_mix(mix).unwrap();
+    let second = engine.tick().unwrap();
+    let plan = second
+        .logical_outputs
+        .output(fm_switcher::LogicalOutputSlot::new(1).unwrap())
+        .expect("enabled")
+        .as_ref()
+        .expect("resolved");
+    let OutputVideo::Background(background) = &plan.video else {
+        panic!("a background plan");
+    };
+    assert_eq!(background.primary, FeedLayer::Input(input(3)));
+}
+
+#[test]
 fn an_unknown_output_is_refused_without_changing_the_show() {
     let mut engine = engine();
     let mut unknown = config();
