@@ -1160,6 +1160,27 @@ pub fn run(command: Command) -> AppResult<()> {
             keep_live,
             preview,
         } => crate::title_row::apply_row(&path, input, &row, row_number, keep_live, preview)?,
+        Command::RemoteTitleApplyRow {
+            address,
+            path,
+            input,
+            row,
+            row_number,
+            keep_live,
+            preview,
+            key,
+            expected_revision,
+        } => crate::title_row::remote_apply_row(
+            address,
+            &path,
+            input,
+            &row,
+            row_number,
+            keep_live,
+            preview,
+            key,
+            expected_revision,
+        )?,
         Command::TitleDesignImport {
             path,
             input,
@@ -7920,6 +7941,11 @@ Usage:
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli crawl-apply-table <show.freemix> <input-id> <table.(csv|tsv|xlsx|ods)> --field <column>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.(json|csv|tsv|xlsx|ods)> [--row <n>] [--keep-live] [--preview]
+  freemix-cli remote-title-apply-row <address> <show.freemix> <input-id> <row.(json|csv|tsv|xlsx|ods)> [--row <n>] [--keep-live] [--preview] [--key <idempotency-key>] [--expect <revision>]
+      Maps one row onto the template of the local project's title input and
+      applies the mapped fields to the daemon's live title. The title's
+      current field revision and on-air state come from the daemon, so the
+      update is an off-air prepare or a live on-air update as needed.
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...
   freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp:-10000..=10000>]
   freemix-cli audio-label <show.freemix> <input> <label (empty clears)> [--key <key>] [--expect <revision>]

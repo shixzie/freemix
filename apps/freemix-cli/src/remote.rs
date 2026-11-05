@@ -13,7 +13,7 @@ use fm_protocol::{
     HeartbeatMessage, MAX_LINE_BYTES, Role, RuntimeLifecycleEvent, ServerIdentity,
     StreamRealizedState, StreamStatusMessage, WireMessage, decode_line, encode_line,
 };
-use fm_types::ProjectId;
+use fm_types::{InputId, ProjectId};
 use fm_ui_model::{ManualTransitionStatus, ProjectState};
 
 type RemoteResult<T> = Result<T, Box<dyn Error>>;
@@ -35,6 +35,59 @@ const REEL_EXPORT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub fn status(address: SocketAddr) -> RemoteResult<()> {
     let remote = Remote::connect(address, Role::Viewer)?;
     remote.print_status()
+}
+
+/// One title's live state as `remote-title-apply-row` needs it (GX-005).
+pub(crate) struct RemoteTitle {
+    pub(crate) field_revision: u64,
+    pub(crate) fields: Vec<fm_protocol::TitleFieldStatus>,
+    pub(crate) phase: fm_protocol::TitlePhase,
+    pub(crate) on_air: bool,
+}
+
+/// Reads one title's phase and field revisions from the daemon at `address`.
+pub(crate) fn title_state(address: SocketAddr, input: InputId) -> RemoteResult<RemoteTitle> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    let title = state.title(input).ok_or_else(|| {
+        RemoteFailure(format!("title input {input} does not exist on the daemon"))
+    })?;
+    if !title.complete {
+        return Err(RemoteFailure(format!("title input {input} state is incomplete")).into());
+    }
+    Ok(RemoteTitle {
+        field_revision: title.field_revision,
+        fields: title.fields.clone(),
+        phase: title.phase,
+        on_air: remote_title_on_air(&state, input),
+    })
+}
+
+/// Whether the daemon would treat `input` as on air for a field edit: the
+/// desired state (Program, a manual-transition endpoint, or an overlay
+/// showing or fading) or the last realized state, which the engine also
+/// spans.
+fn remote_title_on_air(state: &ProjectState, input: InputId) -> bool {
+    if state.title_on_air(input) {
+        return true;
+    }
+    let switcher = state.switcher();
+    if switcher.realized.program == input {
+        return true;
+    }
+    if let ManualTransitionStatus::Active(transition) = switcher.realized_manual_transition
+        && (transition.from == input || transition.to == input)
+    {
+        return true;
+    }
+    state
+        .realized_overlays()
+        .iter()
+        .any(|overlay| overlay.source == Some(input) && (overlay.active || overlay.opacity > 0))
 }
 
 pub fn diagnostics(address: SocketAddr) -> RemoteResult<()> {

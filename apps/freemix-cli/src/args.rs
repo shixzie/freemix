@@ -1145,6 +1145,20 @@ pub enum Command {
         /// Print the per-field changes without saving anything.
         preview: bool,
     },
+    /// `remote-title-apply-row <address> <project> <input> <row>`: map one
+    /// row against the local template and apply it to the daemon's live
+    /// title (GX-005).
+    RemoteTitleApplyRow {
+        address: SocketAddr,
+        path: PathBuf,
+        input: u128,
+        row: PathBuf,
+        row_number: u64,
+        keep_live: bool,
+        preview: bool,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// `crawl-apply-table <project> <input> <table> --field <column>`:
     /// replace a stored crawl's item texts with one table column (GX-004).
     CrawlApplyTable {
@@ -2767,22 +2781,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         }
         "title-apply-row" => {
             let path = required_path(&mut arguments, "project path")?;
-            let input = number(&required(&mut arguments, "input")?, "input")?;
-            let row = required_path(&mut arguments, "row path")?;
-            let mut row_number = 1;
-            let mut keep_live = false;
-            let mut preview = false;
-            while let Some(option) = arguments.next() {
-                match option.as_str() {
-                    "--row" => {
-                        row_number =
-                            number(&required(&mut arguments, "row number")?, "row number")?;
-                    }
-                    "--keep-live" => keep_live = true,
-                    "--preview" => preview = true,
-                    _ => return Err(ArgsError::UnknownOption(option)),
-                }
-            }
+            let (input, row, row_number, keep_live, preview) = title_row_tail(&mut arguments)?;
             Ok(Command::TitleApplyRow {
                 path,
                 input,
@@ -2790,6 +2789,23 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 row_number,
                 keep_live,
                 preview,
+            })
+        }
+        "remote-title-apply-row" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let path = required_path(&mut arguments, "project path")?;
+            let (input, row, row_number, keep_live, preview) = title_row_tail(&mut arguments)?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::RemoteTitleApplyRow {
+                address,
+                path,
+                input,
+                row,
+                row_number,
+                keep_live,
+                preview,
+                key,
+                expected_revision,
             })
         }
         "audio-strip" => parse_audio_strip(arguments),
@@ -7217,6 +7233,29 @@ fn parse_input_freeze(
         },
         (None, None) => unreachable!("a freeze command names a target"),
     })
+}
+
+/// The `<input> <row> [--row <n>] [--keep-live] [--preview]` tail shared by
+/// the local and remote title-row commands (GX-005).
+fn title_row_tail(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<(u128, PathBuf, u64, bool, bool), ArgsError> {
+    let input = number(&required(arguments, "input")?, "input")?;
+    let row = required_path(arguments, "row path")?;
+    let mut row_number = 1;
+    let mut keep_live = false;
+    let mut preview = false;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--row" => {
+                row_number = number(&required(arguments, "row number")?, "row number")?;
+            }
+            "--keep-live" => keep_live = true,
+            "--preview" => preview = true,
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok((input, row, row_number, keep_live, preview))
 }
 
 /// A `replay-set` edit (OR-012): each `None` keeps the current value.
