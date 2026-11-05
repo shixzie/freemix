@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.164 / schema 109 (2026-11-05).
+(2026-10-19); items refreshed through protocol 2.165 / schema 109 (2026-11-05).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -5145,11 +5145,17 @@ from the daemon's snapshot, addresses the mapped values to the remote title's
 own field ids by name, drops values that already match, and sends one
 `set_title_fields` edit at the live base revision with `require=on_air` or
 `require=off_air` as the title demands; `--keep-live` omits failed fields and
-`--preview` reports the remote changes without sending. Remaining gaps:
-no daemon, protocol command, or UI preview drives a mapped row directly from
-a data source; the remote command still needs the local project for its
-template; there is no time-zone database or localization; image URIs are never
-fetched; and preview state is in memory only. `GX-005` remains planned. Preview state now
+`--preview` reports the remote changes without sending. Protocol 2.165 adds
+`set_title_row`: the client sends raw strings keyed by template field name,
+and the engine builds the field bindings from the title's own definitions,
+coerces them with `fm-data`, and applies the values atomically at the title's
+base revision and air requirement; `keep_live` skips failed fields.
+`freemix-cli remote-title-row <address> <input> <row>` reads a JSON, CSV/TSV,
+`.xlsx`, or `.ods` row and sends those raw values, so the daemon's template is
+the only one needed. Remaining gaps: no daemon or Studio periodically polls a
+file or URL and applies rows on a schedule; the UI has no row preview; there
+is no time-zone database or localization; image URIs are never fetched; and
+preview state is in memory only. `GX-005` remains planned. Preview state now
 round-trips through a strict, versioned text document (`PreviewSnapshot`) and
 persists per title input in `project.json` (schema 106), strictly parsed and
 canonicalized on load; `freemix-cli preview-check`, `preview-import`, and
