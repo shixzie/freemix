@@ -1568,14 +1568,30 @@ impl NativeProjectPlan {
                     continue;
                 }
                 let source = match layer.source {
-                    SourceRef::Input(input) => match self.video_routes.get(&input) {
-                        Some(NativeVideoRoute::Scene(scene)) => NativeSceneSource::Scene(*scene),
-                        Some(NativeVideoRoute::Leaf(leaf)) => NativeSceneSource::Leaf(*leaf),
-                        None => {
-                            tokens.push(None);
-                            continue;
+                    SourceRef::Input(input) => {
+                        if let Some(alias) = self.alias_crops.get(&input) {
+                            NativeSceneSource::Alias {
+                                input,
+                                source: alias.source,
+                                crop: alias.crop,
+                            }
+                        } else if let Some(feed) = self.feeds.get(&input) {
+                            NativeSceneSource::Feed { input, feed: *feed }
+                        } else {
+                            match self.video_routes.get(&input) {
+                                Some(NativeVideoRoute::Scene(scene)) => {
+                                    NativeSceneSource::Scene(*scene)
+                                }
+                                Some(NativeVideoRoute::Leaf(leaf)) => {
+                                    NativeSceneSource::Leaf(*leaf)
+                                }
+                                None => {
+                                    tokens.push(None);
+                                    continue;
+                                }
+                            }
                         }
-                    },
+                    }
                     SourceRef::Scene(scene) => NativeSceneSource::Scene(scene),
                 };
                 let known = plan
@@ -1586,14 +1602,17 @@ impl NativeProjectPlan {
                     .map(|(token, _)| *token);
                 let token = match (known, source) {
                     (Some(token), _) => Some(token),
-                    (None, NativeSceneSource::Leaf(_) | NativeSceneSource::Feed { .. }) => {
-                        next_source.checked_add(1).map(|after| {
-                            let token = SourceId::new(next_source);
-                            next_source = after;
-                            bound.push((token, source));
-                            token
-                        })
-                    }
+                    (
+                        None,
+                        NativeSceneSource::Leaf(_)
+                        | NativeSceneSource::Feed { .. }
+                        | NativeSceneSource::Alias { .. },
+                    ) => next_source.checked_add(1).map(|after| {
+                        let token = SourceId::new(next_source);
+                        next_source = after;
+                        bound.push((token, source));
+                        token
+                    }),
                     (None, NativeSceneSource::Scene(scene)) if Some(scene) == self.black_scene => {
                         next_source.checked_add(1).map(|after| {
                             let token = SourceId::new(next_source);
@@ -8219,7 +8238,13 @@ impl NativeMediaRuntime {
             .flat_map(|scene| scene.sources.iter())
             .filter_map(|(_, source)| match source {
                 NativeSceneSource::Leaf(input) => Some(*input),
-                NativeSceneSource::Scene(_) | NativeSceneSource::Feed { .. } => None,
+                NativeSceneSource::Alias {
+                    source: NativeAliasSource::Leaf(input),
+                    ..
+                } => Some(*input),
+                NativeSceneSource::Scene(_)
+                | NativeSceneSource::Feed { .. }
+                | NativeSceneSource::Alias { .. } => None,
             });
         let leaves = direct.chain(scene_leaves).collect::<BTreeSet<_>>();
         for leaf in leaves {
