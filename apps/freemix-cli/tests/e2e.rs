@@ -1830,6 +1830,7 @@ fn serve_layout_edit(
     serve_edit(listener, edit);
 }
 
+#[allow(clippy::too_many_lines)] // one field per snapshot member
 fn write_handshake_snapshot(
     writer: &mut TcpStream,
     engine: &EngineIdentity,
