@@ -3580,7 +3580,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 161));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 162));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -4540,7 +4540,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 161));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 162));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -4913,7 +4913,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 161));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 162));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {

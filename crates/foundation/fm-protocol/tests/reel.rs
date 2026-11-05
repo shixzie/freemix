@@ -461,7 +461,7 @@ fn export_state_tokens_are_stable() {
 
 #[test]
 fn protocol_2_109_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 161));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 162));
     assert_eq!(prefix(), "command\tprotocol=2.161\tid=a\tidempotency_key=k");
 }
 

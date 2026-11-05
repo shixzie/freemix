@@ -63,7 +63,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_protocol_is_2_90() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 161));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 162));
 }
 
 #[test]

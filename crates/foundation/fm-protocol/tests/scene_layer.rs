@@ -212,7 +212,7 @@ fn operations() -> Vec<SceneLayerOperation> {
 
 #[test]
 fn protocol_is_2_43() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 161));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 162));
 }
 
 #[test]

@@ -2900,6 +2900,53 @@ fn add_input(id: &str, input_value: u128, name: &str) -> CommandMessage {
     )
 }
 
+#[test]
+fn alias_and_feed_add_sources_map_to_the_engine() {
+    assert_eq!(
+        engine_input_source(&LiveInputSource::Alias {
+            target: WireInputId::from_domain(input(1)),
+            crop: Some(fm_protocol::WireLayerCrop {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            }),
+        }),
+        fm_engine::EngineInputSource::Alias {
+            target: input(1),
+            crop: Some(fm_model::CropRect::new(1, 2, 3, 4)),
+        }
+    );
+    assert_eq!(
+        engine_input_source(&LiveInputSource::Alias {
+            target: WireInputId::from_domain(input(2)),
+            crop: None,
+        }),
+        fm_engine::EngineInputSource::Alias {
+            target: input(2),
+            crop: None,
+        }
+    );
+    assert_eq!(
+        engine_input_source(&LiveInputSource::ProgramFeed),
+        fm_engine::EngineInputSource::MixFeed(fm_model::MixFeed::Program)
+    );
+    assert_eq!(
+        engine_input_source(&LiveInputSource::PreviewFeed),
+        fm_engine::EngineInputSource::MixFeed(fm_model::MixFeed::Preview)
+    );
+    assert_eq!(
+        wire_input_source(&fm_engine::EngineInputSource::Alias {
+            target: input(4),
+            crop: None,
+        }),
+        LiveInputSource::Alias {
+            target: WireInputId::from_domain(input(4)),
+            crop: None,
+        }
+    );
+}
+
 fn remove_input(id: &str, input_value: u128) -> CommandMessage {
     command(
         id,

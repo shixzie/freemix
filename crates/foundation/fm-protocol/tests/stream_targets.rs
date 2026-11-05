@@ -78,7 +78,7 @@ fn config() -> StreamTargetConfig {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 161));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 162));
     assert_eq!(MAX_STREAM_TARGETS, 5);
     assert_eq!(
         StreamReconnect::DEFAULT,
