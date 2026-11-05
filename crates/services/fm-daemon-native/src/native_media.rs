@@ -9699,37 +9699,95 @@ impl NativeMediaRuntime {
             if !execution.required.contains(&scene.id) {
                 continue;
             }
+            // Cropped aliases are composed once per source, then bound to
+            // every layer token that reads them (IN-024).
+            let mut cropped: BTreeMap<usize, NativeTexture> = BTreeMap::new();
+            for (index, (_, source)) in scene.sources.iter().enumerate() {
+                let NativeSceneSource::Alias {
+                    input,
+                    source,
+                    crop,
+                } = source
+                else {
+                    continue;
+                };
+                let target = match source {
+                    NativeAliasSource::Leaf(leaf) => graded
+                        .get(leaf)
+                        .map_or_else(
+                            || {
+                                registry_frame(registry, *leaf, frame.deadline)
+                                    .map(NativeWorkingFrame::texture)
+                            },
+                            Ok,
+                        )
+                        .map_err(|_| NativeSourceRenderError::MissingSource { input: *input })?,
+                    NativeAliasSource::Scene(dependency) => {
+                        &outputs
+                            .get(dependency)
+                            .ok_or(NativeSourceRenderError::MissingSource { input: *input })?
+                            .1
+                    }
+                    NativeAliasSource::Feed(feed) => {
+                        if let Some(texture) = feeds.get(*feed) {
+                            texture
+                        } else {
+                            let black = scene
+                                .black_scene
+                                .ok_or(NativeSourceRenderError::MissingSource { input: *input })?;
+                            &outputs
+                                .get(&black)
+                                .ok_or(NativeSourceRenderError::MissingSource { input: *input })?
+                                .1
+                        }
+                    }
+                };
+                let texture = self
+                    .crop_project_texture(project.dimensions, *crop, target)
+                    .await?;
+                cropped.insert(index, texture);
+            }
             let sources = scene
                 .sources
                 .iter()
-                .map(|(token, source)| {
-                    let texture = match source {
-                        NativeSceneSource::Leaf(input) => {
-                            leaf_texture(registry, graded, *input, frame.deadline)?
-                        }
-                        NativeSceneSource::Scene(dependency) => {
-                            &outputs
-                                .get(dependency)
-                                .ok_or(NativeSourceRenderError::MissingSource {
-                                    input: frame.program.primary,
-                                })?
-                                .1
-                        }
-                        NativeSceneSource::Feed { input, feed } => {
-                            if let Some(texture) = graded.get(input) {
-                                texture
-                            } else if let Some(texture) = feeds.get(*feed) {
-                                texture
-                            } else {
-                                let black = scene.black_scene.ok_or(
-                                    NativeSourceRenderError::MissingSource { input: *input },
-                                )?;
+                .enumerate()
+                .map(|(index, (token, source))| {
+                    let texture = if let Some(texture) = cropped.get(&index) {
+                        texture
+                    } else {
+                        match source {
+                            NativeSceneSource::Leaf(input) => {
+                                leaf_texture(registry, graded, *input, frame.deadline)?
+                            }
+                            NativeSceneSource::Scene(dependency) => {
                                 &outputs
-                                    .get(&black)
+                                    .get(dependency)
                                     .ok_or(NativeSourceRenderError::MissingSource {
-                                        input: *input,
+                                        input: frame.program.primary,
                                     })?
                                     .1
+                            }
+                            NativeSceneSource::Feed { input, feed } => {
+                                if let Some(texture) = graded.get(input) {
+                                    texture
+                                } else if let Some(texture) = feeds.get(*feed) {
+                                    texture
+                                } else {
+                                    let black = scene.black_scene.ok_or(
+                                        NativeSourceRenderError::MissingSource { input: *input },
+                                    )?;
+                                    &outputs
+                                        .get(&black)
+                                        .ok_or(NativeSourceRenderError::MissingSource {
+                                            input: *input,
+                                        })?
+                                        .1
+                                }
+                            }
+                            NativeSceneSource::Alias { .. } => {
+                                return Err(NativeSourceRenderError::MissingSource {
+                                    input: frame.program.primary,
+                                });
                             }
                         }
                     };
@@ -10991,6 +11049,43 @@ impl NativeMediaRuntime {
         texture: &NativeTexture,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         block_on(self.copy_feed_texture(dimensions, texture))
+    }
+
+    async fn crop_project_texture(
+        &self,
+        dimensions: VideoDimensions,
+        crop: [u32; 4],
+        texture: &NativeTexture,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        let mut scene = CompositorScene::new(
+            dimensions.width(),
+            dimensions.height(),
+            CompositorRgba8::new(0, 0, 0, u8::MAX),
+        )
+        .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        scene.push_layer(
+            SourceLayer::new(
+                SourceId::new(0),
+                0,
+                Transform::new(
+                    0,
+                    0,
+                    dimensions.width(),
+                    dimensions.height(),
+                    CompositorRotation::Deg0,
+                ),
+            )
+            .with_crop(fm_compositor::CropRect::new(
+                crop[0], crop[1], crop[2], crop[3],
+            )),
+        );
+        let (composition, _) = compile_scene(&scene, OutputTarget::Program)
+            .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        let sources = [NativeSourceFrame::new(SourceId::new(0), texture)];
+        self.composition_renderer
+            .render(&self.context, &composition, &sources)
+            .await
+            .map_err(NativeSourceRenderError::SceneCompositor)
     }
 
     async fn copy_feed_texture(
