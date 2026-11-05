@@ -3180,11 +3180,14 @@ the daemon writes a lossless PNG into the project bundle's `assets/` as
 bundle-relative path; `remote-frozen-still <address> <input>` sends the
 request and prints them. A native daemon reads the GPU-latched source texture
 back through the sRGB output transform, so the still matches the Program
-picture; a simulated daemon renders the input's current simulated picture. Remaining gaps: there is no
-dedicated freeze button or always-visible badge beyond the menu and hover
-note, no Studio capture action, no audio freeze/alignment, timestamps are
-still bare ticks rather than `fm-frame` timing types, and stills carry no
-color metadata or compression. `SW-016` remains planned.
+picture; a simulated daemon renders the input's current simulated picture.
+Studio's input-bank menu offers Capture still on a frozen tile, sends the
+2.164 request through the session, and shows the returned asset URI (or the
+daemon's refusal) under the action. Remaining gaps: there is no dedicated
+freeze button or always-visible badge beyond the menu and hover note, no
+audio freeze/alignment, timestamps are still bare ticks rather than
+`fm-frame` timing types, and stills carry no color metadata or compression.
+`SW-016` remains planned.
 
 Current implementation boundary for video delay (`IN-022`): `fm-video`
 provides a `VideoDelayLine` timed purely by media timestamps that presents the
