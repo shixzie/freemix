@@ -279,7 +279,7 @@ pub use script::{
 };
 pub use secondary_mix::{
     MAX_WIRE_MIX_NUMBER, MAX_WIRE_SECONDARY_MIXES, WireMixNumber, WireSecondaryMixConfig,
-    WireSecondaryMixMode, WireSecondaryMixSource,
+    WireSecondaryMixMode, WireSecondaryMixSource, WireSecondaryMixState,
 };
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,

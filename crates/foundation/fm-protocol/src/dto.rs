@@ -2691,6 +2691,9 @@ pub struct SnapshotMessage {
     pub logical_outputs: Vec<crate::WireLogicalOutputConfig>,
     /// Every configured secondary mix, ascending by number (Protocol 2.158).
     pub secondary_mixes: Vec<crate::WireSecondaryMixConfig>,
+    /// Every configured secondary mix's live Program/Preview and transition
+    /// progress, ascending by number (Protocol 2.159).
+    pub secondary_mix_states: Vec<crate::WireSecondaryMixState>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<crate::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).

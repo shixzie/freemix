@@ -92,3 +92,16 @@ impl WireSecondaryMixConfig {
         }
     }
 }
+
+/// One secondary mix's live Program/Preview and transition progress
+/// (Protocol 2.159).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WireSecondaryMixState {
+    pub number: WireMixNumber,
+    /// The live Program layer; `None` is black.
+    pub program: Option<WireSecondaryMixSource>,
+    /// The live Preview layer; `None` when the mix has no Preview or is black.
+    pub preview: Option<WireSecondaryMixSource>,
+    pub numerator: u32,
+    pub denominator: u32,
+}

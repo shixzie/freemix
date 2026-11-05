@@ -511,6 +511,9 @@ pub struct ProjectSnapshot {
     pub logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured secondary mix, ascending by number (Protocol 2.158).
     pub secondary_mixes: Vec<fm_protocol::WireSecondaryMixConfig>,
+    /// Every configured mix's live Program/Preview and transition progress
+    /// (Protocol 2.159).
+    pub secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -650,6 +653,7 @@ impl ProjectSnapshot {
             fade_to_black_curve: message.fade_to_black_curve,
             logical_outputs: message.logical_outputs,
             secondary_mixes: message.secondary_mixes,
+            secondary_mix_states: message.secondary_mix_states,
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
@@ -1366,6 +1370,8 @@ pub struct ProjectState {
     logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured secondary mix (Protocol 2.158).
     secondary_mixes: Vec<fm_protocol::WireSecondaryMixConfig>,
+    /// Every configured mix's live Program/Preview and transition progress.
+    secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
     /// Every configured display-output slot (Protocol 2.42).
     display_outputs: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::DisplayOutputConfig>,
     /// Each slot's runtime state as last reported (Protocol 2.42); kept for
@@ -2007,6 +2013,9 @@ pub struct ClientView {
     pub logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured secondary mix, ascending by number (Protocol 2.158).
     pub secondary_mixes: Vec<fm_protocol::WireSecondaryMixConfig>,
+    /// Every configured mix's live Program/Preview and transition progress
+    /// (Protocol 2.159).
+    pub secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -3194,6 +3203,7 @@ impl ClientModel {
             fade_to_black_curve: state.fade_to_black_curve,
             logical_outputs: state.logical_outputs.clone(),
             secondary_mixes: state.secondary_mixes.clone(),
+            secondary_mix_states: state.secondary_mix_states.clone(),
             display_outputs: state
                 .display_outputs
                 .iter()
@@ -3501,6 +3511,7 @@ impl ClientModel {
             fade_to_black_curve: snapshot.fade_to_black_curve,
             logical_outputs: snapshot.logical_outputs,
             secondary_mixes: snapshot.secondary_mixes,
+            secondary_mix_states: snapshot.secondary_mix_states,
             display_outputs: snapshot
                 .display_outputs
                 .into_iter()

@@ -2142,6 +2142,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         secondary_mixes: super::secondary_mix::decode_entries(
             &fields.required("secondary_mixes")?,
         )?,
+        secondary_mix_states: super::secondary_mix::decode_states(
+            &fields.required("secondary_mix_states")?,
+        )?,
         display_outputs: super::display_output::decode_entries(
             &fields.required("display_outputs")?,
         )?,

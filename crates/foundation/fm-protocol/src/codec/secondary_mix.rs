@@ -9,7 +9,7 @@
 
 use crate::{
     CodecError, MAX_WIRE_MIX_NUMBER, MAX_WIRE_SECONDARY_MIXES, WireMixNumber,
-    WireSecondaryMixConfig, WireSecondaryMixMode, WireSecondaryMixSource,
+    WireSecondaryMixConfig, WireSecondaryMixMode, WireSecondaryMixSource, WireSecondaryMixState,
 };
 
 use super::media::{FieldSource, Push};
@@ -232,6 +232,137 @@ pub(super) fn decode_entries(value: &str) -> Result<Vec<WireSecondaryMixConfig>,
         .collect()
 }
 
+/// Encodes a snapshot's `secondary_mix_states`.
+pub(super) fn encode_states(states: &[WireSecondaryMixState]) -> Result<String, CodecError> {
+    if states.len() > MAX_WIRE_SECONDARY_MIXES {
+        return Err(CodecError::TooManyItems("secondary_mix_states"));
+    }
+    let mut previous = None;
+    states
+        .iter()
+        .map(|state| {
+            if previous.is_some_and(|previous| previous >= state.number)
+                || state.number.is_main()
+                || state.denominator == 0
+                || state.numerator > state.denominator
+            {
+                return Err(invalid("secondary_mix_states", state.number.to_string()));
+            }
+            previous = Some(state.number);
+            let program = match state.program {
+                Some(source) => escape_bounded(&source_token(source))?,
+                None => "-".to_owned(),
+            };
+            let preview = match state.preview {
+                Some(source) => escape_bounded(&source_token(source))?,
+                None => "-".to_owned(),
+            };
+            Ok(format!(
+                "{}~{}~{}~{}~{}",
+                state.number, program, preview, state.numerator, state.denominator
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|states| states.join(","))
+}
+
+/// Decodes a snapshot's `secondary_mix_states`.
+pub(super) fn decode_states(value: &str) -> Result<Vec<WireSecondaryMixState>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries = value.split(',').collect::<Vec<_>>();
+    if entries.len() > MAX_WIRE_SECONDARY_MIXES {
+        return Err(CodecError::TooManyItems("secondary_mix_states"));
+    }
+    let mut previous = None;
+    entries
+        .into_iter()
+        .map(|entry| {
+            let [number, program, preview, numerator, denominator] =
+                entry.split('~').collect::<Vec<_>>()[..]
+            else {
+                return Err(invalid("secondary_mix_states", entry));
+            };
+            let number = parse_number("secondary_mix_states", number)?;
+            if previous.is_some_and(|previous| previous >= number) || number.is_main() {
+                return Err(invalid("secondary_mix_states", entry));
+            }
+            previous = Some(number);
+            let program = if program == "-" {
+                None
+            } else {
+                Some(parse_source("secondary_mix_states", &unescape(program)?)?)
+            };
+            let preview = if preview == "-" {
+                None
+            } else {
+                Some(parse_source("secondary_mix_states", &unescape(preview)?)?)
+            };
+            let numerator = parse_canonical_u64(numerator)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| invalid("secondary_mix_states", entry))?;
+            let denominator = parse_canonical_u64(denominator)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|denominator| *denominator != 0)
+                .ok_or_else(|| invalid("secondary_mix_states", entry))?;
+            if numerator > denominator {
+                return Err(invalid("secondary_mix_states", entry));
+            }
+            Ok(WireSecondaryMixState {
+                number,
+                program,
+                preview,
+                numerator,
+                denominator,
+            })
+        })
+        .collect()
+}
+
 const _: () = {
     let _ = MAX_WIRE_MIX_NUMBER;
 };
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroU128;
+
+    use super::*;
+
+    fn input(value: u128) -> crate::WireInputId {
+        crate::WireInputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    #[test]
+    fn live_mix_states_round_trip_and_are_strict() {
+        let states = vec![
+            WireSecondaryMixState {
+                number: WireMixNumber::new(2).unwrap(),
+                program: Some(WireSecondaryMixSource::Input(input(3))),
+                preview: Some(WireSecondaryMixSource::Mix(WireMixNumber::MAIN)),
+                numerator: 1,
+                denominator: 2,
+            },
+            WireSecondaryMixState {
+                number: WireMixNumber::new(3).unwrap(),
+                program: Some(WireSecondaryMixSource::Mix(WireMixNumber::new(2).unwrap())),
+                preview: None,
+                numerator: 0,
+                denominator: 1,
+            },
+        ];
+        let encoded = encode_states(&states).unwrap();
+        assert_eq!(decode_states(&encoded).unwrap(), states);
+
+        for broken in [
+            "2~input:3~mix:1~2~1",
+            "2~input:3~mix:1~0~0",
+            "1~input:3~-~0~1",
+            "2~input:3~mix:1~0~1~extra",
+            "2~input:0~-~0~1",
+        ] {
+            assert!(decode_states(broken).is_err(), "accepted {broken}");
+        }
+    }
+}

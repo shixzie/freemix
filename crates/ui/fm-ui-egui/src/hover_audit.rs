@@ -291,6 +291,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::Ease,
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
+        secondary_mix_states: Vec::new(),
         display_outputs: display_output_entries(),
         display_output_states: display_output_states(),
         // IN-015: a live stream and a reconnecting one, so the tile badges

@@ -581,6 +581,7 @@ fn snapshot(screen_capture_inputs: Vec<ScreenCaptureEntry>) -> WireMessage {
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
+        secondary_mix_states: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),

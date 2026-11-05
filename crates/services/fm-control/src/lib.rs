@@ -5297,6 +5297,7 @@ fn snapshot_record(
         fade_to_black_curve: engine.show().desired_switcher().fade_to_black_curve(),
         logical_outputs: logical_output::wire_entries(engine.show()),
         secondary_mixes: secondary_mix::wire_entries(engine.show()),
+        secondary_mix_states: secondary_mix::wire_states(engine.secondary_mix_frame()),
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),
         network_streams: network_stream::wire_entries(engine.show(), network_states),

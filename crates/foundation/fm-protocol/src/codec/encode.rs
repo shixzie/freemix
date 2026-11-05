@@ -2088,6 +2088,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         super::secondary_mix::encode_entries(&message.secondary_mixes)?,
     )?;
     record.field_string(
+        "secondary_mix_states",
+        super::secondary_mix::encode_states(&message.secondary_mix_states)?,
+    )?;
+    record.field_string(
         "display_outputs",
         super::display_output::encode_entries(&message.display_outputs)?,
     )?;

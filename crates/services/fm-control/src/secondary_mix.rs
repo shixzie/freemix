@@ -3,7 +3,7 @@
 use fm_engine::{EngineCommand, EngineEvent, ShowState};
 use fm_protocol::{
     CommandPayload, EventPayload, WireMixNumber, WireSecondaryMixConfig, WireSecondaryMixMode,
-    WireSecondaryMixSource,
+    WireSecondaryMixSource, WireSecondaryMixState,
 };
 
 /// The engine command of a secondary-mix payload.
@@ -65,6 +65,31 @@ pub(super) fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayloa
 /// Every configured secondary mix in number order.
 pub(super) fn wire_entries(show: &ShowState) -> Vec<WireSecondaryMixConfig> {
     show.secondary_mixes().map(wire_config).collect()
+}
+
+/// Every configured mix's live Program/Preview and transition progress.
+pub(super) fn wire_states(frame: &fm_switcher::MixBankFrame) -> Vec<WireSecondaryMixState> {
+    frame
+        .mixes
+        .iter()
+        .map(|mix| WireSecondaryMixState {
+            number: wire_number(mix.mix),
+            program: wire_layer(mix.primary),
+            preview: mix.preview.map(wire_layer),
+            numerator: mix.mix_numerator,
+            denominator: mix.mix_denominator,
+        })
+        .collect()
+}
+
+fn wire_layer(layer: fm_switcher::MixLayer) -> Option<WireSecondaryMixSource> {
+    match layer {
+        fm_switcher::MixLayer::Input(input) => Some(WireSecondaryMixSource::Input(
+            fm_protocol::WireInputId::from_domain(input),
+        )),
+        fm_switcher::MixLayer::Mix(number) => Some(WireSecondaryMixSource::Mix(wire_number(number))),
+        fm_switcher::MixLayer::Black => None,
+    }
 }
 
 fn model_number(number: WireMixNumber) -> fm_model::MixNumber {
