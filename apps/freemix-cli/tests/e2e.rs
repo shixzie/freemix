@@ -2063,7 +2063,9 @@ fn write_handshake_snapshot(
                 animation_revision: 0,
                 clip: Box::new(
                     fm_protocol::WireTitleClip::from_tracks(
-                        fm_animation::Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+                        fm_model::fm_animation::Timebase::new(
+                            fm_types::FrameRate::new(30, 1).unwrap(),
+                        ),
                         0,
                         0,
                         Vec::new(),
