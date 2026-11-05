@@ -5999,7 +5999,6 @@ fn apply_runtime(
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetInputVideoDelay { .. }
-        | EngineCommand::SetInputFreeze { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
