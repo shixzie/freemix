@@ -2054,7 +2054,36 @@ fn write_handshake_snapshot(
         }),
     );
     for state in SNAPSHOT_TITLE_STATES.with(|cell| cell.borrow().clone()) {
-        write_message(writer, &WireMessage::TitleState(state));
+        write_message(writer, &WireMessage::TitleState(state.clone()));
+        write_message(
+            writer,
+            &WireMessage::TitleAnimationState(fm_protocol::TitleAnimationStateMessage {
+                revision: state.revision,
+                input: state.input,
+                animation_revision: 0,
+                clip: Box::new(
+                    fm_protocol::WireTitleClip::from_tracks(
+                        fm_animation::Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+                        0,
+                        0,
+                        Vec::new(),
+                    )
+                    .unwrap(),
+                ),
+            }),
+        );
+        write_message(
+            writer,
+            &WireMessage::TitleLayoutState(fm_protocol::TitleLayoutStateMessage {
+                revision: state.revision,
+                input: state.input,
+                layout: Box::new(fm_protocol::WireTitleLayout {
+                    width: 1920,
+                    height: 1080,
+                    elements: Vec::new(),
+                }),
+            }),
+        );
     }
     for (scene, layout) in SNAPSHOT_LAYOUTS.with(|cell| cell.borrow().clone()) {
         write_message(
