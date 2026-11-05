@@ -1183,7 +1183,6 @@ impl Project {
             outputs: Vec::new(),
             logical_outputs: Vec::new(),
             secondary_mixes: Vec::new(),
-            secondary_mix_states: Vec::new(),
             stream_targets: Vec::new(),
             main_mix: None,
             recording_desired: [false; RECORDER_SLOT_COUNT],
