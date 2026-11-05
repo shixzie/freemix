@@ -1727,6 +1727,37 @@ pub fn run(command: Command) -> AppResult<()> {
             expected_revision,
         )?,
         Command::RemoteDisplayOutputList { address } => remote::display_outputs(address)?,
+        Command::InputVideoDelay {
+            path,
+            input,
+            frames,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetInputVideoDelay {
+                input: input_id(input)?,
+                frames,
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteInputVideoDelay {
+            address,
+            input,
+            frames,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetInputVideoDelay {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                frames,
+            },
+            key,
+            expected_revision,
+        )?,
         Command::Replay { path } => {
             let project = inspect_engine(&path)?;
             let settings = project.engine.show().replay();

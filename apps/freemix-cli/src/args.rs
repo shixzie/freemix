@@ -1432,6 +1432,21 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Sets one input's video delay in frames (IN-022).
+    InputVideoDelay {
+        path: PathBuf,
+        input: u128,
+        frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteInputVideoDelay {
+        address: SocketAddr,
+        input: u128,
+        frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Lists the configured display-output slots and their state.
     DisplayOutputList {
         path: PathBuf,
@@ -2840,6 +2855,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-display-output-clear"
         | "remote-display-output-list"
         | "remote-display-inventory") => parse_display_output(display, arguments),
+        delay @ ("input-video-delay" | "remote-input-video-delay") => {
+            parse_input_video_delay(delay, arguments)
+        }
         live @ ("live-lan" | "remote-live-lan" | "live-lan-set" | "remote-live-lan-set") => {
             parse_live_lan(live, arguments)
         }
@@ -7009,6 +7027,43 @@ fn parse_display_output(
             }
         }
         _ => return Err(ArgsError::UnknownCommand(command.to_owned())),
+    })
+}
+
+/// `input-video-delay` and `remote-input-video-delay` (IN-022, Protocol
+/// 2.160).
+fn parse_input_video_delay(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let frames = number(&required(&mut arguments, "frames")?, "frames")?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::InputVideoDelay {
+            path,
+            input,
+            frames,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteInputVideoDelay {
+            address,
+            input,
+            frames,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("an input-video-delay command names a target"),
     })
 }
 
