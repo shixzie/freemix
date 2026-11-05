@@ -20,8 +20,8 @@ pub(crate) enum SceneRenderError {
     UnknownInput(InputId),
     SceneSource(SceneId),
     Resolve(ResolveError),
-    AliasCropUnsupported {
-        input: InputId,
+    AliasCropComposition {
+        layer: usize,
     },
     UnsupportedInput {
         input: InputId,
@@ -59,9 +59,9 @@ impl fmt::Display for SceneRenderError {
             Self::UnknownInput(input) => write!(formatter, "input {input} does not exist"),
             Self::SceneSource(scene) => write!(formatter, "scene source {scene} is unsupported"),
             Self::Resolve(error) => error.fmt(formatter),
-            Self::AliasCropUnsupported { input } => write!(
+            Self::AliasCropComposition { layer } => write!(
                 formatter,
-                "alias input {input} has a crop, which scene rendering does not support"
+                "layer {layer} cannot combine an alias crop with its own mask, key, or an outside crop"
             ),
             Self::Frame(error) => error.fmt(formatter),
             Self::UnsupportedInput { input } => {
@@ -173,25 +173,28 @@ pub(crate) fn render_scene(
         None => None,
     };
     // Resolves one layer source through its alias chain: a concrete leaf
-    // draws normally, a feed draws black before its first commit, and an
-    // alias's own crop is not composable into a scene layer yet (IN-024).
-    let resolve_layer = |input: InputId| -> Result<(InputId, Option<InputId>), SceneRenderError> {
+    // draws normally, a feed draws black before its first commit, and a
+    // cropped alias carries the project-pixel crop for this layer (IN-024).
+    let resolve_layer = |input: InputId| -> Result<
+        (InputId, Option<InputId>, Option<fm_model::CropRect>),
+        SceneRenderError,
+    > {
         let Some(context) = context.as_ref() else {
             return Err(SceneRenderError::UnknownInput(input));
         };
         let chosen = context
             .resolve_input(input)
             .map_err(SceneRenderError::Resolve)?;
-        if chosen.crop.is_some() {
-            return Err(SceneRenderError::AliasCropUnsupported { input });
-        }
         Ok(match &chosen.source {
-            RenderSource::Input(concrete) => (*concrete, Some(*concrete)),
+            RenderSource::Input(concrete) => (*concrete, Some(*concrete), chosen.crop),
             RenderSource::Scene(scene) => return Err(SceneRenderError::SceneSource(*scene)),
-            RenderSource::PreviousFrame { .. } | RenderSource::Black { .. } => (input, None),
+            RenderSource::PreviousFrame { .. } | RenderSource::Black { .. } => {
+                (input, None, chosen.crop)
+            }
         })
     };
-    let mut sources: BTreeMap<InputId, (SourceId, Option<InputId>)> = BTreeMap::new();
+    let mut sources: BTreeMap<InputId, (SourceId, Option<InputId>, Option<fm_model::CropRect>)> =
+        BTreeMap::new();
 
     for (index, layer) in model.layers.iter().enumerate() {
         if !layer.enabled {
@@ -204,7 +207,7 @@ pub(crate) fn render_scene(
             }));
         }
         let input = input_for_layer(project, layer.source)?;
-        let (source_input, rendered_input) = resolve_layer(input.id)?;
+        let (source_input, rendered_input, alias_crop) = resolve_layer(input.id)?;
         if let Some(render) = rendered_input {
             validate_input(
                 project
@@ -221,12 +224,31 @@ pub(crate) fn render_scene(
             pipeline.width(),
             pipeline.height(),
         )?;
-        let token = scene_source_token(&mut sources, source_input, rendered_input);
-        // A key/fill key's input (SW-008) renders like a layer source.
+        // A cropped alias pre-crops the rendered picture; the layer's own
+        // crop is translated into that smaller picture, while a mask or a
+        // key would need its own translation and is refused.
+        let mut draw_layer = layer.clone();
+        if let Some(alias_crop) = alias_crop {
+            if layer.mask.is_some() || layer.key.is_some() {
+                return Err(SceneRenderError::AliasCropComposition { layer: index });
+            }
+            if let Some(layer_crop) = layer.crop {
+                let Some(translated) = translate_layer_crop(layer_crop, alias_crop) else {
+                    return Err(SceneRenderError::AliasCropComposition { layer: index });
+                };
+                draw_layer.crop = Some(translated);
+            }
+        }
+        let token = scene_source_token(&mut sources, source_input, rendered_input, alias_crop);
+        // A key/fill key's input (SW-008) renders like a layer source; a
+        // cropped alias key is refused because its sampling space would move.
         let key_token = match layer.key.and_then(fm_model::LayerKey::key_input) {
             Some(key_input) => {
                 let key_input = input_for_layer(project, SourceRef::Input(key_input))?;
-                let (key_source, key_render) = resolve_layer(key_input.id)?;
+                let (key_source, key_render, key_crop) = resolve_layer(key_input.id)?;
+                if key_crop.is_some() {
+                    return Err(SceneRenderError::AliasCropComposition { layer: index });
+                }
                 if let Some(render) = key_render {
                     validate_input(
                         project
@@ -236,11 +258,16 @@ pub(crate) fn render_scene(
                             .ok_or(SceneRenderError::UnknownInput(render))?,
                     )?;
                 }
-                Some(scene_source_token(&mut sources, key_source, key_render))
+                Some(scene_source_token(
+                    &mut sources,
+                    key_source,
+                    key_render,
+                    key_crop,
+                ))
             }
             None => None,
         };
-        let mut source_layer = compositor_layer(token, layer, key_token);
+        let mut source_layer = compositor_layer(token, &draw_layer, key_token);
         if let Some(grade) = grades.input(rendered_input.unwrap_or(source_input)) {
             source_layer = source_layer.with_grade(grade.clone());
         }
@@ -254,20 +281,29 @@ pub(crate) fn render_scene(
         compile_scene(&composition, OutputTarget::Program).map_err(SceneRenderError::Plan)?;
     let frames = sources
         .into_iter()
-        .map(|(_, (source, rendered))| match rendered {
-            Some(input) => pipeline
-                .render_source(input, frame_number)
-                .map(|frame| (source, frame))
-                .map_err(SceneRenderError::Source),
-            None => solid_color(
-                pipeline.width(),
-                pipeline.height(),
-                Rgba8::new(0, 0, 0, u8::MAX),
-            )
-            .map(|frame| (source, frame))
-            .map_err(SceneRenderError::Frame),
+        .map(|(_, (source, rendered, crop))| {
+            let frame = match rendered {
+                Some(input) => pipeline
+                    .render_source(input, frame_number)
+                    .map_err(SceneRenderError::Source)?,
+                None => solid_color(
+                    pipeline.width(),
+                    pipeline.height(),
+                    Rgba8::new(0, 0, 0, u8::MAX),
+                )
+                .map_err(SceneRenderError::Frame)?,
+            };
+            let frame = match crop {
+                Some(crop) => fm_video::crop(
+                    &frame,
+                    CropRect::new(crop.x, crop.y, crop.width, crop.height),
+                )
+                .map_err(SceneRenderError::Crop)?,
+                None => frame,
+            };
+            Ok((source, frame))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, SceneRenderError>>()?;
     let bindings = frames
         .iter()
         .map(|(source, frame)| CpuSourceFrame::new(*source, frame))
@@ -288,16 +324,38 @@ pub(crate) fn render_scene(
 /// Tokens one layer source by its resolved key, sharing a texture between
 /// aliases of the same concrete input.
 fn scene_source_token(
-    sources: &mut BTreeMap<InputId, (SourceId, Option<InputId>)>,
+    sources: &mut BTreeMap<InputId, (SourceId, Option<InputId>, Option<fm_model::CropRect>)>,
     key: InputId,
     rendered: Option<InputId>,
+    crop: Option<fm_model::CropRect>,
 ) -> SourceId {
-    if let Some((token, _)) = sources.get(&key) {
+    if let Some((token, _, _)) = sources.get(&key) {
         return *token;
     }
     let token = SourceId::new(u64::try_from(sources.len()).unwrap_or(u64::MAX));
-    sources.insert(key, (token, rendered));
+    sources.insert(key, (token, rendered, crop));
     token
+}
+
+/// Translates `layer`'s crop into `alias`'s pre-cropped picture, or `None`
+/// when the layer crop reaches outside the alias crop.
+fn translate_layer_crop(
+    layer: fm_model::CropRect,
+    alias: fm_model::CropRect,
+) -> Option<fm_model::CropRect> {
+    let right = layer.x.checked_add(layer.width)?;
+    let bottom = layer.y.checked_add(layer.height)?;
+    let alias_right = alias.x.checked_add(alias.width)?;
+    let alias_bottom = alias.y.checked_add(alias.height)?;
+    if layer.x < alias.x || layer.y < alias.y || right > alias_right || bottom > alias_bottom {
+        return None;
+    }
+    Some(fm_model::CropRect::new(
+        layer.x - alias.x,
+        layer.y - alias.y,
+        layer.width,
+        layer.height,
+    ))
 }
 
 fn input_for_layer(project: &Project, source: SourceRef) -> Result<&Input, SceneRenderError> {
