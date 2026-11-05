@@ -585,6 +585,7 @@ messages! {
     TileFreezeHover => t("Hold this input's current picture"),
     TileUnfreezeHover => t("Resume this input's live picture"),
     TileFrozenNote => t("Frozen: holding its current picture"),
+    TileFrozenBadge => t("FROZEN"),
     CaptureStill => t("Capture still"),
     TileCaptureStillHover => t("Write the frozen picture to the project bundle as a PNG and show its asset URI"),
     StillAssetLabel => t("Still: {asset}"),

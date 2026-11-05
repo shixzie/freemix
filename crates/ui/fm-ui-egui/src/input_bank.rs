@@ -476,6 +476,7 @@ impl StudioShell {
                     lifecycle: tile.lifecycle,
                     enabled,
                     locked: tile.locked,
+                    frozen,
                     hovered: response.hovered(),
                     focused: response.has_focus(),
                     pressed: response.is_pointer_button_down_on(),
@@ -645,6 +646,32 @@ impl StudioShell {
             })
             .0
             .on_hover_text(l.text(Msg::TileMoreHover));
+            let mut freeze = small_button(if frozen {
+                l.text(Msg::UnfreezeInput)
+            } else {
+                l.text(Msg::FreezeInput)
+            })
+            .min_size(Vec2::new(0.0, 20.0));
+            if frozen {
+                freeze = freeze.stroke(Stroke::new(crate::theme::line_width(), AMBER));
+            }
+            if ui
+                .add_enabled(enabled, freeze)
+                .hint(
+                    if frozen {
+                        l.text(Msg::TileUnfreezeHover)
+                    } else {
+                        l.text(Msg::TileFreezeHover)
+                    },
+                    preview_reason,
+                )
+                .clicked()
+            {
+                intents.push(StudioIntent::SetInputFreeze {
+                    input,
+                    frozen: !frozen,
+                });
+            }
             ui.with_layout(l10n::trailing_layout(l), |ui| {
                 let cut = ui
                     .add_enabled(
@@ -1418,6 +1445,8 @@ struct TilePaint<'a> {
     lifecycle: InputLifecycleStatus,
     enabled: bool,
     locked: bool,
+    /// Whether the input is frozen (SW-016), which adds a FROZEN badge.
+    frozen: bool,
     hovered: bool,
     focused: bool,
     pressed: bool,
@@ -1439,6 +1468,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         lifecycle,
         enabled,
         locked,
+        frozen,
         hovered,
         focused,
         pressed,
@@ -1451,6 +1481,14 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
     let name_bar = Rect::from_min_max(pos2(rect.min.x, thumb.max.y), rect.max);
     let border = tally_color(tally);
     let has_tally = !tally.is_none();
+    if frozen {
+        paint_top_corner_badge(
+            &painter,
+            thumb,
+            l10n::locale(ui.ctx()).text(Msg::TileFrozenBadge).to_owned(),
+            AMBER,
+        );
+    }
 
     painter.rect_filled(
         rect,
@@ -1721,6 +1759,22 @@ fn number_rect(thumb: Rect, index: usize) -> Rect {
 
 /// Paints a thumbnail's source tag `galley` on `fill` (see
 /// [`thumb_tag_rect`]).
+/// Paints a badge in a picture's top trailing corner, clear of the number
+/// key and the thumbnail tag.
+fn paint_top_corner_badge(painter: &egui::Painter, thumb: Rect, text: String, color: Color32) {
+    let galley = painter.layout_no_wrap(
+        text,
+        FontId::new(9.0, FontFamily::Proportional),
+        Color32::WHITE,
+    );
+    let badge = Rect::from_min_size(
+        pos2(thumb.max.x - galley.size().x - 6.0, thumb.min.y + 4.0),
+        Vec2::new(galley.size().x + 10.0, 15.0),
+    );
+    painter.rect_filled(badge, CornerRadius::same(3), color);
+    painter.galley(badge.center() - galley.size() / 2.0, galley, Color32::WHITE);
+}
+
 fn paint_thumb_tag(
     painter: &egui::Painter,
     thumb: Rect,

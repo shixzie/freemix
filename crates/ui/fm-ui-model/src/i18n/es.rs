@@ -1239,6 +1239,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::TileFrozenNote,
         t("Congelada: mantiene su imagen actual"),
     ),
+    (Msg::TileFrozenBadge, t("CONGELADO")),
     (Msg::VideoDelayLabel, t("Retardo de vídeo")),
     (
         Msg::VideoDelayHover,
