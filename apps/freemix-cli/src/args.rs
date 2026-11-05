@@ -1456,6 +1456,19 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Freezes or resumes one input's picture (SW-016).
+    InputFreeze {
+        path: PathBuf,
+        input: u128,
+        frozen: bool,
+    },
+    RemoteInputFreeze {
+        address: SocketAddr,
+        input: u128,
+        frozen: bool,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     RemoteInputVideoDelay {
         address: SocketAddr,
         input: u128,
@@ -2884,6 +2897,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         delay @ ("input-video-delay" | "remote-input-video-delay") => {
             parse_input_video_delay(delay, arguments)
         }
+        freeze @ ("input-freeze" | "remote-input-freeze") => parse_input_freeze(freeze, arguments),
         live @ ("live-lan" | "remote-live-lan" | "live-lan-set" | "remote-live-lan-set") => {
             parse_live_lan(live, arguments)
         }
@@ -7168,6 +7182,40 @@ fn parse_input_video_delay(
             expected_revision,
         },
         (None, None) => unreachable!("an input-video-delay command names a target"),
+    })
+}
+
+/// `input-freeze` and `remote-input-freeze` (SW-016, Protocol 2.161).
+fn parse_input_freeze(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let frozen = boolean_choice(&required(&mut arguments, "freeze")?, "freeze")?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::InputFreeze {
+            path,
+            input,
+            frozen,
+        },
+        (None, Some(address)) => Command::RemoteInputFreeze {
+            address,
+            input,
+            frozen,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a freeze command names a target"),
     })
 }
 

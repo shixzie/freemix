@@ -1772,6 +1772,35 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::InputFreeze {
+            path,
+            input,
+            frozen,
+        } => mutate(
+            &path,
+            EngineCommand::SetInputFreeze {
+                input: input_id(input)?,
+                frozen,
+            },
+            1,
+            None,
+            None,
+        )?,
+        Command::RemoteInputFreeze {
+            address,
+            input,
+            frozen,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetInputFreeze {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                frozen,
+            },
+            key,
+            expected_revision,
+        )?,
         Command::Replay { path } => {
             let project = inspect_engine(&path)?;
             let settings = project.engine.show().replay();
@@ -7674,6 +7703,8 @@ Usage:
   freemix-cli new <show.freemix> [--name <name>]
   freemix-cli input-video-delay <show.freemix> <nonzero-input-id> <frames:0..=600>
   freemix-cli remote-input-video-delay <address> <nonzero-input-id> <frames:0..=600>
+  freemix-cli input-freeze <show.freemix> <nonzero-input-id> on|off
+  freemix-cli remote-input-freeze <address> <nonzero-input-id> on|off
   freemix-cli input-add <show.freemix> <nonzero-input-id> <name>
   freemix-cli simulated-solid-input-add <show.freemix> <nonzero-input-id> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255>
   freemix-cli media-input-add <show.freemix> <nonzero-input-id> <name> <asset://key>
