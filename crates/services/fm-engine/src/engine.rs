@@ -5246,9 +5246,11 @@ fn apply_input_catalogue_mutation(
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
-            state
-                .set_input_source(input, source.spec())
-                .map_err(|_| input_catalogue_rejection(InputCatalogueError::UnknownInput(input)))?;
+            if let Some(spec) = source.spec() {
+                state.set_input_source(input, spec).map_err(|_| {
+                    input_catalogue_rejection(InputCatalogueError::UnknownInput(input))
+                })?;
+            }
             if let EngineInputSource::Capture(config) = &source {
                 state.set_capture_settings_unchecked(input, config.settings.clone());
             }

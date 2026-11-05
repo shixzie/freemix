@@ -67,9 +67,10 @@ pub enum EngineInputSource {
 }
 
 impl EngineInputSource {
-    /// The replaceable source this is (IN-026).
+    /// The replaceable source this is (IN-026), or `None` for an alias or
+    /// feed, which have no replaceable source.
     #[must_use]
-    pub fn spec(&self) -> fm_model::InputSourceSpec {
+    pub fn spec(&self) -> Option<fm_model::InputSourceSpec> {
         let video = match self {
             Self::Solid {
                 red,
@@ -81,36 +82,32 @@ impl EngineInputSource {
             },
             Self::Bars => fm_model::GeneratorVideo::Bars,
             Self::NetworkStream(config) => {
-                return fm_model::InputSourceSpec::Network((**config).clone());
+                return Some(fm_model::InputSourceSpec::Network((**config).clone()));
             }
             Self::Capture(config) => {
-                return fm_model::InputSourceSpec::Device {
+                return Some(fm_model::InputSourceSpec::Device {
                     stable_key: config.stable_key.clone(),
-                };
+                });
             }
             Self::SystemAudio(config) => {
-                return fm_model::InputSourceSpec::SystemAudio((**config).clone());
+                return Some(fm_model::InputSourceSpec::SystemAudio((**config).clone()));
             }
-            Self::Image(config) => return fm_model::InputSourceSpec::Image((**config).clone()),
+            Self::Image(config) => {
+                return Some(fm_model::InputSourceSpec::Image((**config).clone()));
+            }
             Self::Slideshow(config) => {
-                return fm_model::InputSourceSpec::Slideshow((**config).clone());
+                return Some(fm_model::InputSourceSpec::Slideshow((**config).clone()));
             }
             Self::ScreenCapture(config) => {
-                return fm_model::InputSourceSpec::ScreenCapture((**config).clone());
+                return Some(fm_model::InputSourceSpec::ScreenCapture((**config).clone()));
             }
-            Self::Replay => return fm_model::InputSourceSpec::Replay,
-            Self::Alias { target, crop } => {
-                return fm_model::InputSourceSpec::Alias {
-                    target: *target,
-                    crop: *crop,
-                };
-            }
-            Self::MixFeed(feed) => return fm_model::InputSourceSpec::MixFeed(*feed),
+            Self::Replay => return Some(fm_model::InputSourceSpec::Replay),
+            Self::Alias { .. } | Self::MixFeed(_) => return None,
         };
-        fm_model::InputSourceSpec::Generator {
+        Some(fm_model::InputSourceSpec::Generator {
             video,
             tone_hz: None,
-        }
+        })
     }
 }
 

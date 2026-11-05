@@ -299,10 +299,11 @@ pub enum GeneratorVideo {
 
 /// An input source that can be named on the wire and swapped live: a
 /// generator, a media file, a capture device, a network stream, a system
-/// audio source, a still picture, a slideshow, a screen or window capture,
-/// an alias, or a Program/Preview feed.
+/// audio source, a still picture, a slideshow, or a screen or window
+/// capture.
 ///
-/// Scene, title, and plain colour inputs have no replaceable source.
+/// Scene, alias, title, mix-feed, and plain colour inputs have no
+/// replaceable source.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum InputSourceSpec {
     /// A simulated generator with a silent or sine-tone audio track.
@@ -331,14 +332,6 @@ pub enum InputSourceSpec {
     /// A replay player (OR-012): it plays the replay events the server
     /// records of the project's replay sources.
     Replay,
-    /// An alias of another input, optionally cropped in project pixels
-    /// (IN-024).
-    Alias {
-        target: InputId,
-        crop: Option<crate::CropRect>,
-    },
-    /// The Program or Preview bus as a one-frame-delayed input (IN-025).
-    MixFeed(crate::MixFeed),
 }
 
 /// Why a source specification is unusable.
@@ -573,13 +566,7 @@ impl InputSourceSpec {
             Self::ScreenCapture(config) => config
                 .validate()
                 .map_err(|_| InputSourceError::InvalidScreenCapture),
-            Self::Replay | Self::MixFeed(_) => Ok(()),
-            Self::Alias { crop, .. } => match crop {
-                Some(crop) if !crop.fits_source() || crop.width == 0 || crop.height == 0 => {
-                    Err(InputSourceError::InvalidLocator)
-                }
-                _ => Ok(()),
-            },
+            Self::Replay => Ok(()),
         }
     }
 
@@ -615,12 +602,11 @@ impl InputSourceSpec {
             }),
             InputKind::ScreenCapture(config) => Some(Self::ScreenCapture(config.clone())),
             InputKind::Replay => Some(Self::Replay),
-            InputKind::Alias { target, crop } => Some(Self::Alias {
-                target: *target,
-                crop: *crop,
-            }),
-            InputKind::MixFeed(feed) => Some(Self::MixFeed(*feed)),
-            InputKind::Color | InputKind::Scene { .. } | InputKind::Title(_) => None,
+            InputKind::Color
+            | InputKind::Scene { .. }
+            | InputKind::Alias { .. }
+            | InputKind::MixFeed(_)
+            | InputKind::Title(_) => None,
         }
     }
 
@@ -658,11 +644,6 @@ impl InputSourceSpec {
             }
             Self::ScreenCapture(config) => InputKind::ScreenCapture(config.clone()),
             Self::Replay => InputKind::Replay,
-            Self::Alias { target, crop } => InputKind::Alias {
-                target: *target,
-                crop: *crop,
-            },
-            Self::MixFeed(feed) => InputKind::MixFeed(*feed),
         }
     }
 
