@@ -2930,7 +2930,10 @@ impl NativeDaemon {
         self.start_pending_streams();
         let (compiled_grades, grade_revision) = self.compiled_grades(control);
         let slideshow_job = self.slideshow_job(control);
-        let shows_preview = self.display_shows_preview();
+        // A Preview feed needs a committed Preview picture even when no
+        // display is showing Preview (IN-025).
+        let shows_preview =
+            self.display_shows_preview() || self.project_plan.has_feed(fm_model::MixFeed::Preview);
         self.project_plan
             .refresh_scene_models(|scene| control.scene_model(scene));
         let video = &mut self.video;
