@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.166 / schema 109 (2026-11-05).
+(2026-10-19); items refreshed through protocol 2.166 / schema 110 (2026-11-05).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -3205,7 +3205,7 @@ flagged discontinuities and timestamp jumps beyond the skew limit reset and
 re-anchor, and frame-count, byte, and duration bounds evict oldest-first and reject
 oversized frames. The effective delay converts to audio samples, aligning with
 `fm-audio` `SampleDelay` within one sample at 48 kHz. The project now stores
-each input's requested delay in frames (schema 109, at most 600), validation
+each input's requested delay in frames (schema 110, at most 600), validation
 rejects unknown inputs and oversized delays, `EngineCommand::SetInputVideoDelay`
 is an undoable project edit, and the daemon folds it back into the project on
 save. Protocol 2.161 carries the list in every snapshot, sets one with

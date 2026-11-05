@@ -1160,7 +1160,7 @@ pub struct Project {
     /// Each title input's canonical preview-state document (GX-005, schema
     /// 106), by input. Staged data-binding values, not live title values.
     previews: BTreeMap<InputId, String>,
-    /// Each input's persisted video delay in frames (IN-022, schema 109), by
+    /// Each input's persisted video delay in frames (IN-022, schema 110), by
     /// input, ascending.
     input_video_delays: BTreeMap<InputId, u32>,
     /// Each title input's canonical crawl document (GX-003, schema 106), by

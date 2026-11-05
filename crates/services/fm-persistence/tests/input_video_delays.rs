@@ -1,4 +1,4 @@
-//! IN-022 at schema 109: per-input video delays round-trip exactly and
+//! IN-022 at schema 110: per-input video delays round-trip exactly and
 //! strictly in `project.json`.
 
 use std::{

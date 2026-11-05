@@ -1,4 +1,4 @@
-//! Per-input video delays in `project.json` (IN-022, schema 109).
+//! Per-input video delays in `project.json` (IN-022, schema 110).
 //!
 //! ```text
 //! "input_video_delays": [
