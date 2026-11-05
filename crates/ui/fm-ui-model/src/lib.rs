@@ -509,6 +509,8 @@ pub struct ProjectSnapshot {
     pub fade_to_black_curve: fm_protocol::FadeToBlackCurve,
     /// Every configured logical output, ascending by slot (Protocol 2.157).
     pub logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
+    /// Every configured secondary mix, ascending by number (Protocol 2.158).
+    pub secondary_mixes: Vec<fm_protocol::WireSecondaryMixConfig>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -647,6 +649,7 @@ impl ProjectSnapshot {
                 .collect(),
             fade_to_black_curve: message.fade_to_black_curve,
             logical_outputs: message.logical_outputs,
+            secondary_mixes: message.secondary_mixes,
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
@@ -833,6 +836,11 @@ pub enum DurableChange {
     LogicalOutputChanged {
         slot: fm_protocol::WireLogicalOutputSlot,
         config: Option<Box<fm_protocol::WireLogicalOutputConfig>>,
+    },
+    /// One secondary mix was configured or cleared (Protocol 2.158).
+    SecondaryMixChanged {
+        number: fm_protocol::WireMixNumber,
+        config: Option<Box<fm_protocol::WireSecondaryMixConfig>>,
     },
     /// The `LiveLAN` configuration changed (Protocol 2.57); never the PIN.
     LiveLanChanged(fm_protocol::LiveLanEntry),
@@ -1172,6 +1180,9 @@ impl DurableProjectEvent {
             EventPayload::LogicalOutputChanged { slot, config } => {
                 DurableChange::LogicalOutputChanged { slot, config }
             }
+            EventPayload::SecondaryMixChanged { number, config } => {
+                DurableChange::SecondaryMixChanged { number, config }
+            }
             EventPayload::LiveLanChanged(entry) => DurableChange::LiveLanChanged(entry),
             EventPayload::AlertRulesChanged(settings) => DurableChange::AlertRulesChanged(settings),
             EventPayload::ReplayChanged { frame, operation } => {
@@ -1353,6 +1364,8 @@ pub struct ProjectState {
     fade_to_black_curve: fm_protocol::FadeToBlackCurve,
     /// Every configured logical output (Protocol 2.157).
     logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
+    /// Every configured secondary mix (Protocol 2.158).
+    secondary_mixes: Vec<fm_protocol::WireSecondaryMixConfig>,
     /// Every configured display-output slot (Protocol 2.42).
     display_outputs: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::DisplayOutputConfig>,
     /// Each slot's runtime state as last reported (Protocol 2.42); kept for
@@ -1992,6 +2005,8 @@ pub struct ClientView {
     pub fade_to_black_curve: fm_protocol::FadeToBlackCurve,
     /// Every configured logical output, ascending by slot (Protocol 2.157).
     pub logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
+    /// Every configured secondary mix, ascending by number (Protocol 2.158).
+    pub secondary_mixes: Vec<fm_protocol::WireSecondaryMixConfig>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -3178,6 +3193,7 @@ impl ClientModel {
             fade_to_black_output_durations: state.fade_to_black_output_durations.clone(),
             fade_to_black_curve: state.fade_to_black_curve,
             logical_outputs: state.logical_outputs.clone(),
+            secondary_mixes: state.secondary_mixes.clone(),
             display_outputs: state
                 .display_outputs
                 .iter()
@@ -3484,6 +3500,7 @@ impl ClientModel {
             fade_to_black_output_durations: snapshot.fade_to_black_output_durations,
             fade_to_black_curve: snapshot.fade_to_black_curve,
             logical_outputs: snapshot.logical_outputs,
+            secondary_mixes: snapshot.secondary_mixes,
             display_outputs: snapshot
                 .display_outputs
                 .into_iter()
@@ -5788,6 +5805,15 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             if let Some(config) = config {
                 state.logical_outputs.push(*config);
                 state.logical_outputs.sort_by_key(|config| config.slot);
+            }
+        }
+        DurableChange::SecondaryMixChanged { number, config } => {
+            state
+                .secondary_mixes
+                .retain(|candidate| candidate.number != number);
+            if let Some(config) = config {
+                state.secondary_mixes.push(*config);
+                state.secondary_mixes.sort_by_key(|config| config.number);
             }
         }
         DurableChange::AlertRulesChanged(settings) => state.alert_rules = settings,
