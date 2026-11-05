@@ -8424,7 +8424,7 @@ fn remote_frozen_still_writes_the_joined_png() {
         stdout(&result).contains("frozen-still: input=1 4x3 bytes="),
         "{}\n{}",
         stdout(&result),
-        stderr(&result)
+        String::from_utf8_lossy(&result.stderr)
     );
     let png = fs::read(&output).unwrap();
     assert!(png.starts_with(&fm_video::PNG_SIGNATURE), "{png:?}");
