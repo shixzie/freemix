@@ -12978,6 +12978,91 @@ mod tests {
     }
 
     #[test]
+    fn native_alias_effects_apply_to_direct_and_scene_pictures() {
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(88).unwrap());
+        let leaf = input(1);
+        let plain_alias = input(2);
+        let effected_alias = input(3);
+        let scene_input = input(4);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: leaf,
+                    frame: split_retained_frame(
+                        clock_domain,
+                        [255, 0, 0, 255],
+                        [0, 0, 255, 255],
+                        4,
+                        2,
+                    ),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, leaf);
+        for (id, effects) in [
+            (plain_alias, Vec::new()),
+            (
+                effected_alias,
+                vec![fm_model::LayerEffect::new("saturation", vec![-100])],
+            ),
+        ] {
+            project.add_input(Input {
+                id,
+                name: format!("alias {id}"),
+                kind: InputKind::Alias {
+                    target: leaf,
+                    crop: None,
+                    effects,
+                },
+                required_capabilities: Vec::new(),
+            });
+        }
+        add_scene_input(&mut project, scene_input, scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(effected_alias), 0)],
+        );
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+
+        let read = |program| {
+            let frame = runtime
+                .render_project_frame_result_blocking(
+                    playback.registry(),
+                    &plan,
+                    &frame_result(0, program, None),
+                )
+                .unwrap();
+            block_on(runtime.diagnostic_readback(&frame)).unwrap()
+        };
+        let plain = read(plain_alias);
+        let first = rgba16f_pixel(&plain.bytes, 4, 0, 0);
+        let last = rgba16f_pixel(&plain.bytes, 4, 3, 0);
+        assert!(
+            first[0] > 0.5 && first[2] < 0.1 && last[2] > 0.5 && last[0] < 0.1,
+            "the plain alias keeps the red and blue halves"
+        );
+        for program in [effected_alias, scene_input] {
+            let effected = read(program);
+            for x in [0_u32, 3] {
+                let pixel = rgba16f_pixel(&effected.bytes, 4, x, 0);
+                assert!(
+                    (pixel[0] - pixel[1]).abs() < 0.05 && (pixel[1] - pixel[2]).abs() < 0.05,
+                    "the alias effect desaturates {program} at x={x}: {pixel:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn native_frozen_live_inputs_hold_their_picture() {
         let Some(runtime) = native_test_runtime() else {
             return;
