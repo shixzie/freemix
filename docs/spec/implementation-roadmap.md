@@ -3217,15 +3217,17 @@ and a finite dependency render order, and its borrow structure forbids
 committing a feed frame while a tick is still resolving. The CLI authors both
 kinds offline with `alias-input-add` (including an optional
 `--crop x,y,width,height`) and `mix-feed-input-add`, refusing missing targets,
-self/cyclic chains, and malformed crops without saving. Its `render` and
-`transition-render-frame` commands consume the resolver for Program endpoints:
+self/cyclic chains, and malformed crops without saving. Its `render`,
+`transition-render-frame`, and scene rendering commands consume the resolver:
 an alias draws its chain's concrete leaf or scene under the alias's own crop,
-and a mix feed draws black before any tick is committed. Remaining gaps: the
-native renderer, monitor taps, `scene-render-frame`, and scene layers still
-draw only direct leaves, so aliases nested in a scene are refused there; there
-is no protocol or Studio authoring; feedback ignores the second input of an
-active transition; and aliases do not yet carry independent effects,
-shortcuts, or layer state. `IN-024` and `IN-025` remain planned.
+a mix feed draws black before any tick is committed, and scene layers resolve
+aliases and feeds while refusing an alias whose crop cannot be composed into
+the layer's own crop. Remaining gaps: the native renderer and monitor taps
+still draw only direct leaves, so aliases and feeds are refused or skipped
+there; a cropped alias inside a scene layer is refused; there is no protocol
+or Studio authoring; feedback ignores the second input of an active
+transition; and aliases do not yet carry independent effects, shortcuts, or
+layer state. `IN-024` and `IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
