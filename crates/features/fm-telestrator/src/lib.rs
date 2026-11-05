@@ -1631,6 +1631,7 @@ struct ScreenPoint {
     y: f64,
 }
 
+#[allow(clippy::too_many_lines)] // one branch per stroke style
 fn render_stroke(layer: &mut RenderLayer, stroke: &Stroke) {
     let points: Vec<_> = stroke
         .points
@@ -1741,6 +1742,7 @@ fn render_stroke(layer: &mut RenderLayer, stroke: &Stroke) {
 
 /// Stamps `image` into the axis-aligned rectangle between `from` and `to`,
 /// sampling nearest neighbors and blending each source pixel over the layer.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to the image bounds
 fn paint_image(
     layer: &mut RenderLayer,
     image: &ImageStamp,
@@ -1775,6 +1777,7 @@ fn paint_image(
 
 /// Stamps a text primitive's coverage into the axis-aligned rectangle between
 /// `from` and `to`, tinting it with the stroke color and opacity.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to the text bounds
 fn paint_text(
     layer: &mut RenderLayer,
     text: &TextStamp,
