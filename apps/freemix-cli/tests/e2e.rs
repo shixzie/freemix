@@ -7922,6 +7922,37 @@ fn local_input_video_delays_persist_and_are_bounded() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// IN-022, Protocol 2.160: the remote delay command sends the exact project
+/// edit and accepts the daemon's realization.
+#[test]
+fn remote_input_video_delay_sends_the_exact_edit() {
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-input-video-delay",
+        payload: CommandPayload::SetInputVideoDelay {
+            input: input(1),
+            frames: 5,
+        },
+        event: EventPayload::InputVideoDelayChanged {
+            input: input(1),
+            frames: 5,
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-input-video-delay",
+        &server.address(),
+        "1",
+        "5",
+        "--key",
+        "remote-input-video-delay",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
 /// OR-017: the local `LiveLAN` settings are a validated, persisted project
 /// edit; absent options keep their value, the PIN is stored but never
 /// printed, and a streamed output cannot be removed.
