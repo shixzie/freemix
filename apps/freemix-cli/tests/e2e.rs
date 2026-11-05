@@ -12981,8 +12981,7 @@ fn local_scene_layers_resolve_alias_and_feed_inputs() {
     ]));
     assert_solid_ppm(&feed_image, 4, 3, [0, 0, 0]);
 
-    // An alias crop is not composable into a scene layer yet; the refusal
-    // names the input instead of drawing the wrong picture.
+    // A cropped alias layer draws the selected region of its target.
     assert_success(&invoke(&[
         "alias-input-add",
         path,
@@ -13002,19 +13001,94 @@ fn local_scene_layers_resolve_alias_and_feed_inputs() {
     ]));
     assert_success(&invoke(&["preview", path, "10"]));
     assert_success(&invoke(&["cut", path]));
-    assert_failure_contains(
-        &invoke_bounded(&[
-            "render",
-            path,
-            context.root.join("refused.ppm").to_str().unwrap(),
-            "--width",
-            "4",
-            "--height",
-            "3",
-        ]),
-        "alias input 6 has a crop",
-    );
+    let cropped_alias = context.root.join("scene-alias-crop.ppm");
+    assert_success(&invoke_bounded(&[
+        "render",
+        path,
+        cropped_alias.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "3",
+    ]));
+    assert_solid_ppm(&cropped_alias, 4, 3, [73, 151, 199]);
 
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+#[test]
+fn local_scene_layer_cropped_alias_matches_the_uncropped_picture() {
+    let context = ContractContext::new();
+    let path = context.project_path();
+    assert_success(&invoke(&["new", path]));
+    assert_success(&invoke(&["input-add", path, "4", "Bars"]));
+    assert_success(&invoke(&[
+        "alias-input-add",
+        path,
+        "5",
+        "Left half",
+        "4",
+        "--crop",
+        "0,0,960,1080",
+    ]));
+    for (scene, input, name) in [
+        (20_u128, 10_u128, "Full"),
+        (21, 11, "Cropped"),
+        (22, 12, "Translated"),
+    ] {
+        assert_success(&invoke(&[
+            "scene-input-add",
+            path,
+            &input.to_string(),
+            &scene.to_string(),
+            name,
+        ]));
+    }
+    assert_success(&invoke(&["scene-layer-add", path, "20", "4", "0", "Bars"]));
+    assert_success(&invoke(&["scene-layer-add", path, "21", "5", "0", "Crop"]));
+    assert_success(&invoke(&["scene-layer-add", path, "22", "5", "0", "Crop"]));
+    // The layer crop lies inside the alias crop, so it is translated.
+    assert_success(&invoke(&[
+        "scene-layer-crop",
+        path,
+        "22",
+        "0",
+        "0",
+        "0",
+        "480",
+        "1080",
+    ]));
+    let render = |scene: u128, name: &str| {
+        let output = context.root.join(name);
+        assert_success(&invoke_bounded(&[
+            "scene-render-frame",
+            path,
+            &scene.to_string(),
+            "--phase",
+            "hold",
+            output.to_str().unwrap(),
+        ]));
+        output
+    };
+    let full = render(20, "full.ppm");
+    let cropped = render(21, "cropped.ppm");
+    let translated = render(22, "translated.ppm");
+    for y in [0_u32, 180, 359] {
+        for x in (0_u32..640).step_by(2) {
+            assert_eq!(
+                ppm_pixel(&cropped, 640, 360, x, y),
+                ppm_pixel(&full, 640, 360, x / 2, y),
+                "cropped pixel {x},{y}"
+            );
+        }
+        for x in (0_u32..640).step_by(4) {
+            assert_eq!(
+                ppm_pixel(&translated, 640, 360, x, y),
+                ppm_pixel(&full, 640, 360, x / 4, y),
+                "translated crop pixel {x},{y}"
+            );
+        }
+    }
     fs::remove_dir_all(context.root).unwrap();
 }
 
