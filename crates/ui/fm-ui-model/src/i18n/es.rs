@@ -10846,6 +10846,32 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::NameReplay, t("Entrada de repetición")),
     (Msg::KindReplayKey, t("REPETICIÓN")),
+    (Msg::NameAlias, t("Entrada alias")),
+    (Msg::KindAliasKey, t("ALIAS")),
+    (
+        Msg::KindAliasHover,
+        t(
+            "Una entrada virtual que muestra la imagen de otra entrada, opcionalmente recortada; tiene su propio nombre, tira y grado",
+        ),
+    ),
+    (Msg::NameMixFeed, t("Entrada de mezcla")),
+    (Msg::KindMixFeedKey, t("MEZCLA")),
+    (
+        Msg::KindMixFeedHover,
+        t("Una entrada virtual que muestra el bus Programa o Previo con un fotograma de retraso"),
+    ),
+    (Msg::AddInputAliasTarget, t("Entrada con alias")),
+    (
+        Msg::AddInputAliasTargetHover,
+        t("La entrada que muestra este alias; el alias sigue su imagen y su audio"),
+    ),
+    (
+        Msg::AddInputAliasRequired,
+        t("Selecciona una entrada para el alias"),
+    ),
+    (Msg::AddInputFeedBus, t("Mezcla")),
+    (Msg::AddInputFeedProgram, t("Programa")),
+    (Msg::AddInputFeedPreview, t("Previo")),
     (
         Msg::KindReplayHover,
         t(

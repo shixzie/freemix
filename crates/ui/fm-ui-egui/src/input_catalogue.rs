@@ -109,6 +109,10 @@ pub enum NewInputKind {
     ScreenCapture,
     /// A Replay input: cues and plays captured replay events (OR-012).
     Replay,
+    /// A virtual input rendering another input (IN-024).
+    Alias,
+    /// A Program or Preview feed input (IN-025).
+    MixFeed,
 }
 
 impl NewInputKind {
@@ -130,6 +134,8 @@ impl NewInputKind {
             Self::MediaList => Msg::NameMediaList,
             Self::ScreenCapture => Msg::NameScreenCapture,
             Self::Replay => Msg::NameReplay,
+            Self::Alias => Msg::NameAlias,
+            Self::MixFeed => Msg::NameMixFeed,
         }
     }
 
@@ -145,6 +151,8 @@ impl NewInputKind {
             Self::MediaList => Msg::KindMediaListKey,
             Self::ScreenCapture => Msg::KindScreenCaptureKey,
             Self::Replay => Msg::KindReplayKey,
+            Self::Alias => Msg::KindAliasKey,
+            Self::MixFeed => Msg::KindMixFeedKey,
         }
     }
 
@@ -160,6 +168,8 @@ impl NewInputKind {
             Self::MediaList => Msg::KindMediaListHover,
             Self::ScreenCapture => Msg::KindScreenCaptureHover,
             Self::Replay => Msg::KindReplayHover,
+            Self::Alias => Msg::KindAliasHover,
+            Self::MixFeed => Msg::KindMixFeedHover,
         }
     }
 }
@@ -493,6 +503,10 @@ pub(crate) struct AddInputDraft {
     pub(crate) media_list: crate::media_list_ui::MediaListDraft,
     /// The screen and window capture form (IN-011).
     pub(crate) screen_capture: crate::screen_capture_ui::ScreenCaptureDraft,
+    /// The input an alias shows (IN-024).
+    pub(crate) alias_target: Option<fm_types::InputId>,
+    /// Whether a feed shows Program (`true`) or Preview (IN-025).
+    pub(crate) feed_program: bool,
     /// The name field takes keyboard focus once, when the dialog opens.
     focus_pending: bool,
     /// Language of the suggested name.
@@ -536,6 +550,11 @@ impl AddInputDraft {
             ),
             media_list: crate::media_list_ui::MediaListDraft::default(),
             screen_capture: crate::screen_capture_ui::ScreenCaptureDraft::default(),
+            alias_target: state
+                .view
+                .as_ref()
+                .and_then(|view| view.inputs.first().copied()),
+            feed_program: true,
             focus_pending: true,
             locale: tracker.locale,
         }
@@ -577,6 +596,14 @@ impl AddInputDraft {
                 LiveInputSource::ScreenCapture(Box::new(self.screen_capture.config()?))
             }
             NewInputKind::Replay => LiveInputSource::Replay,
+            NewInputKind::Alias => LiveInputSource::Alias {
+                target: fm_protocol::WireInputId::from_domain(
+                    self.alias_target.ok_or(Msg::AddInputAliasRequired.en())?,
+                ),
+                crop: None,
+            },
+            NewInputKind::MixFeed if self.feed_program => LiveInputSource::ProgramFeed,
+            NewInputKind::MixFeed => LiveInputSource::PreviewFeed,
         })
     }
 
@@ -584,7 +611,14 @@ impl AddInputDraft {
     /// the reason, and whether it is only still to be filled in.
     pub(crate) fn source_problem(&self) -> Option<FieldProblem<Msg>> {
         let problem = match self.kind {
-            NewInputKind::Solid | NewInputKind::Bars | NewInputKind::Replay => return None,
+            NewInputKind::Solid
+            | NewInputKind::Bars
+            | NewInputKind::Replay
+            | NewInputKind::MixFeed => return None,
+            NewInputKind::Alias => {
+                self.alias_target?;
+                return None;
+            }
             NewInputKind::Network => {
                 let problem = self.stream.checked().err()?;
                 (problem.field.label(), problem.reason, problem.prompt)
@@ -1189,7 +1223,11 @@ impl StudioShell {
                                 NewInputKind::Slideshow,
                                 NewInputKind::MediaList,
                             ],
-                            &[NewInputKind::Replay],
+                            &[
+                                NewInputKind::Alias,
+                                NewInputKind::MixFeed,
+                                NewInputKind::Replay,
+                            ],
                         ];
                         for row in rows {
                             ui.horizontal(|ui| {
@@ -1309,6 +1347,55 @@ impl StudioShell {
                                     draft.name = name;
                                 }
                             }
+                        }
+                        if draft.kind == NewInputKind::Alias {
+                            ui.add_space(6.0);
+                            crate::theme::form_section(ui, l.text(Msg::AddInputAliasTarget));
+                            let alias = state
+                                .view
+                                .as_ref()
+                                .map(|view| view.inputs.iter().copied().zip(&view.input_names));
+                            let current = draft.alias_target.and_then(|target| {
+                                state
+                                    .view
+                                    .as_ref()
+                                    .and_then(|view| view.input_name(target))
+                                    .map(|name| (target, name.to_owned()))
+                            });
+                            egui::ComboBox::from_id_salt("studio-add-input-alias-target")
+                                .selected_text(current.as_ref().map_or_else(
+                                    || l.text(Msg::AddInputAliasRequired).to_owned(),
+                                    |(_, name)| name.clone(),
+                                ))
+                                .show_ui(ui, |ui| {
+                                    if let Some(alias) = alias {
+                                        for (input, name) in alias {
+                                            ui.selectable_value(
+                                                &mut draft.alias_target,
+                                                Some(input),
+                                                name,
+                                            );
+                                        }
+                                    }
+                                })
+                                .response
+                                .hint(l.text(Msg::AddInputAliasTargetHover), "");
+                        }
+                        if draft.kind == NewInputKind::MixFeed {
+                            ui.add_space(6.0);
+                            crate::theme::form_section(ui, l.text(Msg::AddInputFeedBus));
+                            ui.horizontal(|ui| {
+                                ui.radio_value(
+                                    &mut draft.feed_program,
+                                    true,
+                                    l.text(Msg::AddInputFeedProgram),
+                                );
+                                ui.radio_value(
+                                    &mut draft.feed_program,
+                                    false,
+                                    l.text(Msg::AddInputFeedPreview),
+                                );
+                            });
                         }
                         if draft.kind == NewInputKind::Capture {
                             ui.add_space(6.0);
