@@ -65,6 +65,7 @@ pub const FAVORITE_KEYS: u8 = 4;
 /// Overlay channels a key may turn on or off.
 pub const OVERLAY_KEYS: u8 = 4;
 /// Recorded replay angles a key may select (the eight-source maximum).
+#[allow(clippy::cast_possible_truncation)] // the protocol caps replay sources at 8
 pub const REPLAY_ANGLES: u8 = fm_protocol::MAX_REPLAY_RECORD_SOURCES as u8;
 /// The replay speeds a play key may request, in percent.
 pub const REPLAY_PLAY_SPEEDS: [u8; 4] = [25, 50, 75, 100];
