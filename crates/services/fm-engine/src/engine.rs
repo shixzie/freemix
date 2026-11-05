@@ -6789,9 +6789,9 @@ fn map_title_row(
                 fm_data::TitleFieldStatus::Path(error) => error.to_string(),
                 fm_data::TitleFieldStatus::Transform(error) => error.to_string(),
                 fm_data::TitleFieldStatus::Coercion(error) => error.to_string(),
-                fm_data::TitleFieldStatus::Mapped | fm_data::TitleFieldStatus::Omitted => {
-                    "unmapped".to_owned()
-                }
+                fm_data::TitleFieldStatus::Mapped
+                | fm_data::TitleFieldStatus::Fallback
+                | fm_data::TitleFieldStatus::Omitted => "unmapped".to_owned(),
             };
             return Err(Rejection::new(
                 RejectionCode::InvalidCommand,
