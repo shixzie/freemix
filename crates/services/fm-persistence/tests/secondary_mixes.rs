@@ -188,17 +188,11 @@ fn chained_secondary_mix_cycles_are_refused_on_load() {
     let expected = configured();
     store.save(&stored(expected)).unwrap();
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    let broken = text
-        .replacen(
-            "\"mode\": \"preview_program\", \"program\": {\"input\": 10}, \"preview\": {\"input\": 11}",
-            "\"mode\": \"preview_program\", \"program\": {\"mix\": 3}, \"preview\": {\"input\": 11}",
-            1,
-        )
-        .replacen(
-            "\"mode\": \"output_only\", \"program\": {\"mix\": 2}",
-            "\"mode\": \"output_only\", \"program\": {\"mix\": 2}",
-            1,
-        );
+    let broken = text.replacen(
+        "\"mode\": \"preview_program\", \"program\": {\"input\": 10}, \"preview\": {\"input\": 11}",
+        "\"mode\": \"preview_program\", \"program\": {\"mix\": 3}, \"preview\": {\"input\": 11}",
+        1,
+    );
     fs::write(directory.path("show.freemix/project.json"), broken).unwrap();
     assert!(store.load().is_err());
 }
