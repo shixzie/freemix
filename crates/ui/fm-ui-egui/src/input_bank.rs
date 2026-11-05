@@ -369,6 +369,7 @@ impl StudioShell {
     }
 
     #[allow(clippy::too_many_lines)] // one immediate-mode tile plus its key row
+    #[allow(clippy::large_types_passed_by_value)] // one tile's borrowed context
     fn draw_tile(
         &mut self,
         ui: &mut Ui,
@@ -675,6 +676,7 @@ impl StudioShell {
     }
 
     #[allow(clippy::too_many_lines)] // one menu with its footer notes
+    #[allow(clippy::large_types_passed_by_value)] // one tile's borrowed context
     fn draw_tile_menu(
         &mut self,
         ui: &mut Ui,
