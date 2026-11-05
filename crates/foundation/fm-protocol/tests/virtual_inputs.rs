@@ -4,7 +4,7 @@ use core::num::NonZeroU128;
 
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, LiveInputSource, WireInputId,
-    WireLayerCrop, WireMessage, decode_line, encode_line,
+    WireLayerCrop, WireLayerEffect, WireMessage, decode_line, encode_line,
 };
 
 fn input(value: u128) -> WireInputId {
@@ -37,6 +37,7 @@ fn alias_and_feed_add_commands_round_trip() {
     round_trip(LiveInputSource::Alias {
         target: input(1),
         crop: None,
+        effects: Vec::new(),
     });
     round_trip(LiveInputSource::Alias {
         target: input(2),
@@ -46,6 +47,10 @@ fn alias_and_feed_add_commands_round_trip() {
             width: 640,
             height: 360,
         }),
+        effects: vec![WireLayerEffect {
+            name: "saturation".into(),
+            parameters: vec![-25],
+        }],
     });
     round_trip(LiveInputSource::ProgramFeed);
     round_trip(LiveInputSource::PreviewFeed);
@@ -61,6 +66,7 @@ fn alias_tokens_are_canonical() {
             width: 3,
             height: 4,
         }),
+        effects: Vec::new(),
     }))
     .unwrap();
     for field in [
@@ -89,6 +95,7 @@ fn an_alias_crop_past_the_source_bound_is_refused() {
             width: 3,
             height: 4,
         }),
+        effects: Vec::new(),
     }))
     .unwrap();
     let past = line.replace("crop_width=3", "crop_width=16384");
@@ -103,6 +110,7 @@ fn an_alias_crop_past_the_source_bound_is_refused() {
             width: 16_384,
             height: 1,
         }),
+        effects: Vec::new(),
     });
     assert!(encode_line(&invalid).is_err());
 
@@ -137,4 +145,46 @@ fn an_incomplete_or_empty_alias_crop_is_refused() {
     ] {
         assert!(decode_line(&damaged).is_err(), "{damaged}");
     }
+}
+
+#[test]
+fn alias_effects_round_trip_and_are_bounded() {
+    let effects = vec![
+        WireLayerEffect {
+            name: "levels".into(),
+            parameters: vec![16, 235],
+        },
+        WireLayerEffect {
+            name: "flip".into(),
+            parameters: vec![1, 0],
+        },
+    ];
+    round_trip(LiveInputSource::Alias {
+        target: input(1),
+        crop: None,
+        effects: effects.clone(),
+    });
+
+    let invalid = command(LiveInputSource::Alias {
+        target: input(1),
+        crop: None,
+        effects: vec![WireLayerEffect {
+            name: "posterize".into(),
+            parameters: vec![4],
+        }],
+    });
+    assert!(encode_line(&invalid).is_err());
+
+    let too_many = command(LiveInputSource::Alias {
+        target: input(1),
+        crop: None,
+        effects: vec![
+            WireLayerEffect {
+                name: "saturation".into(),
+                parameters: vec![0],
+            };
+            fm_protocol::MAX_SCENE_LAYER_EFFECTS + 1
+        ],
+    });
+    assert!(encode_line(&too_many).is_err());
 }
