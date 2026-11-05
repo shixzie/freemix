@@ -15,7 +15,7 @@ use fm_protocol::{
 };
 use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
 
-const PREFIX: &str = "command\tprotocol=2.160\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.161\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -148,6 +148,7 @@ fn snapshot(audio_mixer: AudioMixerStatus, excluded: Vec<WireOutputId>) -> WireM
         secondary_mixes: Vec::new(),
         secondary_mix_states: Vec::new(),
         input_video_delays: Vec::new(),
+        frozen_inputs: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
@@ -187,7 +188,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 160));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 161));
 }
 
 #[test]

@@ -7135,7 +7135,7 @@ fn parse_display_output(
 }
 
 /// `input-video-delay` and `remote-input-video-delay` (IN-022, Protocol
-/// 2.160).
+/// 2.161).
 fn parse_input_video_delay(
     command: &str,
     mut arguments: impl Iterator<Item = String>,

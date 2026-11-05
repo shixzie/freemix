@@ -1,4 +1,4 @@
-//! Per-input video delays on the wire (IN-022, Protocol 2.160).
+//! Per-input video delays on the wire (IN-022, Protocol 2.161).
 //!
 //! A snapshot's `input_video_delays` is a comma-separated list of
 //! `<input>:<frames>` in strictly ascending input order. `frames` is a

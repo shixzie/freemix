@@ -514,7 +514,7 @@ pub struct ProjectSnapshot {
     /// Every configured mix's live Program/Preview and transition progress
     /// (Protocol 2.159).
     pub secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
-    /// Every input's video delay in frames, ascending (Protocol 2.160).
+    /// Every input's video delay in frames, ascending (Protocol 2.161).
     pub input_video_delays: Vec<fm_protocol::WireInputVideoDelay>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
@@ -849,7 +849,7 @@ pub enum DurableChange {
         number: fm_protocol::WireMixNumber,
         config: Option<Box<fm_protocol::WireSecondaryMixConfig>>,
     },
-    /// One input's video delay changed (Protocol 2.160).
+    /// One input's video delay changed (Protocol 2.161).
     InputVideoDelayChanged {
         input: InputId,
         frames: u32,
@@ -2031,7 +2031,7 @@ pub struct ClientView {
     /// Every configured mix's live Program/Preview and transition progress
     /// (Protocol 2.159).
     pub secondary_mix_states: Vec<fm_protocol::WireSecondaryMixState>,
-    /// Every input's video delay in frames, ascending (Protocol 2.160).
+    /// Every input's video delay in frames, ascending (Protocol 2.161).
     pub input_video_delays: Vec<fm_protocol::WireInputVideoDelay>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,

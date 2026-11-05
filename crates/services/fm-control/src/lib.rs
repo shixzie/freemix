@@ -23,6 +23,7 @@ mod capture;
 mod cue;
 mod display_output;
 mod grade;
+mod input_freeze;
 mod input_lifecycle;
 mod input_video_delay;
 mod live_lan;
@@ -3617,6 +3618,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetInputVideoDelay { .. }
+        | EngineCommand::SetInputFreeze { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::SetNetworkStream { .. }
@@ -3933,6 +3935,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         }
         payload @ CommandPayload::SetInputVideoDelay { .. } => {
             input_video_delay::engine_command(payload).expect("an input-video-delay payload")
+        }
+        payload @ CommandPayload::SetInputFreeze { .. } => {
+            input_freeze::engine_command(payload).expect("an input-freeze payload")
         }
         CommandPayload::SetNetworkStream { .. } => {
             unreachable!("network stream edits resolve their URL against the show")
@@ -4975,6 +4980,13 @@ fn accepted_event_payload(
     if let Some(payload) = outcome
         .events
         .iter()
+        .find_map(|event| input_freeze::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
         .find_map(|event| live_lan::changed(&event.payload))
     {
         return payload;
@@ -5321,6 +5333,7 @@ fn snapshot_record(
         logical_outputs: logical_output::wire_entries(engine.show()),
         secondary_mixes: secondary_mix::wire_entries(engine.show()),
         input_video_delays: input_video_delay::wire_entries(engine.show()),
+        frozen_inputs: input_freeze::wire_entries(engine.show()),
         secondary_mix_states: secondary_mix::wire_states(engine.secondary_mix_frame()),
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),

@@ -958,6 +958,7 @@ fn serve_streams_snapshot_peer(
             secondary_mixes: Vec::new(),
             secondary_mix_states: Vec::new(),
             input_video_delays: Vec::new(),
+            frozen_inputs: Vec::new(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
@@ -1871,6 +1872,7 @@ fn write_handshake_snapshot(
             secondary_mixes: Vec::new(),
             secondary_mix_states: Vec::new(),
             input_video_delays: Vec::new(),
+            frozen_inputs: Vec::new(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: SNAPSHOT_NETWORK_STREAMS.with(|cell| cell.borrow().clone()),
@@ -2002,6 +2004,7 @@ fn write_handshake_version_with_fade_to_black(
             secondary_mixes: Vec::new(),
             secondary_mix_states: Vec::new(),
             input_video_delays: Vec::new(),
+            frozen_inputs: Vec::new(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
@@ -8037,7 +8040,7 @@ fn local_input_video_delays_persist_and_are_bounded() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
-/// IN-022, Protocol 2.160: the remote delay command sends the exact project
+/// IN-022, Protocol 2.161: the remote delay command sends the exact project
 /// edit and accepts the daemon's realization.
 #[test]
 fn remote_input_video_delay_sends_the_exact_edit() {

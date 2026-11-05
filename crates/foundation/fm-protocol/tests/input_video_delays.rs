@@ -1,4 +1,4 @@
-//! IN-022: per-input video delay commands round-trip at Protocol 2.160.
+//! IN-022: per-input video delay commands round-trip at Protocol 2.161.
 
 use core::num::NonZeroU128;
 

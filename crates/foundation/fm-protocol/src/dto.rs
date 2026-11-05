@@ -2174,7 +2174,7 @@ pub enum CommandPayload {
         kind: AutoTransitionKind,
         duration_frames: u32,
     },
-    /// Sets one input's video delay in frames (Protocol 2.160, IN-022). A
+    /// Sets one input's video delay in frames (Protocol 2.161, IN-022). A
     /// padlocked, undoable project edit.
     SetInputVideoDelay {
         input: WireInputId,
@@ -2709,7 +2709,7 @@ pub struct SnapshotMessage {
     /// progress, ascending by number (Protocol 2.159).
     pub secondary_mix_states: Vec<crate::WireSecondaryMixState>,
     /// Every input's video delay in frames, ascending by input (Protocol
-    /// 2.160).
+    /// 2.161).
     pub input_video_delays: Vec<crate::WireInputVideoDelay>,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<crate::DisplayOutputEntry>,
@@ -2973,7 +2973,7 @@ pub enum EventPayload {
         number: crate::WireMixNumber,
         config: Option<Box<crate::WireSecondaryMixConfig>>,
     },
-    /// One input's video delay changed (Protocol 2.160, IN-022).
+    /// One input's video delay changed (Protocol 2.161, IN-022).
     InputVideoDelayChanged {
         input: WireInputId,
         frames: u32,

@@ -1,4 +1,4 @@
-//! Per-input video delay codec (Protocol 2.160, IN-022).
+//! Per-input video delay codec (Protocol 2.161, IN-022).
 
 use crate::{CodecError, MAX_WIRE_INPUT_VIDEO_DELAY_FRAMES, WireInputVideoDelay};
 
