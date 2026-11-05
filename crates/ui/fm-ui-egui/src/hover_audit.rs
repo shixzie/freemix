@@ -1933,6 +1933,23 @@ fn with_screen_capture_inventory(
     state
 }
 
+/// A frozen input's bank tile (SW-016): its always-visible FROZEN badge,
+/// its dedicated Unfreeze button, and the last capture's asset label.
+fn frozen_bank_scenes(locale: Locale) -> Vec<Scene> {
+    let mut state = ready(true, Variant::default());
+    if let Some(view) = state.view.as_mut() {
+        view.frozen_inputs.push(wire(1));
+    }
+    state.frozen_still = Some(crate::FrozenStillCapture {
+        input: input(1),
+        width: 1_920,
+        height: 1_080,
+        asset_uri: "asset://frozen-1.png".into(),
+        path: "assets/frozen-1.png".into(),
+    });
+    vec![Scene::console("input-bank/frozen", shell(&|_| {}), state)]
+}
+
 /// The Add input dialog's alias and feed forms (IN-024, IN-025): an alias
 /// with the first input selected, and a Program and Preview feed.
 fn alias_feed_scenes(locale: Locale) -> Vec<Scene> {
@@ -4288,6 +4305,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.extend(still_scenes(locale));
     scenes.extend(screen_capture_scenes(locale));
     scenes.extend(alias_feed_scenes(locale));
+    scenes.extend(frozen_bank_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
