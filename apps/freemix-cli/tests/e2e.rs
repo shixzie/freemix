@@ -8461,7 +8461,7 @@ fn remote_title_apply_row_maps_fields_and_sends_the_exact_edit() {
         vec![title_row_state(fm_protocol::TitlePhase::Hold)],
         vec![title_row_input()],
     );
-    fs::write(&row, r#"{"Score": 12}"#).unwrap();
+    fs::write(&row, r##"{"Score": 12, "Bar color": "#112233"}"##).unwrap();
     let output = invoke(&[
         "remote-title-apply-row",
         &server.address(),
