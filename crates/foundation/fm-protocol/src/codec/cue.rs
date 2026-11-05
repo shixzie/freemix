@@ -143,8 +143,8 @@ pub(super) fn action_is_valid(action: &WireCueAction) -> bool {
         WireCueAction::Clock { name, operation } => {
             crate::clock_name_is_valid(name)
                 && operation.value_ns().is_none_or(|value| {
-                    value <= crate::cue::MAX_CUE_CLOCK_VALUE_NS
-                        && value >= -crate::cue::MAX_CUE_CLOCK_VALUE_NS
+                    (-crate::cue::MAX_CUE_CLOCK_VALUE_NS..=crate::cue::MAX_CUE_CLOCK_VALUE_NS)
+                        .contains(&value)
                 })
         }
         WireCueAction::AudioGain { gain, .. } => gain.is_valid(),
@@ -361,6 +361,7 @@ fn parse_audio_token(kind: &str, id: &str, rest: &[&str]) -> Option<WireCueActio
 /// Parses one canonical cue action token; `None` when it is malformed.
 /// Bounds are checked by [`validate_spec`], not here.
 #[must_use]
+#[allow(clippy::too_many_lines)] // one arm per action token
 pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
     let parts: Vec<&str> = value.split('.').collect();
     let input = parse_target;
