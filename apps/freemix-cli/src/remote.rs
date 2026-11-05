@@ -3098,6 +3098,7 @@ impl Remote {
                         | EventPayload::LogicalOutputChanged { .. }
                         | EventPayload::SecondaryMixChanged { .. }
                         | EventPayload::InputVideoDelayChanged { .. }
+                        | EventPayload::InputFreezeChanged { .. }
                         | EventPayload::LiveLanChanged(_)
                         | EventPayload::AlertRulesChanged(_)
                         | EventPayload::NetworkStreamChanged { .. }
