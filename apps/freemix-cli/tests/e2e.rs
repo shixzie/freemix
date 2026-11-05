@@ -8505,6 +8505,7 @@ fn remote_alias_input_add_sends_the_exact_source() {
                     width: 960,
                     height: 1080,
                 }),
+                effects: Vec::new(),
             },
         },
         event: EventPayload::InputAdded {

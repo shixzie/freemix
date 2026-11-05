@@ -2899,6 +2899,7 @@ mod tests {
             Ok(LiveInputSource::Alias {
                 target: wire(1),
                 crop: None,
+                effects: Vec::new(),
             })
         );
 
@@ -2917,11 +2918,34 @@ mod tests {
                     width: 640,
                     height: 360,
                 }),
+                effects: Vec::new(),
             })
         );
 
         draft.alias_crop_width = 0;
         assert_eq!(draft.source(), Err(Msg::AddInputAliasCropInvalid.en()));
+
+        draft.alias_crop = false;
+        draft.alias_effects = "saturation:-50 brightness_contrast:10,-5".into();
+        assert_eq!(
+            draft.source(),
+            Ok(LiveInputSource::Alias {
+                target: wire(1),
+                crop: None,
+                effects: vec![
+                    fm_protocol::WireLayerEffect {
+                        name: "saturation".into(),
+                        parameters: vec![-50],
+                    },
+                    fm_protocol::WireLayerEffect {
+                        name: "brightness_contrast".into(),
+                        parameters: vec![10, -5],
+                    },
+                ],
+            })
+        );
+        draft.alias_effects = "saturation".into();
+        assert_eq!(draft.source(), Err(Msg::AddInputAliasEffectsInvalid.en()));
         assert_eq!(
             draft.source_problem().map(|problem| problem.field),
             Some(Msg::AddInputAliasCropWidth)
