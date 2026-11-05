@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.162 / schema 109 (2026-11-05).
+(2026-10-19); items refreshed through protocol 2.163 / schema 109 (2026-11-05).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -3196,7 +3196,16 @@ rejects unknown inputs and oversized delays, `EngineCommand::SetInputVideoDelay`
 is an undoable project edit, and the daemon folds it back into the project on
 save. Protocol 2.161 carries the list in every snapshot, sets one with
 `set_input_video_delay`, and announces an edit (or its undo or redo) with
-`input_video_delay_changed`; the client model replicates it. The CLI sets the
+`input_video_delay_changed`; Protocol 2.163 adds that event's
+`audio_delay_samples`, and the client model replicates both the delay and the
+aligned strip. Setting a video delay also aligns the input's audio strip to
+the same wall-clock span (`frames × sample rate / frame rate`, rounded half
+up and clamped to the strip's one-second, 48,000-sample bound); undo and redo
+recompute the alignment from the restored frames, and the daemon delivers a
+changed strip to the native audio realizer through the frame's strip updates
+while the simulated audio plane reads the folded project. The engine takes
+the project's sample rate when the daemon or CLI restores it (48 kHz
+otherwise). The CLI sets the
 delay locally with `input-video-delay <show> <input> <frames>` and remotely
 with `remote-input-video-delay <address> <input> <frames>`, and both save and
 restore paths now preserve and fold every related setting (logical outputs,
@@ -3212,8 +3221,9 @@ pictures (only while delayed) and count back from the newest. Both clamp to what
 retain (seven frames at the default eight-frame ring), and the frame loop sends
 the realizer a changed map only. Remaining gaps: the simulated render path does
 not apply the delay, the native delay is clamped by the source ring, the
-Studio field commits when the drag ends rather than continuously, there is no
-audio alignment, loop, freeze integration, or clip save;
+Studio field commits when the drag ends rather than continuously, a video
+delay owns the strip alignment (a manual audio delay is overwritten on the
+next delay edit), there is no loop, freeze integration, or clip save;
 `SampleDelay` can change its delay live within the one-second bound while
 preserving history (growing prepends silence), and the Master mixer's delay
 setter uses that path; it still cannot exceed one second; no source/output
