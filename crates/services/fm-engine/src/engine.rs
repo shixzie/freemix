@@ -1329,10 +1329,10 @@ impl EngineSnapshot {
     }
 }
 
-#[derive(Clone, Debug)]
 /// Audio sample rate an engine assumes until the project's own rate is set.
 pub const DEFAULT_AUDIO_SAMPLE_RATE: u32 = 48_000;
 
+#[derive(Clone, Debug)]
 pub struct Engine {
     commands: CommandState<ShowState, EngineAcceptance>,
     /// Monotonic count of receipts recorded, so preparations go stale after
@@ -2632,6 +2632,8 @@ impl Engine {
                 let mutation = EngineMutation {
                     command: sub,
                     target_frame,
+                    frame_rate: self.frame_rate,
+                    audio_sample_rate: self.audio_sample_rate,
                     realized_on_air,
                     playlist,
                     title_clip_bound: None,
@@ -3054,6 +3056,8 @@ impl Engine {
             Ok(EngineMutation {
                 command,
                 target_frame,
+                frame_rate: self.frame_rate,
+                audio_sample_rate: self.audio_sample_rate,
                 realized_on_air,
                 playlist,
                 title_clip_bound,
@@ -4180,6 +4184,8 @@ fn validate_idle_restore(
 struct EngineMutation {
     command: EngineCommand,
     target_frame: FrameNumber,
+    frame_rate: FrameRate,
+    audio_sample_rate: u32,
     /// The realized switcher's on-air use of a title command's input.
     realized_on_air: Option<InputUsage>,
     /// The stepped playlist of a playlist command.
