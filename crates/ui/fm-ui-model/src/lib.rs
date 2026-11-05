@@ -7,7 +7,7 @@
 //! intent for realization.
 
 use core::{cmp::Ordering, fmt, num::NonZeroU128};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use fm_command::{CommandId, Revision};
