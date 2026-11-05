@@ -2300,7 +2300,7 @@ impl TitleRowSources {
                     input.get().get(),
                     extension.as_deref().unwrap_or("data")
                 ));
-                (cache, format, Some(source_path.to_owned()))
+                (cache, format, Some((*source_path).to_owned()))
             } else {
                 let relative = std::path::Path::new(source_path);
                 if relative.is_absolute()
@@ -2334,7 +2334,7 @@ impl TitleRowSources {
                 input,
                 TitleRowSource {
                     input,
-                    path: source_path.to_owned(),
+                    path: (*source_path).to_owned(),
                     interval,
                     keep_live: *keep_live == "1",
                     source,
