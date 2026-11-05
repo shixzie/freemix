@@ -565,6 +565,7 @@ pub enum Command {
         name: String,
         target: u128,
         crop: Option<CropRect>,
+        effects: Vec<fm_model::LayerEffect>,
     },
     /// Adds an alias on the daemon (IN-024, Protocol 2.162).
     RemoteAliasInputAdd {
@@ -573,6 +574,7 @@ pub enum Command {
         name: String,
         target: u128,
         crop: Option<CropRect>,
+        effects: Vec<fm_model::LayerEffect>,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -2555,6 +2557,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let name = nonblank(&mut arguments, "input name")?;
             let target = number(&required(&mut arguments, "target input")?, "target input")?;
             let mut crop = None;
+            let mut effects = Vec::new();
             let mut key = None;
             let mut expected_revision = None;
             while let Some(option) = arguments.next() {
@@ -2565,6 +2568,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                         }
                         crop = Some(alias_crop(&required(&mut arguments, "crop")?)?);
                     }
+                    "--effect" => effects.push(effect_token(&required(&mut arguments, "effect")?)?),
                     "--key" => {
                         let value = required(&mut arguments, "idempotency key")?;
                         if value.trim().is_empty() {
@@ -2587,6 +2591,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 name,
                 target,
                 crop,
+                effects,
                 key,
                 expected_revision,
             })
@@ -5814,6 +5819,7 @@ fn parse_alias_input_add(
     let name = nonblank(&mut arguments, "input name")?;
     let target = number(&required(&mut arguments, "target input")?, "target input")?;
     let mut crop = None;
+    let mut effects = Vec::new();
     while let Some(option) = arguments.next() {
         match option.as_str() {
             "--crop" => {
@@ -5822,6 +5828,7 @@ fn parse_alias_input_add(
                 }
                 crop = Some(alias_crop(&required(&mut arguments, "crop")?)?);
             }
+            "--effect" => effects.push(effect_token(&required(&mut arguments, "effect")?)?),
             _ => return Err(ArgsError::UnknownOption(option)),
         }
     }
@@ -5831,6 +5838,7 @@ fn parse_alias_input_add(
         name,
         target,
         crop,
+        effects,
     })
 }
 

@@ -227,7 +227,15 @@ pub fn run(command: Command) -> AppResult<()> {
             name,
             target,
             crop,
-        } => add_alias_input(&path, input_id(input)?, name, input_id(target)?, crop)?,
+            effects,
+        } => add_alias_input(
+            &path,
+            input_id(input)?,
+            name,
+            input_id(target)?,
+            crop,
+            effects,
+        )?,
         Command::MixFeedInputAdd {
             path,
             input,
@@ -240,6 +248,7 @@ pub fn run(command: Command) -> AppResult<()> {
             name,
             target,
             crop,
+            effects,
             key,
             expected_revision,
         } => remote::execute(
@@ -255,6 +264,13 @@ pub fn run(command: Command) -> AppResult<()> {
                         width: crop.width,
                         height: crop.height,
                     }),
+                    effects: effects
+                        .iter()
+                        .map(|effect| fm_protocol::WireLayerEffect {
+                            name: effect.name.clone(),
+                            parameters: effect.parameters.clone(),
+                        })
+                        .collect(),
                 },
             },
             key,
@@ -4147,13 +4163,18 @@ fn add_alias_input(
     name: String,
     target: InputId,
     crop: Option<CropRect>,
+    effects: Vec<LayerEffect>,
 ) -> AppResult<()> {
     add_project_input(
         path,
         Input {
             id: input,
             name,
-            kind: InputKind::Alias { target, crop },
+            kind: InputKind::Alias {
+                target,
+                crop,
+                effects,
+            },
             required_capabilities: Vec::new(),
         },
     )
