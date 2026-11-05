@@ -9,9 +9,10 @@ use std::{
 use fm_client::{Client, ClientConfig, ConnectionState, Intake, Outbound};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandPayload, CommandResult, DiagnosticsRequest,
-    DiagnosticsResponse, EventPayload, FadeToBlackState, HandshakeOutcome, HandshakeRequest,
-    HeartbeatMessage, MAX_LINE_BYTES, Role, RuntimeLifecycleEvent, ServerIdentity,
-    StreamRealizedState, StreamStatusMessage, WireMessage, decode_line, encode_line,
+    DiagnosticsResponse, EventPayload, FadeToBlackState, FrozenStillRequest, HandshakeOutcome,
+    HandshakeRequest, HeartbeatMessage, MAX_FROZEN_STILL_BYTES, MAX_LINE_BYTES, Role,
+    RuntimeLifecycleEvent, ServerIdentity, StreamRealizedState, StreamStatusMessage, WireMessage,
+    decode_line, encode_line,
 };
 use fm_types::{InputId, ProjectId};
 use fm_ui_model::{ManualTransitionStatus, ProjectState};
@@ -1208,6 +1209,107 @@ pub fn script(
         print_script_run(script, &state.script_run_status(script));
     }
     Ok(())
+}
+
+/// Exports one frozen input's latched picture as a PNG (SW-016).
+///
+/// The daemon answers a `FrozenStillRequest` with PNG parts; the client joins
+/// them in order and writes the file only after every part arrived.
+pub fn frozen_still(address: SocketAddr, input: InputId, output: &Path) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let request_id = format!("cli-frozen-still-{}", unique_client_id()?);
+    remote.write(&WireMessage::FrozenStillRequest(FrozenStillRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: request_id.clone(),
+        input: fm_protocol::WireInputId::from_domain(input),
+    }))?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut parts: Option<(u16, u32, u32, Vec<u8>)> = None;
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::FrozenStillResponse(part) => {
+                if part.request_id != request_id
+                    || part.input != fm_protocol::WireInputId::from_domain(input)
+                {
+                    return Err(RemoteFailure(
+                        "frozen-still response does not match the request".into(),
+                    )
+                    .into());
+                }
+                if part.parts == 0
+                    || part.part >= part.parts
+                    || part.data.is_empty()
+                    || part.data.len() > fm_protocol::MAX_FROZEN_STILL_PART_BYTES
+                {
+                    return Err(RemoteFailure(format!(
+                        "frozen-still part {}/{} is out of bounds",
+                        part.part, part.parts
+                    ))
+                    .into());
+                }
+                match parts.as_mut() {
+                    None if part.part == 0 => {
+                        parts = Some((part.parts, part.width, part.height, part.data.clone()));
+                    }
+                    Some((count, width, height, data))
+                        if *count == part.parts
+                            && *width == part.width
+                            && *height == part.height
+                            && usize::from(part.part)
+                                * fm_protocol::MAX_FROZEN_STILL_PART_BYTES
+                                == data.len() =>
+                    {
+                        data.extend_from_slice(&part.data);
+                        if data.len() > MAX_FROZEN_STILL_BYTES {
+                            return Err(RemoteFailure(
+                                "frozen-still PNG exceeds the protocol bound".into(),
+                            )
+                            .into());
+                        }
+                    }
+                    _ => {
+                        return Err(RemoteFailure(format!(
+                            "frozen-still part {} arrived out of order",
+                            part.part
+                        ))
+                        .into());
+                    }
+                }
+                let (count, width, height, data) = parts.as_ref().expect("a part started");
+                if part.part + 1 == *count {
+                    if !data.starts_with(&fm_video::png::PNG_SIGNATURE) {
+                        return Err(
+                            RemoteFailure("frozen-still response is not a PNG".into()).into()
+                        );
+                    }
+                    std::fs::write(output, data)?;
+                    println!(
+                        "frozen-still: input={input} {width}x{height} bytes={} path={}",
+                        data.len(),
+                        output.display()
+                    );
+                    return Ok(());
+                }
+            }
+            WireMessage::Event(event) => remote.client.intake(WireMessage::Event(event))?,
+            WireMessage::RuntimeEvent(event) => {
+                remote.client.intake(WireMessage::RuntimeEvent(event))?;
+            }
+            WireMessage::Error(error) => {
+                return Err(RemoteFailure(refusal_text(
+                    &error.error.code,
+                    &error.error.message,
+                    &error.error.fields,
+                ))
+                .into());
+            }
+            _ => {
+                return Err(
+                    RemoteFailure("expected frozen_still_response from daemon".into()).into(),
+                );
+            }
+        }
+    }
 }
 
 /// Lists, exports, or imports the shortcut set of the daemon at `address`
