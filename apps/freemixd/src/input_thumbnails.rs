@@ -1571,6 +1571,7 @@ mod tests {
             InputKind::Alias {
                 target: input_id(1),
                 crop: None,
+                effects: Vec::new(),
             },
         ));
         project.add_scene(Scene {

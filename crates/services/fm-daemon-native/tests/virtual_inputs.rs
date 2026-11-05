@@ -69,6 +69,7 @@ fn add_alias(project: &mut Project, value: u128, target: u128, crop: Option<fm_m
         kind: InputKind::Alias {
             target: input(target),
             crop,
+            effects: Vec::new(),
         },
         required_capabilities: Vec::new(),
     });
