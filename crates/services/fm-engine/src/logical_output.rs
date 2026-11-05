@@ -1,21 +1,22 @@
 //! Resolving the show's logical outputs into one frame's render plans
-//! (SW-012).
+//! (SW-012) and the secondary-mix frame they read (IN-023).
 
 use fm_model::{
     LogicalAudioMap, LogicalMultiViewCell, LogicalOutputConfig, LogicalOutputSource,
-    LogicalOverlayPolicy,
+    LogicalOverlayPolicy, SecondaryMixSource,
 };
 use fm_switcher::{
-    AudioMap, LogicalOutputSlot, LogicalOutputs, MultiViewCell, OutputRoutingFrame, OutputSource,
-    OverlayPolicy, OverlaySet, RoutingContext,
+    AudioMap, LogicalOutputSlot, LogicalOutputs, MixBankFrame, MixFrame, MixId, MixLayer,
+    MultiViewCell, OVERLAY_CHANNEL_COUNT, OutputRoutingFrame, OutputSource, OverlayPolicy,
+    OverlaySet, RoutingContext,
 };
 
 use crate::ShowState;
 
 /// Resolves every enabled logical output against the show's desired switcher
-/// state. Secondary mixes are not carried by the engine yet, so a source that
-/// names one resolves as unavailable; Program, Preview, inputs, multiviews,
-/// overlays, and audio maps resolve normally.
+/// state and the secondary mixes configured in the project. A mix source
+/// resolves from the project's static Program/Preview routing; live mix
+/// transitions remain with the bank when it is wired to the frame loop.
 pub(crate) fn frame(state: &ShowState) -> OutputRoutingFrame {
     let mut routing = LogicalOutputs::new();
     for config in state.logical_outputs() {
@@ -24,11 +25,44 @@ pub(crate) fn frame(state: &ShowState) -> OutputRoutingFrame {
         };
         let _ = routing.configure(slot, Some(switcher_config(config)));
     }
+    let mixes = mix_frame(state);
     routing.resolve(&RoutingContext {
         switcher: state.desired_switcher(),
-        mixes: None,
+        mixes: Some(&mixes),
         buses: state.audio_buses(),
     })
+}
+
+/// The project's secondary mixes as one bank frame. Each mix carries its
+/// configured Program and Preview source; no transition is running until the
+/// live bank is wired.
+fn mix_frame(state: &ShowState) -> MixBankFrame {
+    MixBankFrame {
+        frame: 0,
+        mixes: state
+            .secondary_mixes()
+            .map(|config| MixFrame {
+                mix: MixId::new(config.number.number()).expect("a validated mix number"),
+                primary: mix_layer(config.program),
+                secondary: None,
+                transition_kind: None,
+                mix_numerator: 0,
+                mix_denominator: 1,
+                preview: config.preview.map(mix_layer),
+                overlays: [None; OVERLAY_CHANNEL_COUNT],
+            })
+            .collect(),
+    }
+}
+
+fn mix_layer(source: SecondaryMixSource) -> MixLayer {
+    match source {
+        SecondaryMixSource::Input(input) => MixLayer::Input(input),
+        SecondaryMixSource::Mix(number) => MixLayer::Mix {
+            mix: MixId::new(number.number()).expect("a validated mix number"),
+            frame: 0,
+        },
+    }
 }
 
 fn switcher_config(config: &LogicalOutputConfig) -> fm_switcher::LogicalOutputConfig {
