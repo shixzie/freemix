@@ -345,8 +345,10 @@ mod tests {
 
     #[test]
     fn a_draft_refuses_main_missing_sources_and_preview_equals_program() {
-        let mut draft = SecondaryMixDraft::default();
-        draft.number = 1;
+        let mut draft = SecondaryMixDraft {
+            number: 1,
+            ..SecondaryMixDraft::default()
+        };
         assert!(draft.config().is_err());
         draft.number = 2;
         draft.program = "input:0".into();
