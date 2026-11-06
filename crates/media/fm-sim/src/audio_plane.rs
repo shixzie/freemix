@@ -18,7 +18,7 @@
 //! the same configuration and rendered through the same frames therefore
 //! produce identical PCM, sample for sample.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use fm_audio::{
@@ -31,9 +31,9 @@ use fm_frame::{
     ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration, NormalizedTimestamp,
     OriginalTimestamp, SequenceNumber, TimeBase, TimingError,
 };
-use fm_switcher::{ProgramFrame, TransitionKind};
+use fm_switcher::{MixAudio, MixAudioSource, MixBankFrame, MixId, ProgramFrame, TransitionKind};
 use fm_types::strip_dsp::{StripDsp, StripDspTarget};
-use fm_types::{AudioFormat, FrameRate, InputId};
+use fm_types::{AudioFormat, FrameRate, InputId, OutputId};
 
 /// Level of every simulated input tone, in dBFS.
 ///
@@ -374,6 +374,16 @@ impl SimulatedGenerator {
     }
 }
 
+/// Adds `source` planes into `target` at `gain`, bounded by `samples`.
+fn add_planes(target: &mut [Vec<f32>], source: &[Vec<f32>], samples: usize, gain: f32) {
+    for (target, source) in target.iter_mut().zip(source) {
+        let count = samples.min(source.len());
+        for (target, source) in target[..count].iter_mut().zip(&source[..count]) {
+            *target += source * gain;
+        }
+    }
+}
+
 /// The exact source gains of one Program frame, mirroring the native plan.
 #[derive(Clone, Copy, Debug)]
 struct ProgramAudioPlan {
@@ -393,6 +403,17 @@ impl ProgramAudioPlan {
         }
     }
 }
+
+/// One logical output's audio map for the simulated plane (SW-012/IN-023).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SimulatedOutputAudioPlan {
+    pub output: OutputId,
+    pub audio: fm_switcher::AudioSource,
+}
+
+/// How many bank frames of secondary-mix audio routes the plane retains for
+/// nested mix reads.
+const MAX_MIX_AUDIO_HISTORY: usize = 16;
 
 /// The simulated daemon's audio render plane; see the module documentation.
 pub struct SimulatedAudioPlane {
@@ -418,6 +439,11 @@ pub struct SimulatedAudioPlane {
     /// Inputs whose audio is silenced while their picture is frozen
     /// (SW-016), restored from the strip state on unfreeze.
     frozen_inputs: BTreeSet<InputId>,
+    /// Each logical output's rendered audio map for the last frame
+    /// (SW-012/IN-023).
+    output_planes: BTreeMap<OutputId, Vec<Vec<f32>>>,
+    /// The last bank frames' mix audio routes, for nested mix reads.
+    mix_audio_history: VecDeque<(u64, BTreeMap<MixId, MixAudio>)>,
     frame: u64,
     start_sample: u64,
     end_sample: u64,
@@ -480,6 +506,8 @@ impl SimulatedAudioPlane {
             loudness: Vec::new(),
             monitor_solo: false,
             frozen_inputs: BTreeSet::new(),
+            output_planes: BTreeMap::new(),
+            mix_audio_history: VecDeque::new(),
             frame: 0,
             start_sample: 0,
             end_sample: 0,
@@ -524,6 +552,19 @@ impl SimulatedAudioPlane {
     #[must_use]
     pub const fn frame(&self) -> u64 {
         self.frame
+    }
+
+    /// `output`'s rendered audio map for the last frame, or `None` when its
+    /// map was Master or Bus and the plane keeps only the Program block.
+    #[must_use]
+    pub fn output_planes(&self, output: OutputId) -> Option<&[Vec<f32>]> {
+        self.output_planes.get(&output).map(Vec::as_slice)
+    }
+
+    /// Every logical output the last frame rendered audio for, ascending.
+    #[must_use]
+    pub const fn rendered_outputs(&self) -> &BTreeMap<OutputId, Vec<Vec<f32>>> {
+        &self.output_planes
     }
 
     /// The last frame's absolute sample span `(start, end)`.
@@ -609,6 +650,29 @@ impl SimulatedAudioPlane {
         frame: u64,
         resets: &[StripDspTarget],
     ) -> Result<(), SimulatedAudioError> {
+        self.render_with_outputs(program, frame, resets, &[], &MixBankFrame::empty())
+    }
+
+    /// Renders one video frame's Program interval and every logical output's
+    /// audio map (SW-012/IN-023).
+    ///
+    /// `outputs` names the maps to render; Master and Bus maps keep the
+    /// Program block/aux path outside this plane, so they are not stored.
+    /// `mixes` supplies the frame's secondary-mix audio routes, and the plane
+    /// retains the last sixteen bank frames so a nested mix read resolves the
+    /// frame it names.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed error as [`Self::render`].
+    pub fn render_with_outputs(
+        &mut self,
+        program: ProgramFrame,
+        frame: u64,
+        resets: &[StripDspTarget],
+        outputs: &[SimulatedOutputAudioPlan],
+        mixes: &MixBankFrame,
+    ) -> Result<(), SimulatedAudioError> {
         let (start_sample, end_sample) =
             frame_sample_span(frame, self.format.sample_rate.hertz(), self.frame_rate)
                 .ok_or(SimulatedAudioError::TimelineOverflow)?;
@@ -691,11 +755,101 @@ impl SimulatedAudioPlane {
             None,
         )?;
         self.master_loudness.process_planes(&self.program, samples);
+        self.render_output_audio(outputs, mixes, samples);
         self.frame = frame;
         self.start_sample = start_sample;
         self.end_sample = end_sample;
         self.samples = samples;
         Ok(())
+    }
+
+    /// Renders each logical output's audio map into [`Self::output_planes`].
+    fn render_output_audio(
+        &mut self,
+        outputs: &[SimulatedOutputAudioPlan],
+        mixes: &MixBankFrame,
+        samples: usize,
+    ) {
+        self.output_planes.clear();
+        self.mix_audio_history.push_back((
+            mixes.frame,
+            mixes.mixes.iter().map(|mix| (mix.mix, mix.audio)).collect(),
+        ));
+        while self.mix_audio_history.len() > MAX_MIX_AUDIO_HISTORY {
+            self.mix_audio_history.pop_front();
+        }
+        let channels = self.format.channels.channels().len();
+        for plan in outputs {
+            let mut planes = vec![vec![0.0_f32; samples]; channels];
+            match plan.audio {
+                fm_switcher::AudioSource::Master | fm_switcher::AudioSource::Bus(_) => continue,
+                fm_switcher::AudioSource::Silent => {}
+                fm_switcher::AudioSource::Input(input) => {
+                    if let Some(source) = self.source_planes.get(&input) {
+                        add_planes(&mut planes, source, samples, 1.0);
+                    }
+                }
+                fm_switcher::AudioSource::Mix(audio) => {
+                    self.mix_audio_planes(&mut planes, audio, 1.0, samples, 0);
+                }
+            }
+            self.output_planes.insert(plan.output, planes);
+        }
+    }
+
+    /// Mixes one secondary-mix audio route into `target` at `gain`.
+    #[allow(clippy::cast_precision_loss)] // exact for the bank's transition bounds
+    fn mix_audio_planes(
+        &self,
+        target: &mut [Vec<f32>],
+        audio: MixAudio,
+        gain: f32,
+        samples: usize,
+        depth: usize,
+    ) {
+        if depth > MAX_MIX_AUDIO_HISTORY {
+            return;
+        }
+        let denominator = audio.denominator.max(1);
+        let numerator = audio.numerator.min(denominator);
+        let primary_gain = gain * (denominator - numerator) as f32 / denominator as f32;
+        let secondary_gain = gain * numerator as f32 / denominator as f32;
+        self.mix_audio_source_planes(target, audio.primary, primary_gain, samples, depth);
+        if let Some(secondary) = audio.secondary {
+            self.mix_audio_source_planes(target, secondary, secondary_gain, samples, depth);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mix_audio_source_planes(
+        &self,
+        target: &mut [Vec<f32>],
+        source: MixAudioSource,
+        gain: f32,
+        samples: usize,
+        depth: usize,
+    ) {
+        match source {
+            MixAudioSource::Input(input) => {
+                if let Some(planes) = self.source_planes.get(&input) {
+                    add_planes(target, planes, samples, gain);
+                }
+            }
+            MixAudioSource::Silent => {}
+            MixAudioSource::Mix { mix, frame } => {
+                let Some((_, routes)) = self
+                    .mix_audio_history
+                    .iter()
+                    .rev()
+                    .find(|(candidate, _)| *candidate == frame)
+                else {
+                    return;
+                };
+                if let Some(audio) = routes.get(&mix) {
+                    self.mix_audio_planes(target, *audio, gain, samples, depth + 1);
+                }
+            }
+        }
     }
 
     /// Takes the meter interval of the last rendered frame.
