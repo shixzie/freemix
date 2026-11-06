@@ -19334,6 +19334,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // crossfade, silence, and nested delay in one render
     fn logical_output_audio_renders_mix_routes_with_crossfades_and_delay() {
         let program = input(1);
         let a = input(2);
