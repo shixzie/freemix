@@ -1960,6 +1960,113 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::SecondaryMixTBarStart {
+            path,
+            number,
+            kind,
+            key,
+            expected_revision,
+        } => live(
+            &path,
+            EngineCommand::SecondaryMixStartTBar {
+                number: model_secondary_mix_number(number),
+                kind: fm_control::domain_transition_kind(kind),
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixTBarStart {
+            address,
+            number,
+            kind,
+            key,
+            expected_revision,
+        } => remote::execute_live(
+            address,
+            fm_protocol::CommandPayload::SecondaryMixStartTBar { number, kind },
+            key,
+            expected_revision,
+        )?,
+        Command::SecondaryMixTBarPosition {
+            path,
+            number,
+            position,
+            key,
+            expected_revision,
+        } => live(
+            &path,
+            EngineCommand::SecondaryMixSetTBarPosition {
+                number: model_secondary_mix_number(number),
+                position: fm_switcher::TBarPosition::new(position.basis_points())
+                    .expect("a validated manual position"),
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixTBarPosition {
+            address,
+            number,
+            position,
+            key,
+            expected_revision,
+        } => remote::execute_live(
+            address,
+            fm_protocol::CommandPayload::SecondaryMixSetTBarPosition { number, position },
+            key,
+            expected_revision,
+        )?,
+        Command::SecondaryMixTBarCommit {
+            path,
+            number,
+            key,
+            expected_revision,
+        } => live(
+            &path,
+            EngineCommand::SecondaryMixCommitTBar {
+                number: model_secondary_mix_number(number),
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixTBarCommit {
+            address,
+            number,
+            key,
+            expected_revision,
+        } => remote::execute_live(
+            address,
+            fm_protocol::CommandPayload::SecondaryMixCommitTBar { number },
+            key,
+            expected_revision,
+        )?,
+        Command::SecondaryMixTBarCancel {
+            path,
+            number,
+            key,
+            expected_revision,
+        } => live(
+            &path,
+            EngineCommand::SecondaryMixCancelTBar {
+                number: model_secondary_mix_number(number),
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixTBarCancel {
+            address,
+            number,
+            key,
+            expected_revision,
+        } => remote::execute_live(
+            address,
+            fm_protocol::CommandPayload::SecondaryMixCancelTBar { number },
+            key,
+            expected_revision,
+        )?,
         Command::SecondaryMixFadeToBlack {
             path,
             number,
@@ -8574,6 +8681,14 @@ Usage:
   freemix-cli remote-secondary-mix-transition <127.0.0.1:port> <mix:2..=16> <kind> <frames> [--key <key>] [--expect <revision>]
   freemix-cli secondary-mix-fade-to-black <show.freemix> <mix:2..=16> <live|black> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-secondary-mix-fade-to-black <127.0.0.1:port> <mix:2..=16> <live|black> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mix-tbar-start <show.freemix> <mix:2..=16> <kind> [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mix-tbar-start <127.0.0.1:port> <mix:2..=16> <kind> [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mix-tbar-position <show.freemix> <mix:2..=16> <0..=10000> [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mix-tbar-position <127.0.0.1:port> <mix:2..=16> <0..=10000> [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mix-tbar-commit <show.freemix> <mix:2..=16> [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mix-tbar-commit <127.0.0.1:port> <mix:2..=16> [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mix-tbar-cancel <show.freemix> <mix:2..=16> [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mix-tbar-cancel <127.0.0.1:port> <mix:2..=16> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-set <127.0.0.1:port> <slot:1|2> <spec as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-clear <127.0.0.1:port> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-list <127.0.0.1:port>

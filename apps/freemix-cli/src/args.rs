@@ -1607,6 +1607,62 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Starts one secondary mix's manual T-bar (IN-023).
+    SecondaryMixTBarStart {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        kind: fm_protocol::AutoTransitionKind,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixTBarStart {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        kind: fm_protocol::AutoTransitionKind,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Moves one secondary mix's T-bar (IN-023).
+    SecondaryMixTBarPosition {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        position: fm_protocol::ManualTransitionPosition,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixTBarPosition {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        position: fm_protocol::ManualTransitionPosition,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Commits one secondary mix's T-bar (IN-023).
+    SecondaryMixTBarCommit {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixTBarCommit {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Cancels one secondary mix's T-bar (IN-023).
+    SecondaryMixTBarCancel {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixTBarCancel {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Fades one secondary mix to Black or back to Live (IN-023).
     SecondaryMixFadeToBlack {
         path: PathBuf,
@@ -3265,7 +3321,15 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "secondary-mix-transition"
         | "remote-secondary-mix-transition"
         | "secondary-mix-fade-to-black"
-        | "remote-secondary-mix-fade-to-black") => parse_secondary_mix(secondary, arguments),
+        | "remote-secondary-mix-fade-to-black"
+        | "secondary-mix-tbar-start"
+        | "remote-secondary-mix-tbar-start"
+        | "secondary-mix-tbar-position"
+        | "remote-secondary-mix-tbar-position"
+        | "secondary-mix-tbar-commit"
+        | "remote-secondary-mix-tbar-commit"
+        | "secondary-mix-tbar-cancel"
+        | "remote-secondary-mix-tbar-cancel") => parse_secondary_mix(secondary, arguments),
         delay @ ("input-video-delay" | "remote-input-video-delay") => {
             parse_input_video_delay(delay, arguments)
         }
@@ -7655,6 +7719,93 @@ fn parse_secondary_mix(
                     key,
                     expected_revision,
                 },
+                _ => unreachable!("a secondary-mix command names a target"),
+            }
+        }
+        "secondary-mix-tbar-start" => {
+            let mix = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
+            let kind = auto_transition_kind(&required(&mut arguments, "transition kind")?)?;
+            let (key, expected_revision) = command_options(arguments)?;
+            match (path, address) {
+                (Some(path), _) => Command::SecondaryMixTBarStart {
+                    path,
+                    number: mix,
+                    kind,
+                    key,
+                    expected_revision,
+                },
+                (None, Some(address)) => Command::RemoteSecondaryMixTBarStart {
+                    address,
+                    number: mix,
+                    kind,
+                    key,
+                    expected_revision,
+                },
+                (None, None) => unreachable!("a secondary-mix command names a target"),
+            }
+        }
+        "secondary-mix-tbar-position" => {
+            let mix = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
+            let position = number::<u16>(&required(&mut arguments, "position")?, "position")?;
+            let position = fm_protocol::ManualTransitionPosition::new(position).ok_or(
+                ArgsError::OutOfRange {
+                    field: "position",
+                    minimum: 0,
+                    maximum: fm_protocol::ManualTransitionPosition::MAX,
+                    value: position,
+                },
+            )?;
+            let (key, expected_revision) = command_options(arguments)?;
+            match (path, address) {
+                (Some(path), _) => Command::SecondaryMixTBarPosition {
+                    path,
+                    number: mix,
+                    position,
+                    key,
+                    expected_revision,
+                },
+                (None, Some(address)) => Command::RemoteSecondaryMixTBarPosition {
+                    address,
+                    number: mix,
+                    position,
+                    key,
+                    expected_revision,
+                },
+                (None, None) => unreachable!("a secondary-mix command names a target"),
+            }
+        }
+        "secondary-mix-tbar-commit" | "secondary-mix-tbar-cancel" => {
+            let mix = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
+            let (key, expected_revision) = command_options(arguments)?;
+            match (action, path, address) {
+                ("secondary-mix-tbar-commit", Some(path), _) => Command::SecondaryMixTBarCommit {
+                    path,
+                    number: mix,
+                    key,
+                    expected_revision,
+                },
+                ("secondary-mix-tbar-commit", None, Some(address)) => {
+                    Command::RemoteSecondaryMixTBarCommit {
+                        address,
+                        number: mix,
+                        key,
+                        expected_revision,
+                    }
+                }
+                ("secondary-mix-tbar-cancel", Some(path), _) => Command::SecondaryMixTBarCancel {
+                    path,
+                    number: mix,
+                    key,
+                    expected_revision,
+                },
+                ("secondary-mix-tbar-cancel", None, Some(address)) => {
+                    Command::RemoteSecondaryMixTBarCancel {
+                        address,
+                        number: mix,
+                        key,
+                        expected_revision,
+                    }
+                }
                 _ => unreachable!("a secondary-mix command names a target"),
             }
         }
