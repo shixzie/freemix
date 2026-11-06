@@ -1607,6 +1607,23 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Fades one secondary mix to Black or back to Live (IN-023).
+    SecondaryMixFadeToBlack {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        active: bool,
+        duration_frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixFadeToBlack {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        active: bool,
+        duration_frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Starts a timed transition of one secondary mix (IN-023).
     SecondaryMixTransition {
         path: PathBuf,
@@ -3246,7 +3263,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "secondary-mix-cut"
         | "remote-secondary-mix-cut"
         | "secondary-mix-transition"
-        | "remote-secondary-mix-transition") => parse_secondary_mix(secondary, arguments),
+        | "remote-secondary-mix-transition"
+        | "secondary-mix-fade-to-black"
+        | "remote-secondary-mix-fade-to-black") => parse_secondary_mix(secondary, arguments),
         delay @ ("input-video-delay" | "remote-input-video-delay") => {
             parse_input_video_delay(delay, arguments)
         }
@@ -7637,6 +7656,40 @@ fn parse_secondary_mix(
                     expected_revision,
                 },
                 _ => unreachable!("a secondary-mix command names a target"),
+            }
+        }
+        "secondary-mix-fade-to-black" => {
+            let mix = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
+            let active = match required(&mut arguments, "target")?.as_str() {
+                "black" => true,
+                "live" => false,
+                value => {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "mix fade target",
+                        value: value.to_owned(),
+                    });
+                }
+            };
+            let duration_frames = number(&required(&mut arguments, "frames")?, "frames")?;
+            let (key, expected_revision) = command_options(arguments)?;
+            match (path, address) {
+                (Some(path), _) => Command::SecondaryMixFadeToBlack {
+                    path,
+                    number: mix,
+                    active,
+                    duration_frames,
+                    key,
+                    expected_revision,
+                },
+                (None, Some(address)) => Command::RemoteSecondaryMixFadeToBlack {
+                    address,
+                    number: mix,
+                    active,
+                    duration_frames,
+                    key,
+                    expected_revision,
+                },
+                (None, None) => unreachable!("a secondary-mix command names a target"),
             }
         }
         "secondary-mix-transition" => {

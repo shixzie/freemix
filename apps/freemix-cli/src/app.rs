@@ -1960,6 +1960,41 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::SecondaryMixFadeToBlack {
+            path,
+            number,
+            active,
+            duration_frames,
+            key,
+            expected_revision,
+        } => live(
+            &path,
+            EngineCommand::SecondaryMixFadeToBlack {
+                number: model_secondary_mix_number(number),
+                active,
+                duration_frames,
+            },
+            duration_frames,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixFadeToBlack {
+            address,
+            number,
+            active,
+            duration_frames,
+            key,
+            expected_revision,
+        } => remote::execute_live(
+            address,
+            fm_protocol::CommandPayload::SecondaryMixFadeToBlack {
+                number,
+                active,
+                duration_frames,
+            },
+            key,
+            expected_revision,
+        )?,
         Command::SecondaryMixTransition {
             path,
             number,
@@ -8537,6 +8572,8 @@ Usage:
   freemix-cli remote-secondary-mix-clear <127.0.0.1:port> <mix:2..=16> [--key <key>] [--expect <revision>]
   freemix-cli remote-secondary-mix-cut <127.0.0.1:port> <mix:2..=16> [--key <key>] [--expect <revision>]
   freemix-cli remote-secondary-mix-transition <127.0.0.1:port> <mix:2..=16> <kind> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mix-fade-to-black <show.freemix> <mix:2..=16> <live|black> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mix-fade-to-black <127.0.0.1:port> <mix:2..=16> <live|black> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-set <127.0.0.1:port> <slot:1|2> <spec as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-clear <127.0.0.1:port> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-list <127.0.0.1:port>
