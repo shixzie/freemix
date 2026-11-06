@@ -313,7 +313,12 @@ impl MixState {
                     .into_iter()
                     .flat_map(|transition| [Some(transition.from), Some(transition.to)]),
             )
-            .chain(self.overlays.iter().flatten().map(|overlay| overlay.source))
+            .chain(
+                self.overlays
+                    .iter()
+                    .flatten()
+                    .map(|overlay| Some(overlay.source)),
+            )
             .flatten()
     }
 }
