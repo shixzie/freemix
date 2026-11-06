@@ -2925,6 +2925,18 @@ mod tests {
         draft.alias_crop_width = 0;
         assert_eq!(draft.source(), Err(Msg::AddInputAliasCropInvalid.en()));
 
+        assert_eq!(
+            draft.source_problem().map(|problem| problem.field),
+            Some(Msg::AddInputAliasCropWidth)
+        );
+        draft.alias_crop_width = 16_384;
+        draft.alias_crop_x = 1;
+        assert_eq!(draft.source(), Err(Msg::AddInputAliasCropInvalid.en()));
+        assert_eq!(
+            draft.source_problem().map(|problem| problem.field),
+            Some(Msg::AddInputAliasCropWidth)
+        );
+
         draft.alias_crop = false;
         draft.alias_effects = "saturation:-50 brightness_contrast:10,-5".into();
         assert_eq!(
@@ -2946,13 +2958,6 @@ mod tests {
         );
         draft.alias_effects = "saturation".into();
         assert_eq!(draft.source(), Err(Msg::AddInputAliasEffectsInvalid.en()));
-        assert_eq!(
-            draft.source_problem().map(|problem| problem.field),
-            Some(Msg::AddInputAliasCropWidth)
-        );
-        draft.alias_crop_width = 16_384;
-        draft.alias_crop_x = 1;
-        assert_eq!(draft.source(), Err(Msg::AddInputAliasCropInvalid.en()));
     }
 
     #[test]
