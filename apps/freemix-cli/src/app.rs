@@ -4195,6 +4195,7 @@ fn add_scene_input(path: &Path, input: InputId, scene: SceneId, name: String) ->
 }
 
 /// Adds a validated alias input over `target` (IN-024).
+#[allow(clippy::too_many_arguments)] // one field per authored alias property
 fn add_alias_input(
     path: &Path,
     input: InputId,
