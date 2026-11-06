@@ -7047,7 +7047,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        111
+        112
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
@@ -7142,7 +7142,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        111
+        112
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
