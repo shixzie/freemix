@@ -175,7 +175,7 @@ impl<H: Clone> FreezeController<H> {
     ///
     /// Returns [`FreezeError::FrameDurationTooLong`] when the duration does
     /// not fit the controller's signed nanosecond range.
-    pub const fn new(frame_duration: NormalizedDuration) -> Result<Self, FreezeError> {
+    pub fn new(frame_duration: NormalizedDuration) -> Result<Self, FreezeError> {
         let Ok(frame_duration) = i64::try_from(frame_duration.as_nanos()) else {
             return Err(FreezeError::FrameDurationTooLong {
                 nanos: frame_duration.as_nanos(),
@@ -341,7 +341,7 @@ impl<H: Clone> FreezeController<H> {
                         last.checked_add(self.frame_duration)
                             .ok_or(FreezeError::TimestampOverflow)?
                     }
-                    _ => self.live_output_pts(latched.pts)?,
+                    _ => self.live_output_pts(latched.pts)?.as_nanos(),
                 };
                 let output = OutputFrame {
                     pts: NormalizedTimestamp::from_nanos(pts),
@@ -358,7 +358,7 @@ impl<H: Clone> FreezeController<H> {
                 let Some(live) = self.newest_live.as_ref() else {
                     return Ok(None);
                 };
-                let pts = self.live_output_pts(live.pts)?;
+                let pts = self.live_output_pts(live.pts)?.as_nanos();
                 let Some(live) = self.newest_live.take() else {
                     return Ok(None);
                 };
