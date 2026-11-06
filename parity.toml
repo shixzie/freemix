@@ -207,7 +207,7 @@ commands = ["cargo test -p fm-clock --test production_clocks", "cargo test -p fm
 [[tests]]
 id = "accept-sw-014"
 state = "present"
-paths = ["crates/gpu/fm-compositor/tests/safe_areas.rs", "crates/gpu/fm-compositor/tests/golden.rs", "crates/foundation/fm-model/src/safe_area.rs", "crates/foundation/fm-persistence/src/json/safe_areas.rs", "crates/foundation/fm-protocol/tests/safe_areas.rs", "crates/services/fm-engine/tests/safe_areas.rs", "crates/ui/fm-ui-egui/src/safe_areas.rs", "crates/ui/fm-ui-egui/src/monitors.rs", "apps/freemix-studio/src/prefs.rs", "apps/freemix-studio/tests/studio.rs", "apps/freemix-cli/tests/e2e.rs"]
+paths = ["crates/gpu/fm-compositor/tests/safe_areas.rs", "crates/gpu/fm-compositor/tests/golden.rs", "crates/foundation/fm-model/src/safe_area.rs", "crates/services/fm-persistence/src/json/safe_areas.rs", "crates/foundation/fm-protocol/tests/safe_areas.rs", "crates/services/fm-engine/tests/safe_areas.rs", "crates/ui/fm-ui-egui/src/safe_areas.rs", "crates/ui/fm-ui-egui/src/monitors.rs", "apps/freemix-studio/src/prefs.rs", "apps/freemix-studio/tests/studio.rs", "apps/freemix-cli/tests/e2e.rs"]
 commands = ["cargo test -p fm-compositor --test safe_areas", "cargo test -p fm-compositor --test golden", "cargo test -p fm-protocol --test safe_areas", "cargo test -p fm-engine --test safe_areas", "cargo test -p fm-persistence --test current_model", "cargo test -p freemix-studio --test studio", "cargo test -p freemix-cli --test e2e"]
 [[tests]]
 id = "accept-sw-015"
