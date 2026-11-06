@@ -1947,8 +1947,8 @@ fn virtual_input_project() -> Project {
                 target: input_id(3),
                 crop: None,
                 effects: Vec::new(),
-                opacity: u8::MAX,
-                mask: None,
+                opacity: 128,
+                mask: Some(fm_model::RectMask::new(10, 10, 320, 180).inverted(true)),
             },
         ),
         (5, "Program feed", InputKind::MixFeed(MixFeed::Program)),
@@ -1981,11 +1981,13 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
     assert!(encoded.contains("\"schema_version\": 111"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
-         \"height\": 360}, \"effects\": [{\"name\": \"saturation\", \"parameters\": [-50]}]}"
+         \"height\": 360}, \"effects\": [{\"name\": \"saturation\", \"parameters\": [-50]}], \
+         \"opacity\": 255, \"mask\": null}"
     ));
-    assert!(
-        encoded.contains("{\"type\": \"alias\", \"target\": 3, \"crop\": null, \"effects\": []}")
-    );
+    assert!(encoded.contains(
+        "{\"type\": \"alias\", \"target\": 3, \"crop\": null, \"effects\": [], \"opacity\": 128, \
+         \"mask\": {\"x\": 10, \"y\": 10, \"width\": 320, \"height\": 180, \"invert\": true}}"
+    ));
     assert!(encoded.contains("{\"type\": \"mix_feed\", \"feed\": \"program\"}"));
     assert!(encoded.contains("{\"type\": \"mix_feed\", \"feed\": \"preview\"}"));
 
