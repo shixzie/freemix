@@ -192,6 +192,38 @@ fn title_row_intent_maps_to_the_wire_command() {
 }
 
 #[test]
+fn alias_effects_intent_maps_to_the_wire_command() {
+    let effects = vec![fm_protocol::WireLayerEffect {
+        name: "saturation".into(),
+        parameters: vec![-50],
+    }];
+    let payload = studio_intent_payload(
+        StudioIntent::SetAliasEffects {
+            input: model_input(3),
+            effects: effects.clone(),
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        payload,
+        CommandPayload::SetAliasEffects {
+            input: input(3),
+            effects,
+        }
+    );
+    assert!(
+        studio_intent_payload(
+            StudioIntent::RequestAliasEffects {
+                input: model_input(3)
+            },
+            None
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn freeze_intent_maps_to_the_wire_command() {
     let payload = studio_intent_payload(
         StudioIntent::SetInputFreeze {
