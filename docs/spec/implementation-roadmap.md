@@ -3130,10 +3130,17 @@ Fade-to-Black trajectory, and publishes the block per output. An Input map
 renders that input's program samples, and a Silent map renders silence. The
 daemon's capture path prefers a logical output's block for that output before
 its Master, live, or own-duration fallback, so streams, recorders, and the
-`LiveLAN` viewer hear the routed audio. Remaining gaps: the simulated daemon
-still renders only its Master block, and `AudioMap::Bus` logical outputs keep
-the AU-002 output-aux-bus path instead of resolving the bus named in the plan.
-`IN-023` remains planned.
+`LiveLAN` viewer hear the routed audio. The simulated audio plane renders the
+same maps from its deterministic tones: `SimulatedAudioPlane::render_with_outputs`
+takes the frame's logical-output plans and secondary-mix routes, renders Master
+as the Program block, Input as that input's tone, Silent as silence, and Mix
+with the same crossfade and nested one-frame delay, and exposes each output's
+planes. The simulated session passes the realized routing and mix frame from
+the control service on every demanded meter poll. Remaining gaps: the
+simulated daemon publishes only meters and has no recorder or stream consumer
+for those output planes, its aux buses are not rendered, and `AudioMap::Bus`
+logical outputs keep the AU-002 output-aux-bus path instead of resolving the
+bus named in the plan. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
