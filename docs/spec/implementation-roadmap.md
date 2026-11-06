@@ -3288,7 +3288,12 @@ follows a cropped alias of a scene. An alias's own ordered effects apply
 after its crop and before the effects of a layer that draws it, in direct
 Program, Preview, overlay, key/fill, thumbnail, and scene-layer pictures; the
 native realizer bakes them into the alias crop composition and merges them
-ahead of scene-layer effects, and the CPU scene renderers do the same. The
+ahead of scene-layer effects, and the CPU scene renderers do the same. An
+alias also carries its own opacity (0..=255) and an optional rectangular
+mask in its cropped picture's coordinates; both apply after its crop and
+effects. A scene layer drawing the alias takes the alias mask (refused when
+the layer already has one, like a double crop) and multiplies its own opacity
+by the alias's. The
 CLI scene renderer composes cropped aliases the same way: the alias crop is applied to the rendered source, a layer crop inside that region is translated, and a mask, key, or
 layer crop reaching outside the alias crop is refused by layer number rather
 than drawing a wrong picture. Input and scene thumbnails follow alias chains
@@ -3306,10 +3311,15 @@ an optional encoded effect list to `kind=alias`; the CLI accepts repeated
 alias. Protocol 2.168 adds post-add editing: `set_alias_effects` replaces an
 existing alias's ordered list as a padlocked, undoable project edit,
 `input_alias_effects_changed` replicates it, and `alias_effects_request`/
-`alias_effects_response` read the current list. The CLI has
-`remote-alias-effects` and `remote-alias-effects-get`, and Studio's tile menu
-opens an alias-effect editor that reads the current list, accepts the same
-space-separated effect tokens, and applies it atomically. Studio's Add input dialog offers Alias (with an input picker, an
+`alias_effects_response` read the current list. Protocol 2.169 carries the
+alias layer state on `input_add`: `opacity` plus optional `mask_x`/`mask_y`/
+`mask_width`/`mask_height`/`mask_invert` fields; project schema 111 persists
+them beside the effects. The CLI has `remote-alias-effects` and
+`remote-alias-effects-get`; `alias-input-add` and `remote-alias-input-add`
+accept `--opacity` and `--mask x,y,width,height[,on|off]`. Studio's Add input
+dialog offers opacity and an optional bounded/invertible mask, and its tile
+menu opens an alias-effect editor that reads the current list, accepts the
+same space-separated effect tokens, and applies it atomically. Studio's Add input dialog offers Alias (with an input picker, an
 optional project-pixel crop, a nonempty/16384-bound check, and a space-separated
 effect field) and Feed (Program or Preview). The native realizer writes each
 feed's last committed Program and Preview picture into the project bundle as
@@ -3317,8 +3327,9 @@ feed's last committed Program and Preview picture into the project bundle as
 at clean shutdown, and restores them at startup as working textures, so a
 restarted daemon shows the last bus picture until the next commit instead of
 black. Simulated daemons rebuild feed thumbnails from their live monitor
-taps. Remaining gaps: aliases do not yet carry independent shortcuts or layer
-state. `IN-024` remains planned; `IN-025` is implemented end to end.
+taps. Remaining gaps: aliases do not yet carry independent shortcuts.
+`IN-024` remains planned only for shortcuts; `IN-025` is implemented end to
+end.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
