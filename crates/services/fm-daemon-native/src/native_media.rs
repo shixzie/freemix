@@ -10916,6 +10916,7 @@ impl NativeMediaRuntime {
 
     /// Composes a secondary mix's Program background and overlays (IN-023).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)] // background, transition, and mix overlays
     async fn render_mix_texture(
         &self,
         registry: &NativeSourceRegistry,
@@ -11167,6 +11168,7 @@ impl NativeMediaRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)] // input and mix overlay resolution and composition
     async fn render_project_overlays(
         &self,
         registry: &NativeSourceRegistry,
