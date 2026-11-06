@@ -1346,6 +1346,9 @@ fn mix_audio_follows_program_transitions_and_nested_mixes() {
     let (nested, _) = bank.advance_frame();
     assert_eq!(
         nested.mix(mix(3)).unwrap().audio.primary,
-        MixAudioSource::Mix(mix(2))
+        MixAudioSource::Mix {
+            mix: mix(2),
+            frame: 2,
+        }
     );
 }

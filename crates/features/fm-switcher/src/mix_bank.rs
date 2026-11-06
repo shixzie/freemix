@@ -211,7 +211,11 @@ impl MixTransition {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MixAudioSource {
     Input(InputId),
-    Mix(MixId),
+    /// Another mix's audio for an exact previous bank frame.
+    Mix {
+        mix: MixId,
+        frame: u64,
+    },
     Silent,
 }
 
@@ -232,10 +236,13 @@ impl MixAudio {
     }
 }
 
-const fn audio_source(source: MixSource) -> MixAudioSource {
+const fn audio_source(source: MixSource, frame: u64) -> MixAudioSource {
     match source {
         MixSource::Input(input) => MixAudioSource::Input(input),
-        MixSource::Mix(mix) => MixAudioSource::Mix(mix),
+        MixSource::Mix(mix) => match frame.checked_sub(1) {
+            Some(frame) => MixAudioSource::Mix { mix, frame },
+            None => MixAudioSource::Silent,
+        },
     }
 }
 
@@ -1614,8 +1621,8 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             }),
             fade_to_black: state.fade_to_black.frame(),
             audio: MixAudio {
-                primary: audio_source(t_bar.from),
-                secondary: Some(audio_source(t_bar.to)),
+                primary: audio_source(t_bar.from, frame),
+                secondary: Some(audio_source(t_bar.to, frame)),
                 numerator: u32::from(t_bar.position.basis_points()),
                 denominator: u32::from(TBarPosition::MAX),
             },
@@ -1638,8 +1645,8 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             }),
             fade_to_black: state.fade_to_black.frame(),
             audio: MixAudio {
-                primary: audio_source(transition.from),
-                secondary: Some(audio_source(transition.to)),
+                primary: audio_source(transition.from, frame),
+                secondary: Some(audio_source(transition.to, frame)),
                 numerator: transition.elapsed_frames,
                 denominator: transition.duration_frames,
             },
@@ -1660,7 +1667,7 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             }),
             fade_to_black: state.fade_to_black.frame(),
             audio: MixAudio {
-                primary: audio_source(state.program),
+                primary: audio_source(state.program, frame),
                 secondary: None,
                 numerator: 0,
                 denominator: 1,
