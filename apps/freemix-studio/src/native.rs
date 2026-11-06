@@ -1950,6 +1950,9 @@ fn handle_worker_intent(
         }
         intent => intent,
     };
+    if let StudioIntent::SetAliasEffects { input, effects } = &intent {
+        runtime.set_alias_effects(*input, effects.clone());
+    }
     let title_request = intent.title_request();
     if recovery.terminal_uncertainties.len() == TERMINAL_UNCERTAINTY_CAPACITY {
         recovery.visible_error = Some(format!(
