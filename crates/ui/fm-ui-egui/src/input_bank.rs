@@ -822,6 +822,43 @@ impl StudioShell {
                 frozen: !frozen,
             });
         }
+        if frozen
+            && item(
+                ui,
+                enabled,
+                l.text(Msg::CaptureStill),
+                "",
+                l.text(Msg::TileCaptureStillHover),
+                preview_reason,
+            )
+        {
+            intents.push(StudioIntent::CaptureFrozenStill { input });
+        }
+        if frozen {
+            if let Some(still) = state
+                .frozen_still
+                .as_ref()
+                .filter(|still| still.input == input)
+            {
+                ui.label(
+                    RichText::new(l.format(
+                        Msg::StillAssetLabel,
+                        &[("asset", Arg::Str(&still.asset_uri))],
+                    ))
+                    .small()
+                    .color(muted_color()),
+                )
+                .on_hover_text(l.text(Msg::StillAssetHover));
+            }
+            if let Some(error) = state.frozen_still_error.as_deref() {
+                ui.label(
+                    RichText::new(format!("{} {error}", l.text(Msg::StillFailedLabel)))
+                        .small()
+                        .color(AMBER),
+                )
+                .on_hover_text(l.text(Msg::StillFailedHover));
+            }
+        }
         if item(
             ui,
             enabled,
@@ -887,40 +924,6 @@ impl StudioShell {
                 .filter(|(failed, _)| *failed == input)
             {
                 ui.label(RichText::new(message).small().color(AMBER));
-            }
-        }
-        ui.horizontal(|ui| {
-            ui.label(l.text(Msg::VideoDelayLabel));
-                "",
-                l.text(Msg::TileCaptureStillHover),
-                preview_reason,
-            )
-        {
-            intents.push(StudioIntent::CaptureFrozenStill { input });
-        }
-        if frozen {
-            if let Some(still) = state
-                .frozen_still
-                .as_ref()
-                .filter(|still| still.input == input)
-            {
-                ui.label(
-                    RichText::new(l.format(
-                        Msg::StillAssetLabel,
-                        &[("asset", Arg::Str(&still.asset_uri))],
-                    ))
-                    .small()
-                    .color(muted_color()),
-                )
-                .on_hover_text(l.text(Msg::StillAssetHover));
-            }
-            if let Some(error) = state.frozen_still_error.as_deref() {
-                ui.label(
-                    RichText::new(format!("{} {error}", l.text(Msg::StillFailedLabel)))
-                        .small()
-                        .color(AMBER),
-                )
-                .on_hover_text(l.text(Msg::StillFailedHover));
             }
         }
         ui.horizontal(|ui| {
