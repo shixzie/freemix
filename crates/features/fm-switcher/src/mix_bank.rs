@@ -1050,16 +1050,16 @@ impl MixBank {
                     action,
                 } => {
                     if matches!(action, MixStingerAction::Unconfigured) {
-                        return Err(MixBankError::UnconfiguredStinger(*slot));
+                        return Err(MixBankError::UnconfiguredStinger(slot));
                     }
                     self.validate_preview_transition(mix, duration_frames)?;
                     if let MixStingerAction::Play { cut_point_frames } = action
                         && cut_point_frames > duration_frames
                     {
                         return Err(MixBankError::StingerCutPointOutOfRange {
-                            slot: *slot,
-                            cut_point_frames: *cut_point_frames,
-                            duration_frames: *duration_frames,
+                            slot,
+                            cut_point_frames,
+                            duration_frames,
                         });
                     }
                 }
