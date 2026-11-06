@@ -97,6 +97,7 @@ impl SimulatedAudioRuntime {
     ///
     /// A poll without demand renders nothing and returns `None`; it never
     /// advances the engine.
+    #[allow(clippy::too_many_arguments)] // the wall clock, routing, and resets of one poll
     pub fn poll<'a>(
         &'a mut self,
         project: &Project,
