@@ -238,3 +238,121 @@ fn frozen_inputs_are_silent_until_unfrozen() {
         "unfreezing restores the input's tone"
     );
 }
+
+/// IN-023/SW-012: the simulated plane renders logical-output audio maps,
+/// including a secondary-mix crossfade and silence.
+#[test]
+fn output_audio_renders_mix_crossfades_master_and_silence() {
+    use fm_sim::SimulatedOutputAudioPlan;
+    use fm_switcher::{AudioSource, MixAudio, MixAudioSource, MixBankFrame};
+    use fm_types::OutputId;
+
+    let first = input(1);
+    let second = input(2);
+    let mut config = SimulatedAudioConfig::new(format(), frame_rate());
+    config.strips.push(SimulatedAudioStrip::new(
+        first,
+        SimulatedStripState::default(),
+        StripDsp::DEFAULT,
+        Some(SimulatedTone::new(440.0)),
+    ));
+    config.strips.push(SimulatedAudioStrip::new(
+        second,
+        SimulatedStripState::default(),
+        StripDsp::DEFAULT,
+        Some(SimulatedTone::new(1_000.0)),
+    ));
+    let first_only = SimulatedOutputAudioPlan {
+        output: OutputId::new(NonZeroU128::new(7).unwrap()),
+        audio: AudioSource::Mix(MixAudio {
+            primary: MixAudioSource::Input(first),
+            secondary: None,
+            numerator: 0,
+            denominator: 1,
+        }),
+    };
+    let second_only = SimulatedOutputAudioPlan {
+        audio: AudioSource::Mix(MixAudio {
+            primary: MixAudioSource::Input(second),
+            secondary: None,
+            numerator: 0,
+            denominator: 1,
+        }),
+        ..first_only
+    };
+    let crossfade = SimulatedOutputAudioPlan {
+        audio: AudioSource::Mix(MixAudio {
+            primary: MixAudioSource::Input(first),
+            secondary: Some(MixAudioSource::Input(second)),
+            numerator: 3,
+            denominator: 4,
+        }),
+        ..first_only
+    };
+    let master = SimulatedOutputAudioPlan {
+        audio: AudioSource::Master,
+        ..first_only
+    };
+    let silent = SimulatedOutputAudioPlan {
+        output: OutputId::new(NonZeroU128::new(8).unwrap()),
+        audio: AudioSource::Silent,
+    };
+
+    let mut a = plane(config.clone());
+    a.render_with_outputs(
+        program(first),
+        0,
+        &[],
+        &[first_only],
+        &MixBankFrame::empty(),
+    )
+    .unwrap();
+    let mut b = plane(config.clone());
+    b.render_with_outputs(
+        program(first),
+        0,
+        &[],
+        &[second_only],
+        &MixBankFrame::empty(),
+    )
+    .unwrap();
+    let mut mixed = plane(config.clone());
+    mixed
+        .render_with_outputs(program(first), 0, &[], &[crossfade], &MixBankFrame::empty())
+        .unwrap();
+    let mut master_plane = plane(config);
+    master_plane
+        .render_with_outputs(
+            program(first),
+            0,
+            &[],
+            &[master, silent],
+            &MixBankFrame::empty(),
+        )
+        .unwrap();
+
+    let samples = mixed.program_samples();
+    let a_planes = a.output_planes(first_only.output).unwrap();
+    let b_planes = b.output_planes(second_only.output).unwrap();
+    let x_planes = mixed.output_planes(crossfade.output).unwrap();
+    for channel in 0..a_planes.len() {
+        for sample in 0..samples {
+            let expected = 0.25 * a_planes[channel][sample] + 0.75 * b_planes[channel][sample];
+            assert!(
+                (x_planes[channel][sample] - expected).abs() < 1.0e-6,
+                "crossfade sample {sample} on channel {channel}"
+            );
+        }
+    }
+    let master_planes = master_plane.output_planes(master.output).unwrap();
+    for (mapped, rendered) in master_planes.iter().zip(master_plane.program_planes()) {
+        assert_eq!(mapped[..samples], rendered[..samples]);
+    }
+    assert!(
+        master_plane
+            .output_planes(silent.output)
+            .unwrap()
+            .iter()
+            .all(|plane| plane[..samples].iter().all(|sample| *sample == 0.0))
+    );
+}

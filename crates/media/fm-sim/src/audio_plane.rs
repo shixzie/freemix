@@ -782,7 +782,11 @@ impl SimulatedAudioPlane {
         for plan in outputs {
             let mut planes = vec![vec![0.0_f32; samples]; channels];
             match plan.audio {
-                fm_switcher::AudioSource::Master | fm_switcher::AudioSource::Bus(_) => continue,
+                fm_switcher::AudioSource::Master => {
+                    add_planes(&mut planes, &self.program, samples, 1.0);
+                }
+                // The simulated plane renders no aux buses.
+                fm_switcher::AudioSource::Bus(_) => {}
                 fm_switcher::AudioSource::Silent => {}
                 fm_switcher::AudioSource::Input(input) => {
                     if let Some(source) = self.source_planes.get(&input) {
