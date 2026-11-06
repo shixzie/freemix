@@ -2004,7 +2004,11 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     // Field presence, types, and enum spellings are exact.
     for malformed in [
-        encoded.replacen(", \"crop\": null}", "}", 1),
+        encoded.replacen(
+            "\"effects\": []",
+            "\"effects\": [{\"name\": \"saturation\"}]",
+            1,
+        ),
         encoded.replacen("\"target\": 3", "\"target\": 0", 1),
         encoded.replacen("\"target\": 3", "\"target\": \"3\"", 1),
         encoded.replacen("\"feed\": \"program\"", "\"feed\": \"aux\"", 1),
