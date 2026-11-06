@@ -285,8 +285,6 @@ pub fn run(command: Command) -> AppResult<()> {
                         height: mask.height,
                         invert: mask.invert,
                     }),
-                    opacity: u8::MAX,
-                    mask: None,
                 },
             },
             key,
