@@ -10941,7 +10941,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AddInputAliasCropInvalid,
         t("El ancho y el alto del recorte deben ser al menos 1 y como máximo 16384 píxeles"),
     ),
-    (Msg::AddInputAliasOpacity, t("Opacidad")),
+    (Msg::AddInputAliasOpacity, t("Opacidad del alias")),
     (
         Msg::AddInputAliasOpacityHover,
         t("Opacidad propia del alias tras su recorte y efectos, de 0 a 255"),
@@ -10955,7 +10955,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::AddInputAliasMaskY, t("Máscara y")),
     (Msg::AddInputAliasMaskWidth, t("Ancho de máscara")),
     (Msg::AddInputAliasMaskHeight, t("Alto de máscara")),
-    (Msg::AddInputAliasMask, t("Máscara")),
+    (Msg::AddInputAliasMask, t("Máscara del alias")),
     (
         Msg::AddInputAliasMaskHover,
         t(
