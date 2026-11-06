@@ -26,9 +26,9 @@ pub use logical_output::{
 };
 pub use mix_bank::{
     MAX_MIX_BANK_INPUTS, MAX_MIX_TRANSITION_DURATION_FRAMES, MAX_PENDING_MIX_EFFECTS,
-    MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MixBank, MixBankCommand, MixBankError, MixBankEvent,
-    MixBankFrame, MixConfig, MixEffect, MixFrame, MixId, MixLayer, MixMode, MixOverlay, MixSet,
-    MixSource, MixState, MixStingerAction, MixTransition,
+    MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MixAudio, MixAudioSource, MixBank, MixBankCommand,
+    MixBankError, MixBankEvent, MixBankFrame, MixConfig, MixEffect, MixFrame, MixId, MixLayer,
+    MixMode, MixOverlay, MixSet, MixSource, MixState, MixStingerAction, MixTransition,
 };
 pub use overlay::{
     MAX_OVERLAY_QUEUE_DEPTH, MAX_OVERLAY_TRANSITION_DURATION_FRAMES, OVERLAY_CHANNEL_COUNT,
