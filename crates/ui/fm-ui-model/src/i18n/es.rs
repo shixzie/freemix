@@ -23,6 +23,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::Undo, t("Deshacer")),
     (Msg::Redo, t("Rehacer")),
     (Msg::InputBank, t("Banco de entradas")),
+    (Msg::InputShortcutAction, t("Crear atajo…")),
+    (
+        Msg::InputShortcutHover,
+        t(
+            "Iniciar un nuevo atajo del proyecto que pone esta entrada en Previo; define su tecla o nombre OSC y guarda",
+        ),
+    ),
+    (Msg::InputShortcutName, t("Atajo de {name}")),
     (Msg::SelectOnPreview, t("Seleccionar en Previo")),
     (Msg::RenameEllipsis, t("Renombrar…")),
     (Msg::AddInput, t("Añadir entrada")),

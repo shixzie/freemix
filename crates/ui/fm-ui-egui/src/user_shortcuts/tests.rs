@@ -2276,3 +2276,20 @@ fn a_press_in_a_window_gives_it_the_focus() {
     frame(&mut shell, press_at(150.0, 150.0), Some(docked));
     assert_eq!(shell.focused_window, None);
 }
+
+#[test]
+fn an_input_shortcut_draft_previews_that_input() {
+    let input = fm_types::InputId::new(core::num::NonZeroU128::new(7).unwrap());
+    let mut window = ShortcutsWindow::default();
+    window.new_input_draft(Locale::default(), &[], input, "Alias A");
+    let draft = window.draft.as_ref().expect("a new draft");
+    assert_eq!(draft.name, "Alias A shortcut");
+    assert_eq!(
+        draft.action,
+        WireShortcutAction::Actions(vec![WireCueAction::Preview {
+            input: fm_protocol::WireInputTarget::Fixed(fm_protocol::WireInputId::from_domain(
+                input
+            )),
+        }])
+    );
+}

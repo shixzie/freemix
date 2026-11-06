@@ -9,7 +9,7 @@ use fm_clock::ClockDomainId;
 use fm_command::{CommandEnvelope, IdKind, IdempotencyKey, RefusalReason, RejectionCode};
 use fm_engine::{
     EditLockScope, Engine, EngineCommand, EngineCommandOutcome, EngineCueListDefinition,
-    EngineCueOperation, EngineEvent, EngineScriptDefinition, ShowState,
+    EngineCueOperation, EngineEvent, EngineInputSource, EngineScriptDefinition, ShowState,
 };
 use fm_model::{
     Cue, CueAction, Shortcut, ShortcutAction, ShortcutCueOperation, ShortcutKey, TransitionEffect,
@@ -724,4 +724,36 @@ fn dynamic_values_follow_the_control_the_strip_and_the_mute() {
         },
     ));
     assert_eq!(strip(&engine, 13).gain_millidb, -6_000);
+}
+
+#[test]
+fn a_shortcut_can_preview_an_alias() {
+    let mut engine = engine();
+    accepted(&submit(
+        &mut engine,
+        "alias",
+        EngineCommand::AddInput {
+            input: input(15),
+            name: "Alias A".into(),
+            source: EngineInputSource::Alias {
+                target: input(11),
+                crop: None,
+                effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
+            },
+        },
+    ));
+    accepted(&submit(
+        &mut engine,
+        "set",
+        set(shortcut(
+            1,
+            actions(vec![CueAction::Preview {
+                input: fm_types::InputTarget::Fixed(input(15)),
+            }]),
+        )),
+    ));
+    accepted(&submit(&mut engine, "fire", fire(1)));
+    assert_eq!(engine.show().desired_switcher().preview(), input(15));
 }

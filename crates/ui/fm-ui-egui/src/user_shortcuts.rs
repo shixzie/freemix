@@ -37,7 +37,7 @@ use fm_protocol::{
     MAX_SHORTCUT_OSC_BYTES, MAX_SHORTCUTS, ShortcutSpec, ShortcutStatus, WireCue, WireCueAction,
     WireShortcutAction, WireShortcutCueOperation, WireShortcutKey,
 };
-use fm_types::ProjectId;
+use fm_types::{InputId, ProjectId};
 
 use crate::{ConsoleKeymap, ConsoleStroke};
 
@@ -1124,6 +1124,31 @@ impl ShortcutsWindow {
         self.local_refusal = None;
     }
 
+    /// Starts a new draft that puts `input` on Preview when fired: the
+    /// first step of an alias's or any input's independent shortcut
+    /// (IN-024). The operator sets the key or OSC name and saves.
+    pub(crate) fn new_input_draft(
+        &mut self,
+        l: Locale,
+        shortcuts: &[ShortcutStatus],
+        input: InputId,
+        input_name: &str,
+    ) {
+        self.new_draft(l, shortcuts);
+        let Some(draft) = &mut self.draft else {
+            return;
+        };
+        draft.name = l.format(
+            Msg::InputShortcutName,
+            &[("name", Arg::Str(input_name.to_owned()))],
+        );
+        draft.action = WireShortcutAction::Actions(vec![WireCueAction::Preview {
+            input: fm_protocol::WireInputTarget::Fixed(fm_protocol::WireInputId::from_domain(
+                input,
+            )),
+        }]);
+    }
+
     /// Whether the draft differs from what it was loaded from.
     pub(crate) fn dirty(&self) -> bool {
         self.draft != self.loaded
@@ -1181,6 +1206,21 @@ impl StudioShell {
                 .or_else(|| shortcuts.first().map(|found| found.id));
             self.user_shortcuts.select(shortcuts, selected);
         }
+        self.user_shortcuts.open = true;
+    }
+
+    /// Opens the Shortcuts window on a new draft that previews `input`, so
+    /// every input — including an alias — can carry its own key or OSC
+    /// shortcut (IN-024).
+    pub(crate) fn open_input_shortcut(
+        &mut self,
+        state: &StudioUiState,
+        input: InputId,
+        input_name: &str,
+    ) {
+        let shortcuts = replicated(state);
+        self.user_shortcuts
+            .new_input_draft(self.locale, shortcuts, input, input_name);
         self.user_shortcuts.open = true;
     }
 

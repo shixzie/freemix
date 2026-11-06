@@ -803,6 +803,16 @@ impl StudioShell {
         }
         if item(
             ui,
+            edit_reason.is_empty(),
+            l.text(Msg::InputShortcutAction),
+            "",
+            l.text(Msg::InputShortcutHover),
+            edit_reason,
+        ) {
+            self.open_input_shortcut(state, input, name);
+        }
+        if item(
+            ui,
             enabled,
             if frozen {
                 l.text(Msg::UnfreezeInput)
