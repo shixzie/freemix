@@ -1871,7 +1871,7 @@ impl NativeProjectPlan {
             .filter(|overlay| overlay.is_active() && overlay.is_included_in(output))
             .filter_map(|overlay| {
                 overlay.source().map(|input| NativeProgramOverlay {
-                    input,
+                    source: NativeOverlaySource::Input(input),
                     opacity: overlay.opacity(),
                     position: overlay.position(),
                     border: overlay.border(),
@@ -1898,8 +1898,15 @@ impl LogicalBase<'_> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeOverlaySource {
+    Input(InputId),
+    /// Another mix's current Program picture (IN-023 overlay routing).
+    Mix(fm_switcher::MixId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeProgramOverlay {
-    input: InputId,
+    source: NativeOverlaySource,
     opacity: u8,
     position: OverlayPositionPreset,
     border: OverlayBorderPreset,
@@ -1911,7 +1918,7 @@ struct NativeProgramOverlay {
 /// One overlay layer resolved for a logical output (SW-012).
 const fn plan_overlay(layer: &fm_switcher::OverlayLayer) -> NativeProgramOverlay {
     NativeProgramOverlay {
-        input: layer.source,
+        source: NativeOverlaySource::Input(layer.source),
         opacity: layer.opacity,
         position: layer.position,
         border: layer.border,
@@ -10367,7 +10374,12 @@ impl NativeMediaRuntime {
             }
             extra_inputs.extend(plan.overlays.iter().map(|layer| layer.source));
         }
-        extra_inputs.extend(overlay_sets.iter().flatten().map(|overlay| overlay.input));
+        extra_inputs.extend(overlay_sets.iter().flatten().filter_map(
+            |overlay| match overlay.source {
+                NativeOverlaySource::Input(input) => Some(input),
+                NativeOverlaySource::Mix(_) => None,
+            },
+        ));
         let mut inputs = program_inputs;
         inputs.extend(extra_inputs.iter().copied());
         inputs.sort_unstable();
@@ -10750,6 +10762,7 @@ impl NativeMediaRuntime {
                 base,
                 overlays,
                 feeds,
+                None,
             )
             .await?;
         // The program grade colours each composed output before FTB.
@@ -10971,12 +10984,22 @@ impl NativeMediaRuntime {
             .overlays
             .iter()
             .flatten()
-            .map(|input| NativeProgramOverlay {
-                input: *input,
-                opacity: u8::MAX,
-                position: OverlayPositionPreset::FullFrame,
-                border: OverlayBorderPreset::None,
-                motion: None,
+            .filter_map(|layer| match layer {
+                fm_switcher::MixLayer::Input(input) => Some(NativeProgramOverlay {
+                    source: NativeOverlaySource::Input(*input),
+                    opacity: u8::MAX,
+                    position: OverlayPositionPreset::FullFrame,
+                    border: OverlayBorderPreset::None,
+                    motion: None,
+                }),
+                fm_switcher::MixLayer::Mix { mix, .. } => Some(NativeProgramOverlay {
+                    source: NativeOverlaySource::Mix(*mix),
+                    opacity: u8::MAX,
+                    position: OverlayPositionPreset::FullFrame,
+                    border: OverlayBorderPreset::None,
+                    motion: None,
+                }),
+                fm_switcher::MixLayer::Black => None,
             })
             .collect::<Vec<_>>();
         let composed = self
@@ -10989,6 +11012,7 @@ impl NativeMediaRuntime {
                 &base,
                 &overlays,
                 feeds,
+                Some((frame, &mut *seen)),
             )
             .await?;
         seen.pop();
@@ -11016,6 +11040,7 @@ impl NativeMediaRuntime {
             texture,
             &[],
             feeds,
+            None,
         )
         .await
     }
@@ -11140,6 +11165,7 @@ impl NativeMediaRuntime {
         program: &NativeTexture,
         overlays: &[NativeProgramOverlay],
         feeds: NativeFeedFrames<'_>,
+        mut mix_context: Option<(&FrameResult, &mut Vec<MixId>)>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let mut scene = CompositorScene::new(
             project.dimensions.width(),
@@ -11177,28 +11203,53 @@ impl NativeMediaRuntime {
         }
         let (composition, _) = compile_scene(&scene, OutputTarget::Program)
             .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
-        // Moving overlays are drawn first, so every source texture outlives
-        // the composition that samples it.
-        let mut moved = Vec::with_capacity(overlays.len());
-        for overlay in overlays {
-            moved.push(match overlay.motion {
-                Some(motion) => {
+        // Mix overlays and moving overlays own their textures; input overlays
+        // borrow one. Every texture outlives the composition that samples it.
+        let mut owned: Vec<Option<NativeTexture>> = (0..overlays.len()).map(|_| None).collect();
+        for (index, overlay) in overlays.iter().enumerate() {
+            match overlay.source {
+                NativeOverlaySource::Input(input) => {
                     let texture = project_texture(
                         registry,
                         graded,
                         project,
                         scene_outputs,
                         feeds,
-                        overlay.input,
+                        input,
                         deadline,
                     )?;
-                    Some(
-                        self.render_overlay_motion(project, overlay, motion, texture)
-                            .await?,
-                    )
+                    if let Some(motion) = overlay.motion {
+                        owned[index] = Some(
+                            self.render_overlay_motion(project, overlay, motion, texture)
+                                .await?,
+                        );
+                    }
                 }
-                None => None,
-            });
+                NativeOverlaySource::Mix(mix) => {
+                    let Some((frame, seen)) = mix_context.as_mut() else {
+                        return Err(NativeSourceRenderError::MissingSecondaryMix(mix));
+                    };
+                    let texture = Box::pin(self.render_mix_texture(
+                        registry,
+                        graded,
+                        project,
+                        scene_outputs,
+                        frame,
+                        program,
+                        mix,
+                        seen,
+                        feeds,
+                    ))
+                    .await?;
+                    owned[index] = Some(match overlay.motion {
+                        Some(motion) => {
+                            self.render_overlay_motion(project, overlay, motion, &texture)
+                                .await?
+                        }
+                        None => texture,
+                    });
+                }
+            }
         }
         let mut sources = Vec::with_capacity(overlays.len() + 1);
         sources.push(NativeSourceFrame::new(SourceId::new(0), program));
@@ -11206,18 +11257,22 @@ impl NativeMediaRuntime {
             let source = SourceId::new(
                 u64::try_from(index + 1).map_err(|_| NativeSourceRenderError::ResourceBounds)?,
             );
-            let texture = project_texture(
-                registry,
-                graded,
-                project,
-                scene_outputs,
-                feeds,
-                overlay.input,
-                deadline,
-            )?;
-            let texture = match &moved[index] {
-                Some(moved) => moved,
-                None => texture,
+            let texture = match &owned[index] {
+                Some(texture) => texture,
+                None => match overlay.source {
+                    NativeOverlaySource::Input(input) => project_texture(
+                        registry,
+                        graded,
+                        project,
+                        scene_outputs,
+                        feeds,
+                        input,
+                        deadline,
+                    )?,
+                    NativeOverlaySource::Mix(mix) => {
+                        return Err(NativeSourceRenderError::MissingSecondaryMix(mix));
+                    }
+                },
             };
             sources.push(NativeSourceFrame::new(source, texture));
         }
@@ -13510,7 +13565,7 @@ mod tests {
         assert_eq!(
             NativeProjectPlan::program_overlays(&frame, dirty),
             vec![NativeProgramOverlay {
-                input: overlay_source,
+                source: NativeOverlaySource::Input(overlay_source),
                 opacity: u8::MAX,
                 position: OverlayPositionPreset::FullFrame,
                 border: OverlayBorderPreset::None,

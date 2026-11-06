@@ -211,7 +211,7 @@ pub struct MixState {
     program: MixSource,
     preview: Option<MixSource>,
     transition: Option<MixTransition>,
-    overlays: [Option<InputId>; OVERLAY_CHANNEL_COUNT],
+    overlays: [Option<MixSource>; OVERLAY_CHANNEL_COUNT],
 }
 
 impl MixState {
@@ -240,7 +240,7 @@ impl MixState {
     }
 
     #[must_use]
-    pub fn overlay(&self, channel: OverlayChannelId) -> Option<InputId> {
+    pub fn overlay(&self, channel: OverlayChannelId) -> Option<MixSource> {
         self.overlays[channel.index()]
     }
 
@@ -252,6 +252,7 @@ impl MixState {
                     .into_iter()
                     .flat_map(|transition| [Some(transition.from), Some(transition.to)]),
             )
+            .chain(self.overlays)
             .flatten()
     }
 }
@@ -274,7 +275,7 @@ pub enum MixStingerAction {
 pub enum MixEffect {
     OverlayOn {
         channel: OverlayChannelId,
-        source: InputId,
+        source: MixSource,
     },
     OverlayOff {
         channel: OverlayChannelId,
@@ -365,7 +366,7 @@ pub enum MixBankEvent {
     OverlayChanged {
         mix: MixId,
         channel: OverlayChannelId,
-        source: Option<InputId>,
+        source: Option<MixSource>,
     },
     EffectScheduled {
         effect: MixEffect,
@@ -545,7 +546,7 @@ pub struct MixFrame {
     pub mix_denominator: u32,
     /// Preview monitor content; `None` for output-only mixes.
     pub preview: Option<MixLayer>,
-    pub overlays: [Option<InputId>; OVERLAY_CHANNEL_COUNT],
+    pub overlays: [Option<MixLayer>; OVERLAY_CHANNEL_COUNT],
 }
 
 /// All configured mixes for one bank frame, in ascending mix order.
@@ -1037,9 +1038,7 @@ impl MixBank {
             match effect {
                 MixEffect::OverlayOn { source, .. } => {
                     self.require_mix(mix)?;
-                    if !self.inputs.contains(&source) {
-                        return Err(MixBankError::UnknownInput(source));
-                    }
+                    self.validate_route(mix, *source)?;
                 }
                 MixEffect::OverlayOff { .. } => {
                     self.require_mix(mix)?;
@@ -1200,7 +1199,9 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             mix_numerator: transition.elapsed_frames,
             mix_denominator: transition.duration_frames,
             preview,
-            overlays: state.overlays,
+            overlays: state
+                .overlays
+                .map(|source| source.map(|source| resolve(source, frame))),
         },
         None => MixFrame {
             mix,
@@ -1210,7 +1211,9 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             mix_numerator: 0,
             mix_denominator: 1,
             preview,
-            overlays: state.overlays,
+            overlays: state
+                .overlays
+                .map(|source| source.map(|source| resolve(source, frame))),
         },
     }
 }

@@ -523,14 +523,14 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
         bank.schedule_effect(
             MixEffect::OverlayOn {
                 channel,
-                source: input(6),
+                source: src(6),
             },
             targets,
         ),
         Ok(MixBankEvent::EffectScheduled {
             effect: MixEffect::OverlayOn {
                 channel,
-                source: input(6),
+                source: src(6),
             },
             targets,
             apply_frame: 1,
@@ -545,7 +545,7 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
     for target in [mix(2), mix(7)] {
         assert_eq!(
             frame1.mix(target).unwrap().overlays[channel.index()],
-            Some(input(6))
+            Some(MixLayer::Input(input(6)))
         );
     }
     assert_eq!(frame1.mix(MixId::MAIN).unwrap().overlays, [None; 8]);
@@ -554,7 +554,7 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
         Some(&MixBankEvent::EffectApplied {
             effect: MixEffect::OverlayOn {
                 channel,
-                source: input(6),
+                source: src(6),
             },
             targets,
             frame: 1,
@@ -567,7 +567,7 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
     let (frame2, _) = bank.advance_frame();
     assert_eq!(
         frame2.mix(mix(2)).unwrap().overlays[channel.index()],
-        Some(input(6))
+        Some(MixLayer::Input(input(6)))
     );
     assert_eq!(frame2.mix(mix(7)).unwrap().overlays[channel.index()], None);
 }
@@ -591,7 +591,7 @@ fn effect_scheduling_validates_targets_and_bounds() {
         bank.schedule_effect(
             MixEffect::OverlayOn {
                 channel,
-                source: input(42),
+                source: src(42),
             },
             MixSet::single(MixId::MAIN),
         ),
@@ -713,7 +713,7 @@ fn removed_target_rejects_pending_effect() {
     let channel = OverlayChannelId::new(1).unwrap();
     let effect = MixEffect::OverlayOn {
         channel,
-        source: input(5),
+        source: src(5),
     };
     let targets = MixSet::from_mixes([MixId::MAIN, mix(2)]);
     bank.schedule_effect(effect, targets).unwrap();
@@ -746,7 +746,7 @@ fn identical_command_sequences_produce_identical_frames() {
         bank.schedule_effect(
             MixEffect::OverlayOn {
                 channel: OverlayChannelId::new(4).unwrap(),
-                source: input(6),
+                source: src(6),
             },
             MixSet::from_mixes([mix(2), mix(3)]),
         )
