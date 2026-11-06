@@ -31,6 +31,8 @@
 use fm_types::InputId;
 
 use crate::{
+    FadeToBlackController, FadeToBlackCurve, FadeToBlackError, FadeToBlackFrame,
+    FadeToBlackPosition, FadeToBlackRequest, FadeToBlackTarget,
     MAX_OVERLAY_TRANSITION_DURATION_FRAMES, MissingMediaFallback, OVERLAY_CHANNEL_COUNT,
     OverlayChannelId, StingerSlotId, TransitionKind,
 };
@@ -212,6 +214,7 @@ pub struct MixState {
     preview: Option<MixSource>,
     transition: Option<MixTransition>,
     overlays: [Option<MixSource>; OVERLAY_CHANNEL_COUNT],
+    fade_to_black: FadeToBlackController,
 }
 
 impl MixState {
@@ -242,6 +245,11 @@ impl MixState {
     #[must_use]
     pub fn overlay(&self, channel: OverlayChannelId) -> Option<MixSource> {
         self.overlays[channel.index()]
+    }
+
+    #[must_use]
+    pub const fn fade_to_black(&self) -> FadeToBlackController {
+        self.fade_to_black
     }
 
     fn references(&self) -> impl Iterator<Item = MixSource> + '_ {
@@ -321,6 +329,13 @@ pub enum MixBankCommand {
         kind: TransitionKind,
         duration_frames: u32,
     },
+    /// Fades one mix independently to Black or back to Live.
+    FadeToBlack {
+        mix: MixId,
+        target: FadeToBlackTarget,
+        duration_frames: u32,
+        curve: FadeToBlackCurve,
+    },
     /// Drops the Preview bus of a secondary mix.
     SetOutputOnly(MixId),
     /// Restores a Preview bus with the given source.
@@ -391,6 +406,20 @@ pub enum MixBankEvent {
         slot: StingerSlotId,
         fallback: MissingMediaFallback,
     },
+    FadeToBlackStarted {
+        mix: MixId,
+        from: FadeToBlackPosition,
+        target: FadeToBlackTarget,
+        duration_frames: u32,
+    },
+    FadeToBlackPositionChanged {
+        mix: MixId,
+        position: FadeToBlackPosition,
+    },
+    FadeToBlackCompleted {
+        mix: MixId,
+        target: FadeToBlackTarget,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -438,6 +467,11 @@ pub enum MixBankError {
     },
     /// A Stinger effect names a slot with no media configured.
     UnconfiguredStinger(StingerSlotId),
+    /// A mix's Fade-to-Black request was invalid.
+    FadeToBlack {
+        mix: MixId,
+        error: FadeToBlackError,
+    },
     /// A ready clip's cut point does not fit inside the effect duration.
     StingerCutPointOutOfRange {
         slot: StingerSlotId,
@@ -507,6 +541,9 @@ impl core::fmt::Display for MixBankError {
                 "the media of Stinger {} is not configured",
                 slot.number()
             ),
+            Self::FadeToBlack { mix, error } => {
+                write!(formatter, "{mix} Fade-to-Black is invalid: {error}")
+            }
             Self::StingerCutPointOutOfRange {
                 slot,
                 cut_point_frames,
@@ -547,6 +584,7 @@ pub struct MixFrame {
     /// Preview monitor content; `None` for output-only mixes.
     pub preview: Option<MixLayer>,
     pub overlays: [Option<MixLayer>; OVERLAY_CHANNEL_COUNT],
+    pub fade_to_black: FadeToBlackFrame,
 }
 
 /// All configured mixes for one bank frame, in ascending mix order.
@@ -732,6 +770,31 @@ impl MixBank {
                     duration_frames,
                 }])
             }
+            MixBankCommand::FadeToBlack {
+                mix,
+                target,
+                duration_frames,
+                curve,
+            } => {
+                let mut controller = self.require_mix(mix)?.fade_to_black;
+                match controller.request_with_curve(target, duration_frames, curve) {
+                    Ok(FadeToBlackRequest::Unchanged) => Ok(Vec::new()),
+                    Ok(FadeToBlackRequest::Started(started)) => {
+                        self.state_mut(mix).fade_to_black = controller;
+                        Ok(vec![MixBankEvent::FadeToBlackStarted {
+                            mix,
+                            from: started.from,
+                            target: started.target,
+                            duration_frames: started.duration_frames,
+                        }])
+                    }
+                    Ok(FadeToBlackRequest::Completed(target)) => {
+                        self.state_mut(mix).fade_to_black = controller;
+                        Ok(vec![MixBankEvent::FadeToBlackCompleted { mix, target }])
+                    }
+                    Err(error) => Err(MixBankError::FadeToBlack { mix, error }),
+                }
+            }
             MixBankCommand::SetOutputOnly(mix) => self.set_output_only(mix),
             MixBankCommand::EnablePreview { mix, preview } => self.enable_preview(mix, preview),
         }
@@ -825,6 +888,19 @@ impl MixBank {
                 });
             } else {
                 state.transition = Some(transition);
+            }
+        }
+
+        for mix in MixId::all() {
+            let Some(state) = self.mixes[mix.index()].as_mut() else {
+                continue;
+            };
+            let advance = state.fade_to_black.advance();
+            if let Some(position) = advance.position_changed {
+                events.push(MixBankEvent::FadeToBlackPositionChanged { mix, position });
+            }
+            if let Some(target) = advance.completed {
+                events.push(MixBankEvent::FadeToBlackCompleted { mix, target });
             }
         }
 
@@ -1160,6 +1236,7 @@ const fn new_mix_state(config: MixConfig) -> MixState {
         preview,
         transition: None,
         overlays: [None; OVERLAY_CHANNEL_COUNT],
+        fade_to_black: FadeToBlackController::default(),
     }
 }
 

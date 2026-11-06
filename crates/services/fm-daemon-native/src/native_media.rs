@@ -13276,6 +13276,7 @@ mod tests {
                     frame: 0,
                 })
             }),
+            fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
         };
         let overlay_frame = MixFrame {
             mix: overlay_mix,
@@ -13286,6 +13287,7 @@ mod tests {
             mix_denominator: 1,
             preview: None,
             overlays: [None; OVERLAY_CHANNEL_COUNT],
+            fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
         };
         let mut frame = frame_result(0, leaf, None);
         frame.secondary_mixes = MixBankFrame {

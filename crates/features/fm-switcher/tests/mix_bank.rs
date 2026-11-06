@@ -997,3 +997,59 @@ fn mix_overlays_participate_in_routing_cycle_checks() {
         Err(MixBankError::SelfRoute(mix(3)))
     );
 }
+
+#[test]
+fn fade_to_black_is_independent_inside_each_mix() {
+    let mut bank = bank();
+    add_pp(&mut bank, 2, src(3), src(4));
+    add_pp(&mut bank, 3, src(5), src(6));
+
+    assert_eq!(
+        bank.apply(MixBankCommand::FadeToBlack {
+            mix: mix(2),
+            target: FadeToBlackTarget::Black,
+            duration_frames: 2,
+            curve: FadeToBlackCurve::Linear,
+        }),
+        Ok(vec![MixBankEvent::FadeToBlackStarted {
+            mix: mix(2),
+            from: fm_switcher::FadeToBlackPosition::LIVE,
+            target: FadeToBlackTarget::Black,
+            duration_frames: 2,
+        }])
+    );
+    let (frame0, _) = bank.advance_frame();
+    assert_eq!(
+        frame0.mix(mix(2)).unwrap().fade_to_black.target(),
+        FadeToBlackTarget::Black
+    );
+    assert_eq!(
+        frame0.mix(mix(3)).unwrap().fade_to_black.target(),
+        FadeToBlackTarget::Live
+    );
+
+    let (_, events) = bank.advance_frame();
+    assert!(events.contains(&MixBankEvent::FadeToBlackPositionChanged {
+        mix: mix(2),
+        position: frame0.mix(mix(2)).unwrap().fade_to_black.interval_end(),
+    }));
+
+    let (completed_frame, events) = bank.advance_frame();
+    assert!(events.contains(&MixBankEvent::FadeToBlackCompleted {
+        mix: mix(2),
+        target: FadeToBlackTarget::Black,
+    }));
+    let black = completed_frame.mix(mix(2)).unwrap().fade_to_black;
+    assert_eq!(
+        black.interval_start(),
+        fm_switcher::FadeToBlackPosition::BLACK
+    );
+    assert_eq!(
+        black.interval_end(),
+        fm_switcher::FadeToBlackPosition::BLACK
+    );
+    assert_eq!(
+        completed_frame.mix(mix(3)).unwrap().fade_to_black,
+        fm_switcher::FadeToBlackFrame::LIVE
+    );
+}
