@@ -4797,6 +4797,36 @@ fn local_alias_and_mix_feed_inputs_render_through_the_resolver() {
     ]));
     assert_solid_ppm(&feed, 4, 3, [0, 0, 0]);
 
+    // Alias opacity and mask are authored at creation (IN-024, schema 111).
+    assert_success(&invoke(&[
+        "alias-input-add",
+        context.project_path(),
+        "6",
+        "Masked Alias",
+        "1",
+        "--opacity",
+        "128",
+        "--mask",
+        "0,0,1,1,on",
+    ]));
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let masked = stored
+        .project()
+        .inputs()
+        .iter()
+        .find(|input| input.id == InputId::new(NonZeroU128::new(6).unwrap()))
+        .expect("the masked alias persists");
+    assert_eq!(
+        masked.kind,
+        InputKind::Alias {
+            target: InputId::new(NonZeroU128::new(1).unwrap()),
+            crop: None,
+            effects: Vec::new(),
+            opacity: 128,
+            mask: Some(RectMask::new(0, 0, 1, 1).inverted(true)),
+        }
+    );
+
     // Missing targets, self cycles, and malformed crops save nothing.
     let manifest = fs::read(context.project.join("project.json")).unwrap();
     let journal = journal_bytes(&ProjectStore::new(&context.project).unwrap());
@@ -4804,21 +4834,21 @@ fn local_alias_and_mix_feed_inputs_render_through_the_resolver() {
         &invoke(&[
             "alias-input-add",
             context.project_path(),
-            "6",
+            "7",
             "Missing",
             "99",
         ]),
         "project cannot take the new input",
     );
     assert_failure_contains(
-        &invoke(&["alias-input-add", context.project_path(), "6", "Self", "6"]),
+        &invoke(&["alias-input-add", context.project_path(), "7", "Self", "7"]),
         "project cannot take the new input",
     );
     assert_failure_contains(
         &invoke(&[
             "alias-input-add",
             context.project_path(),
-            "6",
+            "7",
             "Bad crop",
             "1",
             "--crop",
