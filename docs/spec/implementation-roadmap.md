@@ -3107,8 +3107,15 @@ Secondary mixes dialog offers To black and To live beside Cut and Fade. A mix
 overlay channel also fades independently: Overlay On/Off carry a bounded
 duration (zero is a cut), compose a per-frame opacity for that channel, and
 clear a fully faded-out source. Native realization draws each mix overlay at
-its composed opacity, and logical outputs carry the same opacity. Remaining
-gaps: no audio path; T-bar inside a mix is absent. `IN-023` remains planned.
+its composed opacity, and logical outputs carry the same opacity. Each mix
+also keeps a manual T-bar: StartTBar, SetTBarPosition, CommitTBar, and
+CancelTBar move a 0..=10000 position through the mix's Program/Preview pair,
+the frame composes that position as its transition progress, commit swaps the
+two sources, and cancel leaves both unchanged. A T-bar refuses an output-only
+mix, a Stinger kind, or any mix already transitioning. Native realization
+renders the manual progress through the same transition path. Remaining gaps:
+no audio path, and the mix T-bar has no protocol, CLI, or Studio surface yet.
+`IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
