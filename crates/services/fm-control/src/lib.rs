@@ -3619,6 +3619,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetInputVideoDelay { .. }
+        | EngineCommand::SetAliasEffects { .. }
         | EngineCommand::SetInputFreeze { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
@@ -3742,6 +3743,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetSecondaryMix { .. }
         | CommandPayload::ClearSecondaryMix { .. }
         | CommandPayload::SetInputVideoDelay { .. }
+        | CommandPayload::SetAliasEffects { .. }
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::SetStreamTarget { .. }
@@ -3942,6 +3944,15 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ CommandPayload::SetInputFreeze { .. } => {
             input_freeze::engine_command(payload).expect("an input-freeze payload")
         }
+        CommandPayload::SetAliasEffects { input, effects } => EngineCommand::SetAliasEffects {
+            input: input.to_domain(),
+            effects: effects
+                .iter()
+                .map(|effect| {
+                    fm_model::LayerEffect::new(effect.name.clone(), effect.parameters.clone())
+                })
+                .collect(),
+        },
         CommandPayload::SetNetworkStream { .. } => {
             unreachable!("network stream edits resolve their URL against the show")
         }
@@ -4519,6 +4530,18 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         }
         command @ EngineCommand::SetInputVideoDelay { .. } => {
             return input_video_delay::wire_edit_payload(command);
+        }
+        EngineCommand::SetAliasEffects { input, effects } => {
+            return Some(CommandPayload::SetAliasEffects {
+                input: WireInputId::from_domain(*input),
+                effects: effects
+                    .iter()
+                    .map(|effect| fm_protocol::WireLayerEffect {
+                        name: effect.name.clone(),
+                        parameters: effect.parameters.clone(),
+                    })
+                    .collect(),
+            });
         }
         command @ EngineCommand::SetLiveLan(_) => {
             return live_lan::wire_edit_payload(command);
