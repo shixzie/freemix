@@ -234,7 +234,10 @@ fn clean_feed_excludes_overlays_while_other_outputs_keep_their_selection() {
 
     let frame = resolve(&routing, &switcher, None);
     assert_eq!(overlay_channels(plan(&frame, 1)), vec![1, 2]);
-    assert_eq!(plan(&frame, 1).overlays[0].source, input(5));
+    assert_eq!(
+        plan(&frame, 1).overlays[0].source,
+        fm_switcher::MixLayer::Input(input(5))
+    );
     assert_eq!(plan(&frame, 1).overlays[0].opacity, u8::MAX);
     assert_eq!(plan(&frame, 2).overlays.len(), 0, "clean feed");
     assert_eq!(overlay_channels(plan(&frame, 3)), vec![2]);
