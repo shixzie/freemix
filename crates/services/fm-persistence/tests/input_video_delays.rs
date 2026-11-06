@@ -128,7 +128,7 @@ fn input_video_delays_round_trip_exactly_and_strictly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 110"), "{text}");
+    assert!(text.contains("\"schema_version\": 111"), "{text}");
     assert!(
         text.contains(
             "\"input_video_delays\": [\n      {\"input\": 10, \"frames\": 5},\n      {\"input\": 11, \"frames\": 600}\n    ]"
