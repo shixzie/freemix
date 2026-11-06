@@ -3098,6 +3098,46 @@ fn live_input_catalogue_changes_sync_the_project_and_refuse_alias_targets() {
             .any(|strip| strip.input == test_input_id(5))
     );
 
+    let effects = vec![fm_protocol::WireLayerEffect {
+        name: "saturation".into(),
+        parameters: vec![-50],
+    }];
+    let edited = execute_durable_command(
+        &mut control,
+        &saver,
+        &mut durable,
+        &operator(),
+        &server,
+        &test_command(
+            "alias-effects",
+            "alias-effects-key",
+            CommandPayload::SetAliasEffects {
+                input: fm_protocol::WireInputId::from_domain(test_input_id(4)),
+                effects: effects.clone(),
+            },
+        ),
+        0,
+    )
+    .unwrap();
+    assert!(matches!(
+        edited.submission.output.result,
+        CommandResult::Accepted { revision: 2, .. }
+    ));
+    let alias = durable
+        .project()
+        .inputs()
+        .iter()
+        .find(|input| input.id == test_input_id(4))
+        .expect("the alias stays persisted");
+    assert_eq!(
+        alias.kind,
+        InputKind::Alias {
+            target: test_input_id(3),
+            crop: None,
+            effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
+        }
+    );
+
     let removed = execute_durable_command(
         &mut control,
         &saver,
@@ -3116,7 +3156,7 @@ fn live_input_catalogue_changes_sync_the_project_and_refuse_alias_targets() {
     .unwrap();
     assert!(matches!(
         removed.submission.output.result,
-        CommandResult::Accepted { revision: 2, .. }
+        CommandResult::Accepted { revision: 3, .. }
     ));
     assert_eq!(
         durable
