@@ -163,6 +163,7 @@ impl EngineCommand {
             | Self::SetLogicalOutput { .. }
             | Self::SetSecondaryMix { .. }
             | Self::SetInputVideoDelay { .. }
+            | Self::SetAliasEffects { .. }
             | Self::SetLiveLan(_)
             | Self::SetAlertRule(_)
             | Self::SetNetworkStream { .. }
@@ -1172,6 +1173,10 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                 frames: state.input_video_delay(*input),
             })
         }
+        EngineCommand::SetAliasEffects { input, .. } => Some(EngineCommand::SetAliasEffects {
+            input: *input,
+            effects: state.alias_effects(*input).to_vec(),
+        }),
         EngineCommand::SetCaptureSettings { input, .. } => {
             state
                 .capture_settings(*input)
