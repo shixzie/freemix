@@ -301,6 +301,9 @@ impl CommandSubmission {
 }
 
 /// The result of preparing a control submission without changing live state.
+// A prepared submission carries a whole command envelope and its receipt;
+// boxing it would only move the allocation from preparation to every caller.
+#[allow(clippy::large_enum_variant)]
 pub enum PrepareSubmitOutcome<'a, A = Policy> {
     /// The idempotency key already has a durable engine receipt or authorization denial.
     Replayed(CommandSubmission),
