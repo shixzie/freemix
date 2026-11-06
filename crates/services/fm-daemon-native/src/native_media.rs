@@ -19425,7 +19425,7 @@ mod tests {
                     Ok(output_plan(
                         1,
                         7,
-                        fm_switcher::AudioSource::Mix {
+                        fm_switcher::AudioSource::Mix(fm_switcher::MixAudio {
                             primary: fm_switcher::MixAudioSource::Mix {
                                 mix: mix_three,
                                 frame: 0,
@@ -19433,7 +19433,7 @@ mod tests {
                             secondary: None,
                             numerator: 0,
                             denominator: 1,
-                        },
+                        }),
                     ))
                 })
             }),
