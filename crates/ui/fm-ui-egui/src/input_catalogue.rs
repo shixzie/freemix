@@ -566,6 +566,30 @@ fn parse_alias_effects(value: &str) -> Result<Vec<fm_protocol::WireLayerEffect>,
     Ok(effects)
 }
 
+/// Formats an effect list as the space-separated editor draft.
+pub(crate) fn format_alias_effects(effects: &[fm_protocol::WireLayerEffect]) -> String {
+    effects
+        .iter()
+        .map(|effect| {
+            if effect.parameters.is_empty() {
+                effect.name.clone()
+            } else {
+                format!(
+                    "{}:{}",
+                    effect.name,
+                    effect
+                        .parameters
+                        .iter()
+                        .map(i32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl AddInputDraft {
     pub(crate) fn new(state: &StudioUiState, tracker: &CatalogueTracker) -> Self {
         let kind = NewInputKind::Solid;

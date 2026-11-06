@@ -19,7 +19,9 @@ use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
 use fm_ui_model::{EditLocks, SwitcherState};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
-use crate::input_catalogue::{CatalogueAvailability, MAX_LIVE_INPUTS};
+use crate::input_catalogue::{
+    CatalogueAvailability, MAX_LIVE_INPUTS, format_alias_effects, parse_alias_effects,
+};
 use crate::input_lifecycle::{
     LifecycleMenu, label_color, lifecycle_badges, tile_status_line, visible_inputs,
 };
@@ -820,11 +822,75 @@ impl StudioShell {
                 frozen: !frozen,
             });
         }
-        if frozen
-            && item(
-                ui,
-                enabled,
-                l.text(Msg::CaptureStill),
+        if item(
+            ui,
+            enabled,
+            l.text(Msg::AliasEffectsAction),
+            "",
+            l.text(Msg::AliasEffectsActionHover),
+            preview_reason,
+        ) {
+            self.alias_effects_open = Some(input);
+            self.alias_effects_loaded = None;
+            self.alias_effects_draft.clear();
+            intents.push(StudioIntent::RequestAliasEffects { input });
+        }
+        if self.alias_effects_open == Some(input) {
+            if self.alias_effects_loaded != Some(input)
+                && let Some(effects) = state.alias_effects.get(&input)
+            {
+                self.alias_effects_draft = format_alias_effects(effects);
+                self.alias_effects_loaded = Some(input);
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.alias_effects_draft)
+                    .hint_text(l.text(Msg::AliasEffectsDraftHover)),
+            )
+            .on_hover_text(l.text(Msg::AliasEffectsDraftHover));
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        edit_reason.is_empty(),
+                        egui::Button::new(l.text(Msg::AliasEffectsApply)),
+                    )
+                    .hint(l.text(Msg::AliasEffectsApplyHover), edit_reason)
+                    .clicked()
+                {
+                    match parse_alias_effects(&self.alias_effects_draft) {
+                        Ok(effects) => {
+                            intents.push(StudioIntent::SetAliasEffects { input, effects });
+                        }
+                        Err(_) => {
+                            self.alias_effects_draft.push_str("\u{0}");
+                        }
+                    }
+                }
+                if ui
+                    .button(l.text(Msg::AliasEffectsRead))
+                    .hint(l.text(Msg::AliasEffectsReadHover), "")
+                    .clicked()
+                {
+                    self.alias_effects_loaded = None;
+                    intents.push(StudioIntent::RequestAliasEffects { input });
+                }
+                if ui
+                    .button(l.text(Msg::AliasEffectsClose))
+                    .hint(l.text(Msg::AliasEffectsCloseHover), "")
+                    .clicked()
+                {
+                    self.alias_effects_open = None;
+                }
+            });
+            if let Some((_, message)) = state
+                .alias_effects_error
+                .as_ref()
+                .filter(|(failed, _)| *failed == input)
+            {
+                ui.label(RichText::new(message).small().color(AMBER));
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label(l.text(Msg::VideoDelayLabel));
                 "",
                 l.text(Msg::TileCaptureStillHover),
                 preview_reason,
