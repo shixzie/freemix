@@ -3311,9 +3311,14 @@ existing alias's ordered list as a padlocked, undoable project edit,
 opens an alias-effect editor that reads the current list, accepts the same
 space-separated effect tokens, and applies it atomically. Studio's Add input dialog offers Alias (with an input picker, an
 optional project-pixel crop, a nonempty/16384-bound check, and a space-separated
-effect field) and Feed (Program or Preview). Remaining gaps: aliases do not
-yet carry independent shortcuts or layer state, and feed persistence is
-limited to the stored project input. `IN-024` and `IN-025` remain planned.
+effect field) and Feed (Program or Preview). The native realizer writes each
+feed's last committed Program and Preview picture into the project bundle as
+`feed-cache/program.png` and `feed-cache/preview.png` (at most one rewrite
+every two seconds) and restores them at startup as working textures, so a
+restarted daemon shows the last bus picture until the next commit instead of
+black. Simulated daemons rebuild feed thumbnails from their live monitor
+taps. Remaining gaps: aliases do not yet carry independent shortcuts or layer
+state. `IN-024` remains planned; `IN-025` is implemented end to end.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 

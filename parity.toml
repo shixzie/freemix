@@ -115,7 +115,7 @@ commands = ["cargo test -p fm-model --test mix_feed_inputs", "cargo test -p fm-m
 [[tests]]
 id = "accept-in-025"
 state = "present"
-paths = ["crates/foundation/fm-model/tests/virtual_inputs.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/tests/virtual_inputs.rs", "crates/foundation/fm-protocol/tests/virtual_inputs.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+paths = ["crates/foundation/fm-model/tests/virtual_inputs.rs", "apps/freemix-cli/tests/e2e.rs", "crates/services/fm-daemon-native/tests/virtual_inputs.rs", "crates/foundation/fm-protocol/tests/virtual_inputs.rs", "apps/freemixd/src/native_video_realizer.rs", "apps/freemixd/src/native_daemon.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
 commands = ["cargo test -p fm-model --test virtual_inputs", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-daemon-native --test virtual_inputs", "cargo test -p fm-protocol --test virtual_inputs", "cargo test -p freemix-studio --test studio", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-026"
