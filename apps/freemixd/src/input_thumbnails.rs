@@ -535,7 +535,7 @@ impl ThumbnailRenderer {
         {
             if hops == 0 {
                 alias_crop = *crop;
-                alias_effects = effects.clone();
+                alias_effects.clone_from(effects);
             }
             hops += 1;
             if hops > work.project.inputs().len() {
