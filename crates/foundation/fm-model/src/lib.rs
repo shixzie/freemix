@@ -107,8 +107,8 @@ pub use project::AddInputError;
 pub use project::AudioBusSendError;
 pub use project::{
     AddAudioBusError, AddOutputError, AddSceneInputError, AddSceneLayerError, AddStreamTargetError,
-    AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DocumentInput, DuplicateInputError,
-    DuplicateSceneInputError, Input, InputAudioStrip, InputAudioStripState,
+    AliasEffectError, AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DocumentInput,
+    DuplicateInputError, DuplicateSceneInputError, Input, InputAudioStrip, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputPanBasisPoints,
     InputReference, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry,
     MAX_CRAWL_DOCUMENT_BYTES, MAX_CRAWLS, MAX_PREVIEW_DOCUMENT_BYTES, MAX_PREVIEW_STATES,
