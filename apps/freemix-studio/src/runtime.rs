@@ -904,13 +904,8 @@ impl StudioRuntime {
     /// Records an alias-effect refusal naming `request_id`, when it is the
     /// read this runtime awaits.
     pub(crate) fn apply_alias_effects_error(&mut self, request_id: &str, message: String) {
-        if let Some((_, input, _)) = &self.alias_effects_request
-            && request_id
-                == self
-                    .alias_effects_request
-                    .as_ref()
-                    .map(|(id, _, _)| id.as_str())
-                    .unwrap_or_default()
+        if let Some((id, input, _)) = &self.alias_effects_request
+            && id == request_id
         {
             self.alias_effects_error = Some((*input, message));
             self.alias_effects_request = None;
