@@ -1155,23 +1155,23 @@ fn mix_overlay_channels_fade_in_and_out() {
             .opacity,
         128
     );
-    let (fade1, _) = bank.advance_frame();
+    let (fade1, events) = bank.advance_frame();
     assert_eq!(
         fade1.mix(MixId::MAIN).unwrap().overlays[channel.index()]
             .unwrap()
             .opacity,
         0
     );
-    let (removed, events) = bank.advance_frame();
-    assert_eq!(
-        removed.mix(MixId::MAIN).unwrap().overlays[channel.index()],
-        None
-    );
     assert!(events.contains(&MixBankEvent::OverlayChanged {
         mix: MixId::MAIN,
         channel,
         source: None,
     }));
+    let (removed, _) = bank.advance_frame();
+    assert_eq!(
+        removed.mix(MixId::MAIN).unwrap().overlays[channel.index()],
+        None
+    );
 }
 
 #[test]
