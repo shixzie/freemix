@@ -228,6 +228,7 @@ pub(crate) fn draw_guides(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // exact normalized geometry
 mod tests {
     use super::*;
 
