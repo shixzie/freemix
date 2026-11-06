@@ -1955,6 +1955,34 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Fundir toda la imagen de esta mezcla desde negro durante la duración de transición de la consola",
         ),
     ),
+    (SecondaryMixTBar, t("T-bar de mezcla")),
+    (SecondaryMixTBarMix, t("Mezcla")),
+    (SecondaryMixTBarKind, t("Transición")),
+    (SecondaryMixTBarPosition, t("Posición")),
+    (
+        SecondaryMixTBarPositionHover,
+        t("Posición del T-bar de 0 (Programa) a 10000 (Previo)"),
+    ),
+    (SecondaryMixTBarStart, t("Iniciar")),
+    (
+        SecondaryMixTBarStartHover,
+        t("Iniciar una transición manual en esta mezcla en la posición 0"),
+    ),
+    (SecondaryMixTBarSet, t("Fijar")),
+    (
+        SecondaryMixTBarSetHover,
+        t("Mover el T-bar activo de esta mezcla a la posición elegida"),
+    ),
+    (SecondaryMixTBarCommit, t("Confirmar")),
+    (
+        SecondaryMixTBarCommitHover,
+        t("Completar el T-bar de esta mezcla e intercambiar Programa con Previo"),
+    ),
+    (SecondaryMixTBarCancel, t("Cancelar")),
+    (
+        SecondaryMixTBarCancelHover,
+        t("Cancelar el T-bar de esta mezcla sin cambiar Programa ni Previo"),
+    ),
     (
         Msg::SecondaryMixEditLocked,
         t("Guardar una mezcla requiere permiso de edición del proyecto."),
