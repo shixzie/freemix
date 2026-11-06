@@ -801,6 +801,7 @@ fn write_frame_rate(output: &mut String, rate: fm_types::FrameRate) {
     .expect("writing to a string cannot fail");
 }
 
+#[allow(clippy::too_many_lines)] // one arm per input kind
 fn write_input_kind(output: &mut String, kind: &InputKind) {
     match kind {
         InputKind::Color => {
