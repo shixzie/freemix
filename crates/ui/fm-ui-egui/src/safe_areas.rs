@@ -16,12 +16,12 @@ use crate::theme::{AMBER, PROGRAM, border_color};
 
 /// Which guides the operator asked to see.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SafeAreaGuides {
-    pub(crate) action: bool,
-    pub(crate) title: bool,
-    pub(crate) center_4_3: bool,
-    pub(crate) center_16_9: bool,
-    pub(crate) center_9_16: bool,
+pub struct SafeAreaGuides {
+    pub action: bool,
+    pub title: bool,
+    pub center_4_3: bool,
+    pub center_16_9: bool,
+    pub center_9_16: bool,
 }
 
 impl Default for SafeAreaGuides {
@@ -46,7 +46,7 @@ impl SafeAreaGuides {
 
     /// Applies one `safe_areas.<name> = on|off` preference line; `false` for
     /// a key this struct does not own.
-    pub(crate) fn apply_preference(&mut self, key: &str, value: &str) -> bool {
+    pub fn apply_preference(&mut self, key: &str, value: &str) -> bool {
         let Some(name) = key.strip_prefix("safe_areas.") else {
             return false;
         };
@@ -68,7 +68,7 @@ impl SafeAreaGuides {
     }
 
     /// The preference lines that reproduce this selection.
-    pub(crate) fn preference_entries(self) -> Vec<(&'static str, &'static str)> {
+    pub fn preference_entries(self) -> Vec<(&'static str, &'static str)> {
         [
             ("safe_areas.action", self.action),
             ("safe_areas.title", self.title),

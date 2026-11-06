@@ -82,7 +82,7 @@ mod preferences;
 mod preset_files;
 mod recorder_tracks;
 mod replay_ui;
-mod safe_areas;
+pub mod safe_areas;
 mod scene_designer;
 mod screen_capture_ui;
 mod scripts;
@@ -2521,7 +2521,7 @@ impl StudioShell {
     /// announced on the next frame.
     /// This console's operator safe-area guides (SW-014).
     #[must_use]
-    pub(crate) const fn safe_area_guides(&self) -> safe_areas::SafeAreaGuides {
+    pub const fn safe_area_guides(&self) -> safe_areas::SafeAreaGuides {
         self.safe_area_guides
     }
 

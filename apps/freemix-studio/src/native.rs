@@ -904,6 +904,8 @@ impl eframe::App for StudioApp {
             .note_shortcut_keys(now, self.shell.shortcut_key_overrides());
         self.preferences
             .note_key_profiles(now, self.shell.console_key_profiles());
+        self.preferences
+            .note_safe_area_guides(now, self.shell.safe_area_guides());
         match self.preferences.observe_at(
             now,
             self.shell.locale(),
@@ -927,6 +929,8 @@ impl eframe::App for StudioApp {
             .note_shortcut_keys(Instant::now(), self.shell.shortcut_key_overrides());
         self.preferences
             .note_key_profiles(Instant::now(), self.shell.console_key_profiles());
+        self.preferences
+            .note_safe_area_guides(Instant::now(), self.shell.safe_area_guides());
         if let Err(error) = self.preferences.observe(
             self.shell.locale(),
             self.shell.layout(),

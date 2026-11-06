@@ -18,6 +18,7 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use fm_ui_egui::safe_areas::SafeAreaGuides;
 use fm_ui_egui::{Appearance, ConsoleKeyProfiles, ConsoleLayout, ShortcutKeyOverrides};
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
@@ -56,6 +57,9 @@ pub struct SavedPreferences {
     pub shortcut_keys: Option<ShortcutKeyOverrides>,
     /// This console's key profiles; `None` when the file has none.
     pub key_profiles: Option<ConsoleKeyProfiles>,
+    /// The operator safe-area guides (SW-014); `None` when the file has
+    /// none, which selects title safe.
+    pub safe_area_guides: Option<SafeAreaGuides>,
 }
 
 impl SavedPreferences {
@@ -71,7 +75,15 @@ impl SavedPreferences {
             timeline_snapping: None,
             shortcut_keys: None,
             key_profiles: None,
+            safe_area_guides: None,
         }
+    }
+
+    /// The operator safe-area guides these preferences select (title safe
+    /// by default).
+    #[must_use]
+    pub fn safe_area_guides(&self) -> SafeAreaGuides {
+        self.safe_area_guides.unwrap_or_default()
     }
 
     /// The Snapping toggle these preferences select (on by default).
@@ -128,6 +140,12 @@ impl SavedPreferences {
                     let mut profiles = saved.key_profiles.take().unwrap_or_default();
                     profiles.apply_preference(key, value);
                     saved.key_profiles = Some(profiles);
+                }
+                key if key.starts_with("safe_areas.") => {
+                    let mut guides = saved.safe_area_guides.unwrap_or_default();
+                    if guides.apply_preference(key, value) {
+                        saved.safe_area_guides = Some(guides);
+                    }
                 }
                 key if key.starts_with(SHORTCUT_KEY_PREFIX) => {
                     let mut overrides = saved.shortcut_keys.take().unwrap_or_default();
@@ -196,6 +214,14 @@ impl SavedPreferences {
                 text.push_str(&key);
                 text.push_str(" = ");
                 text.push_str(&value);
+                text.push('\n');
+            }
+        }
+        if let Some(guides) = self.safe_area_guides {
+            for (key, value) in guides.preference_entries() {
+                text.push_str(key);
+                text.push_str(" = ");
+                text.push_str(value);
                 text.push('\n');
             }
         }
@@ -297,6 +323,8 @@ pub struct PreferenceStore {
     known_shortcut_keys: ShortcutKeyOverrides,
     /// This console's key profiles at startup or last saved.
     known_key_profiles: ConsoleKeyProfiles,
+    /// The operator safe-area guides at startup or last saved.
+    known_safe_areas: SafeAreaGuides,
     /// When the unsaved change was last seen; `None` when the file is up
     /// to date.
     pending: Option<Instant>,
@@ -317,12 +345,14 @@ impl PreferenceStore {
         let known_snapping = saved.timeline_snapping();
         let known_shortcut_keys = saved.shortcut_keys.clone().unwrap_or_default();
         let known_key_profiles = saved.key_profiles.clone().unwrap_or_default();
+        let known_safe_areas = saved.safe_area_guides();
         Self {
             path,
             saved,
             known_snapping,
             known_shortcut_keys,
             known_key_profiles,
+            known_safe_areas,
             known_locale: locale,
             known_layout: layout,
             known_appearance: appearance,
@@ -406,6 +436,16 @@ impl PreferenceStore {
         if *profiles != self.known_key_profiles {
             self.known_key_profiles = profiles.clone();
             self.saved.key_profiles = Some(profiles.clone());
+            self.pending = Some(now);
+        }
+    }
+
+    /// Notes the operator safe-area guides at `now`: a change is saved like
+    /// the Snapping toggle's.
+    pub fn note_safe_area_guides(&mut self, now: Instant, guides: SafeAreaGuides) {
+        if guides != self.known_safe_areas {
+            self.known_safe_areas = guides;
+            self.saved.safe_area_guides = Some(guides);
             self.pending = Some(now);
         }
     }

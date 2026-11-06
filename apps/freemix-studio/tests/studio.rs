@@ -2355,6 +2355,24 @@ fn saved_layout_round_trips_and_ignores_bad_values() {
     assert!(!text.contains("language"), "{text}");
     assert!(!text.contains("rejected"), "{text}");
     assert_eq!(SavedPreferences::parse(&text), saved);
+    // Operator safe-area guides round-trip as local console preferences.
+    let mut safe = SavedPreferences::from_locale(fm_ui_model::i18n::Locale::ENGLISH);
+    safe.safe_area_guides = Some(fm_ui_egui::safe_areas::SafeAreaGuides {
+        action: true,
+        title: false,
+        center_4_3: true,
+        center_16_9: false,
+        center_9_16: true,
+    });
+    let text = safe.render();
+    assert!(text.contains("safe_areas.action = on\n"), "{text}");
+    assert!(text.contains("safe_areas.title = off\n"), "{text}");
+    assert!(text.contains("safe_areas.center_9_16 = on\n"), "{text}");
+    assert_eq!(SavedPreferences::parse(&text), safe);
+    assert_eq!(
+        SavedPreferences::default().safe_area_guides(),
+        fm_ui_egui::safe_areas::SafeAreaGuides::default()
+    );
     // The default layout reads back as itself.
     let default = SavedPreferences {
         layout: Some(ConsoleLayout::default()),
