@@ -2307,6 +2307,25 @@ pub enum CommandPayload {
         active: bool,
         duration_frames: u32,
     },
+    /// Starts a manual T-bar transition of secondary mix `number` (IN-023).
+    /// A live operation.
+    SecondaryMixStartTBar {
+        number: crate::WireMixNumber,
+        kind: AutoTransitionKind,
+    },
+    /// Moves secondary mix `number`'s T-bar to an absolute position (IN-023).
+    SecondaryMixSetTBarPosition {
+        number: crate::WireMixNumber,
+        position: ManualTransitionPosition,
+    },
+    /// Completes secondary mix `number`'s T-bar (IN-023).
+    SecondaryMixCommitTBar {
+        number: crate::WireMixNumber,
+    },
+    /// Cancels secondary mix `number`'s T-bar (IN-023).
+    SecondaryMixCancelTBar {
+        number: crate::WireMixNumber,
+    },
     /// Sets one input's video delay in frames (Protocol 2.161, IN-022). A
     /// padlocked, undoable project edit.
     SetInputVideoDelay {

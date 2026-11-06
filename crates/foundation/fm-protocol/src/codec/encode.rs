@@ -930,6 +930,24 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("active", u8::from(*active))?;
             record.field("duration_frames", duration_frames)?;
         }
+        CommandPayload::SecondaryMixStartTBar { number, kind } => {
+            record.field("payload", "secondary_mix_tbar_start")?;
+            record.field("number", number)?;
+            record.field("kind", kind.token())?;
+        }
+        CommandPayload::SecondaryMixSetTBarPosition { number, position } => {
+            record.field("payload", "secondary_mix_tbar_position")?;
+            record.field("number", number)?;
+            record.field("position_basis_points", position.basis_points())?;
+        }
+        CommandPayload::SecondaryMixCommitTBar { number } => {
+            record.field("payload", "secondary_mix_tbar_commit")?;
+            record.field("number", number)?;
+        }
+        CommandPayload::SecondaryMixCancelTBar { number } => {
+            record.field("payload", "secondary_mix_tbar_cancel")?;
+            record.field("number", number)?;
+        }
         CommandPayload::SetInputVideoDelay { input, frames } => {
             record.field("payload", "set_input_video_delay")?;
             super::video_delay::encode_entry(

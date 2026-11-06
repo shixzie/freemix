@@ -81,6 +81,16 @@ fn live_secondary_mix_commands_round_trip() {
         active: false,
         duration_frames: 15,
     });
+    round_trip(CommandPayload::SecondaryMixStartTBar {
+        number: number(2),
+        kind: AutoTransitionKind::Slide,
+    });
+    round_trip(CommandPayload::SecondaryMixSetTBarPosition {
+        number: number(2),
+        position: fm_protocol::ManualTransitionPosition::new(5_000).unwrap(),
+    });
+    round_trip(CommandPayload::SecondaryMixCommitTBar { number: number(2) });
+    round_trip(CommandPayload::SecondaryMixCancelTBar { number: number(2) });
 }
 
 #[test]

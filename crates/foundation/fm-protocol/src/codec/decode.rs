@@ -987,6 +987,33 @@ fn decode_command_payload(
             active: fields.boolean("active")?,
             duration_frames: fields.parse_required("duration_frames")?,
         },
+        "secondary_mix_tbar_start" => CommandPayload::SecondaryMixStartTBar {
+            number: super::secondary_mix::decode_number(fields)?,
+            kind: super::transition::decode_auto_transition_kind(fields.required("kind")?, "kind")?,
+        },
+        "secondary_mix_tbar_position" => {
+            let value = fields.required("position_basis_points")?;
+            let basis_points = value.parse().map_err(|_| CodecError::InvalidField {
+                field: "position_basis_points",
+                value: value.clone(),
+            })?;
+            let position = crate::ManualTransitionPosition::new(basis_points).ok_or(
+                CodecError::InvalidField {
+                    field: "position_basis_points",
+                    value,
+                },
+            )?;
+            CommandPayload::SecondaryMixSetTBarPosition {
+                number: super::secondary_mix::decode_number(fields)?,
+                position,
+            }
+        }
+        "secondary_mix_tbar_commit" => CommandPayload::SecondaryMixCommitTBar {
+            number: super::secondary_mix::decode_number(fields)?,
+        },
+        "secondary_mix_tbar_cancel" => CommandPayload::SecondaryMixCancelTBar {
+            number: super::secondary_mix::decode_number(fields)?,
+        },
         "set_input_video_delay" => {
             let entry = super::video_delay::decode_entry(fields)?;
             CommandPayload::SetInputVideoDelay {
