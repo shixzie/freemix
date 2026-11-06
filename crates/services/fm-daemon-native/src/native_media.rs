@@ -13235,6 +13235,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // overlay and per-mix fade-to-black in one pipeline
     fn native_mix_overlay_draws_another_mix_program() {
         use fm_switcher::{MixBankFrame, MixFrame, MixId, MixLayer, OVERLAY_CHANNEL_COUNT};
 
