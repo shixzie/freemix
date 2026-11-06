@@ -3174,6 +3174,46 @@ impl Runtime<'_> {
             }
             // One window of a slideshow's slide list (IN-009), only to a
             // session that steps or edits presentations.
+            WireMessage::AliasEffectsRequest(request) => {
+                let effects = durable
+                    .project()
+                    .inputs()
+                    .iter()
+                    .find(|input| input.id == request.input.to_domain())
+                    .and_then(|input| match &input.kind {
+                        fm_model::InputKind::Alias { effects, .. } => Some(effects.clone()),
+                        _ => None,
+                    });
+                match effects {
+                    Some(effects) => peer.reply(WireMessage::AliasEffectsResponse(
+                        fm_protocol::AliasEffectsResponse {
+                            protocol: request.protocol,
+                            request_id: request.request_id,
+                            input: request.input,
+                            effects: effects
+                                .iter()
+                                .map(|effect| fm_protocol::WireLayerEffect {
+                                    name: effect.name.clone(),
+                                    parameters: effect.parameters.clone(),
+                                })
+                                .collect(),
+                        },
+                    ))?,
+                    None => peer.reply(WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision: Some(
+                            self.control.borrow().diagnostics().current_revision,
+                        ),
+                        error: StructuredError {
+                            code: "alias_unavailable".into(),
+                            message: format!("input {} is not an alias", request.input),
+                            fields: Vec::new(),
+                            retryable: false,
+                        },
+                    }))?,
+                }
+                Ok(())
+            }
             WireMessage::TitleRowSourceRequest(request) => {
                 let response = self
                     .title_row_sources
