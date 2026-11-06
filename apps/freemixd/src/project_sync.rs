@@ -279,7 +279,7 @@ pub(crate) fn sync_project_inputs(
                                     )
                                 })
                                 .collect(),
-                            opacity: *opacity,
+                            opacity,
                             mask: mask.map(|mask| {
                                 fm_model::RectMask::new(mask.x, mask.y, mask.width, mask.height)
                                     .inverted(mask.invert)
