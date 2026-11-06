@@ -13260,7 +13260,7 @@ mod tests {
             .unwrap();
         let mix_two = MixId::new(2).unwrap();
         let overlay_mix = MixId::new(3).unwrap();
-        let frame = MixFrame {
+        let mix_two_frame = MixFrame {
             mix: mix_two,
             primary: MixLayer::Input(leaf),
             secondary: None,
@@ -13288,7 +13288,7 @@ mod tests {
         let mut frame = frame_result(0, leaf, None);
         frame.secondary_mixes = MixBankFrame {
             frame: 0,
-            mixes: vec![frame, overlay_frame],
+            mixes: vec![mix_two_frame, overlay_frame],
         };
 
         let composed = block_on(runtime.render_mix_texture(
