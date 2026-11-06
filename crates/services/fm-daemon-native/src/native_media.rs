@@ -13224,6 +13224,94 @@ mod tests {
     }
 
     #[test]
+    fn native_mix_overlay_draws_another_mix_program() {
+        use fm_switcher::{MixBankFrame, MixFrame, MixId, MixLayer, OVERLAY_CHANNEL_COUNT};
+
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(90).unwrap());
+        let leaf = input(1);
+        let overlay_leaf = input(2);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [
+                    NativeResolvedSource::RetainedFrame {
+                        input: leaf,
+                        frame: solid_retained_frame(clock_domain, [255, 0, 0, 255], 4, 2),
+                    },
+                    NativeResolvedSource::RetainedFrame {
+                        input: overlay_leaf,
+                        frame: solid_retained_frame(clock_domain, [0, 0, 255, 255], 4, 2),
+                    },
+                ],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, leaf);
+        add_leaf(&mut project, overlay_leaf);
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let green = runtime
+            .upload_still_blocking(&solid_retained_frame(clock_domain, [0, 255, 0, 255], 4, 2))
+            .unwrap();
+        let mix_two = MixId::new(2).unwrap();
+        let overlay_mix = MixId::new(3).unwrap();
+        let frame = MixFrame {
+            mix: mix_two,
+            primary: MixLayer::Input(leaf),
+            secondary: None,
+            transition_kind: None,
+            mix_numerator: 0,
+            mix_denominator: 1,
+            preview: None,
+            overlays: std::array::from_fn(|channel| {
+                (channel == 0).then_some(MixLayer::Mix {
+                    mix: overlay_mix,
+                    frame: 0,
+                })
+            }),
+        };
+        let overlay_frame = MixFrame {
+            mix: overlay_mix,
+            primary: MixLayer::Input(overlay_leaf),
+            secondary: None,
+            transition_kind: None,
+            mix_numerator: 0,
+            mix_denominator: 1,
+            preview: None,
+            overlays: [None; OVERLAY_CHANNEL_COUNT],
+        };
+        let mut frame = frame_result(0, leaf, None);
+        frame.secondary_mixes = MixBankFrame {
+            frame: 0,
+            mixes: vec![frame, overlay_frame],
+        };
+
+        let composed = block_on(runtime.render_mix_texture(
+            playback.registry(),
+            &BTreeMap::new(),
+            &plan,
+            &BTreeMap::new(),
+            &frame,
+            green.texture(),
+            mix_two,
+            &mut Vec::new(),
+            NativeFeedFrames::default(),
+        ))
+        .unwrap();
+        let picture = block_on(runtime.diagnostic_readback(&composed)).unwrap();
+        let pixel = rgba16f_pixel(&picture.bytes, 4, 0, 0);
+        assert!(
+            pixel[2] > 0.5 && pixel[0] < 0.1 && pixel[1] < 0.1,
+            "the mix overlay draws the other mix's blue Program: {pixel:?}"
+        );
+    }
+
+    #[test]
     fn native_alias_mask_and_opacity_apply_to_direct_and_scene_pictures() {
         let Some(runtime) = native_test_runtime() else {
             return;
