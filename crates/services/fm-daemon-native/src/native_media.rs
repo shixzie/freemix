@@ -823,32 +823,39 @@ impl NativeProjectPlan {
         let mut alias_crops = BTreeMap::new();
         let mut alias_layers = BTreeMap::new();
         for input in project.inputs() {
-            let (concrete, crop, effects, mask, opacity) = resolve_alias_target(input.id, &inputs)?;
-            if let InputKind::MixFeed(feed) = &concrete.kind {
+            let resolved = resolve_alias_target(input.id, &inputs)?;
+            if let InputKind::MixFeed(feed) = &resolved.concrete.kind {
                 feeds.insert(input.id, *feed);
             }
             let full_crop = fm_model::CropRect::new(0, 0, dimensions.width(), dimensions.height());
-            let crop = crop.unwrap_or(full_crop);
-            if crop != full_crop || !effects.is_empty() || mask.is_some() || opacity != u8::MAX {
-                let source = match &concrete.kind {
+            let crop = resolved.crop.unwrap_or(full_crop);
+            if crop != full_crop
+                || !resolved.effects.is_empty()
+                || resolved.mask.is_some()
+                || resolved.opacity != u8::MAX
+            {
+                let source = match &resolved.concrete.kind {
                     InputKind::Scene { scene_id, .. } => NativeAliasSource::Scene(*scene_id),
                     InputKind::MixFeed(feed) => NativeAliasSource::Feed(*feed),
-                    _ => NativeAliasSource::Leaf(concrete.id),
+                    _ => NativeAliasSource::Leaf(resolved.concrete.id),
                 };
                 alias_crops.entry(input.id).or_insert(NativeAliasCrop {
                     source,
                     crop: [crop.x, crop.y, crop.width, crop.height],
-                    mask,
-                    opacity,
+                    mask: resolved.mask,
+                    opacity: resolved.opacity,
                 });
             }
-            if !effects.is_empty() || mask.is_some() || opacity != u8::MAX {
+            if !resolved.effects.is_empty()
+                || resolved.mask.is_some()
+                || resolved.opacity != u8::MAX
+            {
                 alias_layers.insert(
                     input.id,
                     NativeAliasLayer {
-                        effects,
-                        mask,
-                        opacity,
+                        effects: resolved.effects,
+                        mask: resolved.mask,
+                        opacity: resolved.opacity,
                     },
                 );
             }
@@ -862,7 +869,7 @@ impl NativeProjectPlan {
             .map(|input| {
                 let route = match &input.kind {
                     InputKind::Alias { .. } => {
-                        let (concrete, _, _, _, _) = resolve_alias_target(input.id, &inputs)?;
+                        let concrete = resolve_alias_target(input.id, &inputs)?.concrete;
                         match &concrete.kind {
                             InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(*scene_id),
                             InputKind::MixFeed(_) => NativeVideoRoute::Scene(
@@ -2115,23 +2122,21 @@ fn native_execution_peak(
         .ok_or(NativeProjectPlanError::TransientTargetCountOverflow)
 }
 
+/// An alias chain's concrete source and the requested alias's own layer
+/// state (IN-024).
+struct ResolvedAlias<'a> {
+    concrete: &'a fm_model::Input,
+    crop: Option<fm_model::CropRect>,
+    effects: Vec<fm_model::LayerEffect>,
+    mask: Option<fm_model::RectMask>,
+    opacity: u8,
+}
+
 /// Follows an alias chain to its first non-alias input (IN-024).
-///
-/// A cropped alias is refused: the native renderer cannot crop a source
-/// inside its existing composition plans yet.
 fn resolve_alias_target<'a>(
     input: InputId,
     inputs: &BTreeMap<InputId, &'a fm_model::Input>,
-) -> Result<
-    (
-        &'a fm_model::Input,
-        Option<fm_model::CropRect>,
-        Vec<fm_model::LayerEffect>,
-        Option<fm_model::RectMask>,
-        u8,
-    ),
-    NativeProjectPlanError,
-> {
+) -> Result<ResolvedAlias<'a>, NativeProjectPlanError> {
     // Only the requested alias's own crop and effects apply; those on
     // intermediate aliases are ignored, matching `fm_model::SourceResolver`.
     let requested = inputs
@@ -2160,7 +2165,15 @@ fn resolve_alias_target<'a>(
             .ok_or(NativeProjectPlanError::MissingInput(current))?;
         match &model.kind {
             InputKind::Alias { target, .. } => current = *target,
-            _ => return Ok((model, crop, effects, mask, opacity)),
+            _ => {
+                return Ok(ResolvedAlias {
+                    concrete: model,
+                    crop,
+                    effects,
+                    mask,
+                    opacity,
+                });
+            }
         }
     }
 }
@@ -2189,7 +2202,8 @@ fn resolve_scene_source(
 ) -> Result<NativeSceneSource, NativeProjectPlanError> {
     match source {
         SourceRef::Input(input) => {
-            let (model, crop, _effects, _mask, _opacity) = resolve_alias_target(input, inputs)?;
+            let resolved = resolve_alias_target(input, inputs)?;
+            let model = resolved.concrete;
             let source = match &model.kind {
                 InputKind::Scene { scene_id, .. } => {
                     if !scenes.contains_key(scene_id) {
@@ -2200,7 +2214,7 @@ fn resolve_scene_source(
                 InputKind::MixFeed(feed) => NativeAliasSource::Feed(*feed),
                 _ => NativeAliasSource::Leaf(model.id),
             };
-            Ok(match crop {
+            Ok(match resolved.crop {
                 Some(crop) => NativeSceneSource::Alias {
                     input,
                     source,
@@ -11380,6 +11394,7 @@ impl NativeMediaRuntime {
         block_on(self.copy_feed_texture(dimensions, texture))
     }
 
+    #[allow(clippy::too_many_arguments)] // crop, effects, mask, opacity, and background mode
     async fn crop_project_texture(
         &self,
         dimensions: VideoDimensions,
