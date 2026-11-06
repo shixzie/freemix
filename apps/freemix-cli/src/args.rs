@@ -7639,14 +7639,14 @@ fn parse_secondary_mix(
             }
         }
         "secondary-mix-transition" => {
-            let number = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
+            let mix = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
             let kind = auto_transition_kind(&required(&mut arguments, "transition kind")?)?;
             let duration_frames = number(&required(&mut arguments, "frames")?, "frames")?;
             let (key, expected_revision) = command_options(arguments)?;
             match (path, address) {
                 (Some(path), _) => Command::SecondaryMixTransition {
                     path,
-                    number,
+                    number: mix,
                     kind,
                     duration_frames,
                     key,
@@ -7654,7 +7654,7 @@ fn parse_secondary_mix(
                 },
                 (None, Some(address)) => Command::RemoteSecondaryMixTransition {
                     address,
-                    number,
+                    number: mix,
                     kind,
                     duration_frames,
                     key,
