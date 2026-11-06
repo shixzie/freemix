@@ -164,6 +164,35 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             WireMessage::PtzPresetsResponse(decode_ptz_presets_response(&mut fields)?)
         }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
+        "alias_effects_request" => {
+            let protocol = fields.required("protocol")?;
+            let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+                field: "protocol",
+                value: protocol,
+            })?;
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::AliasEffectsRequest(crate::AliasEffectsRequest {
+                protocol,
+                request_id,
+                input: fields.canonical_input("input")?,
+            })
+        }
+        "alias_effects_response" => {
+            let protocol = fields.required("protocol")?;
+            let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+                field: "protocol",
+                value: protocol,
+            })?;
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::AliasEffectsResponse(crate::AliasEffectsResponse {
+                protocol,
+                request_id,
+                input: fields.canonical_input("input")?,
+                effects: super::scene_layout::decode_effect_list(&fields.required("effects")?)?,
+            })
+        }
         "title_row_source_request" => {
             let protocol = fields.required("protocol")?;
             let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {

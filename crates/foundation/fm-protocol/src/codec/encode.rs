@@ -131,6 +131,24 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             }
         }
         WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,
+        WireMessage::AliasEffectsRequest(message) => {
+            validate_request_id(&message.request_id)?;
+            record.kind("alias_effects_request");
+            record.field("protocol", message.protocol)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+        }
+        WireMessage::AliasEffectsResponse(message) => {
+            validate_request_id(&message.request_id)?;
+            record.kind("alias_effects_response");
+            record.field("protocol", message.protocol)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+            record.field_string(
+                "effects",
+                super::scene_layout::encode_effect_list(&message.effects)?,
+            )?;
+        }
         WireMessage::TitleRowSourceRequest(message) => {
             validate_request_id(&message.request_id)?;
             record.kind("title_row_source_request");

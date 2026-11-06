@@ -1547,6 +1547,23 @@ pub struct TitleFieldUpdate {
     pub value: TitleFieldValue,
 }
 
+/// A read-only request for one alias's current effect list (IN-024).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AliasEffectsRequest {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub input: WireInputId,
+}
+
+/// The daemon's answer to one [`AliasEffectsRequest`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AliasEffectsResponse {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub input: WireInputId,
+    pub effects: Vec<crate::WireLayerEffect>,
+}
+
 /// One scheduled title data source operation (GX-005, Protocol 2.166).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TitleRowSourceOperation {
@@ -3673,6 +3690,10 @@ pub enum WireMessage {
     /// 2.109).
     HealthAlertRequest(crate::HealthAlertRequest),
     MonitorFrame(MonitorFrameMessage),
+    /// A client's request for one alias's effects (IN-024, Protocol 2.168).
+    AliasEffectsRequest(AliasEffectsRequest),
+    /// The daemon's answer to a [`AliasEffectsRequest`].
+    AliasEffectsResponse(AliasEffectsResponse),
     /// A client's scheduled title file source (GX-005, Protocol 2.166).
     TitleRowSourceRequest(TitleRowSourceRequest),
     /// The daemon's answer to a [`TitleRowSourceRequest`].
