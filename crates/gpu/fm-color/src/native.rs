@@ -298,6 +298,13 @@ impl NativeWorkingFrame {
         self.metadata
     }
 
+    /// Consumes the frame and returns its texture, dropping the timing and
+    /// metadata (a persisted feed picture needs only the texture).
+    #[must_use]
+    pub fn into_texture(self) -> NativeTexture {
+        self.texture
+    }
+
     /// This frame's timing and metadata over `texture`: a working-space
     /// picture composed from working frames (a slideshow's slides) stays a
     /// working frame.
