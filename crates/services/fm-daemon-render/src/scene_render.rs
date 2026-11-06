@@ -435,6 +435,7 @@ impl<'a> Composer<'a> {
 
     /// Composes `scene` posed at `pose` on the grid, `depth` scenes below
     /// the composed one.
+    #[allow(clippy::too_many_lines)] // one pass over layers, sources, and alias state
     fn compose(
         &self,
         scene: &fm_model::Scene,
