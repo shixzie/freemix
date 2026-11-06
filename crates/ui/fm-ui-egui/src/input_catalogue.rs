@@ -3018,6 +3018,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // crop, effects, opacity, and mask in one draft flow
     fn alias_drafts_author_an_optional_crop() {
         let state = state();
         let tracker = CatalogueTracker::default();
