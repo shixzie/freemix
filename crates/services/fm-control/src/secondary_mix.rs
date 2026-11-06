@@ -31,6 +31,15 @@ pub(super) fn engine_command(payload: &CommandPayload) -> Option<EngineCommand> 
             kind: crate::transition::domain_transition_kind(*kind),
             duration_frames: *duration_frames,
         }),
+        CommandPayload::SecondaryMixFadeToBlack {
+            number,
+            active,
+            duration_frames,
+        } => Some(EngineCommand::SecondaryMixFadeToBlack {
+            number: model_number(*number),
+            active: *active,
+            duration_frames: *duration_frames,
+        }),
         _ => None,
     }
 }
