@@ -916,3 +916,84 @@ fn a_stinger_fallback_still_needs_a_preview_bus() {
     );
     assert_eq!(bank.pending_effects(), 0);
 }
+
+#[test]
+fn a_mix_overlay_reads_the_upstream_mix_one_frame_late() {
+    let mut bank = bank();
+    add_pp(&mut bank, 2, src(3), src(4));
+    add_pp(&mut bank, 3, src(5), src(6));
+    let channel = OverlayChannelId::new(1).unwrap();
+    bank.advance_frame();
+    bank.schedule_effect(
+        MixEffect::OverlayOn {
+            channel,
+            source: MixSource::Mix(mix(2)),
+        },
+        MixSet::single(mix(3)),
+    )
+    .unwrap();
+
+    let (frame1, events) = bank.advance_frame();
+    assert_eq!(
+        frame1.mix(mix(3)).unwrap().overlays[channel.index()],
+        Some(MixLayer::Mix {
+            mix: mix(2),
+            frame: 0,
+        })
+    );
+    assert!(events.contains(&MixBankEvent::OverlayChanged {
+        mix: mix(3),
+        channel,
+        source: Some(MixSource::Mix(mix(2))),
+    }));
+
+    // Cut the upstream mix; the overlay still names frame 1, not the new Program.
+    bank.apply(MixBankCommand::Cut(mix(2))).unwrap();
+    let (frame2, _) = bank.advance_frame();
+    assert_eq!(
+        frame2.mix(mix(3)).unwrap().overlays[channel.index()],
+        Some(MixLayer::Mix {
+            mix: mix(2),
+            frame: 1,
+        })
+    );
+}
+
+#[test]
+fn mix_overlays_participate_in_routing_cycle_checks() {
+    let mut bank = bank();
+    add_pp(&mut bank, 2, src(3), src(4));
+    add_pp(&mut bank, 3, src(5), src(6));
+    let channel = OverlayChannelId::new(2).unwrap();
+    bank.schedule_effect(
+        MixEffect::OverlayOn {
+            channel,
+            source: MixSource::Mix(mix(2)),
+        },
+        MixSet::single(mix(3)),
+    )
+    .unwrap();
+    bank.advance_frame();
+
+    // Mix 2 cannot now read Mix 3: Mix 3 overlays Mix 2.
+    assert_eq!(
+        bank.apply(MixBankCommand::SelectPreview {
+            mix: mix(2),
+            source: MixSource::Mix(mix(3)),
+        }),
+        Err(MixBankError::RoutingCycle {
+            mix: mix(2),
+            source: mix(3),
+        })
+    );
+    assert_eq!(
+        bank.schedule_effect(
+            MixEffect::OverlayOn {
+                channel,
+                source: MixSource::Mix(mix(3)),
+            },
+            MixSet::single(mix(3)),
+        ),
+        Err(MixBankError::SelfRoute(mix(3)))
+    );
+}
