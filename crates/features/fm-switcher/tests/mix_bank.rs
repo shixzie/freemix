@@ -1031,14 +1031,13 @@ fn fade_to_black_is_independent_inside_each_mix() {
     let (_, events) = bank.advance_frame();
     assert!(events.iter().any(|event| matches!(
         event,
-        MixBankEvent::FadeToBlackPositionChanged { mix: changed, .. } if *changed == mix(2)
+        MixBankEvent::FadeToBlackCompleted {
+            mix: changed,
+            target: FadeToBlackTarget::Black,
+        } if *changed == mix(2)
     )));
 
-    let (completed_frame, events) = bank.advance_frame();
-    assert!(events.contains(&MixBankEvent::FadeToBlackCompleted {
-        mix: mix(2),
-        target: FadeToBlackTarget::Black,
-    }));
+    let (completed_frame, _) = bank.advance_frame();
     let black = completed_frame.mix(mix(2)).unwrap().fade_to_black;
     assert_eq!(
         black.interval_start(),
