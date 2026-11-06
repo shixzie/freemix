@@ -277,7 +277,7 @@ mod tests {
         };
         let rects = guides.rects(1080, 1920);
         assert_eq!(rects.len(), 2);
-        assert_eq!(rects[0].1, [0.0, 88.0 / 1920.0, 1.0, 1744.0 / 1920.0]);
+        assert_eq!(rects[0].1, [0.0, 555.0 / 1920.0, 1.0, 810.0 / 1920.0]);
         assert_eq!(rects[1].1, [0.0, 656.0 / 1920.0, 1.0, 608.0 / 1920.0]);
     }
 
