@@ -540,6 +540,12 @@ pub enum EngineCommand {
         input: InputId,
         frames: u32,
     },
+    /// Replaces one alias input's ordered effects (IN-024). A padlocked,
+    /// undoable project edit.
+    SetAliasEffects {
+        input: InputId,
+        effects: Vec<fm_model::LayerEffect>,
+    },
     /// Freezes or resumes one input's picture (SW-016). A live operation: it
     /// is not undoable and is not persisted.
     SetInputFreeze {
@@ -4660,6 +4666,37 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetAliasEffects { input, effects } = self.command {
+            if !state.input_aliases().contains_key(&input) {
+                return Err(Rejection::new(
+                    RejectionCode::NotFound,
+                    format!("show has no alias input {input}"),
+                )
+                .with_reason(crate::error::unknown_input_reason(input)));
+            }
+            if effects.len() > fm_model::LayerEffect::MAX_EFFECTS_PER_LAYER {
+                return Err(Rejection::new(
+                    RejectionCode::InvalidCommand,
+                    format!(
+                        "an alias carries at most {} effects",
+                        fm_model::LayerEffect::MAX_EFFECTS_PER_LAYER
+                    ),
+                ));
+            }
+            for (index, effect) in effects.iter().enumerate() {
+                effect.validate().map_err(|reason| {
+                    Rejection::new(
+                        RejectionCode::InvalidCommand,
+                        format!("alias effect {index} is invalid: {reason}"),
+                    )
+                })?;
+            }
+            state.set_alias_effects_unchecked(input, effects.clone());
+            events.push(EngineEvent::InputAliasEffectsChanged { input, effects });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetInputFreeze { input, frozen } = self.command {
             state.set_input_frozen(input, frozen).map_err(|error| {
                 Rejection::new(RejectionCode::InvalidCommand, error.to_string())
@@ -5185,6 +5222,8 @@ impl EngineMutation {
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
             | EngineCommand::SetInputVideoDelay { .. }
+            | EngineCommand::SetAliasEffects { .. }
+            | EngineCommand::SetAliasEffects { .. }
             | EngineCommand::SetInputFreeze { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
@@ -5298,6 +5337,13 @@ fn apply_input_catalogue_mutation(
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
+            if let EngineInputSource::Alias {
+                target, effects, ..
+            } = &source
+            {
+                state.insert_input_alias(input, *target);
+                state.set_alias_effects_unchecked(input, effects.clone());
+            }
             if let Some(spec) = source.spec() {
                 state.set_input_source(input, spec).map_err(|_| {
                     input_catalogue_rejection(InputCatalogueError::UnknownInput(input))
@@ -5874,6 +5920,8 @@ fn apply_runtime(
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
             | EngineCommand::SetInputVideoDelay { .. }
+            | EngineCommand::SetAliasEffects { .. }
+            | EngineCommand::SetAliasEffects { .. }
             | EngineCommand::SetInputFreeze { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
@@ -5966,6 +6014,9 @@ fn apply_runtime(
         }
         EngineCommand::SetInputFreeze { .. } => {
             unreachable!("freeze commands return before switcher command mapping")
+        }
+        EngineCommand::SetAliasEffects { .. } => {
+            unreachable!("alias effect edits return before switcher command mapping")
         }
         EngineCommand::SelectPreview(input) => SwitcherCommand::SelectPreview(input),
         EngineCommand::Cut => SwitcherCommand::Cut,
@@ -6083,6 +6134,7 @@ fn apply_runtime(
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetInputVideoDelay { .. }
+        | EngineCommand::SetAliasEffects { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
@@ -6291,6 +6343,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetInputVideoDelay { .. }
+        | EngineCommand::SetAliasEffects { .. }
         | EngineCommand::SetInputFreeze { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
@@ -6340,6 +6393,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetLogicalOutput { .. })
         && !matches!(command, EngineCommand::SetSecondaryMix { .. })
         && !matches!(command, EngineCommand::SetInputVideoDelay { .. })
+        && !matches!(command, EngineCommand::SetAliasEffects { .. })
         && !matches!(command, EngineCommand::SetInputFreeze { .. })
         && !matches!(command, EngineCommand::SecondaryMixCut { .. })
         && !matches!(command, EngineCommand::SecondaryMixTransition { .. })
