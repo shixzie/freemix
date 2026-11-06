@@ -902,5 +902,9 @@ fn mix_overlays(frame: &MixFrame) -> Vec<OverlayLayer> {
 }
 
 fn follow_mix_audio(_context: &RoutingContext<'_>, frame: &MixFrame) -> AudioSource {
-    AudioSource::Mix(frame.audio)
+    if frame.audio.is_silent() {
+        AudioSource::Silent
+    } else {
+        AudioSource::Mix(frame.audio)
+    }
 }
