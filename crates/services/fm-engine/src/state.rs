@@ -1891,7 +1891,7 @@ impl ShowState {
 
     /// Records `input`'s own effects without validating the input kind; the
     /// caller checked it (IN-024).
-    pub(crate) fn set_alias_effects_unchecked(
+    pub fn set_alias_effects_unchecked(
         &mut self,
         input: InputId,
         effects: Vec<fm_model::LayerEffect>,
