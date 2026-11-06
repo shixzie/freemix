@@ -11028,6 +11028,15 @@ impl NativeMediaRuntime {
                 Some((frame, &mut *seen)),
             )
             .await?;
+        let composed = self
+            .fade_to_black_renderer
+            .render(
+                &self.context,
+                native_fade_to_black_plan(mix_frame.fade_to_black)?,
+                &composed,
+            )
+            .await
+            .map_err(NativeSourceRenderError::FadeToBlack)?;
         seen.pop();
         Ok(composed)
     }
@@ -13312,6 +13321,31 @@ mod tests {
         assert!(
             pixel[2] > 0.5 && pixel[0] < 0.1 && pixel[1] < 0.1,
             "the mix overlay draws the other mix's blue Program: {pixel:?}"
+        );
+
+        // Fade-to-Black inside Mix 2 covers its background and overlay.
+        let mut faded = mix_two_frame;
+        faded.fade_to_black =
+            fm_switcher::FadeToBlackController::settled(fm_switcher::FadeToBlackTarget::Black)
+                .frame();
+        frame.secondary_mixes.mixes[0] = faded;
+        let black = block_on(runtime.render_mix_texture(
+            playback.registry(),
+            &BTreeMap::new(),
+            &plan,
+            &BTreeMap::new(),
+            &frame,
+            green.texture(),
+            mix_two,
+            &mut Vec::new(),
+            NativeFeedFrames::default(),
+        ))
+        .unwrap();
+        let black = block_on(runtime.diagnostic_readback(&black)).unwrap();
+        let pixel = rgba16f_pixel(&black.bytes, 4, 0, 0);
+        assert!(
+            pixel[0] < 0.01 && pixel[1] < 0.01 && pixel[2] < 0.01,
+            "Mix 2's Fade-to-Black blackens its composed picture: {pixel:?}"
         );
     }
 
