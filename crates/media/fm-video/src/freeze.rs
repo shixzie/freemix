@@ -157,7 +157,8 @@ impl std::error::Error for FreezeError {}
 /// and [`emit`](Self::emit) once per output cadence slot.
 #[derive(Clone, Debug)]
 pub struct FreezeController<H> {
-    frame_duration: i64,
+    frame_duration: NormalizedDuration,
+    frame_duration_nanos: i64,
     state: FreezeState,
     origin: Option<i64>,
     last_source: Option<(u64, i64)>,
@@ -176,13 +177,14 @@ impl<H: Clone> FreezeController<H> {
     /// Returns [`FreezeError::FrameDurationTooLong`] when the duration does
     /// not fit the controller's signed nanosecond range.
     pub fn new(frame_duration: NormalizedDuration) -> Result<Self, FreezeError> {
-        let Ok(frame_duration) = i64::try_from(frame_duration.as_nanos()) else {
+        let Ok(duration_nanos) = i64::try_from(frame_duration.as_nanos()) else {
             return Err(FreezeError::FrameDurationTooLong {
                 nanos: frame_duration.as_nanos(),
             });
         };
         Ok(Self {
             frame_duration,
+            frame_duration_nanos: duration_nanos,
             state: FreezeState::Live,
             origin: None,
             last_source: None,
@@ -200,11 +202,8 @@ impl<H: Clone> FreezeController<H> {
     }
 
     #[must_use]
-    pub fn frame_duration(&self) -> NormalizedDuration {
-        NormalizedDuration::from_nanos(
-            u64::try_from(self.frame_duration).expect("a controller duration is positive"),
-        )
-        .expect("a controller duration is nonzero")
+    pub const fn frame_duration(&self) -> NormalizedDuration {
+        self.frame_duration
     }
 
     #[must_use]
@@ -337,10 +336,9 @@ impl<H: Clone> FreezeController<H> {
                     return Ok(None);
                 };
                 let pts = match self.last_output_pts {
-                    Some(last) if self.latched_presented => {
-                        last.checked_add(self.frame_duration)
-                            .ok_or(FreezeError::TimestampOverflow)?
-                    }
+                    Some(last) if self.latched_presented => last
+                        .checked_add(self.frame_duration_nanos)
+                        .ok_or(FreezeError::TimestampOverflow)?,
                     _ => self.live_output_pts(latched.pts)?.as_nanos(),
                 };
                 let output = OutputFrame {
@@ -387,7 +385,7 @@ impl<H: Clone> FreezeController<H> {
         let pts = match self.last_output_pts {
             Some(last) => {
                 let floor = last
-                    .checked_add(self.frame_duration)
+                    .checked_add(self.frame_duration_nanos)
                     .ok_or(FreezeError::TimestampOverflow)?;
                 mapped.max(floor)
             }
@@ -401,7 +399,7 @@ impl<H: Clone> FreezeController<H> {
     fn map_to_cadence(&self, source_pts: i64) -> Result<i64, FreezeError> {
         let origin = self.origin.unwrap_or(source_pts);
         let offset = i128::from(source_pts) - i128::from(origin);
-        let duration = i128::from(self.frame_duration);
+        let duration = i128::from(self.frame_duration_nanos);
         let slots = offset.div_euclid(duration) + i128::from(offset.rem_euclid(duration) != 0);
         let mapped = i128::from(origin) + slots * duration;
         i64::try_from(mapped).map_err(|_| FreezeError::TimestampOverflow)
