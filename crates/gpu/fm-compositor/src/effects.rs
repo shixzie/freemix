@@ -289,7 +289,7 @@ pub fn apply_reference_effect(
                         .map(|(value, predicted)| value.abs_diff(predicted))
                         .max()
                         .unwrap_or(0);
-                    if motion >= Self::MOTION_THRESHOLD {
+                    if motion >= ReferenceEffect::MOTION_THRESHOLD {
                         Ok(vertical)
                     } else {
                         Ok(Rgba8::new(
