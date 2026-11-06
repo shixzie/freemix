@@ -1872,7 +1872,6 @@ fn decode_new_input_name(fields: &mut Fields) -> Result<String, CodecError> {
     Ok(name)
 }
 
-#[allow(clippy::too_many_lines)] // one arm per input source
 fn parse_safe_area_guides(
     fields: &mut dyn FieldSource,
     name: &'static str,
@@ -1882,6 +1881,7 @@ fn parse_safe_area_guides(
         .ok_or(CodecError::InvalidField { field: name, value })
 }
 
+#[allow(clippy::too_many_lines)] // one arm per input source
 fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, CodecError> {
     let kind = fields.required("kind")?;
     match kind.as_str() {
