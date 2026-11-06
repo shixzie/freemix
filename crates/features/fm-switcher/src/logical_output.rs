@@ -517,6 +517,8 @@ pub enum AudioSource {
     Master,
     Bus(BusId),
     Input(InputId),
+    /// A secondary mix's own Program route, with any transition crossfade.
+    Mix(crate::MixAudio),
     Silent,
 }
 
@@ -899,19 +901,6 @@ fn mix_overlays(frame: &MixFrame) -> Vec<OverlayLayer> {
         .collect()
 }
 
-fn follow_mix_audio(context: &RoutingContext<'_>, frame: &MixFrame) -> AudioSource {
-    let mut layer = frame.primary;
-    // Mix routing is acyclic, so a chain visits each mix at most once.
-    for _ in 0..crate::MIX_BANK_CAPACITY {
-        match layer {
-            MixLayer::Input(input) => return AudioSource::Input(input),
-            MixLayer::Black => return AudioSource::Silent,
-            MixLayer::Mix { mix, .. } if mix.is_main() => return AudioSource::Master,
-            MixLayer::Mix { mix, .. } => match context.mixes.and_then(|bank| bank.mix(mix)) {
-                Some(next) => layer = next.primary,
-                None => return AudioSource::Silent,
-            },
-        }
-    }
-    AudioSource::Silent
+fn follow_mix_audio(_context: &RoutingContext<'_>, frame: &MixFrame) -> AudioSource {
+    AudioSource::Mix(frame.audio)
 }

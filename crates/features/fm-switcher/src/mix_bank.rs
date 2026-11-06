@@ -207,6 +207,38 @@ impl MixTransition {
     }
 }
 
+/// One layer of a secondary mix's audio route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MixAudioSource {
+    Input(InputId),
+    Mix(MixId),
+    Silent,
+}
+
+/// A secondary mix's audio route for one frame: one source, or a crossfade
+/// between two during a transition or T-bar.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MixAudio {
+    pub primary: MixAudioSource,
+    pub secondary: Option<MixAudioSource>,
+    pub numerator: u32,
+    pub denominator: u32,
+}
+
+impl MixAudio {
+    #[must_use]
+    pub const fn is_silent(self) -> bool {
+        matches!(self.primary, MixAudioSource::Silent) && self.secondary.is_none()
+    }
+}
+
+const fn audio_source(source: MixSource) -> MixAudioSource {
+    match source {
+        MixSource::Input(input) => MixAudioSource::Input(input),
+        MixSource::Mix(mix) => MixAudioSource::Mix(mix),
+    }
+}
+
 /// Read-only state of one configured mix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MixState {
@@ -720,6 +752,8 @@ pub struct MixFrame {
     pub preview: Option<MixLayer>,
     pub overlays: [Option<MixOverlay>; OVERLAY_CHANNEL_COUNT],
     pub fade_to_black: FadeToBlackFrame,
+    /// The mix's audio route: its Program layer, or a transition crossfade.
+    pub audio: MixAudio,
 }
 
 /// All configured mixes for one bank frame, in ascending mix order.
@@ -1579,6 +1613,12 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
                 })
             }),
             fade_to_black: state.fade_to_black.frame(),
+            audio: MixAudio {
+                primary: audio_source(t_bar.from),
+                secondary: Some(audio_source(t_bar.to)),
+                numerator: u32::from(t_bar.position.basis_points()),
+                denominator: u32::from(TBarPosition::MAX),
+            },
         };
     }
     match state.transition {
@@ -1597,6 +1637,12 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
                 })
             }),
             fade_to_black: state.fade_to_black.frame(),
+            audio: MixAudio {
+                primary: audio_source(transition.from),
+                secondary: Some(audio_source(transition.to)),
+                numerator: transition.elapsed_frames,
+                denominator: transition.duration_frames,
+            },
         },
         None => MixFrame {
             mix,
@@ -1613,6 +1659,12 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
                 })
             }),
             fade_to_black: state.fade_to_black.frame(),
+            audio: MixAudio {
+                primary: audio_source(state.program),
+                secondary: None,
+                numerator: 0,
+                denominator: 1,
+            },
         },
     }
 }
