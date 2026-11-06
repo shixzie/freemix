@@ -750,8 +750,6 @@ impl Client {
             | WireMessage::AliasEffectsResponse(_)
             | WireMessage::TitleRowSourceRequest(_)
             | WireMessage::TitleRowSourceResponse(_)
-            | WireMessage::AliasEffectsRequest(_)
-            | WireMessage::AliasEffectsResponse(_)
             | WireMessage::FrozenStillRequest(_)
             | WireMessage::FrozenStillResponse(_)
             | WireMessage::InputThumbnailSubscription(_)
@@ -2110,6 +2108,7 @@ impl Client {
             | CommandPayload::SecondaryMixCut { .. }
             | CommandPayload::SecondaryMixTransition { .. }
             | CommandPayload::SetInputVideoDelay { .. }
+            | CommandPayload::SetAliasEffects { .. }
             | CommandPayload::SetInputFreeze { .. }
             | CommandPayload::SetLiveLan { .. }
             | CommandPayload::SetAlertRule(_)

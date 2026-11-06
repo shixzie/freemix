@@ -2288,7 +2288,6 @@ impl TcpSession {
             | WireMessage::AliasEffectsRequest(_)
             | WireMessage::TitleRowSourceRequest(_)
             | WireMessage::TitleRowSourceResponse(_)
-            | WireMessage::AliasEffectsRequest(_)
             | WireMessage::FrozenStillRequest(_)
             | WireMessage::AudioPluginStatusRequest(_)
             | WireMessage::ReelStatusRequest(_)
