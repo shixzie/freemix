@@ -3091,8 +3091,14 @@ one or more mixes carries the slot's readiness decision: an unconfigured slot
 refuses the whole effect, a ready clip is refused when its cut point exceeds
 the requested duration, and a missing clip applies the slot's configured Cut,
 Fade, or Keep Program fallback to every target, with a per-target fallback
-event. Remaining gaps: no audio path; overlay fades, mix-sourced overlays,
-T-bar, and Fade-to-Black inside a mix are absent. `IN-023` remains planned.
+event. A mix overlay names any configured input or another mix: the bank
+stores it as a route, rejects self-reference and cycles through overlays as
+well as Program, Preview, and running transitions, and composes the upstream
+mix one frame late like every other mix read. Native realization resolves a
+mix-sourced overlay through the same recursive mix composition (with cycle
+protection) and draws it full-frame above the mix's background. Remaining
+gaps: no audio path; overlay fades, T-bar, and Fade-to-Black inside a mix are
+absent. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
