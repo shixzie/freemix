@@ -9,7 +9,7 @@
 //! commands: the first two are padlocked project edits, the latter live
 //! operations.
 
-use egui::{ComboBox, RichText, TextEdit, Ui};
+use egui::{ComboBox, RichText, TextEdit};
 use fm_protocol::{
     AutoTransitionKind, WireInputId, WireMixNumber, WireSecondaryMixConfig, WireSecondaryMixMode,
     WireSecondaryMixSource, WireSecondaryMixState,
@@ -18,6 +18,9 @@ use fm_protocol::{
 use crate::l10n::{Locale, Msg};
 use crate::theme::{AMBER, section_label};
 use crate::{StudioIntent, StudioShell, StudioUiState};
+
+/// Matches the protocol's secondary-mix name bound.
+const MAX_SECONDARY_MIX_NAME_BYTES: usize = 128;
 
 /// One unsaved mix form.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,7 +74,7 @@ impl SecondaryMixDraft {
         if name.is_empty() {
             return Err("Mix name must not be empty");
         }
-        if name.len() > fm_model::MAX_SECONDARY_MIX_NAME_BYTES {
+        if name.len() > MAX_SECONDARY_MIX_NAME_BYTES {
             return Err("Mix name is too long");
         }
         let program =
@@ -123,6 +126,7 @@ fn mode_text(l: Locale, mode: WireSecondaryMixMode) -> String {
         WireSecondaryMixMode::PreviewProgram => Msg::SecondaryMixPreviewProgram,
         WireSecondaryMixMode::OutputOnly => Msg::SecondaryMixOutputOnly,
     })
+    .to_owned()
 }
 
 impl StudioShell {
