@@ -196,6 +196,55 @@ fn title_row_intent_maps_to_the_wire_command() {
 }
 
 #[test]
+fn secondary_mix_intents_map_to_the_wire_commands() {
+    let number = fm_protocol::WireMixNumber::new(2).unwrap();
+    let config = fm_protocol::WireSecondaryMixConfig {
+        number,
+        name: "Guest mix".into(),
+        mode: fm_protocol::WireSecondaryMixMode::PreviewProgram,
+        program: fm_protocol::WireSecondaryMixSource::Input(input(1)),
+        preview: Some(fm_protocol::WireSecondaryMixSource::Input(input(2))),
+    };
+    assert_eq!(
+        studio_intent_payload(
+            StudioIntent::SetSecondaryMix {
+                config: Box::new(config.clone()),
+            },
+            None,
+        )
+        .unwrap(),
+        CommandPayload::SetSecondaryMix {
+            number,
+            config: Box::new(config),
+        }
+    );
+    assert_eq!(
+        studio_intent_payload(StudioIntent::ClearSecondaryMix { number }, None).unwrap(),
+        CommandPayload::ClearSecondaryMix { number }
+    );
+    assert_eq!(
+        studio_intent_payload(StudioIntent::SecondaryMixCut { number }, None).unwrap(),
+        CommandPayload::SecondaryMixCut { number }
+    );
+    assert_eq!(
+        studio_intent_payload(
+            StudioIntent::SecondaryMixTransition {
+                number,
+                kind: fm_protocol::AutoTransitionKind::Fade,
+                duration_frames: 12,
+            },
+            None,
+        )
+        .unwrap(),
+        CommandPayload::SecondaryMixTransition {
+            number,
+            kind: fm_protocol::AutoTransitionKind::Fade,
+            duration_frames: 12,
+        }
+    );
+}
+
+#[test]
 fn alias_effects_intent_maps_to_the_wire_command() {
     let effects = vec![fm_protocol::WireLayerEffect {
         name: "saturation".into(),

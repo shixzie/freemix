@@ -172,6 +172,15 @@ impl FakeRemoteServer {
         Self { address, worker }
     }
 
+    /// Serves one command acceptance without a follow-up event, for a live
+    /// operation the daemon confirms only in its next snapshot.
+    fn start_accept_only(role: Role, payload: CommandPayload, key: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || serve_accept_only(&listener, role, &payload, key));
+        Self { address, worker }
+    }
+
     /// Serves one alias-effect read (IN-024, Protocol 2.168).
     fn start_alias_effects(effects: Vec<fm_protocol::WireLayerEffect>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1261,6 +1270,38 @@ fn serve_frozen_still(listener: &TcpListener) {
             path: "assets/frozen-1.png".into(),
         }),
     );
+}
+
+fn serve_accept_only(
+    listener: &TcpListener,
+    role: Role,
+    payload: &CommandPayload,
+    key: &'static str,
+) {
+    let engine = EngineIdentity {
+        engine_id: "project-42".into(),
+        state_epoch: 1,
+        log_id: "fake-remote-log".into(),
+    };
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_role(read_message(&mut reader), role);
+    write_handshake_role(&mut writer, &engine, 0, role);
+    let WireMessage::Command(command) = read_message(&mut reader) else {
+        panic!("expected remote {key} command");
+    };
+    assert_command(&command, payload, key, 0);
+    write_message(
+        &mut writer,
+        &WireMessage::CommandResult(CommandResult::Accepted {
+            id: command.id,
+            revision: 1,
+            scheduled_frame: Some(1),
+        }),
+    );
+    let mut sink = [0_u8; 64];
+    let _ = reader.read(&mut sink);
 }
 
 fn serve_alias_effects(listener: &TcpListener, effects: &[fm_protocol::WireLayerEffect]) {
@@ -8614,6 +8655,162 @@ fn remote_alias_input_add_sends_the_exact_source() {
     ]);
     assert_success(&output);
     server.finish();
+}
+
+/// IN-023, Protocol 2.158: configuring a secondary mix sends the exact
+/// project edit.
+#[test]
+fn remote_secondary_mix_set_sends_the_exact_config() {
+    let number = fm_protocol::WireMixNumber::new(2).unwrap();
+    let config = fm_protocol::WireSecondaryMixConfig {
+        number,
+        name: "Guest mix".into(),
+        mode: fm_protocol::WireSecondaryMixMode::PreviewProgram,
+        program: fm_protocol::WireSecondaryMixSource::Input(input(1)),
+        preview: Some(fm_protocol::WireSecondaryMixSource::Mix(
+            fm_protocol::WireMixNumber::new(3).unwrap(),
+        )),
+    };
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-secondary-mix-set",
+        payload: CommandPayload::SetSecondaryMix {
+            number,
+            config: Box::new(config.clone()),
+        },
+        event: EventPayload::SecondaryMixChanged {
+            number,
+            config: Some(Box::new(config)),
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-secondary-mix-set",
+        &server.address(),
+        "2",
+        "Guest mix",
+        "preview_program",
+        "input:1",
+        "mix:3",
+        "--key",
+        "remote-secondary-mix-set",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
+/// IN-023, Protocol 2.159: a live cut and a timed transition send their exact
+/// live operations.
+#[test]
+fn remote_secondary_mix_cut_and_transition_send_live_commands() {
+    let number = fm_protocol::WireMixNumber::new(2).unwrap();
+    let cut = FakeRemoteServer::start_accept_only(
+        Role::Operator,
+        CommandPayload::SecondaryMixCut { number },
+        "remote-secondary-mix-cut",
+    );
+    let output = invoke(&[
+        "remote-secondary-mix-cut",
+        &cut.address(),
+        "2",
+        "--key",
+        "remote-secondary-mix-cut",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    cut.finish();
+
+    let transition = FakeRemoteServer::start_accept_only(
+        Role::Operator,
+        CommandPayload::SecondaryMixTransition {
+            number,
+            kind: fm_protocol::AutoTransitionKind::Fade,
+            duration_frames: 12,
+        },
+        "remote-secondary-mix-transition",
+    );
+    let output = invoke(&[
+        "remote-secondary-mix-transition",
+        &transition.address(),
+        "2",
+        "fade",
+        "12",
+        "--key",
+        "remote-secondary-mix-transition",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    transition.finish();
+}
+
+/// IN-023: the local CLI configures, lists, cuts, transitions, and clears a
+/// secondary mix.
+#[test]
+fn local_secondary_mix_configuration_and_live_controls() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    assert_success(&invoke(&[
+        "secondary-mix-set",
+        context.project_path(),
+        "2",
+        "Guest mix",
+        "preview_program",
+        "input:1",
+        "input:2",
+    ]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let loaded = store.load().unwrap();
+    let config = loaded
+        .project()
+        .secondary_mix(fm_model::MixNumber::new(2).unwrap())
+        .expect("the mix persists");
+    assert_eq!(config.name, "Guest mix");
+    assert_eq!(config.mode, fm_model::SecondaryMixMode::PreviewProgram);
+    assert_eq!(
+        config.program,
+        fm_model::SecondaryMixSource::Input(InputId::new(NonZeroU128::new(1).unwrap()))
+    );
+    assert_eq!(
+        config.preview,
+        Some(fm_model::SecondaryMixSource::Input(InputId::new(
+            NonZeroU128::new(2).unwrap()
+        )))
+    );
+
+    let listed = invoke(&["secondary-mixes", context.project_path()]);
+    assert_success(&listed);
+    assert!(
+        stdout(&listed).contains("secondary-mix: number=2 name=Guest mix mode=preview_program program=input:1 preview=input:2"),
+        "{}",
+        stdout(&listed)
+    );
+
+    assert_success(&invoke(&["secondary-mix-cut", context.project_path(), "2"]));
+    assert_success(&invoke(&[
+        "secondary-mix-transition",
+        context.project_path(),
+        "2",
+        "fade",
+        "2",
+    ]));
+    assert_success(&invoke(&[
+        "secondary-mix-clear",
+        context.project_path(),
+        "2",
+    ]));
+    assert!(
+        ProjectStore::new(&context.project)
+            .unwrap()
+            .load()
+            .unwrap()
+            .project()
+            .secondary_mixes()
+            .is_empty()
+    );
 }
 
 /// IN-024, Protocol 2.168: replacing an existing alias's effects.
