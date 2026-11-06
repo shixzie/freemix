@@ -1935,7 +1935,7 @@ fn virtual_input_project() -> Project {
             InputKind::Alias {
                 target: input_id(1),
                 crop: Some(CropRect::new(10, 20, 640, 360)),
-                effects: Vec::new(),
+                effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
             },
         ),
         (
@@ -1977,9 +1977,11 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
     assert!(encoded.contains("\"schema_version\": 110"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
-         \"height\": 360}}"
+         \"height\": 360}, \"effects\": [{\"name\": \"saturation\", \"parameters\": [-50]}]}"
     ));
-    assert!(encoded.contains("{\"type\": \"alias\", \"target\": 3, \"crop\": null}"));
+    assert!(
+        encoded.contains("{\"type\": \"alias\", \"target\": 3, \"crop\": null, \"effects\": []}")
+    );
     assert!(encoded.contains("{\"type\": \"mix_feed\", \"feed\": \"program\"}"));
     assert!(encoded.contains("{\"type\": \"mix_feed\", \"feed\": \"preview\"}"));
 
@@ -1990,7 +1992,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
         InputKind::Alias {
             target: input_id(1),
             crop: Some(CropRect::new(10, 20, 640, 360)),
-            effects: Vec::new(),
+            effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
         }
     );
     assert_eq!(
