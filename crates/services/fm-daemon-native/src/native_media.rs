@@ -13116,6 +13116,76 @@ mod tests {
     }
 
     #[test]
+    fn native_alias_mask_and_opacity_apply_to_direct_and_scene_pictures() {
+        let Some(runtime) = native_test_runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(89).unwrap());
+        let leaf = input(1);
+        let alias = input(2);
+        let scene_input = input(3);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: leaf,
+                    frame: split_retained_frame(
+                        clock_domain,
+                        [255, 0, 0, 255],
+                        [0, 0, 255, 255],
+                        4,
+                        2,
+                    ),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, leaf);
+        project.add_input(Input {
+            id: alias,
+            name: "masked alias".into(),
+            kind: InputKind::Alias {
+                target: leaf,
+                crop: None,
+                effects: Vec::new(),
+                opacity: 128,
+                mask: Some(fm_model::RectMask::new(0, 0, 2, 2)),
+            },
+            required_capabilities: Vec::new(),
+        });
+        add_scene_input(&mut project, scene_input, scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(alias), 0)],
+        );
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        for program in [alias, scene_input] {
+            let frame = runtime
+                .render_project_frame_result_blocking(
+                    playback.registry(),
+                    &plan,
+                    &frame_result(0, program, None),
+                )
+                .unwrap();
+            let frame = block_on(runtime.diagnostic_readback(&frame)).unwrap();
+            let masked = rgba16f_pixel(&frame.bytes, 4, 3, 0);
+            assert!(
+                masked[0] < 0.1 && masked[1] < 0.1 && masked[2] < 0.1,
+                "the alias mask hides the right half of {program}: {masked:?}"
+            );
+            let half = rgba16f_pixel(&frame.bytes, 4, 0, 0);
+            assert!(
+                (0.35..0.65).contains(&half[0]) && half[1] < 0.1 && half[2] < 0.1,
+                "the alias opacity halves the red left half of {program}: {half:?}"
+            );
+        }
+    }
+
+    #[test]
     fn native_frozen_live_inputs_hold_their_picture() {
         let Some(runtime) = native_test_runtime() else {
             return;
