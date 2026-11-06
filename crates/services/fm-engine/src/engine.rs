@@ -3423,6 +3423,22 @@ impl Engine {
             .map(drop)
     }
 
+    /// Schedules one overlay or Stinger effect for a set of mixes at the next
+    /// bank frame boundary (IN-023).
+    ///
+    /// # Errors
+    ///
+    /// Returns the bank's refusal for an empty or unknown target set, an
+    /// unknown input or mix route, a cycle, a bad fade duration, or a full
+    /// pending-effect queue.
+    pub fn schedule_mix_effect(
+        &mut self,
+        effect: fm_switcher::MixEffect,
+        targets: fm_switcher::MixSet,
+    ) -> Result<(), fm_switcher::MixBankError> {
+        self.mix_bank.schedule_effect(effect, targets)
+    }
+
     /// Fades secondary mix `number` to Black (`active`) or back to Live
     /// (IN-023), using the show's Fade-to-Black curve.
     ///

@@ -390,3 +390,42 @@ fn a_secondary_mix_fades_to_black_and_back_independently() {
         fm_switcher::FadeToBlackFrame::LIVE
     );
 }
+
+#[test]
+fn a_mix_overlay_fades_in_through_the_engine_bank() {
+    use fm_switcher::OverlayChannelId;
+    use fm_switcher::{MixEffect, MixSet};
+
+    let mut engine = engine();
+    assert!(execute(
+        &mut engine,
+        "set",
+        EngineCommand::SetSecondaryMix {
+            number: mix(2),
+            config: Some(Box::new(preview_config())),
+        },
+    ));
+    engine.tick().unwrap();
+    let channel = OverlayChannelId::new(1).unwrap();
+    engine
+        .schedule_mix_effect(
+            MixEffect::OverlayOn {
+                channel,
+                source: fm_switcher::MixSource::Input(input(2)),
+                duration_frames: 2,
+            },
+            MixSet::single(fm_switcher::MixId::new(2).unwrap()),
+        )
+        .unwrap();
+
+    let first = engine.tick().unwrap();
+    let fade = mix_frame(&first).overlays[channel.index()].expect("the overlay is fading in");
+    assert_eq!(fade.opacity, 127);
+    let settled = engine.tick().unwrap();
+    assert_eq!(
+        mix_frame(&settled).overlays[channel.index()]
+            .expect("the overlay is visible")
+            .opacity,
+        255
+    );
+}
