@@ -414,8 +414,19 @@ fn secondary_mix_output_follows_its_own_transition_and_overlays() {
             frame: 0
         }
     );
-    // Audio follows the mix chain to the input Mix 2 currently shows.
-    assert_eq!(plan(&frame, 2).audio, AudioSource::Input(input(5)));
+    // Audio keeps the mix chain and the same one-frame delay as video.
+    assert_eq!(
+        plan(&frame, 2).audio,
+        AudioSource::Mix(MixAudio {
+            primary: MixAudioSource::Mix {
+                mix: mix(2),
+                frame: 0,
+            },
+            secondary: None,
+            numerator: 0,
+            denominator: 1,
+        })
+    );
 }
 
 #[test]
