@@ -131,11 +131,7 @@ fn mode_text(l: Locale, mode: WireSecondaryMixMode) -> String {
 
 impl StudioShell {
     /// Opens the Secondary mixes dialog.
-    pub(crate) fn open_secondary_mixes(
-        &mut self,
-        state: &StudioUiState,
-        intents: &mut Vec<StudioIntent>,
-    ) {
+    pub(crate) fn open_secondary_mixes(&mut self, state: &StudioUiState) {
         self.secondary_mixes.open = true;
         // Start the form on the first two inputs when it has never been
         // filled in.
