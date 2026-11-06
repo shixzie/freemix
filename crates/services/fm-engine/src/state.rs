@@ -225,6 +225,8 @@ pub struct ShowState {
     scene_inputs: BTreeMap<InputId, SceneId>,
     /// Every alias input and the input it renders (SW-006 cycle checks).
     input_aliases: BTreeMap<InputId, InputId>,
+    /// Every alias input's own ordered effects (IN-024), ascending.
+    alias_effects: BTreeMap<InputId, Vec<fm_model::LayerEffect>>,
     /// Every registered project scene (each scene a Scene input shows, and
     /// with [`Self::set_scene`] any other), with its animation.
     scenes: BTreeMap<SceneId, EngineScene>,
@@ -370,6 +372,7 @@ impl ShowState {
             titles: BTreeMap::new(),
             scene_inputs: BTreeMap::new(),
             input_aliases: BTreeMap::new(),
+            alias_effects: BTreeMap::new(),
             scenes: BTreeMap::new(),
             playlist: Playlist::new(Vec::new(), PlaylistConfig::default())
                 .expect("an empty playlist is valid"),
@@ -1009,6 +1012,7 @@ impl ShowState {
         self.titles.remove(&input);
         self.scene_inputs.remove(&input);
         self.input_aliases.remove(&input);
+        self.alias_effects.remove(&input);
         self.grading.inputs.remove(&input);
         self.media.remove(&input);
         self.media_lists.remove(&input);
@@ -1871,6 +1875,28 @@ impl ShowState {
     #[must_use]
     pub const fn input_aliases(&self) -> &BTreeMap<InputId, InputId> {
         &self.input_aliases
+    }
+
+    /// Alias `input`'s own ordered effects, empty for a non-alias.
+    #[must_use]
+    pub fn alias_effects(&self, input: InputId) -> &[fm_model::LayerEffect] {
+        self.alias_effects.get(&input).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every alias input's own effects, ascending.
+    #[must_use]
+    pub const fn alias_effects_map(&self) -> &BTreeMap<InputId, Vec<fm_model::LayerEffect>> {
+        &self.alias_effects
+    }
+
+    /// Records `input`'s own effects without validating the input kind; the
+    /// caller checked it (IN-024).
+    pub(crate) fn set_alias_effects_unchecked(
+        &mut self,
+        input: InputId,
+        effects: Vec<fm_model::LayerEffect>,
+    ) {
+        self.alias_effects.insert(input, effects);
     }
 
     /// The input `input` renders: itself, or for an alias input the end of
