@@ -1940,7 +1940,7 @@ pub fn run(command: Command) -> AppResult<()> {
             number,
             key,
             expected_revision,
-        } => mutate(
+        } => live(
             &path,
             EngineCommand::SecondaryMixCut {
                 number: model_secondary_mix_number(number),
@@ -1967,7 +1967,7 @@ pub fn run(command: Command) -> AppResult<()> {
             duration_frames,
             key,
             expected_revision,
-        } => mutate(
+        } => live(
             &path,
             EngineCommand::SecondaryMixTransition {
                 number: model_secondary_mix_number(number),
@@ -3562,6 +3562,25 @@ pub(crate) fn mutate(
         return Ok(());
     }
     save_engine(path, &project)?;
+    if let Some(rejection) = result.rejection {
+        return Err(rejection.into());
+    }
+    print_status(&project);
+    Ok(())
+}
+
+/// Runs one live operation against a local project's simulated engine and
+/// prints the resulting status without saving: live mix-bank state is not
+/// part of the persisted project.
+fn live(
+    path: &Path,
+    command: EngineCommand,
+    ticks: u32,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> AppResult<()> {
+    let mut project = load_engine(path)?;
+    let result = execute(&mut project.engine, command, ticks, key, expected_revision)?;
     if let Some(rejection) = result.rejection {
         return Err(rejection.into());
     }
