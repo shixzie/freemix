@@ -1194,3 +1194,126 @@ fn mix_overlay_fade_duration_is_bounded() {
     );
     assert_eq!(bank.pending_effects(), 0);
 }
+
+#[test]
+fn a_mix_t_bar_scrubs_and_commits_only_its_mix() {
+    let mut bank = bank();
+    add_pp(&mut bank, 2, src(3), src(4));
+    add_pp(&mut bank, 3, src(5), src(6));
+    let mix_two = mix(2);
+
+    assert_eq!(
+        bank.apply(MixBankCommand::StartTBar {
+            mix: mix_two,
+            kind: TransitionKind::Fade,
+        }),
+        Ok(vec![MixBankEvent::TBarStarted {
+            mix: mix_two,
+            kind: TransitionKind::Fade,
+            from: src(3),
+            to: src(4),
+        }])
+    );
+    let (frame0, _) = bank.advance_frame();
+    let t_bar = frame0.mix(mix_two).unwrap();
+    assert_eq!(t_bar.primary, MixLayer::Input(input(3)));
+    assert_eq!(t_bar.secondary, Some(MixLayer::Input(input(4))));
+    assert_eq!(t_bar.transition_kind, Some(TransitionKind::Fade));
+    assert_eq!((t_bar.mix_numerator, t_bar.mix_denominator), (0, 10_000));
+
+    bank.apply(MixBankCommand::SetTBarPosition {
+        mix: mix_two,
+        position: TBarPosition::new(5_000).unwrap(),
+    })
+    .unwrap();
+    let (half, _) = bank.advance_frame();
+    assert_eq!(half.mix(mix_two).unwrap().mix_numerator, 5_000);
+    assert_eq!(half.mix(mix(3)).unwrap().secondary, None);
+
+    bank.apply(MixBankCommand::SetTBarPosition {
+        mix: mix_two,
+        position: TBarPosition::new(2_000).unwrap(),
+    })
+    .unwrap();
+    let (reversed, _) = bank.advance_frame();
+    assert_eq!(reversed.mix(mix_two).unwrap().mix_numerator, 2_000);
+
+    assert_eq!(
+        bank.apply(MixBankCommand::CommitTBar(mix_two)),
+        Ok(vec![
+            MixBankEvent::ProgramChanged {
+                mix: mix_two,
+                previous: src(3),
+                program: src(4),
+            },
+            MixBankEvent::TransitionCompleted {
+                mix: mix_two,
+                kind: TransitionKind::Fade,
+                program: src(4),
+            },
+        ])
+    );
+    let (committed, _) = bank.advance_frame();
+    let t_bar = committed.mix(mix_two).unwrap();
+    assert_eq!(t_bar.primary, MixLayer::Input(input(4)));
+    assert_eq!(t_bar.secondary, None);
+    assert_eq!(t_bar.preview, Some(MixLayer::Input(input(3))));
+    assert_eq!(bank.mix(mix_two).unwrap().t_bar_position(), None);
+}
+
+#[test]
+fn a_mix_t_bar_cancel_and_refusals_leave_state_untouched() {
+    let mut bank = bank();
+    add_pp(&mut bank, 2, src(3), src(4));
+    add_output_only(&mut bank, 3, src(5));
+    let mix_two = mix(2);
+
+    assert_eq!(
+        bank.apply(MixBankCommand::StartTBar {
+            mix: mix(3),
+            kind: TransitionKind::Fade,
+        }),
+        Err(MixBankError::PreviewUnavailable(mix(3)))
+    );
+    assert_eq!(
+        bank.apply(MixBankCommand::SetTBarPosition {
+            mix: mix_two,
+            position: TBarPosition::new(1_000).unwrap(),
+        }),
+        Err(MixBankError::NoTBar(mix_two))
+    );
+    assert_eq!(
+        bank.apply(MixBankCommand::CommitTBar(mix_two)),
+        Err(MixBankError::NoTBar(mix_two))
+    );
+    assert_eq!(
+        bank.apply(MixBankCommand::StartTBar {
+            mix: mix_two,
+            kind: TransitionKind::Stinger(StingerSlotId::new(1).unwrap()),
+        }),
+        Err(MixBankError::UnsupportedManualTransitionKind(mix_two))
+    );
+
+    bank.apply(MixBankCommand::StartTBar {
+        mix: mix_two,
+        kind: TransitionKind::Slide,
+    })
+    .unwrap();
+    assert_eq!(
+        bank.apply(MixBankCommand::Transition {
+            mix: mix_two,
+            kind: TransitionKind::Fade,
+            duration_frames: 5,
+        }),
+        Err(MixBankError::TransitionInProgress(mix_two))
+    );
+    assert_eq!(
+        bank.apply(MixBankCommand::CancelTBar(mix_two)),
+        Ok(vec![MixBankEvent::TBarCancelled { mix: mix_two }])
+    );
+    let (frame, _) = bank.advance_frame();
+    let state = frame.mix(mix_two).unwrap();
+    assert_eq!(state.primary, MixLayer::Input(input(3)));
+    assert_eq!(state.secondary, None);
+    assert_eq!(state.preview, Some(MixLayer::Input(input(4))));
+}
