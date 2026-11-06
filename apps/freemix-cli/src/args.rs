@@ -7545,6 +7545,7 @@ fn parse_display_output(
 
 /// `secondary-mixes`, `secondary-mix-set|clear|cut|transition`, and their
 /// `remote-` forms (IN-023, Protocol 2.158/2.159).
+#[allow(clippy::too_many_lines)] // one arm per secondary-mix command
 fn parse_secondary_mix(
     command: &str,
     mut arguments: impl Iterator<Item = String>,
