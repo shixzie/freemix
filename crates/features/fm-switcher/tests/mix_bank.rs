@@ -2,10 +2,10 @@ use std::num::NonZeroU128;
 
 use fm_switcher::{
     FadeToBlackCurve, FadeToBlackTarget, MAX_MIX_BANK_INPUTS, MAX_MIX_TRANSITION_DURATION_FRAMES,
-    MAX_PENDING_MIX_EFFECTS, MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MissingMediaFallback, MixBank,
-    MixBankCommand, MixBankError, MixBankEvent, MixConfig, MixEffect, MixId, MixLayer, MixMode,
-    MixOverlay, MixSet, MixSource, MixStingerAction, OverlayChannelId, StingerSlotId, TBarPosition,
-    TransitionKind,
+    MAX_PENDING_MIX_EFFECTS, MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MissingMediaFallback,
+    MixAudioSource, MixBank, MixBankCommand, MixBankError, MixBankEvent, MixConfig, MixEffect,
+    MixId, MixLayer, MixMode, MixOverlay, MixSet, MixSource, MixStingerAction, OverlayChannelId,
+    StingerSlotId, TBarPosition, TransitionKind,
 };
 use fm_types::InputId;
 
@@ -1316,4 +1316,36 @@ fn a_mix_t_bar_cancel_and_refusals_leave_state_untouched() {
     assert_eq!(state.primary, MixLayer::Input(input(3)));
     assert_eq!(state.secondary, None);
     assert_eq!(state.preview, Some(MixLayer::Input(input(4))));
+}
+
+#[test]
+fn mix_audio_follows_program_transitions_and_nested_mixes() {
+    let mut bank = bank();
+    add_pp(&mut bank, 2, src(3), src(4));
+    let (settled, _) = bank.advance_frame();
+    let audio = settled.mix(mix(2)).unwrap().audio;
+    assert_eq!(audio.primary, MixAudioSource::Input(input(3)));
+    assert_eq!(audio.secondary, None);
+    assert_eq!((audio.numerator, audio.denominator), (0, 1));
+
+    bank.apply(MixBankCommand::Transition {
+        mix: mix(2),
+        kind: TransitionKind::Fade,
+        duration_frames: 2,
+    })
+    .unwrap();
+    let (first, _) = bank.advance_frame();
+    let audio = first.mix(mix(2)).unwrap().audio;
+    assert_eq!(audio.primary, MixAudioSource::Input(input(3)));
+    assert_eq!(audio.secondary, Some(MixAudioSource::Input(input(4))));
+    assert_eq!((audio.numerator, audio.denominator), (0, 2));
+    let (second, _) = bank.advance_frame();
+    assert_eq!(second.mix(mix(2)).unwrap().audio.numerator, 1);
+
+    add_output_only(&mut bank, 3, MixSource::Mix(mix(2)));
+    let (nested, _) = bank.advance_frame();
+    assert_eq!(
+        nested.mix(mix(3)).unwrap().audio.primary,
+        MixAudioSource::Mix(mix(2))
+    );
 }

@@ -84,6 +84,14 @@ fn a_cut_moves_a_live_secondary_mix() {
     assert_eq!(mix_frame(&first).primary, MixLayer::Input(input(1)));
     assert_eq!(mix_frame(&first).preview, Some(MixLayer::Input(input(2))));
     assert_eq!(
+        mix_frame(&first).audio.primary,
+        fm_switcher::MixAudioSource::Input(input(1))
+    );
+    assert_eq!(
+        mix_frame(&first).audio.secondary,
+        Some(fm_switcher::MixAudioSource::Input(input(2)))
+    );
+    assert_eq!(
         mix_frame(&first).primary,
         engine
             .secondary_mix_frame()
