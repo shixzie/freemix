@@ -110,6 +110,9 @@ pub(crate) struct AudioRenderOutcome {
     pub block: AudioBlock,
     pub live: Option<AudioBlock>,
     pub overrides: Vec<(OutputId, AudioBlock)>,
+    /// Per-output audio for logical outputs whose map names an input or a
+    /// mix (SW-012/IN-023), by output.
+    pub outputs: Vec<(OutputId, AudioBlock)>,
     pub meters: Option<OwnedAudioMeters>,
     /// Rendered audio of every `replay_inputs` entry that has any (OR-012).
     pub rendered: BTreeMap<InputId, Vec<Vec<f32>>>,
@@ -413,6 +416,7 @@ fn render(
     let block = master.render_project_frame_audio(&job.frame, &job.plan)?;
     let live = master.take_live_audio();
     let overrides = master.take_override_audio();
+    let outputs = master.take_logical_output_audio();
     let meters = master
         .take_audio_meters()
         .map(|meters| owned_meters(&meters));
@@ -429,6 +433,7 @@ fn render(
         block,
         live,
         overrides,
+        outputs,
         meters,
         rendered,
     })

@@ -826,6 +826,9 @@ pub(crate) struct CaptureAudio<'a> {
     pub(crate) live: Option<AudioBlock>,
     pub(crate) excluded: &'a [fm_types::OutputId],
     pub(crate) overrides: &'a [(fm_types::OutputId, AudioBlock)],
+    /// Logical-output audio routes that differ from Master, by output
+    /// (SW-012/IN-023). A selected output with an entry hears it instead.
+    pub(crate) per_output: &'a [(fm_types::OutputId, AudioBlock)],
 }
 
 #[cfg(feature = "native-media")]
@@ -837,6 +840,13 @@ impl CaptureAudio<'_> {
         project_outputs: &[NativeOutputFrame],
     ) -> &AudioBlock {
         let output = capture_output_id(selected, project_outputs);
+        if let Some((_, block)) = self
+            .per_output
+            .iter()
+            .find(|(candidate, _)| Some(*candidate) == output)
+        {
+            return block;
+        }
         if let Some((_, block)) = self
             .overrides
             .iter()

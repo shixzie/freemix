@@ -3235,6 +3235,7 @@ impl NativeDaemon {
         let audio = Some(mixed.block);
         let live_audio = mixed.live;
         let override_audio = mixed.overrides;
+        let output_audio = mixed.outputs;
         let audio_meters = mixed.meters;
         let rendered_audio = mixed.rendered;
 
@@ -3324,6 +3325,7 @@ impl NativeDaemon {
                     live,
                     excluded: &fade_to_black_excluded,
                     overrides: &overrides,
+                    per_output: &output_audio,
                 },
             );
         }
@@ -3341,6 +3343,7 @@ impl NativeDaemon {
                     live: live_audio,
                     excluded: &fade_to_black_excluded,
                     overrides: &override_audio,
+                    per_output: &output_audio,
                 },
                 audio_meters.as_ref(),
             );
@@ -3353,6 +3356,7 @@ impl NativeDaemon {
                 live,
                 excluded: &fade_to_black_excluded,
                 overrides: &override_audio,
+                per_output: &output_audio,
             }
             .for_output(output, &self.latest_project_outputs)
             .clone();

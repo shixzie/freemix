@@ -5,7 +5,7 @@
 //! though the function is async so that GPU normalization can remain async.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt,
     future::Future,
@@ -4311,7 +4311,20 @@ pub struct NativeMasterRuntime {
     /// This frame's mix for every output fading over its own duration on a
     /// different trajectory (SW-004).
     override_audio: Vec<(OutputId, AudioBlock)>,
+    /// This frame's audio for each logical output whose map names an input or
+    /// a secondary mix (SW-012/IN-023). Master and bus maps keep the capture
+    /// path's existing blocks.
+    logical_output_audio: Vec<(OutputId, AudioBlock)>,
+    /// The last [`MAX_MIX_AUDIO_HISTORY`] bank frames' audio routes, so a
+    /// nested mix read resolves the frame it names.
+    mix_audio_history: VecDeque<(u64, BTreeMap<fm_switcher::MixId, fm_switcher::MixAudio>)>,
 }
+
+/// How many bank frames of secondary-mix audio routes the renderer retains.
+///
+/// A nested mix read names an older frame; a chain of at most fifteen mixes
+/// can accumulate that many frames of delay.
+const MAX_MIX_AUDIO_HISTORY: usize = 16;
 
 impl NativeMasterRuntime {
     /// Probes local videos, decodes one bounded initial audio page where an
@@ -4714,6 +4727,8 @@ impl NativeMasterRuntime {
             failed: false,
             live_audio: None,
             override_audio: Vec::new(),
+            logical_output_audio: Vec::new(),
+            mix_audio_history: VecDeque::new(),
             frozen_inputs: BTreeSet::new(),
         })
     }
@@ -5178,6 +5193,80 @@ impl NativeMasterRuntime {
         Ok(())
     }
 
+    /// Renders this frame's audio for every logical output whose map names an
+    /// input or a secondary mix (SW-012/IN-023).
+    ///
+    /// Program/Master and aux-bus maps keep the capture path's existing
+    /// blocks; a Silent map becomes silence, an Input map the input's rendered
+    /// program samples, and a Mix map that mix's Program route with its exact
+    /// transition crossfade and one-frame-delayed nested reads. The output's
+    /// own Fade-to-Black trajectory applies after the route.
+    fn render_logical_output_audio(
+        &mut self,
+        frame: &FrameResult,
+        timing: MediaTiming,
+        samples: usize,
+    ) -> Result<(), NativeMasterError> {
+        self.logical_output_audio.clear();
+        let bank_frame = frame.secondary_mixes.frame;
+        self.mix_audio_history.push_back((
+            bank_frame,
+            frame
+                .secondary_mixes
+                .mixes
+                .iter()
+                .map(|mix| (mix.mix, mix.audio))
+                .collect(),
+        ));
+        while self.mix_audio_history.len() > MAX_MIX_AUDIO_HISTORY {
+            self.mix_audio_history.pop_front();
+        }
+        let channels = self.format.channels.channels().len();
+        for slot in &frame.logical_outputs.outputs {
+            let Some(Ok(plan)) = slot else {
+                continue;
+            };
+            match plan.audio {
+                fm_switcher::AudioSource::Master | fm_switcher::AudioSource::Bus(_) => continue,
+                _ => {}
+            }
+            let mut planes = vec![vec![0.0_f32; samples]; channels];
+            match plan.audio {
+                fm_switcher::AudioSource::Silent => {}
+                fm_switcher::AudioSource::Input(input) => {
+                    if let Some(source) = self.scratch.rendered.get(&input) {
+                        add_audio_planes(&mut planes, source, samples, 1.0);
+                    }
+                }
+                fm_switcher::AudioSource::Mix(audio) => {
+                    mix_audio_planes(
+                        &mut planes,
+                        audio,
+                        1.0,
+                        &self.mix_audio_history,
+                        &self.scratch.rendered,
+                        samples,
+                        0,
+                    );
+                }
+                fm_switcher::AudioSource::Master | fm_switcher::AudioSource::Bus(_) => {
+                    unreachable!("filtered above")
+                }
+            }
+            apply_fade_to_black_audio(&mut planes, samples, frame.fade_to_black_for(plan.output));
+            self.logical_output_audio.push((
+                plan.output,
+                AudioBlock::new(
+                    timing,
+                    self.format.sample_rate,
+                    self.format.channels.clone(),
+                    planes,
+                )?,
+            ));
+        }
+        Ok(())
+    }
+
     /// The last rendered block as it was before Fade to Black, while Fade
     /// to Black is fading and some output is excluded from it (SW-004).
     pub const fn take_live_audio(&mut self) -> Option<AudioBlock> {
@@ -5188,6 +5277,12 @@ impl NativeMasterRuntime {
     /// its own duration on a different trajectory (SW-004).
     pub fn take_override_audio(&mut self) -> Vec<(OutputId, AudioBlock)> {
         core::mem::take(&mut self.override_audio)
+    }
+
+    /// This frame's rendered audio for every logical output whose map names
+    /// an input or a secondary mix (SW-012/IN-023), by output.
+    pub fn take_logical_output_audio(&mut self) -> Vec<(OutputId, AudioBlock)> {
+        core::mem::take(&mut self.logical_output_audio)
     }
 
     /// Replaces a strip's or the Master bus's reference plugin chain
@@ -6514,6 +6609,7 @@ impl NativeMasterRuntime {
             ));
         }
         apply_fade_to_black_audio(&mut self.scratch.mix, samples, frame.fade_to_black);
+        self.render_logical_output_audio(frame, timing, samples)?;
         // Master loudness measures what Program carries (AU-005).
         if let Some(meter) = &mut self.scratch.master_loudness {
             meter.process_planes(&self.scratch.mix, samples);
@@ -7142,6 +7238,89 @@ fn absolute_frame_sample_span(
         u64::try_from(start).map_err(|_| NativeMasterError::BoundsExceeded)?,
         u64::try_from(end).map_err(|_| NativeMasterError::BoundsExceeded)?,
     ))
+}
+
+/// Adds `source` planes into `target` with `gain`, ignoring any extra
+/// channels or samples the source carries.
+fn add_audio_planes(target: &mut [Vec<f32>], source: &[Vec<f32>], samples: usize, gain: f32) {
+    for (target, source) in target.iter_mut().zip(source) {
+        let count = samples.min(source.len());
+        for (target, source) in target[..count].iter_mut().zip(&source[..count]) {
+            *target += source * gain;
+        }
+    }
+}
+
+/// Mixes one secondary-mix audio route into `target` at `gain`.
+#[allow(clippy::cast_precision_loss)] // exact for the bank's transition bounds
+fn mix_audio_planes(
+    target: &mut [Vec<f32>],
+    audio: fm_switcher::MixAudio,
+    gain: f32,
+    history: &VecDeque<(u64, BTreeMap<fm_switcher::MixId, fm_switcher::MixAudio>)>,
+    rendered: &BTreeMap<InputId, Vec<Vec<f32>>>,
+    samples: usize,
+    depth: usize,
+) {
+    if depth > MAX_MIX_AUDIO_HISTORY {
+        return;
+    }
+    let denominator = audio.denominator.max(1);
+    let numerator = audio.numerator.min(denominator);
+    let primary_gain = gain * (denominator - numerator) as f32 / denominator as f32;
+    let secondary_gain = gain * numerator as f32 / denominator as f32;
+    mix_audio_source_planes(
+        target,
+        audio.primary,
+        primary_gain,
+        history,
+        rendered,
+        samples,
+        depth,
+    );
+    if let Some(secondary) = audio.secondary {
+        mix_audio_source_planes(
+            target,
+            secondary,
+            secondary_gain,
+            history,
+            rendered,
+            samples,
+            depth,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mix_audio_source_planes(
+    target: &mut [Vec<f32>],
+    source: fm_switcher::MixAudioSource,
+    gain: f32,
+    history: &VecDeque<(u64, BTreeMap<fm_switcher::MixId, fm_switcher::MixAudio>)>,
+    rendered: &BTreeMap<InputId, Vec<Vec<f32>>>,
+    samples: usize,
+    depth: usize,
+) {
+    match source {
+        fm_switcher::MixAudioSource::Input(input) => {
+            if let Some(planes) = rendered.get(&input) {
+                add_audio_planes(target, planes, samples, gain);
+            }
+        }
+        fm_switcher::MixAudioSource::Silent => {}
+        fm_switcher::MixAudioSource::Mix { mix, frame } => {
+            let Some((_, routes)) = history
+                .iter()
+                .rev()
+                .find(|(candidate, _)| *candidate == frame)
+            else {
+                return;
+            };
+            if let Some(audio) = routes.get(&mix) {
+                mix_audio_planes(target, *audio, gain, history, rendered, samples, depth + 1);
+            }
+        }
+    }
 }
 
 fn output_audio_timing(
@@ -12544,6 +12723,8 @@ mod tests {
         NativeMasterRuntime {
             live_audio: None,
             override_audio: Vec::new(),
+            logical_output_audio: Vec::new(),
+            mix_audio_history: VecDeque::new(),
             frozen_inputs: BTreeSet::new(),
             format,
             frame_rate: FrameRate::new(25, 1).unwrap(),
@@ -12594,6 +12775,8 @@ mod tests {
         NativeMasterRuntime {
             live_audio: None,
             override_audio: Vec::new(),
+            logical_output_audio: Vec::new(),
+            mix_audio_history: VecDeque::new(),
             frozen_inputs: BTreeSet::new(),
             format,
             frame_rate: FrameRate::new(25, 1).unwrap(),
@@ -19661,5 +19844,141 @@ mod pushed_audio_mapping_tests {
             &map_pushed_audio(&discrete, &planes, &stereo, 1),
             &[&[0.25], &[-0.5]],
         );
+    }
+
+    fn output_plan(
+        slot: u8,
+        output: u128,
+        audio: fm_switcher::AudioSource,
+    ) -> fm_switcher::OutputRenderPlan {
+        fm_switcher::OutputRenderPlan {
+            slot: fm_switcher::LogicalOutputSlot::new(slot).unwrap(),
+            output: OutputId::new(NonZeroU128::new(output).unwrap()),
+            video: fm_switcher::OutputVideo::Background(fm_switcher::BackgroundPlan {
+                primary: fm_switcher::FeedLayer::Input(input(1)),
+                secondary: None,
+                transition_kind: None,
+                mix_numerator: 0,
+                mix_denominator: 1,
+                fade_to_black: fm_switcher::FadeToBlackPosition::LIVE,
+            }),
+            overlays: Vec::new(),
+            audio,
+        }
+    }
+
+    #[test]
+    fn logical_output_audio_renders_mix_routes_with_crossfades_and_delay() {
+        let program = input(1);
+        let a = input(2);
+        let b = input(3);
+        let mut master = audio_test_master(&[(program, 0.1), (a, 0.2), (b, 0.4)], 3);
+        let mix_two = fm_switcher::MixId::new(2).unwrap();
+        let mix_three = fm_switcher::MixId::new(3).unwrap();
+        let route = fm_switcher::MixAudio {
+            primary: fm_switcher::MixAudioSource::Input(a),
+            secondary: Some(fm_switcher::MixAudioSource::Input(b)),
+            numerator: 1,
+            denominator: 2,
+        };
+        let mix =
+            |number: fm_switcher::MixId, audio: fm_switcher::MixAudio| fm_switcher::MixFrame {
+                mix: number,
+                primary: fm_switcher::MixLayer::Input(a),
+                secondary: None,
+                transition_kind: None,
+                mix_numerator: 0,
+                mix_denominator: 1,
+                preview: None,
+                overlays: [None; fm_switcher::OVERLAY_CHANNEL_COUNT],
+                fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
+                audio,
+            };
+        let mut first = frame_result(0, program, None);
+        first.secondary_mixes = fm_switcher::MixBankFrame {
+            frame: 0,
+            mixes: vec![
+                mix(mix_two, route),
+                mix(
+                    mix_three,
+                    fm_switcher::MixAudio {
+                        primary: fm_switcher::MixAudioSource::Input(b),
+                        secondary: None,
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                ),
+            ],
+        };
+        first.logical_outputs = fm_switcher::OutputRoutingFrame {
+            outputs: std::array::from_fn(|index| match index {
+                0 => Some(Ok(output_plan(1, 7, fm_switcher::AudioSource::Mix(route)))),
+                1 => Some(Ok(output_plan(2, 8, fm_switcher::AudioSource::Silent))),
+                _ => None,
+            }),
+            render_order: Vec::new(),
+        };
+
+        assert!(master.service_next_frame().unwrap());
+        master.render_frame_audio(&first).unwrap();
+        let outputs = master.take_logical_output_audio();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].0, OutputId::new(NonZeroU128::new(7).unwrap()));
+        for sample in outputs[0].1.plane(0).unwrap() {
+            assert_sample_exact(*sample, 0.3);
+        }
+        assert_eq!(outputs[1].0, OutputId::new(NonZeroU128::new(8).unwrap()));
+        assert!(
+            outputs[1]
+                .1
+                .plane(0)
+                .unwrap()
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+
+        let mut second = frame_result(1, program, None);
+        second.secondary_mixes = fm_switcher::MixBankFrame {
+            frame: 1,
+            mixes: vec![mix(
+                mix_two,
+                fm_switcher::MixAudio {
+                    primary: fm_switcher::MixAudioSource::Mix {
+                        mix: mix_three,
+                        frame: 0,
+                    },
+                    secondary: None,
+                    numerator: 0,
+                    denominator: 1,
+                },
+            )],
+        };
+        second.logical_outputs = fm_switcher::OutputRoutingFrame {
+            outputs: std::array::from_fn(|index| {
+                (index == 0).then(|| {
+                    Ok(output_plan(
+                        1,
+                        7,
+                        fm_switcher::AudioSource::Mix {
+                            primary: fm_switcher::MixAudioSource::Mix {
+                                mix: mix_three,
+                                frame: 0,
+                            },
+                            secondary: None,
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                    ))
+                })
+            }),
+            render_order: Vec::new(),
+        };
+        assert!(master.service_next_frame().unwrap());
+        master.render_frame_audio(&second).unwrap();
+        let outputs = master.take_logical_output_audio();
+        assert_eq!(outputs.len(), 1);
+        for sample in outputs[0].1.plane(0).unwrap() {
+            assert_sample_exact(*sample, 0.4);
+        }
     }
 }
