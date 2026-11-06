@@ -1083,6 +1083,7 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // one arm per input source
 fn encode_input_catalogue_command(
     record: &mut Record,
     payload: &CommandPayload,
