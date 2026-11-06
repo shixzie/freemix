@@ -6,10 +6,10 @@ use std::num::NonZeroU128;
 use fm_switcher::{
     AudioMap, AudioSource, BackgroundPlan, CellFeed, FadeToBlackPosition, FeedLayer,
     LOGICAL_OUTPUT_COUNT, LogicalOutputConfig, LogicalOutputSlot, LogicalOutputs,
-    MAX_OUTPUT_MULTIVIEW_CELLS, MixBank, MixBankCommand, MixBankFrame, MixConfig, MixId, MixSource,
-    MultiViewCell, OutputRenderPlan, OutputRoutingError, OutputRoutingFrame, OutputSource,
-    OutputVideo, OverlayChannelId, OverlayPolicy, OverlaySet, RoutingContext, SwitcherCommand,
-    SwitcherState, TransitionKind,
+    MAX_OUTPUT_MULTIVIEW_CELLS, MixAudio, MixAudioSource, MixBank, MixBankCommand, MixBankFrame,
+    MixConfig, MixId, MixSource, MultiViewCell, OutputRenderPlan, OutputRoutingError,
+    OutputRoutingFrame, OutputSource, OutputVideo, OverlayChannelId, OverlayPolicy, OverlaySet,
+    RoutingContext, SwitcherCommand, SwitcherState, TransitionKind,
 };
 use fm_types::{BusId, InputId, OutputId};
 
@@ -190,7 +190,15 @@ fn four_outputs_select_sources_independently() {
     assert_eq!(plan(&frame, 1).audio, AudioSource::Master);
     assert_eq!(plan(&frame, 2).audio, AudioSource::Input(input(2)));
     assert_eq!(plan(&frame, 3).audio, AudioSource::Bus(bus(11)));
-    assert_eq!(plan(&frame, 4).audio, AudioSource::Input(input(5)));
+    assert_eq!(
+        plan(&frame, 4).audio,
+        AudioSource::Mix(MixAudio {
+            primary: MixAudioSource::Input(input(5)),
+            secondary: None,
+            numerator: 0,
+            denominator: 1,
+        })
+    );
 }
 
 #[test]
@@ -384,7 +392,15 @@ fn secondary_mix_output_follows_its_own_transition_and_overlays() {
     assert_eq!(mix_two.primary, FeedLayer::Input(input(5)));
     assert_eq!(mix_two.secondary, Some(FeedLayer::Input(input(6))));
     assert_eq!(mix_two.transition_kind, Some(TransitionKind::Wipe));
-    assert_eq!(plan(&frame, 1).audio, AudioSource::Input(input(5)));
+    assert_eq!(
+        plan(&frame, 1).audio,
+        AudioSource::Mix(MixAudio {
+            primary: MixAudioSource::Input(input(5)),
+            secondary: Some(MixAudioSource::Input(input(6))),
+            numerator: 0,
+            denominator: 2,
+        })
+    );
     // Bank frame zero has no previous Mix 2 frame to read.
     assert_eq!(background(plan(&frame, 2)).primary, FeedLayer::Black);
     assert_eq!(plan(&frame, 2).audio, AudioSource::Silent);
