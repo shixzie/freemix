@@ -3940,7 +3940,11 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::ClearSecondaryMix { .. }
         | CommandPayload::SecondaryMixCut { .. }
         | CommandPayload::SecondaryMixTransition { .. }
-        | CommandPayload::SecondaryMixFadeToBlack { .. }) => {
+        | CommandPayload::SecondaryMixFadeToBlack { .. }
+        | CommandPayload::SecondaryMixStartTBar { .. }
+        | CommandPayload::SecondaryMixSetTBarPosition { .. }
+        | CommandPayload::SecondaryMixCommitTBar { .. }
+        | CommandPayload::SecondaryMixCancelTBar { .. }) => {
             secondary_mix::engine_command(payload).expect("a secondary-mix payload")
         }
         payload @ CommandPayload::SetInputVideoDelay { .. } => {

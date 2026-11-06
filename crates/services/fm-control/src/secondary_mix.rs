@@ -40,6 +40,29 @@ pub(super) fn engine_command(payload: &CommandPayload) -> Option<EngineCommand> 
             active: *active,
             duration_frames: *duration_frames,
         }),
+        CommandPayload::SecondaryMixStartTBar { number, kind } => {
+            Some(EngineCommand::SecondaryMixStartTBar {
+                number: model_number(*number),
+                kind: crate::transition::domain_transition_kind(*kind),
+            })
+        }
+        CommandPayload::SecondaryMixSetTBarPosition { number, position } => {
+            Some(EngineCommand::SecondaryMixSetTBarPosition {
+                number: model_number(*number),
+                position: fm_switcher::TBarPosition::new(position.basis_points())
+                    .expect("a validated manual position"),
+            })
+        }
+        CommandPayload::SecondaryMixCommitTBar { number } => {
+            Some(EngineCommand::SecondaryMixCommitTBar {
+                number: model_number(*number),
+            })
+        }
+        CommandPayload::SecondaryMixCancelTBar { number } => {
+            Some(EngineCommand::SecondaryMixCancelTBar {
+                number: model_number(*number),
+            })
+        }
         _ => None,
     }
 }
