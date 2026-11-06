@@ -3118,8 +3118,13 @@ adds `secondary_mix_tbar_start`, `secondary_mix_tbar_position`,
 `secondary_mix_tbar_commit`, and `secondary_mix_tbar_cancel`; the CLI has the
 `secondary-mix-tbar-*` commands locally and remotely, and Studio's Secondary
 mixes dialog selects a mix and transition kind, sets the 0..=10000 position,
-and offers Start, Set, Commit, and Cancel. Remaining gaps: no audio path.
-`IN-023` remains planned.
+and offers Start, Set, Commit, and Cancel. Each mix frame now also carries a
+`MixAudio` route: the Program source, a transition or T-bar crossfade with its
+exact numerator/denominator, and nested mixes at the same one-frame delay as
+video, with frame zero silent. Logical outputs with follow-video audio carry
+that route as `AudioSource::Mix`. Remaining gap: the output audio renderer
+still does not consume logical-output audio routes (the SW-012 audio path), so
+a secondary mix's samples are not heard yet. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
