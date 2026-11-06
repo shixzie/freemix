@@ -503,12 +503,9 @@ fn transitions_between_mix_sources_resolve_both_layers_to_previous_frame() {
     );
     assert_eq!(
         m4.secondary,
-        Some(MixOverlay {
-            source: MixLayer::Mix {
-                mix: mix(2),
-                frame: 0,
-            },
-            opacity: u8::MAX,
+        Some(MixLayer::Mix {
+            mix: mix(2),
+            frame: 0,
         })
     );
 }
