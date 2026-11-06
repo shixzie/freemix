@@ -3113,8 +3113,12 @@ CancelTBar move a 0..=10000 position through the mix's Program/Preview pair,
 the frame composes that position as its transition progress, commit swaps the
 two sources, and cancel leaves both unchanged. A T-bar refuses an output-only
 mix, a Stinger kind, or any mix already transitioning. Native realization
-renders the manual progress through the same transition path. Remaining gaps:
-no audio path, and the mix T-bar has no protocol, CLI, or Studio surface yet.
+renders the manual progress through the same transition path. Protocol 2.171
+adds `secondary_mix_tbar_start`, `secondary_mix_tbar_position`,
+`secondary_mix_tbar_commit`, and `secondary_mix_tbar_cancel`; the CLI has the
+`secondary-mix-tbar-*` commands locally and remotely, and Studio's Secondary
+mixes dialog selects a mix and transition kind, sets the 0..=10000 position,
+and offers Start, Set, Commit, and Cancel. Remaining gaps: no audio path.
 `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
