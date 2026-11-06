@@ -1083,7 +1083,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(111);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(112);
 
 /// Maximum stored scoreboard documents on one project (GX-003).
 pub const MAX_SCOREBOARDS: usize = 256;
@@ -1173,6 +1173,9 @@ pub struct Project {
     fade_to_black_excluded_outputs: BTreeSet<OutputId>,
     fade_to_black_output_durations: BTreeMap<OutputId, u32>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
+    /// The operator safe-area guides this show's consoles draw (SW-014,
+    /// schema 112).
+    safe_area_guides: crate::SafeAreaGuideSelection,
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
     live_lan: fm_types::live_lan::LiveLanConfig,
@@ -1251,6 +1254,7 @@ impl Project {
             fade_to_black_excluded_outputs: BTreeSet::new(),
             fade_to_black_output_durations: BTreeMap::new(),
             fade_to_black_curve: fm_types::FadeToBlackCurve::Linear,
+            safe_area_guides: crate::SafeAreaGuideSelection::default(),
             display_outputs: BTreeMap::new(),
             live_lan: fm_types::live_lan::LiveLanConfig::default(),
             screen_capture_restore_tokens: BTreeMap::new(),
@@ -1793,6 +1797,18 @@ impl Project {
     #[must_use]
     pub const fn fade_to_black_curve(&self) -> fm_types::FadeToBlackCurve {
         self.fade_to_black_curve
+    }
+
+    /// The operator safe-area guides this show's consoles draw (SW-014,
+    /// schema 112).
+    #[must_use]
+    pub const fn safe_area_guides(&self) -> crate::SafeAreaGuideSelection {
+        self.safe_area_guides
+    }
+
+    /// Replaces the operator safe-area guide selection.
+    pub fn set_safe_area_guides(&mut self, guides: crate::SafeAreaGuideSelection) {
+        self.safe_area_guides = guides;
     }
 
     pub const fn set_fade_to_black_curve(&mut self, curve: fm_types::FadeToBlackCurve) {

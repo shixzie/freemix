@@ -18,7 +18,7 @@ use fm_protocol::{
 };
 use fm_types::FrameRate;
 
-const PREFIX: &str = "command\tprotocol=2.171\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.172\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -623,6 +623,7 @@ fn snapshot(capture_inputs: Vec<CaptureInputEntry>) -> WireMessage {
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
+        safe_area_guides: fm_protocol::WireSafeAreaGuides::default(),
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
         secondary_mix_states: Vec::new(),

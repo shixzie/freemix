@@ -240,6 +240,11 @@ pub enum StudioIntent {
     /// Delays one input's video in frames (IN-022, Protocol 2.160); a
     /// padlocked, undoable project edit.
     SetInputVideoDelay { input: InputId, frames: u32 },
+    /// Replaces the project's operator safe-area guide selection (SW-014,
+    /// Protocol 2.172); a padlocked, undoable project edit.
+    SetSafeAreaGuides {
+        guides: fm_protocol::WireSafeAreaGuides,
+    },
     /// Updates changed Master-strip controls on one input.
     SetInputAudioStrip {
         input: InputId,
@@ -4243,6 +4248,7 @@ mod tests {
             fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black_output_durations: Vec::new(),
             fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
+            safe_area_guides: fm_protocol::WireSafeAreaGuides::default(),
             logical_outputs: Vec::new(),
             secondary_mixes: Vec::new(),
             secondary_mix_states: Vec::new(),

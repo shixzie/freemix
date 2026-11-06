@@ -1395,7 +1395,9 @@ impl StudioShell {
                     },
                     frame.pictures[bus.tap().index()],
                     frame.native_runtime,
-                    self.safe_area_guides(),
+                    state.view.as_ref().map_or(self.safe_area_guides(), |view| {
+                        crate::safe_areas::SafeAreaGuides::from_wire(view.safe_area_guides)
+                    }),
                 );
                 if meters {
                     monitors::draw_monitor_meters(ui, bus, width, bus_meters(state, bus));

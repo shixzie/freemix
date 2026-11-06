@@ -22,7 +22,7 @@ use fm_protocol::{
     WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.171\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.172\tid=a\tidempotency_key=k";
 
 /// Lowercase hex of `text`'s UTF-8 bytes.
 fn hex(text: &str) -> String {

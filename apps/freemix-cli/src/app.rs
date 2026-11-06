@@ -1781,6 +1781,39 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::SafeAreaGuides { path } => {
+            let project = inspect_engine(&path)?;
+            println!(
+                "safe-area-guides={}",
+                project.project.safe_area_guides().tokens()
+            );
+        }
+        Command::RemoteSafeAreaGuides { address } => remote::safe_area_guides(address)?,
+        Command::SafeAreaGuidesSet {
+            path,
+            guides,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetSafeAreaGuides {
+                guides: model_safe_area_guides(guides),
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSafeAreaGuidesSet {
+            address,
+            guides,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetSafeAreaGuides { guides },
+            key,
+            expected_revision,
+        )?,
         Command::FadeToBlack {
             path,
             target,
@@ -5677,6 +5710,18 @@ fn model_secondary_mix_source_text(source: fm_model::SecondaryMixSource) -> Stri
     }
 }
 
+fn model_safe_area_guides(
+    guides: fm_protocol::WireSafeAreaGuides,
+) -> fm_model::SafeAreaGuideSelection {
+    fm_model::SafeAreaGuideSelection {
+        action: guides.action,
+        title: guides.title,
+        center_4_3: guides.center_4_3,
+        center_16_9: guides.center_16_9,
+        center_9_16: guides.center_9_16,
+    }
+}
+
 pub(crate) fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
     restore_project_engine(path, &inspect_stored_project(path)?)
 }
@@ -5803,6 +5848,7 @@ fn restore_project_engine(path: &Path, stored: &StoredProject) -> AppResult<Proj
             .map_err(|error| AppFailure(format!("invalid Fade-to-Black duration: {error}")))?;
     }
     let _ = realized.set_fade_to_black_curve(project.fade_to_black_curve());
+    show.set_safe_area_guides(project.safe_area_guides());
     let fade_to_black = stored.runtime_fade_to_black();
     show.restore_fade_to_black(fade_to_black.desired.target_active);
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
@@ -6574,6 +6620,7 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
         );
     }
     project.set_fade_to_black_curve(show.desired_switcher().fade_to_black_curve());
+    project.set_safe_area_guides(show.safe_area_guides());
     Ok(())
 }
 
@@ -8669,6 +8716,10 @@ Usage:
   freemix-cli remote-ftb-output <127.0.0.1:port> <output> <affected:on|off> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb-output-duration <127.0.0.1:port> <output> <frames:1..=3600|none> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb-curve <127.0.0.1:port> <linear|ease> [--key <key>] [--expect <revision>]
+  freemix-cli safe-area-guides <show.freemix>
+  freemix-cli remote-safe-area-guides <127.0.0.1:port>
+  freemix-cli safe-area-guides-set <show.freemix> <-|action,title,4:3,16:9,9:16> [--key <key>] [--expect <revision>]
+  freemix-cli remote-safe-area-guides-set <127.0.0.1:port> <-|action,title,4:3,16:9,9:16> [--key <key>] [--expect <revision>]
   freemix-cli secondary-mixes <show.freemix>
   freemix-cli secondary-mix-set <show.freemix> <mix:2..=16> <name> <preview_program|output_only> <program:input:ID|mix:N> [preview:input:ID|mix:N] [--key <key>] [--expect <revision>]
   freemix-cli secondary-mix-clear <show.freemix> <mix:2..=16> [--key <key>] [--expect <revision>]

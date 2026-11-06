@@ -196,6 +196,21 @@ fn title_row_intent_maps_to_the_wire_command() {
 }
 
 #[test]
+fn safe_area_guides_intent_maps_to_the_wire_command() {
+    let guides = fm_protocol::WireSafeAreaGuides {
+        action: true,
+        title: false,
+        center_4_3: true,
+        center_16_9: false,
+        center_9_16: true,
+    };
+    assert_eq!(
+        studio_intent_payload(StudioIntent::SetSafeAreaGuides { guides }, None).unwrap(),
+        CommandPayload::SetSafeAreaGuides { guides }
+    );
+}
+
+#[test]
 fn secondary_mix_intents_map_to_the_wire_commands() {
     let number = fm_protocol::WireMixNumber::new(2).unwrap();
     let config = fm_protocol::WireSecondaryMixConfig {
@@ -420,6 +435,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
+        safe_area_guides: fm_protocol::WireSafeAreaGuides::default(),
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
         secondary_mix_states: Vec::new(),

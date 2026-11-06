@@ -2099,6 +2099,7 @@ impl Client {
             | CommandPayload::SetFadeToBlackOutput { .. }
             | CommandPayload::SetFadeToBlackOutputDuration { .. }
             | CommandPayload::SetFadeToBlackCurve { .. }
+            | CommandPayload::SetSafeAreaGuides { .. }
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetLogicalOutput { .. }

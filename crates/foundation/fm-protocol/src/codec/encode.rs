@@ -863,6 +863,10 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "fade_to_black_curve")?;
             record.field("curve", curve.token())?;
         }
+        CommandPayload::SetSafeAreaGuides { guides } => {
+            record.field("payload", "set_safe_area_guides")?;
+            record.field("guides", guides.tokens())?;
+        }
         CommandPayload::SetDisplayOutput { slot, config } => {
             record.field("payload", "set_display_output")?;
             record.field("slot", slot)?;
@@ -2299,6 +2303,7 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         super::audio_mixer::encode_output_durations(&message.fade_to_black_output_durations)?,
     )?;
     record.field("fade_to_black_curve", message.fade_to_black_curve.token())?;
+    record.field("safe_area_guides", message.safe_area_guides.tokens())?;
     record.field_string(
         "logical_outputs",
         super::logical_output::encode_entries(&message.logical_outputs)?,
@@ -3169,6 +3174,10 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::FadeToBlackCurveChanged { curve } => {
             record.field("event", "fade_to_black_curve_changed")?;
             record.field("curve", curve.token())?;
+        }
+        EventPayload::SafeAreaGuidesChanged { guides } => {
+            record.field("event", "safe_area_guides_changed")?;
+            record.field("guides", guides.tokens())?;
         }
         EventPayload::ReplayChanged { frame, operation } => {
             record.field("event", "replay_changed")?;

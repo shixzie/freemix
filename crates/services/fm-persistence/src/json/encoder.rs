@@ -116,6 +116,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
 /// The project's playlist, cues, grading, and every later section, then
 /// the end of the project object.
 fn write_project_runtime(output: &mut String, project: &fm_model::Project) {
+    super::safe_areas::write_safe_area_guides(output, project);
     write_playlist(output, project.playlist());
     super::cue::write_cue_lists(output, project.cue_lists());
     super::grade::write_grading(output, project.grading());

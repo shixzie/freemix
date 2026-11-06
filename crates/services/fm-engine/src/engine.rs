@@ -502,6 +502,11 @@ pub enum EngineCommand {
     SetFadeToBlackCurve {
         curve: FadeToBlackCurve,
     },
+    /// Replaces the operator safe-area guide selection (SW-014). A padlocked,
+    /// undoable project edit.
+    SetSafeAreaGuides {
+        guides: fm_model::SafeAreaGuideSelection,
+    },
     /// Configures (`Some`) or clears (`None`) one fullscreen display output
     /// slot (OR-011). A project edit, undone by restoring the slot's
     /// previous configuration; the daemon realizes it live.
@@ -923,6 +928,11 @@ pub enum EngineEvent {
     /// Automatic Fade-to-Black moves now ease along `curve` (SW-004).
     FadeToBlackCurveChanged {
         curve: FadeToBlackCurve,
+    },
+    /// The operator safe-area guide selection changed, including through an
+    /// undo or redo (SW-014).
+    SafeAreaGuidesChanged {
+        guides: fm_model::SafeAreaGuideSelection,
     },
     /// A display output slot was configured or cleared (or the edit was
     /// undone or redone) (OR-011); the slot afterwards is read from
@@ -4779,6 +4789,13 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetSafeAreaGuides { guides } = self.command {
+            state.set_safe_area_guides(guides);
+            events.push(EngineEvent::SafeAreaGuidesChanged { guides });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetDisplayOutput { slot, config } = self.command {
             state
                 .set_display_output(slot, config.as_deref().cloned())
@@ -5417,6 +5434,7 @@ impl EngineMutation {
             | EngineCommand::SetFadeToBlackOutput { .. }
             | EngineCommand::SetFadeToBlackOutputDuration { .. }
             | EngineCommand::SetFadeToBlackCurve { .. }
+            | EngineCommand::SetSafeAreaGuides { .. }
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLogicalOutput { .. }
             | EngineCommand::SetSecondaryMix { .. }
@@ -6163,6 +6181,9 @@ fn apply_runtime(
     if let EngineCommand::SetFadeToBlackCurve { curve } = command {
         return switcher.apply(SwitcherCommand::SetFadeToBlackCurve(curve));
     }
+    if matches!(command, EngineCommand::SetSafeAreaGuides { .. }) {
+        return Ok(Vec::new());
+    }
     if let EngineCommand::InputLifecycle(edit) = &command {
         return realize_input_lifecycle(switcher, edit);
     }
@@ -6224,6 +6245,9 @@ fn apply_runtime(
         }
         EngineCommand::SetAliasEffects { .. } => {
             unreachable!("alias effect edits return before switcher command mapping")
+        }
+        EngineCommand::SetSafeAreaGuides { .. } => {
+            unreachable!("safe-area edits return before switcher command mapping")
         }
         EngineCommand::SelectPreview(input) => SwitcherCommand::SelectPreview(input),
         EngineCommand::Cut => SwitcherCommand::Cut,
@@ -6550,6 +6574,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. }
+        | EngineCommand::SetSafeAreaGuides { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
@@ -6605,6 +6630,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetFadeToBlackOutput { .. })
         && !matches!(command, EngineCommand::SetFadeToBlackOutputDuration { .. })
         && !matches!(command, EngineCommand::SetFadeToBlackCurve { .. })
+        && !matches!(command, EngineCommand::SetSafeAreaGuides { .. })
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
         && !matches!(command, EngineCommand::SetLogicalOutput { .. })
         && !matches!(command, EngineCommand::SetSecondaryMix { .. })

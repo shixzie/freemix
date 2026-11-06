@@ -2254,6 +2254,11 @@ pub enum CommandPayload {
     SetFadeToBlackCurve {
         curve: crate::FadeToBlackCurve,
     },
+    /// Replaces the operator safe-area guide selection (SW-014, Protocol
+    /// 2.172). A padlocked, undoable project edit.
+    SetSafeAreaGuides {
+        guides: crate::WireSafeAreaGuides,
+    },
     /// Configures one fullscreen display-output slot (Protocol 2.42,
     /// OR-011; see [`crate::DisplayOutputConfig`]). A padlocked, undoable
     /// project edit applied live.
@@ -2859,6 +2864,9 @@ pub struct SnapshotMessage {
     pub fade_to_black_output_durations: Vec<(WireOutputId, u32)>,
     /// How automatic Fade-to-Black moves ease (Protocol 2.48).
     pub fade_to_black_curve: crate::FadeToBlackCurve,
+    /// The operator safe-area guides every console draws (SW-014, Protocol
+    /// 2.172).
+    pub safe_area_guides: crate::WireSafeAreaGuides,
     /// Every configured logical output, ascending by slot (Protocol 2.157).
     pub logical_outputs: Vec<crate::WireLogicalOutputConfig>,
     /// Every configured secondary mix, ascending by number (Protocol 2.158).
@@ -3112,6 +3120,11 @@ pub enum EventPayload {
     /// Automatic Fade-to-Black moves now ease along `curve` (Protocol 2.48).
     FadeToBlackCurveChanged {
         curve: crate::FadeToBlackCurve,
+    },
+    /// The operator safe-area guide selection changed, including through an
+    /// undo or redo (SW-014, Protocol 2.172).
+    SafeAreaGuidesChanged {
+        guides: crate::WireSafeAreaGuides,
     },
     /// A display-output slot was configured (`Some`) or cleared (`None`),
     /// or that edit was undone or redone (Protocol 2.42).

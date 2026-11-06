@@ -22,6 +22,7 @@ mod production_clock;
 mod ptz_presets;
 mod reel;
 mod replay;
+mod safe_areas;
 mod scene_animation;
 mod scoreboard;
 mod screen_capture;

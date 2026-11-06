@@ -274,6 +274,7 @@ pub(crate) fn restore_engine_with_titles(
     .with_audio_buses(canonical.audio_buses().iter().map(|bus| bus.id).collect())
     .with_stream_targets(canonical.stream_targets())?;
     restore_input_audio_strips(&mut show, canonical)?;
+    show.set_safe_area_guides(canonical.safe_area_guides());
 
     restore_display_outputs(&mut show, canonical)?;
     let mut realized = SwitcherState::new(input_ids, realized_program, realized_preview)?
@@ -910,6 +911,7 @@ pub(crate) fn sync_project_audio_mixer(
         );
     }
     project.set_fade_to_black_curve(show.desired_switcher().fade_to_black_curve());
+    project.set_safe_area_guides(show.safe_area_guides());
     Ok(())
 }
 

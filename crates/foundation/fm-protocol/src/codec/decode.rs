@@ -947,6 +947,9 @@ fn decode_command_payload(
         "fade_to_black_curve" => CommandPayload::SetFadeToBlackCurve {
             curve: super::audio_mixer::decode_curve(fields.required("curve")?)?,
         },
+        "set_safe_area_guides" => CommandPayload::SetSafeAreaGuides {
+            guides: parse_safe_area_guides(fields, "guides")?,
+        },
         "set_display_output" => CommandPayload::SetDisplayOutput {
             slot: super::display_output::decode_slot(fields)?,
             config: Box::new(super::display_output::decode_config(fields)?),
@@ -1870,6 +1873,15 @@ fn decode_new_input_name(fields: &mut Fields) -> Result<String, CodecError> {
 }
 
 #[allow(clippy::too_many_lines)] // one arm per input source
+fn parse_safe_area_guides(
+    fields: &mut dyn FieldSource,
+    name: &'static str,
+) -> Result<crate::WireSafeAreaGuides, CodecError> {
+    let value = fields.required(name)?;
+    crate::WireSafeAreaGuides::from_tokens(&value)
+        .ok_or(CodecError::InvalidField { field: name, value })
+}
+
 fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, CodecError> {
     let kind = fields.required("kind")?;
     match kind.as_str() {
@@ -2438,6 +2450,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
             fields,
         )?,
         fade_to_black_curve: super::audio_mixer::decode_snapshot_curve(fields)?,
+        safe_area_guides: parse_safe_area_guides(fields, "safe_area_guides")?,
         logical_outputs: super::logical_output::decode_entries(
             &fields.required("logical_outputs")?,
         )?,
@@ -3235,6 +3248,9 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         },
         "fade_to_black_curve_changed" => EventPayload::FadeToBlackCurveChanged {
             curve: super::audio_mixer::decode_curve(fields.required("curve")?)?,
+        },
+        "safe_area_guides_changed" => EventPayload::SafeAreaGuidesChanged {
+            guides: parse_safe_area_guides(fields, "guides")?,
         },
         "capture_settings_changed" => EventPayload::CaptureSettingsChanged {
             input: fields.canonical_input("input")?,

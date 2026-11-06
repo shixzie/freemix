@@ -159,6 +159,7 @@ impl EngineCommand {
             | Self::SetFadeToBlackOutput { .. }
             | Self::SetFadeToBlackOutputDuration { .. }
             | Self::SetFadeToBlackCurve { .. }
+            | Self::SetSafeAreaGuides { .. }
             | Self::SetDisplayOutput { .. }
             | Self::SetLogicalOutput { .. }
             | Self::SetSecondaryMix { .. }
@@ -1058,6 +1059,9 @@ fn fade_to_black_inverse(state: &ShowState, command: &EngineCommand) -> Option<E
         EngineCommand::SetFadeToBlackCurve { .. } => Some(EngineCommand::SetFadeToBlackCurve {
             curve: switcher.fade_to_black_curve(),
         }),
+        EngineCommand::SetSafeAreaGuides { .. } => Some(EngineCommand::SetSafeAreaGuides {
+            guides: state.safe_area_guides(),
+        }),
         _ => None,
     }
 }
@@ -1131,7 +1135,8 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         }
         EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
-        | EngineCommand::SetFadeToBlackCurve { .. } => fade_to_black_inverse(state, command),
+        | EngineCommand::SetFadeToBlackCurve { .. }
+        | EngineCommand::SetSafeAreaGuides { .. } => fade_to_black_inverse(state, command),
         EngineCommand::SetLiveLan(_) => Some(EngineCommand::SetLiveLan(Box::new(
             state.live_lan().clone(),
         ))),

@@ -23,6 +23,7 @@ mod ptz;
 mod recorder_status;
 mod reel;
 mod replay;
+mod safe_areas;
 mod scene_layer;
 pub mod screen_capture;
 mod script;
@@ -258,6 +259,7 @@ pub use replay::{
     ReplayStatusRequest, ReplayStorageLevel, ReplayStorageStatus, replay_event_name_is_valid,
     replay_list_name_is_valid, replay_step_is_valid, replay_storage_root_is_valid,
 };
+pub use safe_areas::WireSafeAreaGuides;
 pub use scene_layer::{MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS, MAX_KEY_LIGHT_WRAP_WIDTH};
 pub use scene_layer::{
     MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MAX_SOURCE_CROP_SIDE,

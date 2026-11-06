@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.166 / schema 110 (2026-11-05).
+(2026-10-19); items refreshed through protocol 2.172 / schema 112 (2026-11-06).
 Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -1641,17 +1641,24 @@ remain absent, so item 7 and `SW-011` remain planned.
 action and 90% title presets, an SMPTE preset that emits both, aspect-ratio
 center cuts, and caller-positioned custom guides in basis points, all with
 documented truncating geometry, half-open bounds, a sixteen-guide plan bound,
-and operator-only rasterization. Studio's View › Safe areas menu now turns
-action-safe, title-safe, 4:3, 16:9, and 9:16 guides on or off over the Program
-and Preview monitors, drawing corner ticks for the safe areas and full
-rectangles for the aspect cuts; every guide is local console state persisted in
-`studio.conf` (`safe_areas.*`), never in Program, recordings, streams, or an
-output. The cut geometry uses the same rounded centered-cut arithmetic as the
-compositor, so a 9:16 cut on a landscape canvas outlines exactly the portrait
-strip a fill crop keeps. Remaining gaps: guides are not project or wire state,
-so another console does not share them, custom guide rectangles have no
-operator UI, and explicit non-operator routing is absent. `SW-014` remains
-planned.
+and operator-only rasterization. The project now stores the operator guide
+selection (`safe_area_guides`, schema 112): action-safe, title-safe, and the
+4:3, 16:9, and 9:16 center cuts, with title safe as the default and `-` for
+none. Protocol 2.172 carries it in every snapshot, replaces it with the
+padlocked, undoable `set_safe_area_guides` project edit, and announces the new
+selection (including through undo or redo) with `safe_area_guides_changed`.
+The CLI prints it with `safe-area-guides` / `remote-safe-area-guides` and sets
+it locally or remotely with `safe-area-guides-set` /
+`remote-safe-area-guides-set <-|action,title,4:3,16:9,9:16>`. Studio's View ›
+Safe-area guides menu reads the replicated project selection, sends one set
+command per change, and draws corner ticks for the safe areas and full
+rectangles for the aspect cuts over Program and Preview, never in Program,
+recordings, streams, or an output; while no project state is available the
+same menu edits the console's local `studio.conf` fallback. The cut geometry
+uses the same rounded centered-cut arithmetic as the compositor, so a 9:16 cut
+on a landscape canvas outlines exactly the portrait strip a fill crop keeps.
+Remaining gaps: custom guide rectangles have no operator UI, and explicit
+non-operator routing is absent. `SW-014` remains planned.
 
 Current implementation boundary for item 6: the switcher and engine now own
 eight independently addressed overlay channels with a retained source, exact

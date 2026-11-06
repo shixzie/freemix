@@ -13,6 +13,7 @@ mod media_playback;
 mod playlist;
 mod project;
 mod resolve;
+mod safe_area;
 mod scene_animation;
 mod scene_layer_edit;
 mod script;
@@ -129,6 +130,7 @@ pub use resolve::{
     AudioRoute, FrameContext, LayerSource, MixFeedHistory, MixSelection, RenderSource,
     ResolveError, ResolvedInput, ResolvedLayer, ResolvedScene, SourceResolver,
 };
+pub use safe_area::SafeAreaGuideSelection;
 pub use scene_animation::{
     LayerId, LayerPose, SCENE_ANIMATION_PROPERTIES, SceneAnimation, SceneAnimationError, SceneClip,
     apply_pose, default_scene_timebase, footprint, pose_layer, resolve_anchor, scene_animates,

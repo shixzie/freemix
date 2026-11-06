@@ -39,6 +39,30 @@ impl Default for SafeAreaGuides {
 }
 
 impl SafeAreaGuides {
+    /// This console selection from the project's replicated wire form.
+    #[must_use]
+    pub const fn from_wire(guides: fm_protocol::WireSafeAreaGuides) -> Self {
+        Self {
+            action: guides.action,
+            title: guides.title,
+            center_4_3: guides.center_4_3,
+            center_16_9: guides.center_16_9,
+            center_9_16: guides.center_9_16,
+        }
+    }
+
+    /// The project wire form of this selection.
+    #[must_use]
+    pub const fn to_wire(self) -> fm_protocol::WireSafeAreaGuides {
+        fm_protocol::WireSafeAreaGuides {
+            action: self.action,
+            title: self.title,
+            center_4_3: self.center_4_3,
+            center_16_9: self.center_16_9,
+            center_9_16: self.center_9_16,
+        }
+    }
+
     /// Whether no guide is selected.
     #[must_use]
     pub(crate) const fn is_empty(self) -> bool {
@@ -280,6 +304,18 @@ mod tests {
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].1, [0.0, 555.0 / 1920.0, 1.0, 810.0 / 1920.0]);
         assert_eq!(rects[1].1, [0.0, 656.0 / 1920.0, 1.0, 608.0 / 1920.0]);
+    }
+
+    #[test]
+    fn the_wire_form_round_trips_every_switch() {
+        let guides = SafeAreaGuides {
+            action: true,
+            title: false,
+            center_4_3: true,
+            center_16_9: true,
+            center_9_16: false,
+        };
+        assert_eq!(SafeAreaGuides::from_wire(guides.to_wire()), guides);
     }
 
     #[test]

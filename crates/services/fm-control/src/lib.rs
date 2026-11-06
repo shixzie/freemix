@@ -35,6 +35,7 @@ mod paged;
 mod playlist;
 mod reel;
 mod replay;
+mod safe_areas;
 mod scene_animation;
 mod scene_layer;
 mod screen_capture;
@@ -3631,6 +3632,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. }
+        | EngineCommand::SetSafeAreaGuides { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
@@ -3783,6 +3785,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetFadeToBlackOutput { .. }
         | CommandPayload::SetFadeToBlackOutputDuration { .. }
         | CommandPayload::SetFadeToBlackCurve { .. }
+        | CommandPayload::SetSafeAreaGuides { .. }
         | CommandPayload::Cut
         | CommandPayload::Fade { .. }
         | CommandPayload::AlphaFade { .. }
@@ -3944,6 +3947,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         },
         CommandPayload::SetFadeToBlackCurve { curve } => {
             EngineCommand::SetFadeToBlackCurve { curve: *curve }
+        }
+        payload @ CommandPayload::SetSafeAreaGuides { .. } => {
+            safe_areas::engine_command(payload).expect("a safe-area payload")
         }
         payload @ (CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }) => {
@@ -4562,6 +4568,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         | EngineCommand::SetFadeToBlackCurve { .. }) => {
             return audio_mixer::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetSafeAreaGuides { .. } => {
+            return safe_areas::wire_edit_payload(command);
+        }
         command @ EngineCommand::SetDisplayOutput { .. } => {
             return display_output::wire_edit_payload(command);
         }
@@ -5079,6 +5088,13 @@ fn accepted_event_payload(
     if let Some(payload) = outcome
         .events
         .iter()
+        .find_map(|event| safe_areas::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
         .find_map(|event| display_output::changed(&event.payload))
     {
         return payload;
@@ -5457,6 +5473,7 @@ fn snapshot_record(
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),
         fade_to_black_output_durations: audio_mixer::wire_output_durations(engine.show()),
         fade_to_black_curve: engine.show().desired_switcher().fade_to_black_curve(),
+        safe_area_guides: safe_areas::wire(engine.show().safe_area_guides()),
         logical_outputs: logical_output::wire_entries(engine.show()),
         secondary_mixes: secondary_mix::wire_entries(engine.show()),
         input_video_delays: input_video_delay::wire_entries(engine.show()),

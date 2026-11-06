@@ -17,7 +17,7 @@ use fm_protocol::{
 };
 use fm_types::network_stream::{AudioChannels, SrtKeyLength, StreamMode};
 
-const PREFIX: &str = "command\tprotocol=2.171\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.172\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -580,6 +580,7 @@ fn fm_protocol_test_snapshot(network_streams: Vec<NetworkStreamEntry>) -> WireMe
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
+        safe_area_guides: fm_protocol::WireSafeAreaGuides::default(),
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
         secondary_mix_states: Vec::new(),

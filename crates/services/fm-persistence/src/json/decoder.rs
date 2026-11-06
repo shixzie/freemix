@@ -90,6 +90,7 @@ struct ProjectDto {
     fade_to_black_excluded_outputs: std::collections::BTreeSet<fm_types::OutputId>,
     fade_to_black_output_durations: Vec<(fm_types::OutputId, u32)>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
+    safe_area_guides: fm_model::SafeAreaGuideSelection,
     display_outputs: Vec<(
         fm_types::display::DisplayOutputSlot,
         fm_types::display::DisplayOutputConfig,
@@ -176,6 +177,7 @@ impl ProjectDto {
             fade_to_black_output_durations:
                 super::audio_mixer::parse_fade_to_black_output_durations(&mut object)?,
             fade_to_black_curve: super::audio_mixer::parse_fade_to_black_curve(&mut object)?,
+            safe_area_guides: super::safe_areas::parse_safe_area_guides(&mut object)?,
             display_outputs: super::display_output::parse_display_outputs(&mut object)?,
             live_lan: super::live_lan::parse_live_lan(&mut object)?,
             replay: super::replay::parse_replay(&mut object)?,
@@ -316,6 +318,7 @@ impl ProjectDto {
             project.set_fade_to_black_output_duration(output, Some(duration));
         }
         project.set_fade_to_black_curve(self.fade_to_black_curve);
+        project.set_safe_area_guides(self.safe_area_guides);
         // Unknown source outputs and displays both slots claim are reported
         // by project validation.
         for (slot, config) in self.display_outputs {

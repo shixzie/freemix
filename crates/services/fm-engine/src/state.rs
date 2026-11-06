@@ -218,6 +218,8 @@ pub struct ShowState {
     input_video_delays: BTreeMap<InputId, u32>,
     /// Every frozen input (SW-016), ascending. Runtime state, never persisted.
     frozen_inputs: BTreeSet<InputId>,
+    /// The operator safe-area guides this show's consoles draw (SW-014).
+    safe_area_guides: fm_model::SafeAreaGuideSelection,
     input_audio_strips: BTreeMap<InputId, EngineInputAudioStripState>,
     desired_switcher: SwitcherState,
     project_locked: bool,
@@ -368,6 +370,7 @@ impl ShowState {
             audio_buses: Vec::new(),
             input_video_delays: BTreeMap::new(),
             frozen_inputs: BTreeSet::new(),
+            safe_area_guides: fm_model::SafeAreaGuideSelection::default(),
             desired_switcher,
             project_locked: false,
             locked_inputs: BTreeSet::new(),
@@ -583,6 +586,17 @@ impl ShowState {
         let delays = self.input_video_delays.clone();
         fm_model::validate_input_video_delays(&delays, &self.inputs)
             .map_err(ShowError::InvalidInputVideoDelay)
+    }
+
+    /// The operator safe-area guides (SW-014).
+    #[must_use]
+    pub const fn safe_area_guides(&self) -> fm_model::SafeAreaGuideSelection {
+        self.safe_area_guides
+    }
+
+    /// Replaces the operator safe-area guides.
+    pub fn set_safe_area_guides(&mut self, guides: fm_model::SafeAreaGuideSelection) {
+        self.safe_area_guides = guides;
     }
 
     /// The logical output routing, ascending by slot (SW-012).

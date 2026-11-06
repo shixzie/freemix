@@ -289,6 +289,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
         fade_to_black_excluded_outputs: vec![output(2)],
         fade_to_black_output_durations: vec![(output(1), 45)],
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::Ease,
+        safe_area_guides: fm_protocol::WireSafeAreaGuides::default(),
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
         secondary_mix_states: Vec::new(),

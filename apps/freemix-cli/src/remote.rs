@@ -184,6 +184,18 @@ pub fn clock_control(
     }
 }
 
+/// Prints the daemon's operator safe-area guides (SW-014, Protocol 2.172).
+pub fn safe_area_guides(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    println!("safe-area-guides={}", state.safe_area_guides().tokens());
+    Ok(())
+}
+
 /// Lists the daemon's configured secondary mixes and their live states
 /// (IN-023, Protocol 2.158/2.159).
 pub fn secondary_mixes(address: SocketAddr) -> RemoteResult<()> {
@@ -3080,6 +3092,7 @@ impl CommandCompletion {
             CommandPayload::SetFadeToBlackOutput { .. }
             | CommandPayload::SetFadeToBlackOutputDuration { .. }
             | CommandPayload::SetFadeToBlackCurve { .. } => Self::FadeToBlackOutput,
+            CommandPayload::SetSafeAreaGuides { .. } => Self::Project,
             CommandPayload::Undo { .. } | CommandPayload::Redo { .. } => Self::History,
             CommandPayload::SetEditLock { .. } => Self::Padlock,
             CommandPayload::TakeTitle { fields, .. } => Self::TitleTake {
@@ -3502,6 +3515,10 @@ impl Remote {
                         | EventPayload::FadeToBlackCurveChanged { .. } => matches!(
                             completion,
                             CommandCompletion::FadeToBlackOutput | CommandCompletion::History
+                        ),
+                        EventPayload::SafeAreaGuidesChanged { .. } => matches!(
+                            completion,
+                            CommandCompletion::Project | CommandCompletion::History
                         ),
                     };
                     if matches_revision && !expected_event {

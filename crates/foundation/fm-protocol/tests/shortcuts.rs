@@ -473,6 +473,7 @@ fn snapshot(shortcut_states: u16) -> fm_protocol::SnapshotMessage {
         fade_to_black_excluded_outputs: Vec::new(),
         fade_to_black_output_durations: Vec::new(),
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
+        safe_area_guides: fm_protocol::WireSafeAreaGuides::default(),
         logical_outputs: Vec::new(),
         secondary_mixes: Vec::new(),
         secondary_mix_states: Vec::new(),

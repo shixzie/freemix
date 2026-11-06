@@ -1441,6 +1441,26 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Prints the project's operator safe-area guides (SW-014).
+    SafeAreaGuides {
+        path: PathBuf,
+    },
+    RemoteSafeAreaGuides {
+        address: SocketAddr,
+    },
+    /// Replaces the operator safe-area guide selection (SW-014).
+    SafeAreaGuidesSet {
+        path: PathBuf,
+        guides: fm_protocol::WireSafeAreaGuides,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSafeAreaGuidesSet {
+        address: SocketAddr,
+        guides: fm_protocol::WireSafeAreaGuides,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Labels a strip, assigns it to a group, renames a group, or moves a
     /// group fader (AU-001).
     AudioMixer {
@@ -3257,6 +3277,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-ftb-output-duration"
         | "ftb-curve"
         | "remote-ftb-curve") => parse_fade_to_black_timing(timing, arguments),
+        guides @ ("safe-area-guides"
+        | "remote-safe-area-guides"
+        | "safe-area-guides-set"
+        | "remote-safe-area-guides-set") => parse_safe_area_guides(guides, arguments),
         "rename" => parse_rename(arguments),
         "input-reorder" => parse_reorder(arguments, false),
         "preview" => {
@@ -4676,6 +4700,54 @@ fn parse_fade_to_black_output(
             expected_revision,
         },
         (None, None) => unreachable!("an FTB output command names a project or an address"),
+    })
+}
+
+/// `safe-area-guides` and `safe-area-guides-set <tokens>`, with their
+/// `remote-` forms (SW-014, Protocol 2.172).
+fn parse_safe_area_guides(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let action = command.strip_prefix("remote-").unwrap_or(command);
+    if action == "safe-area-guides" {
+        reject_extra(&mut arguments)?;
+        return Ok(match (path, address) {
+            (Some(path), _) => Command::SafeAreaGuides { path },
+            (None, Some(address)) => Command::RemoteSafeAreaGuides { address },
+            (None, None) => unreachable!("a safe-area command names a target"),
+        });
+    }
+    let tokens = required(&mut arguments, "guide tokens")?;
+    let guides =
+        fm_protocol::WireSafeAreaGuides::from_tokens(&tokens).ok_or(ArgsError::InvalidChoice {
+            field: "safe-area guides",
+            value: tokens,
+        })?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::SafeAreaGuidesSet {
+            path,
+            guides,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteSafeAreaGuidesSet {
+            address,
+            guides,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a safe-area command names a target"),
     })
 }
 

@@ -507,6 +507,8 @@ pub struct ProjectSnapshot {
     pub fade_to_black_output_durations: Vec<(OutputId, u32)>,
     /// How automatic Fade-to-Black moves ease (Protocol 2.48).
     pub fade_to_black_curve: fm_protocol::FadeToBlackCurve,
+    /// The operator safe-area guides (Protocol 2.172).
+    pub safe_area_guides: fm_protocol::WireSafeAreaGuides,
     /// Every configured logical output, ascending by slot (Protocol 2.157).
     pub logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured secondary mix, ascending by number (Protocol 2.158).
@@ -655,6 +657,7 @@ impl ProjectSnapshot {
                 .map(|(output, frames)| (output.to_domain(), frames))
                 .collect(),
             fade_to_black_curve: message.fade_to_black_curve,
+            safe_area_guides: message.safe_area_guides,
             logical_outputs: message.logical_outputs,
             secondary_mixes: message.secondary_mixes,
             secondary_mix_states: message.secondary_mix_states,
@@ -841,6 +844,10 @@ pub enum DurableChange {
     /// Automatic Fade-to-Black moves now ease along `curve` (Protocol 2.48).
     FadeToBlackCurveChanged {
         curve: fm_protocol::FadeToBlackCurve,
+    },
+    /// The operator safe-area guides changed (Protocol 2.172).
+    SafeAreaGuidesChanged {
+        guides: fm_protocol::WireSafeAreaGuides,
     },
     /// A display-output slot was configured or cleared (Protocol 2.42).
     DisplayOutputChanged {
@@ -1206,6 +1213,9 @@ impl DurableProjectEvent {
             EventPayload::FadeToBlackCurveChanged { curve } => {
                 DurableChange::FadeToBlackCurveChanged { curve }
             }
+            EventPayload::SafeAreaGuidesChanged { guides } => {
+                DurableChange::SafeAreaGuidesChanged { guides }
+            }
             EventPayload::DisplayOutputChanged { slot, config } => {
                 DurableChange::DisplayOutputChanged { slot, config }
             }
@@ -1411,6 +1421,8 @@ pub struct ProjectState {
     fade_to_black_output_durations: Vec<(OutputId, u32)>,
     /// How automatic Fade-to-Black moves ease (Protocol 2.48).
     fade_to_black_curve: fm_protocol::FadeToBlackCurve,
+    /// The operator safe-area guides (Protocol 2.172).
+    safe_area_guides: fm_protocol::WireSafeAreaGuides,
     /// Every configured logical output (Protocol 2.157).
     logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured secondary mix (Protocol 2.158).
@@ -1653,6 +1665,12 @@ impl ProjectState {
     #[must_use]
     pub const fn fade_to_black_curve(&self) -> fm_protocol::FadeToBlackCurve {
         self.fade_to_black_curve
+    }
+
+    /// Returns the operator safe-area guides (Protocol 2.172).
+    #[must_use]
+    pub const fn safe_area_guides(&self) -> fm_protocol::WireSafeAreaGuides {
+        self.safe_area_guides
     }
 
     /// Returns input `input`'s replicated lifecycle (Protocol 2.38).
@@ -2092,6 +2110,8 @@ pub struct ClientView {
     pub fade_to_black_output_durations: Vec<(OutputId, u32)>,
     /// How automatic Fade-to-Black moves ease (Protocol 2.48).
     pub fade_to_black_curve: fm_protocol::FadeToBlackCurve,
+    /// The operator safe-area guides (Protocol 2.172).
+    pub safe_area_guides: fm_protocol::WireSafeAreaGuides,
     /// Every configured logical output, ascending by slot (Protocol 2.157).
     pub logical_outputs: Vec<fm_protocol::WireLogicalOutputConfig>,
     /// Every configured secondary mix, ascending by number (Protocol 2.158).
@@ -3289,6 +3309,7 @@ impl ClientModel {
             fade_to_black_excluded_outputs: state.fade_to_black_excluded_outputs.clone(),
             fade_to_black_output_durations: state.fade_to_black_output_durations.clone(),
             fade_to_black_curve: state.fade_to_black_curve,
+            safe_area_guides: state.safe_area_guides,
             logical_outputs: state.logical_outputs.clone(),
             secondary_mixes: state.secondary_mixes.clone(),
             secondary_mix_states: state.secondary_mix_states.clone(),
@@ -3611,6 +3632,7 @@ impl ClientModel {
             fade_to_black_excluded_outputs: snapshot.fade_to_black_excluded_outputs,
             fade_to_black_output_durations: snapshot.fade_to_black_output_durations,
             fade_to_black_curve: snapshot.fade_to_black_curve,
+            safe_area_guides: snapshot.safe_area_guides,
             logical_outputs: snapshot.logical_outputs,
             secondary_mixes: snapshot.secondary_mixes,
             secondary_mix_states: snapshot.secondary_mix_states,
@@ -5464,6 +5486,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidPagedChange(input))
             };
         }
+        DurableChange::SafeAreaGuidesChanged { .. } => return Ok(()),
         DurableChange::TransitionFavoriteChanged { slot, .. } => {
             return if (1..=TRANSITION_FAVORITE_COUNT).contains(&usize::from(*slot)) {
                 Ok(())
@@ -6018,6 +6041,9 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         }
         DurableChange::FadeToBlackCurveChanged { curve } => {
             state.fade_to_black_curve = curve;
+        }
+        DurableChange::SafeAreaGuidesChanged { guides } => {
+            state.safe_area_guides = guides;
         }
         DurableChange::DesiredSwitcher {
             selection,
