@@ -2922,6 +2922,8 @@ fn alias_and_feed_add_sources_map_to_the_engine() {
             target: input(1),
             crop: Some(fm_model::CropRect::new(1, 2, 3, 4)),
             effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
+            opacity: u8::MAX,
+            mask: None,
         }
     );
     assert_eq!(
@@ -2936,6 +2938,8 @@ fn alias_and_feed_add_sources_map_to_the_engine() {
             target: input(2),
             crop: None,
             effects: Vec::new(),
+            opacity: u8::MAX,
+            mask: None,
         }
     );
     assert_eq!(
@@ -2951,6 +2955,8 @@ fn alias_and_feed_add_sources_map_to_the_engine() {
             target: input(4),
             crop: None,
             effects: Vec::new(),
+            opacity: u8::MAX,
+            mask: None,
         }),
         LiveInputSource::Alias {
             target: WireInputId::from_domain(input(4)),
