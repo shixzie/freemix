@@ -1638,12 +1638,20 @@ multiview, selection persistence, protocol or wire state, daemon multiview
 outputs, confidence-mode behavior, and click/touch dispatch to the engine all
 remain absent, so item 7 and `SW-011` remain planned.
 `fm-compositor` also generates exact integer safe-area guides: centered 93%
-action and 90% title presets, an SMPTE preset that emits both, and
-caller-positioned custom guides in basis points, all with documented truncating
-geometry, half-open bounds, a sixteen-guide plan bound, and operator-only
-rasterization. Aspect-ratio guide sets, explicit non-operator routing,
-persistence, wire state, and an operator UI for choosing guides remain absent,
-so `SW-014` remains planned.
+action and 90% title presets, an SMPTE preset that emits both, aspect-ratio
+center cuts, and caller-positioned custom guides in basis points, all with
+documented truncating geometry, half-open bounds, a sixteen-guide plan bound,
+and operator-only rasterization. Studio's View › Safe areas menu now turns
+action-safe, title-safe, 4:3, 16:9, and 9:16 guides on or off over the Program
+and Preview monitors, drawing corner ticks for the safe areas and full
+rectangles for the aspect cuts; every guide is local console state persisted in
+`studio.conf` (`safe_areas.*`), never in Program, recordings, streams, or an
+output. The cut geometry uses the same rounded centered-cut arithmetic as the
+compositor, so a 9:16 cut on a landscape canvas outlines exactly the portrait
+strip a fill crop keeps. Remaining gaps: guides are not project or wire state,
+so another console does not share them, custom guide rectangles have no
+operator UI, and explicit non-operator routing is absent. `SW-014` remains
+planned.
 
 Current implementation boundary for item 6: the switcher and engine now own
 eight independently addressed overlay channels with a retained source, exact
