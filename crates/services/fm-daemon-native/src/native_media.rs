@@ -13287,6 +13287,12 @@ mod tests {
                 })
             }),
             fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
+            audio: fm_switcher::MixAudio {
+                primary: fm_switcher::MixAudioSource::Input(leaf),
+                secondary: None,
+                numerator: 0,
+                denominator: 1,
+            },
         };
         let overlay_frame = MixFrame {
             mix: overlay_mix,
@@ -13298,6 +13304,12 @@ mod tests {
             preview: None,
             overlays: [None; OVERLAY_CHANNEL_COUNT],
             fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
+            audio: fm_switcher::MixAudio {
+                primary: fm_switcher::MixAudioSource::Input(overlay_leaf),
+                secondary: None,
+                numerator: 0,
+                denominator: 1,
+            },
         };
         let mut frame = frame_result(0, leaf, None);
         frame.secondary_mixes = MixBankFrame {
