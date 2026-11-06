@@ -269,7 +269,7 @@ fn alias_masks_must_fit_the_cropped_picture() {
             crop: Some(CropRect::new(100, 100, 640, 360)),
             effects: Vec::new(),
             opacity: 200,
-            mask: Some(crate::RectMask::new(10, 10, 640, 360)),
+            mask: Some(fm_model::RectMask::new(10, 10, 640, 360)),
         },
     ));
     assert!(project.validate().is_ok(), "{:?}", project.validate().err());
@@ -283,7 +283,7 @@ fn alias_masks_must_fit_the_cropped_picture() {
                 crop: Some(CropRect::new(100, 100, 640, 360)),
                 effects: Vec::new(),
                 opacity: 200,
-                mask: Some(crate::RectMask::new(10, 10, 700, 360)),
+                mask: Some(fm_model::RectMask::new(10, 10, 700, 360)),
             },
             Vec::new(),
         )
