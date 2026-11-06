@@ -11613,10 +11613,24 @@ impl NativeMediaRuntime {
         let Some(texture) = playback.frozen_texture(input) else {
             return Ok(None);
         };
+        self.capture_texture_still_blocking(texture).map(Some)
+    }
+
+    /// Encodes one composed texture as an sRGB PNG, the cache form used by
+    /// frozen stills and persisted feed pictures (IN-025).
+    ///
+    /// # Errors
+    ///
+    /// Returns the GPU readback, frame-layout, or PNG encoding failure as
+    /// text.
+    pub fn capture_texture_still_blocking(
+        &self,
+        texture: &NativeTexture,
+    ) -> Result<CapturedStill, String> {
         let width = core::num::NonZeroU32::new(texture.width())
-            .ok_or_else(|| "the frozen picture has no width".to_owned())?;
+            .ok_or_else(|| "the picture has no width".to_owned())?;
         let height = core::num::NonZeroU32::new(texture.height())
-            .ok_or_else(|| "the frozen picture has no height".to_owned())?;
+            .ok_or_else(|| "the picture has no height".to_owned())?;
         let mut owner = self
             .create_program_readback_blocking(width, height)
             .map_err(|error| error.to_string())?;
@@ -11632,11 +11646,11 @@ impl NativeMediaRuntime {
         .map_err(|error| error.to_string())?;
         let png = fm_video::encode_png_rgba8_srgb_compressed(&frame)
             .map_err(|error| error.to_string())?;
-        Ok(Some(CapturedStill {
+        Ok(CapturedStill {
             width: readback.width,
             height: readback.height,
             png,
-        }))
+        })
     }
 
     /// Reads a native texture back to CPU memory for diagnostics and tests.
