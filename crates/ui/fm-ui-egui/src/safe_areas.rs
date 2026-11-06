@@ -15,6 +15,7 @@ use egui::{Color32, Painter, Rect, Stroke, Vec2, pos2};
 use crate::theme::{AMBER, PROGRAM, border_color};
 
 /// Which guides the operator asked to see.
+#[allow(clippy::struct_excessive_bools)] // one independent guide switch each
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SafeAreaGuides {
     pub action: bool,
@@ -68,6 +69,7 @@ impl SafeAreaGuides {
     }
 
     /// The preference lines that reproduce this selection.
+    #[must_use]
     pub fn preference_entries(self) -> Vec<(&'static str, &'static str)> {
         [
             ("safe_areas.action", self.action),
@@ -137,18 +139,16 @@ fn percent(width: u32, height: u32, percent: u32) -> [f32; 4] {
 fn center_cut(width: u32, height: u32, aspect_width: u32, aspect_height: u32) -> [f32; 4] {
     let wide = u128::from(width) * u128::from(aspect_height);
     let tall = u128::from(height) * u128::from(aspect_width);
-    let (cut_width, cut_height) = if wide > tall {
-        (
+    let (cut_width, cut_height) = match wide.cmp(&tall) {
+        core::cmp::Ordering::Greater => (
             rounded_ratio(height, aspect_width, aspect_height, width),
             height,
-        )
-    } else if wide < tall {
-        (
+        ),
+        core::cmp::Ordering::Less => (
             width,
             rounded_ratio(width, aspect_height, aspect_width, height),
-        )
-    } else {
-        (width, height)
+        ),
+        core::cmp::Ordering::Equal => (width, height),
     };
     normalize(
         width,
