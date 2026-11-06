@@ -692,6 +692,9 @@ impl AddInputDraft {
                 if crop.is_some_and(|crop| !crop.fits_source()) {
                     return Err(Msg::AddInputAliasCropInvalid.en());
                 }
+                if self.alias_mask && !self.alias_mask_fits() {
+                    return Err(Msg::AddInputAliasMaskInvalid.en());
+                }
                 LiveInputSource::Alias {
                     target: fm_protocol::WireInputId::from_domain(
                         self.alias_target.ok_or(Msg::AddInputAliasRequired.en())?,
@@ -711,6 +714,29 @@ impl AddInputDraft {
             NewInputKind::MixFeed if self.feed_program => LiveInputSource::ProgramFeed,
             NewInputKind::MixFeed => LiveInputSource::PreviewFeed,
         })
+    }
+
+    /// Whether the draft mask is nonempty and inside the alias picture (its
+    /// crop when it has one, the source bound otherwise).
+    fn alias_mask_fits(&self) -> bool {
+        let (width, height) = if self.alias_crop {
+            (self.alias_crop_width, self.alias_crop_height)
+        } else {
+            (
+                fm_protocol::MAX_SOURCE_CROP_SIDE,
+                fm_protocol::MAX_SOURCE_CROP_SIDE,
+            )
+        };
+        self.alias_mask_width > 0
+            && self.alias_mask_height > 0
+            && self
+                .alias_mask_x
+                .checked_add(self.alias_mask_width)
+                .is_some_and(|right| right <= width)
+            && self
+                .alias_mask_y
+                .checked_add(self.alias_mask_height)
+                .is_some_and(|bottom| bottom <= height)
     }
 
     /// The stream or capture form field the source fails on: its label,
@@ -751,29 +777,12 @@ impl AddInputDraft {
                         prompt: false,
                     });
                 }
-                if self.alias_mask {
-                    let (width, height) = if self.alias_crop {
-                        (self.alias_crop_width, self.alias_crop_height)
-                    } else {
-                        (16_384, 16_384)
-                    };
-                    let fits = self.alias_mask_width > 0
-                        && self.alias_mask_height > 0
-                        && self
-                            .alias_mask_x
-                            .checked_add(self.alias_mask_width)
-                            .is_some_and(|right| right <= width)
-                        && self
-                            .alias_mask_y
-                            .checked_add(self.alias_mask_height)
-                            .is_some_and(|bottom| bottom <= height);
-                    if !fits {
-                        return Some(FieldProblem {
-                            field: Msg::AddInputAliasMask,
-                            reason: Msg::AddInputAliasMaskInvalid.en(),
-                            prompt: false,
-                        });
-                    }
+                if self.alias_mask && !self.alias_mask_fits() {
+                    return Some(FieldProblem {
+                        field: Msg::AddInputAliasMask,
+                        reason: Msg::AddInputAliasMaskInvalid.en(),
+                        prompt: false,
+                    });
                 }
                 return None;
             }
