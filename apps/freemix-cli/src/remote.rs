@@ -1268,6 +1268,73 @@ pub fn title_source(
     }
 }
 
+/// Reads one alias's current effect list (IN-024).
+pub fn alias_effects(address: SocketAddr, input: InputId) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let request_id = format!("cli-alias-effects-{}", unique_client_id()?);
+    remote.write(&WireMessage::AliasEffectsRequest(
+        fm_protocol::AliasEffectsRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            input: fm_protocol::WireInputId::from_domain(input),
+        },
+    ))?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::AliasEffectsResponse(response) => {
+                if response.request_id != request_id
+                    || response.protocol != CURRENT_PROTOCOL_VERSION
+                {
+                    return Err(RemoteFailure(
+                        "alias-effects response does not match the request".into(),
+                    )
+                    .into());
+                }
+                let effects = if response.effects.is_empty() {
+                    "none".to_owned()
+                } else {
+                    response
+                        .effects
+                        .iter()
+                        .map(|effect| {
+                            if effect.parameters.is_empty() {
+                                effect.name.clone()
+                            } else {
+                                format!(
+                                    "{}:{}",
+                                    effect.name,
+                                    effect
+                                        .parameters
+                                        .iter()
+                                        .map(i32::to_string)
+                                        .collect::<Vec<_>>()
+                                        .join(",")
+                                )
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+                println!("alias-effects: input={input} effects={effects}");
+                return Ok(());
+            }
+            WireMessage::Event(event) => {
+                remote.client.intake(WireMessage::Event(event))?;
+            }
+            WireMessage::RuntimeEvent(event) => {
+                remote.client.intake(WireMessage::RuntimeEvent(event))?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            _ => {
+                return Err(
+                    RemoteFailure("expected alias_effects_response from daemon".into()).into(),
+                );
+            }
+        }
+    }
+}
+
 /// Asks the daemon to write one frozen input's latched picture as a PNG
 /// into its project bundle (SW-016), and prints the asset URI it returned.
 pub fn frozen_still(address: SocketAddr, input: InputId) -> RemoteResult<()> {
