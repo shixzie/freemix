@@ -213,8 +213,61 @@ pub struct MixState {
     program: MixSource,
     preview: Option<MixSource>,
     transition: Option<MixTransition>,
-    overlays: [Option<MixSource>; OVERLAY_CHANNEL_COUNT],
+    overlays: [Option<MixOverlayState>; OVERLAY_CHANNEL_COUNT],
     fade_to_black: FadeToBlackController,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OverlayFade {
+    from: u8,
+    to: u8,
+    duration_frames: u32,
+    elapsed_frames: u32,
+}
+
+impl OverlayFade {
+    fn opacity(self, elapsed_frames: u32) -> u8 {
+        let elapsed = elapsed_frames.min(self.duration_frames);
+        let from = i32::from(self.from);
+        let delta = i32::from(self.to) - from;
+        let value = from
+            + delta * i32::try_from(elapsed).unwrap_or(i32::MAX)
+                / i32::try_from(self.duration_frames).unwrap_or(1);
+        u8::try_from(value.clamp(0, i32::from(u8::MAX))).unwrap_or(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MixOverlayState {
+    source: MixSource,
+    opacity: u8,
+    fade: Option<OverlayFade>,
+}
+
+impl MixOverlayState {
+    fn frame_opacity(self) -> u8 {
+        self.fade.map_or(self.opacity, |fade| {
+            fade.opacity(fade.elapsed_frames.saturating_add(1))
+        })
+    }
+
+    fn advance(&mut self) -> Option<u8> {
+        let mut fade = self.fade?;
+        fade.elapsed_frames += 1;
+        let finished = fade.elapsed_frames >= fade.duration_frames;
+        let opacity = if finished {
+            fade.to
+        } else {
+            fade.opacity(fade.elapsed_frames)
+        };
+        self.opacity = opacity;
+        if finished {
+            self.fade = None;
+        } else {
+            self.fade = Some(fade);
+        }
+        Some(opacity)
+    }
 }
 
 impl MixState {
@@ -244,7 +297,7 @@ impl MixState {
 
     #[must_use]
     pub fn overlay(&self, channel: OverlayChannelId) -> Option<MixSource> {
-        self.overlays[channel.index()]
+        self.overlays[channel.index()].map(|overlay| overlay.source)
     }
 
     #[must_use]
@@ -260,7 +313,7 @@ impl MixState {
                     .into_iter()
                     .flat_map(|transition| [Some(transition.from), Some(transition.to)]),
             )
-            .chain(self.overlays)
+            .chain(self.overlays.iter().flatten().map(|overlay| overlay.source))
             .flatten()
     }
 }
@@ -284,9 +337,11 @@ pub enum MixEffect {
     OverlayOn {
         channel: OverlayChannelId,
         source: MixSource,
+        duration_frames: u32,
     },
     OverlayOff {
         channel: OverlayChannelId,
+        duration_frames: u32,
     },
     /// Starts a stinger-labelled Preview-to-Program transition in each target,
     /// or applies the slot's missing-media fallback.
@@ -383,6 +438,11 @@ pub enum MixBankEvent {
         channel: OverlayChannelId,
         source: Option<MixSource>,
     },
+    OverlayFadeChanged {
+        mix: MixId,
+        channel: OverlayChannelId,
+        opacity: u8,
+    },
     EffectScheduled {
         effect: MixEffect,
         targets: MixSet,
@@ -461,6 +521,10 @@ pub enum MixBankError {
         duration_frames: u32,
         maximum: u32,
     },
+    InvalidOverlayDuration {
+        duration_frames: u32,
+        maximum: u32,
+    },
     EmptyTargetSet,
     PendingEffectsFull {
         maximum: usize,
@@ -529,6 +593,13 @@ impl core::fmt::Display for MixBankError {
                 formatter,
                 "transition duration {duration_frames} is outside 1..={maximum}"
             ),
+            Self::InvalidOverlayDuration {
+                duration_frames,
+                maximum,
+            } => write!(
+                formatter,
+                "overlay fade duration {duration_frames} exceeds {maximum} frames"
+            ),
             Self::EmptyTargetSet => formatter.write_str("an effect needs at least one target mix"),
             Self::PendingEffectsFull { maximum } => {
                 write!(
@@ -572,6 +643,13 @@ pub enum MixLayer {
     Black,
 }
 
+/// One overlay channel's source and faded opacity in a composed mix frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MixOverlay {
+    pub source: MixLayer,
+    pub opacity: u8,
+}
+
 /// What one mix shows in one bank frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MixFrame {
@@ -583,7 +661,7 @@ pub struct MixFrame {
     pub mix_denominator: u32,
     /// Preview monitor content; `None` for output-only mixes.
     pub preview: Option<MixLayer>,
-    pub overlays: [Option<MixLayer>; OVERLAY_CHANNEL_COUNT],
+    pub overlays: [Option<MixOverlay>; OVERLAY_CHANNEL_COUNT],
     pub fade_to_black: FadeToBlackFrame,
 }
 
@@ -902,6 +980,26 @@ impl MixBank {
             if let Some(target) = advance.completed {
                 events.push(MixBankEvent::FadeToBlackCompleted { mix, target });
             }
+            for channel in OverlayChannelId::ALL {
+                let Some(overlay) = state.overlays[channel.index()].as_mut() else {
+                    continue;
+                };
+                if let Some(opacity) = overlay.advance() {
+                    events.push(MixBankEvent::OverlayFadeChanged {
+                        mix,
+                        channel,
+                        opacity,
+                    });
+                    if overlay.fade.is_none() && opacity == 0 {
+                        state.overlays[channel.index()] = None;
+                        events.push(MixBankEvent::OverlayChanged {
+                            mix,
+                            channel,
+                            source: None,
+                        });
+                    }
+                }
+            }
         }
 
         self.next_frame += 1;
@@ -1112,12 +1210,30 @@ impl MixBank {
         }
         for mix in targets.iter() {
             match effect {
-                MixEffect::OverlayOn { source, .. } => {
+                MixEffect::OverlayOn {
+                    source,
+                    duration_frames,
+                    ..
+                } => {
                     self.require_mix(mix)?;
                     self.validate_route(mix, source)?;
+                    if duration_frames > MAX_OVERLAY_TRANSITION_DURATION_FRAMES {
+                        return Err(MixBankError::InvalidOverlayDuration {
+                            duration_frames,
+                            maximum: MAX_OVERLAY_TRANSITION_DURATION_FRAMES,
+                        });
+                    }
                 }
-                MixEffect::OverlayOff { .. } => {
+                MixEffect::OverlayOff {
+                    duration_frames, ..
+                } => {
                     self.require_mix(mix)?;
+                    if duration_frames > MAX_OVERLAY_TRANSITION_DURATION_FRAMES {
+                        return Err(MixBankError::InvalidOverlayDuration {
+                            duration_frames,
+                            maximum: MAX_OVERLAY_TRANSITION_DURATION_FRAMES,
+                        });
+                    }
                 }
                 MixEffect::Stinger {
                     slot,
@@ -1145,21 +1261,74 @@ impl MixBank {
 
     fn apply_effect(&mut self, mix: MixId, effect: MixEffect, events: &mut Vec<MixBankEvent>) {
         match effect {
-            MixEffect::OverlayOn { channel, source } => {
-                self.state_mut(mix).overlays[channel.index()] = Some(source);
+            MixEffect::OverlayOn {
+                channel,
+                source,
+                duration_frames,
+            } => {
+                let state = self.state_mut(mix);
+                let from =
+                    state.overlays[channel.index()].map_or(0, MixOverlayState::frame_opacity);
+                let overlay = MixOverlayState {
+                    source,
+                    opacity: if duration_frames == 0 { u8::MAX } else { from },
+                    fade: (duration_frames != 0).then_some(OverlayFade {
+                        from,
+                        to: u8::MAX,
+                        duration_frames,
+                        elapsed_frames: 0,
+                    }),
+                };
+                state.overlays[channel.index()] = Some(overlay);
                 events.push(MixBankEvent::OverlayChanged {
                     mix,
                     channel,
                     source: Some(source),
                 });
+                if duration_frames != 0 {
+                    events.push(MixBankEvent::OverlayFadeChanged {
+                        mix,
+                        channel,
+                        opacity: overlay.frame_opacity(),
+                    });
+                }
             }
-            MixEffect::OverlayOff { channel } => {
-                self.state_mut(mix).overlays[channel.index()] = None;
-                events.push(MixBankEvent::OverlayChanged {
-                    mix,
-                    channel,
-                    source: None,
-                });
+            MixEffect::OverlayOff {
+                channel,
+                duration_frames,
+            } => {
+                let state = self.state_mut(mix);
+                let Some(mut overlay) = state.overlays[channel.index()] else {
+                    events.push(MixBankEvent::OverlayChanged {
+                        mix,
+                        channel,
+                        source: None,
+                    });
+                    return;
+                };
+                if duration_frames == 0 {
+                    state.overlays[channel.index()] = None;
+                    events.push(MixBankEvent::OverlayChanged {
+                        mix,
+                        channel,
+                        source: None,
+                    });
+                } else {
+                    let from = overlay.frame_opacity();
+                    overlay.opacity = from;
+                    overlay.fade = Some(OverlayFade {
+                        from,
+                        to: 0,
+                        duration_frames,
+                        elapsed_frames: 0,
+                    });
+                    state.overlays[channel.index()] = Some(overlay);
+                    events.push(MixBankEvent::OverlayFadeChanged {
+                        mix,
+                        channel,
+                        opacity: overlay.frame_opacity(),
+                    });
+                }
             }
             MixEffect::Stinger {
                 slot,
@@ -1276,9 +1445,12 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             mix_numerator: transition.elapsed_frames,
             mix_denominator: transition.duration_frames,
             preview,
-            overlays: state
-                .overlays
-                .map(|source| source.map(|source| resolve(source, frame))),
+            overlays: state.overlays.map(|overlay| {
+                overlay.map(|overlay| MixOverlay {
+                    source: resolve(overlay.source, frame),
+                    opacity: overlay.frame_opacity(),
+                })
+            }),
             fade_to_black: state.fade_to_black.frame(),
         },
         None => MixFrame {
@@ -1289,9 +1461,12 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             mix_numerator: 0,
             mix_denominator: 1,
             preview,
-            overlays: state
-                .overlays
-                .map(|source| source.map(|source| resolve(source, frame))),
+            overlays: state.overlays.map(|overlay| {
+                overlay.map(|overlay| MixOverlay {
+                    source: resolve(overlay.source, frame),
+                    opacity: overlay.frame_opacity(),
+                })
+            }),
             fade_to_black: state.fade_to_black.frame(),
         },
     }
