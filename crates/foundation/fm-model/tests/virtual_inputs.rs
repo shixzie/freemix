@@ -65,6 +65,8 @@ fn alias(target: u128, crop: Option<CropRect>) -> InputKind {
         target: input_id(target),
         crop,
         effects: Vec::new(),
+        opacity: u8::MAX,
+        mask: None,
     }
 }
 
