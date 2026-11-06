@@ -13347,6 +13347,33 @@ mod tests {
             "the half-opacity overlay blends red and blue: {pixel:?}"
         );
 
+        // A T-bar at half travel composes half of each Program source.
+        let mut scrubbed = mix_two_frame;
+        scrubbed.secondary = Some(MixLayer::Input(overlay_leaf));
+        scrubbed.transition_kind = Some(fm_switcher::TransitionKind::Fade);
+        scrubbed.mix_numerator = 5_000;
+        scrubbed.mix_denominator = 10_000;
+        scrubbed.overlays = [None; OVERLAY_CHANNEL_COUNT];
+        frame.secondary_mixes.mixes[0] = scrubbed;
+        let t_bar = block_on(runtime.render_mix_texture(
+            playback.registry(),
+            &BTreeMap::new(),
+            &plan,
+            &BTreeMap::new(),
+            &frame,
+            green.texture(),
+            mix_two,
+            &mut Vec::new(),
+            NativeFeedFrames::default(),
+        ))
+        .unwrap();
+        let t_bar = block_on(runtime.diagnostic_readback(&t_bar)).unwrap();
+        let pixel = rgba16f_pixel(&t_bar.bytes, 4, 0, 0);
+        assert!(
+            pixel[0] > 0.1 && pixel[2] > 0.1,
+            "the half-travelled mix T-bar blends both Program sources: {pixel:?}"
+        );
+
         // Fade-to-Black inside Mix 2 covers its background and overlay.
         let mut faded = mix_two_frame;
         faded.fade_to_black =
