@@ -3311,6 +3311,7 @@ impl Remote {
                         EventPayload::InputRenamed { .. }
                         | EventPayload::InputOrderChanged { .. }
                         | EventPayload::InputAdded { .. }
+                        | EventPayload::InputAliasEffectsChanged { .. }
                         | EventPayload::InputRemoved { .. }
                         | EventPayload::InputLifecycleChanged { .. }
                         | EventPayload::GradeChanged(_)
