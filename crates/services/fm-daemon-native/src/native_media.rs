@@ -13045,9 +13045,9 @@ mod tests {
                 .unwrap();
             block_on(runtime.diagnostic_readback(&frame)).unwrap()
         };
-        let plain = read(plain_alias);
-        let first = rgba16f_pixel(&plain.bytes, 4, 0, 0);
-        let last = rgba16f_pixel(&plain.bytes, 4, 3, 0);
+        let unescaped = read(plain_alias);
+        let first = rgba16f_pixel(&unescaped.bytes, 4, 0, 0);
+        let last = rgba16f_pixel(&unescaped.bytes, 4, 3, 0);
         assert!(
             first[0] > 0.5 && first[2] < 0.1 && last[2] > 0.5 && last[0] < 0.1,
             "the plain alias keeps the red and blue halves"
