@@ -658,8 +658,7 @@ impl AddInputDraft {
                         self.alias_target.ok_or(Msg::AddInputAliasRequired.en())?,
                     ),
                     crop,
-                    effects: parse_alias_effects(&self.alias_effects)
-                        .map_err(|message| message.en())?,
+                    effects: parse_alias_effects(&self.alias_effects).map_err(Msg::en)?,
                 }
             }
             NewInputKind::MixFeed if self.feed_program => LiveInputSource::ProgramFeed,
