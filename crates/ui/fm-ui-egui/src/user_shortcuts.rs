@@ -1138,10 +1138,7 @@ impl ShortcutsWindow {
         let Some(draft) = &mut self.draft else {
             return;
         };
-        draft.name = l.format(
-            Msg::InputShortcutName,
-            &[("name", Arg::Str(input_name.to_owned()))],
-        );
+        draft.name = l.format(Msg::InputShortcutName, &[("name", Arg::Str(input_name))]);
         draft.action = WireShortcutAction::Actions(vec![WireCueAction::Preview {
             input: fm_protocol::WireInputTarget::Fixed(fm_protocol::WireInputId::from_domain(
                 input,
