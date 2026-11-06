@@ -1916,17 +1916,19 @@ struct NativeProgramOverlay {
 }
 
 /// One overlay layer resolved for a logical output (SW-012).
-const fn plan_overlay(layer: &fm_switcher::OverlayLayer) -> NativeProgramOverlay {
-    NativeProgramOverlay {
-        source: match layer.source {
-            fm_switcher::MixSource::Input(input) => NativeOverlaySource::Input(input),
-            fm_switcher::MixSource::Mix(mix) => NativeOverlaySource::Mix(mix),
-        },
+fn plan_overlay(layer: &fm_switcher::OverlayLayer) -> Option<NativeProgramOverlay> {
+    let source = match layer.source {
+        fm_switcher::MixLayer::Input(input) => NativeOverlaySource::Input(input),
+        fm_switcher::MixLayer::Mix { mix, .. } => NativeOverlaySource::Mix(mix),
+        fm_switcher::MixLayer::Black => return None,
+    };
+    Some(NativeProgramOverlay {
+        source,
         opacity: layer.opacity,
         position: layer.position,
         border: layer.border,
         motion: layer.motion,
-    }
+    })
 }
 
 /// Whether `background` is exactly the frame's Program transition, which the
@@ -10334,7 +10336,7 @@ impl NativeMediaRuntime {
             .iter()
             .zip(plans.iter().copied())
             .map(|(output, plan)| match plan {
-                Some(plan) => plan.overlays.iter().map(plan_overlay).collect(),
+                Some(plan) => plan.overlays.iter().filter_map(plan_overlay).collect(),
                 None => output.map_or_else(Vec::new, |output| {
                     NativeProjectPlan::program_overlays(frame, output)
                 }),
@@ -10376,8 +10378,8 @@ impl NativeMediaRuntime {
                 }
             }
             extra_inputs.extend(plan.overlays.iter().filter_map(|layer| match layer.source {
-                fm_switcher::MixSource::Input(input) => Some(input),
-                fm_switcher::MixSource::Mix(_) => None,
+                fm_switcher::MixLayer::Input(input) => Some(input),
+                fm_switcher::MixLayer::Mix { .. } | fm_switcher::MixLayer::Black => None,
             }));
         }
         extra_inputs.extend(overlay_sets.iter().flatten().filter_map(
@@ -10497,7 +10499,11 @@ impl NativeMediaRuntime {
         logical_outputs: &BTreeMap<OutputId, NativeTexture>,
         feeds: NativeFeedFrames<'_>,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
-        let overlays = plan.overlays.iter().map(plan_overlay).collect::<Vec<_>>();
+        let overlays = plan
+            .overlays
+            .iter()
+            .filter_map(plan_overlay)
+            .collect::<Vec<_>>();
         match &plan.video {
             OutputVideo::MultiView(cells) => {
                 let base = self
