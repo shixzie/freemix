@@ -3466,6 +3466,11 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`fm_switcher::MixBankError::NoTBar`] when none is active.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if `number` is not a valid mix number, which the model
+    /// guarantees by construction.
     pub fn set_secondary_mix_t_bar_position(
         &mut self,
         number: fm_model::MixNumber,
@@ -3482,6 +3487,11 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`fm_switcher::MixBankError::NoTBar`] when none is active.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if `number` is not a valid mix number, which the model
+    /// guarantees by construction.
     pub fn commit_secondary_mix_t_bar(
         &mut self,
         number: fm_model::MixNumber,
@@ -3497,6 +3507,11 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`fm_switcher::MixBankError::NoTBar`] when none is active.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if `number` is not a valid mix number, which the model
+    /// guarantees by construction.
     pub fn cancel_secondary_mix_t_bar(
         &mut self,
         number: fm_model::MixNumber,
