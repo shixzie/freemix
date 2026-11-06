@@ -4,7 +4,7 @@ use fm_switcher::{
     FadeToBlackCurve, FadeToBlackTarget, MAX_MIX_BANK_INPUTS, MAX_MIX_TRANSITION_DURATION_FRAMES,
     MAX_PENDING_MIX_EFFECTS, MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MissingMediaFallback, MixBank,
     MixBankCommand, MixBankError, MixBankEvent, MixConfig, MixEffect, MixId, MixLayer, MixMode,
-    MixOverlay, MixSet, MixSource, MixStingerAction, OverlayChannelId, StingerSlotId,
+    MixOverlay, MixSet, MixSource, MixStingerAction, OverlayChannelId, StingerSlotId, TBarPosition,
     TransitionKind,
 };
 use fm_types::InputId;
