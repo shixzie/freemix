@@ -538,7 +538,10 @@ fn flip(pixel: vec2<u32>) -> vec4<i32> {
 }
 
 // Field deinterlacing (fm_compositor::ReferenceEffect::Deinterlace): mode
-// 0 blends each line pair, 1 keeps the top field, 2 the bottom field.
+// 0 blends each line pair, 1 keeps the top field, 2 the bottom field, and 3
+// predicts each pixel from its same-field vertical neighbours and falls back
+// to the inter-field mean when the prediction is close enough (motion below
+// the reference's fixed threshold).
 fn deinterlace(pixel: vec2<u32>) -> vec4<i32> {
     let last = op.height - 1u;
     if op.parameter_0 == 1u {
@@ -548,6 +551,17 @@ fn deinterlace(pixel: vec2<u32>) -> vec4<i32> {
         return load_codes(vec2<u32>(pixel.x, min(pixel.y | 1u, last)));
     }
     let other = load_codes(vec2<u32>(pixel.x, min(pixel.y ^ 1u, last)));
+    if op.parameter_0 == 3u {
+        let current = load_codes(pixel);
+        let up = load_codes(vec2<u32>(pixel.x, max(pixel.y, 2u) - 2u));
+        let down = load_codes(vec2<u32>(pixel.x, min(pixel.y + 2u, last)));
+        let vertical = (up + down + vec4<i32>(1)) / 2;
+        let difference = abs(current - vertical);
+        let motion = max(max(difference.r, difference.g), max(difference.b, difference.a));
+        if motion >= 32 {
+            return vertical;
+        }
+    }
     return (load_codes(pixel) + other + vec4<i32>(1)) / 2;
 }
 

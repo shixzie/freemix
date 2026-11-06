@@ -5952,6 +5952,7 @@ pub struct Layer {
 /// | `saturation` | `[amount]` | `-100..=100` |
 /// | `sharpen` | `[amount]` | `0..=1000` (per mille) |
 /// | `flip` | `[horizontal, vertical]` | each `0` or `1` |
+/// | `deinterlace` | `[mode]` | `0..=3`: blend, top, bottom, or motion-adaptive |
 ///
 /// A layer carries at most [`LayerEffect::MAX_EFFECTS_PER_LAYER`] effects,
 /// applied in list order after its key and mask and before its grade.
@@ -6012,7 +6013,7 @@ impl LayerEffect {
             "saturation" => &[(-100, 100)],
             "sharpen" => &[(0, 1000)],
             "flip" => &[(0, 1), (0, 1)],
-            "deinterlace" => &[(0, 2)],
+            "deinterlace" => &[(0, 3)],
             _ => return None,
         })
     }

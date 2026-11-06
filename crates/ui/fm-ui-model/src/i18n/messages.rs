@@ -2447,6 +2447,8 @@ messages! {
     DesignDeinterlaceTopHover => t("Show only the even lines, each doubled"),
     DesignDeinterlaceBottom => t("Bottom field"),
     DesignDeinterlaceBottomHover => t("Show only the odd lines, each doubled"),
+    DesignDeinterlaceMotion => t("Motion adaptive"),
+    DesignDeinterlaceMotionHover => t("Blend still areas and rebuild moving detail from the same field, keeping edges sharp without combing"),
     DesignMatteFeather => t("Feather"),
     DesignMatteFeatherHover => t("Soften the matte's edge over up to 64 pixels to each side; 0 keeps it hard, and an edge on the layer's own border stays hard"),
     DesignMatteAddPointHover => t("Add a point halfway along the shape's closing edge, at most 8 points"),

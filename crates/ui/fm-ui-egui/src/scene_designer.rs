@@ -3226,8 +3226,8 @@ fn icon_key(ui: &mut Ui, enabled: bool, icon: KeyIcon, label: &str) -> egui::Res
     )
 }
 
-/// The deinterlace effect's mode: blend the fields, or keep the top or
-/// bottom field.
+/// The deinterlace effect's mode: blend the fields, keep the top or bottom
+/// field, or rebuild moving detail from the same field.
 fn deinterlace_mode(
     ui: &mut Ui,
     l: Locale,
@@ -3248,6 +3248,11 @@ fn deinterlace_mode(
             2,
             Msg::DesignDeinterlaceBottom,
             Msg::DesignDeinterlaceBottomHover,
+        ),
+        (
+            3,
+            Msg::DesignDeinterlaceMotion,
+            Msg::DesignDeinterlaceMotionHover,
         ),
     ];
     let shown = modes

@@ -510,6 +510,7 @@ fn every_reference_effect_matches_the_cpu_reference() {
         ("deinterlace", vec![0]),
         ("deinterlace", vec![1]),
         ("deinterlace", vec![2]),
+        ("deinterlace", vec![3]),
     ] {
         let case = format!("{name} {parameters:?}");
         let layer = full_layer().with_effect(Effect::new(name, parameters));

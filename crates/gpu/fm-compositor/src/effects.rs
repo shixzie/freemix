@@ -85,11 +85,21 @@ pub enum ReferenceEffect {
     /// become `(a + b + 1) / 2` per channel, alpha included; a last unpaired
     /// line stays), `1` keeps the top field (every line shows the even line
     /// of its pair), and `2` the bottom field (every line shows the odd line
-    /// of its pair, the last even line itself when it has none).
+    /// of its pair, the last even line itself when it has none). `3` is
+    /// motion-adaptive: the same-field vertical average is
+    /// `(up + down + 1) / 2` (neighbours two rows away, clamped at the frame
+    /// edges); when any channel of the pixel differs from it by at least
+    /// [`MOTION_THRESHOLD`](Self::MOTION_THRESHOLD), the pixel takes that
+    /// intra-field average, otherwise it takes the inter-field mean used by
+    /// mode `0`.
     Deinterlace { mode: u8 },
 }
 
 impl ReferenceEffect {
+    /// Smallest per-channel difference from the same-field vertical average
+    /// that marks a pixel as moving for mode `3`.
+    pub const MOTION_THRESHOLD: u8 = 32;
+
     /// Returns the descriptor name this effect parses from.
     #[must_use]
     pub const fn name(&self) -> &'static str {
@@ -128,7 +138,7 @@ impl ReferenceEffect {
             DEINTERLACE_NAME => {
                 expect_parameter_count(name, parameters, 1)?;
                 Ok(ReferenceEffect::Deinterlace {
-                    mode: u8_parameter(name, 0, parameters[0], 0, 2)?,
+                    mode: u8_parameter(name, 0, parameters[0], 0, 3)?,
                 })
             }
             _ => Err(ReferenceEffectError::UnknownEffect {
@@ -260,6 +270,36 @@ pub fn apply_reference_effect(
             match mode {
                 1 => at(y & !1),
                 2 => at((y | 1).min(last)),
+                3 => {
+                    let other = at((y ^ 1).min(last))?;
+                    let up = at(y.saturating_sub(2))?;
+                    let down = at((y + 2).min(last))?;
+                    let mean = |a: u8, b: u8| {
+                        u8::try_from((u16::from(a) + u16::from(b)).div_ceil(2)).unwrap_or(u8::MAX)
+                    };
+                    let vertical = Rgba8::new(
+                        mean(up.r, down.r),
+                        mean(up.g, down.g),
+                        mean(up.b, down.b),
+                        mean(up.a, down.a),
+                    );
+                    let motion = [pixel.r, pixel.g, pixel.b, pixel.a]
+                        .into_iter()
+                        .zip([vertical.r, vertical.g, vertical.b, vertical.a])
+                        .map(|(value, predicted)| value.abs_diff(predicted))
+                        .max()
+                        .unwrap_or(0);
+                    if motion >= Self::MOTION_THRESHOLD {
+                        Ok(vertical)
+                    } else {
+                        Ok(Rgba8::new(
+                            mean(pixel.r, other.r),
+                            mean(pixel.g, other.g),
+                            mean(pixel.b, other.b),
+                            mean(pixel.a, other.a),
+                        ))
+                    }
+                }
                 _ => {
                     let other = at((y ^ 1).min(last))?;
                     let mean = |a: u8, b: u8| {

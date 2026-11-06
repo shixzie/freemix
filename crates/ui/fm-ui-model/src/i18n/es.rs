@@ -6538,6 +6538,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DesignDeinterlaceBottomHover,
         t("Muestra solo las líneas impares, cada una duplicada"),
     ),
+    (Msg::DesignDeinterlaceMotion, t("Adaptativo al movimiento")),
+    (
+        Msg::DesignDeinterlaceMotionHover,
+        t(
+            "Mezclar zonas quietas y reconstruir el detalle en movimiento desde el mismo campo, manteniendo bordes nítidos sin peine",
+        ),
+    ),
     (Msg::DesignMatteFeather, t("Difuminado")),
     (
         Msg::DesignMatteFeatherHover,

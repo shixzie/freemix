@@ -422,7 +422,10 @@ fn deinterlace_blends_or_keeps_one_field_exactly() {
     assert_eq!(pixels(&top), [line(10), line(10), line(40)]);
     let bottom = apply(&source, ReferenceEffect::Deinterlace { mode: 2 });
     assert_eq!(pixels(&bottom), [line(21), line(21), line(40)]);
-    for mode in [0, 1, 2] {
+    // Low motion falls back to the inter-field blend.
+    let motion = apply(&source, ReferenceEffect::Deinterlace { mode: 3 });
+    assert_eq!(pixels(&motion), pixels(&blended));
+    for mode in [0, 1, 2, 3] {
         assert_eq!(
             ReferenceEffect::from_descriptor(&Effect::new("deinterlace", vec![mode])),
             Ok(ReferenceEffect::Deinterlace {
@@ -430,8 +433,25 @@ fn deinterlace_blends_or_keeps_one_field_exactly() {
             })
         );
     }
-    assert!(ReferenceEffect::from_descriptor(&Effect::new("deinterlace", vec![3])).is_err());
+    assert!(ReferenceEffect::from_descriptor(&Effect::new("deinterlace", vec![4])).is_err());
     assert!(ReferenceEffect::from_descriptor(&Effect::new("deinterlace", vec![])).is_err());
+}
+
+#[test]
+fn motion_adaptive_deinterlace_rebuilds_moving_detail_from_one_field() {
+    let line = |value: u8| Rgba8::new(value, value + 1, value + 2, 255);
+    let source = frame(1, 5, &[line(10), line(21), line(200), line(221), line(10)]);
+    let output = apply(&source, ReferenceEffect::Deinterlace { mode: 3 });
+    assert_eq!(
+        pixels(&output),
+        [
+            Rgba8::new(105, 106, 107, 255),
+            Rgba8::new(116, 117, 118, 255),
+            Rgba8::new(10, 11, 12, 255),
+            Rgba8::new(16, 17, 18, 255),
+            Rgba8::new(105, 106, 107, 255),
+        ]
+    );
 }
 
 #[test]
