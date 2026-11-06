@@ -423,6 +423,10 @@ pub enum SessionEvent {
     FrozenStillResponse {
         response: fm_protocol::FrozenStillResponse,
     },
+    /// The daemon answered one alias-effect read (IN-024, Protocol 2.168).
+    AliasEffectsResponse {
+        response: fm_protocol::AliasEffectsResponse,
+    },
     /// The daemon answered a display inventory request (Protocol 2.42).
     /// The inventory is also in the replicated model.
     DisplayInventory {
@@ -580,6 +584,8 @@ pub struct TcpSession {
     pending_clock_requests: VecDeque<String>,
     /// The frozen-still request IDs awaiting an answer.
     pending_frozen_stills: VecDeque<String>,
+    /// The alias-effect request IDs awaiting an answer.
+    pending_alias_effects: VecDeque<String>,
     last_audio_meter_sequence: Option<u64>,
     latest_audio_meters: Option<AudioMetersMessage>,
     last_stream_status_sequence: Option<u64>,
@@ -740,6 +746,7 @@ impl TcpSession {
             pending_diagnostics: None,
             pending_clock_requests: VecDeque::new(),
             pending_frozen_stills: VecDeque::new(),
+            pending_alias_effects: VecDeque::new(),
             last_audio_meter_sequence: None,
             latest_audio_meters: None,
             last_stream_status_sequence: None,
@@ -1733,6 +1740,52 @@ impl TcpSession {
         result
     }
 
+    /// Sends one alias-effect read (IN-024, Protocol 2.168) and returns at
+    /// once; the answer arrives as [`SessionEvent::AliasEffectsResponse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected, the request ID is already
+    /// pending or invalid, or writing the request fails.
+    pub fn send_alias_effects_request(
+        &mut self,
+        request: fm_protocol::AliasEffectsRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        let request_id = request.request_id.clone();
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(TcpSessionError::Client(ClientError::InvalidConfig(
+                "alias effects request ID must be 1-128 ASCII graphic bytes",
+            )));
+        }
+        if self
+            .pending_alias_effects
+            .iter()
+            .any(|pending| pending == &request_id)
+        {
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        if request.protocol != CURRENT_PROTOCOL_VERSION {
+            return Err(TcpSessionError::Client(ClientError::InvalidConfig(
+                "alias effects protocol must be the current version",
+            )));
+        }
+        self.pending_alias_effects.push_back(request_id.clone());
+        let result = self
+            .send_wire_wait(&WireMessage::AliasEffectsRequest(request), None)
+            .and_then(|()| self.flush_wire_wait(None));
+        if result.is_err() {
+            self.pending_alias_effects
+                .retain(|pending| pending != &request_id);
+        }
+        result
+    }
+
     /// Sends one frozen-still export request (SW-016, Protocol 2.164) and
     /// returns at once; the answer arrives as
     /// [`SessionEvent::FrozenStillResponse`] from [`Self::receive`], or as a
@@ -1905,6 +1958,19 @@ impl TcpSession {
                             return Err(TcpSessionError::UnexpectedMessage);
                         }
                         self.pending_frozen_stills
+                            .retain(|pending| pending != &response.request_id);
+                    }
+                    WireMessage::AliasEffectsResponse(response) => {
+                        if response.protocol != CURRENT_PROTOCOL_VERSION
+                            || !self
+                                .pending_alias_effects
+                                .iter()
+                                .any(|pending| pending == &response.request_id)
+                        {
+                            self.transition_disconnect();
+                            return Err(TcpSessionError::UnexpectedMessage);
+                        }
+                        self.pending_alias_effects
                             .retain(|pending| pending != &response.request_id);
                     }
                     WireMessage::StreamStatus(status) => {
@@ -2095,6 +2161,20 @@ impl TcpSession {
                     .retain(|pending| pending != &response.request_id);
                 Ok(SessionEvent::FrozenStillResponse { response })
             }
+            WireMessage::AliasEffectsResponse(response) => {
+                if response.protocol != CURRENT_PROTOCOL_VERSION
+                    || !self
+                        .pending_alias_effects
+                        .iter()
+                        .any(|pending| pending == &response.request_id)
+                {
+                    self.transition_disconnect();
+                    return Err(TcpSessionError::UnexpectedMessage);
+                }
+                self.pending_alias_effects
+                    .retain(|pending| pending != &response.request_id);
+                Ok(SessionEvent::AliasEffectsResponse { response })
+            }
             WireMessage::MonitorFrame(frame) => {
                 let complete = self.validate_monitor_frame(&frame)?;
                 Ok(SessionEvent::MonitorFrame {
@@ -2206,11 +2286,9 @@ impl TcpSession {
             | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::ReplayStatusRequest(_)
             | WireMessage::AliasEffectsRequest(_)
-            | WireMessage::AliasEffectsResponse(_)
             | WireMessage::TitleRowSourceRequest(_)
             | WireMessage::TitleRowSourceResponse(_)
             | WireMessage::AliasEffectsRequest(_)
-            | WireMessage::AliasEffectsResponse(_)
             | WireMessage::FrozenStillRequest(_)
             | WireMessage::AudioPluginStatusRequest(_)
             | WireMessage::ReelStatusRequest(_)
