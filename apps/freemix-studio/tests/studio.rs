@@ -242,6 +242,22 @@ fn secondary_mix_intents_map_to_the_wire_commands() {
             duration_frames: 12,
         }
     );
+    assert_eq!(
+        studio_intent_payload(
+            StudioIntent::SecondaryMixFadeToBlack {
+                number,
+                active: true,
+                duration_frames: 12,
+            },
+            None,
+        )
+        .unwrap(),
+        CommandPayload::SecondaryMixFadeToBlack {
+            number,
+            active: true,
+            duration_frames: 12,
+        }
+    );
 }
 
 #[test]

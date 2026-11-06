@@ -8747,6 +8747,34 @@ fn remote_secondary_mix_cut_and_transition_send_live_commands() {
     transition.finish();
 }
 
+/// IN-023, Protocol 2.170: a mix fade-to-black is one live operation.
+#[test]
+fn remote_secondary_mix_fade_to_black_sends_the_live_command() {
+    let number = fm_protocol::WireMixNumber::new(2).unwrap();
+    let server = FakeRemoteServer::start_accept_only(
+        Role::Operator,
+        CommandPayload::SecondaryMixFadeToBlack {
+            number,
+            active: true,
+            duration_frames: 9,
+        },
+        "remote-secondary-mix-fade-to-black",
+    );
+    let output = invoke(&[
+        "remote-secondary-mix-fade-to-black",
+        &server.address(),
+        "2",
+        "black",
+        "9",
+        "--key",
+        "remote-secondary-mix-fade-to-black",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
 /// IN-023: the local CLI configures, lists, cuts, transitions, and clears a
 /// secondary mix.
 #[test]
@@ -8790,6 +8818,20 @@ fn local_secondary_mix_configuration_and_live_controls() {
     );
 
     assert_success(&invoke(&["secondary-mix-cut", context.project_path(), "2"]));
+    assert_success(&invoke(&[
+        "secondary-mix-fade-to-black",
+        context.project_path(),
+        "2",
+        "black",
+        "2",
+    ]));
+    assert_success(&invoke(&[
+        "secondary-mix-fade-to-black",
+        context.project_path(),
+        "2",
+        "live",
+        "2",
+    ]));
     assert_success(&invoke(&[
         "secondary-mix-transition",
         context.project_path(),
