@@ -243,6 +243,7 @@ impl EngineCommand {
             | Self::TitleOffAir { .. }
             | Self::SecondaryMixCut { .. }
             | Self::SecondaryMixTransition { .. }
+            | Self::SecondaryMixFadeToBlack { .. }
             | Self::PlaylistControl(_)
             | Self::PlaylistAdvance { .. }
             | Self::RealizePlaylistCue(_)
