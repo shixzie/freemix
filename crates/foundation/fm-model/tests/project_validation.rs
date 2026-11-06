@@ -2131,6 +2131,7 @@ fn layer_effects_persist_ordered_bounded_descriptors() {
         LayerEffect::new("levels", vec![0, 128]),
         LayerEffect::new("brightness_contrast", vec![-20, 35]),
         LayerEffect::new("sharpen", vec![1000]),
+        LayerEffect::new("deinterlace", vec![3]),
     ];
     project.add_scene(Scene {
         id: scene_id(99),
@@ -2147,6 +2148,7 @@ fn layer_effects_persist_ordered_bounded_descriptors() {
             LayerEffect::new("levels", vec![0, 128]),
             LayerEffect::new("brightness_contrast", vec![-20, 35]),
             LayerEffect::new("sharpen", vec![1000]),
+            LayerEffect::new("deinterlace", vec![3]),
         ]
     );
 }
@@ -2224,6 +2226,10 @@ fn layer_effects_are_bounded_reference_effects() {
             LayerEffect::new("flip", vec![0, 2]),
             LayerEffectError::ParameterOutOfRange { parameter: 1 },
         ),
+        (
+            LayerEffect::new("deinterlace", vec![4]),
+            LayerEffectError::ParameterOutOfRange { parameter: 0 },
+        ),
     ] {
         assert_eq!(effect.validate(), Err(error), "{effect:?}");
         assert_effects_rejected(vec![effect]);
@@ -2244,8 +2250,8 @@ fn layer_effects_are_bounded_reference_effects() {
         LayerEffect::new("saturation", vec![-100]),
         LayerEffect::new("sharpen", vec![1000]),
         LayerEffect::new("flip", vec![1, 1]),
+        LayerEffect::new("deinterlace", vec![3]),
         LayerEffect::new("levels", vec![0, 1]),
-        LayerEffect::new("saturation", vec![100]),
         LayerEffect::new("sharpen", vec![0]),
     ];
     assert_eq!(boundary.len(), LayerEffect::MAX_EFFECTS_PER_LAYER);
