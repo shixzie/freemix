@@ -4909,6 +4909,84 @@ mod tests {
     }
 
     #[test]
+    fn alias_effects_request_round_trips_through_the_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut peer = HeartbeatPeer::accept(&listener);
+            peer.handshake_request();
+            peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+                HandshakeOutcome::Snapshot {
+                    reason: SnapshotReason::NoCursor,
+                },
+            )));
+            peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+            let request = loop {
+                match peer.receive() {
+                    WireMessage::AliasEffectsRequest(request) => break request,
+                    WireMessage::Heartbeat(heartbeat) => {
+                        peer.send(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        ));
+                    }
+                    other => panic!("expected the alias-effects request, got {other:?}"),
+                }
+            };
+            assert_eq!(request.protocol, CURRENT_PROTOCOL_VERSION);
+            assert!(request.request_id.starts_with("studio-alias-effects-"));
+            peer.send(&WireMessage::AliasEffectsResponse(
+                fm_protocol::AliasEffectsResponse {
+                    protocol: CURRENT_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    input: request.input,
+                    effects: vec![fm_protocol::WireLayerEffect {
+                        name: "saturation".into(),
+                        parameters: vec![-50],
+                    }],
+                },
+            ));
+            peer.acknowledge_heartbeats_until_eof();
+        });
+        let project = ProjectId::new(NonZeroU128::new(1).unwrap());
+        let mut runtime = StudioRuntime::new(StudioConfig {
+            connection: ConnectionConfig::Existing(ExistingConfig {
+                address,
+                expected_project_id: project,
+            }),
+            client_id: "alias-effects-test".to_owned(),
+            desired_role: Role::Operator,
+            restart_policy: RestartPolicy {
+                maximum_restarts: 0,
+            },
+            osc_listen: None,
+            transport: crate::ControlTransport::Tcp,
+            ui: crate::UiPreferences::default(),
+        })
+        .unwrap();
+        runtime.connect(HEARTBEAT_TEST_TIMEOUT).unwrap();
+        let input = WireInputId::new(NonZeroU128::new(2).unwrap()).to_domain();
+        assert!(runtime.request_alias_effects(input));
+        let event = runtime
+            .receive_timeout(HEARTBEAT_TEST_TIMEOUT)
+            .unwrap()
+            .expect("the alias-effects answer arrives");
+        let SessionEvent::AliasEffectsResponse { response } = event else {
+            panic!("expected an alias-effects response, got {event:?}");
+        };
+        runtime.apply_alias_effects_response(&response);
+        let effects = runtime.alias_effects().get(&input).expect("read effects");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].name, "saturation");
+        assert_eq!(effects[0].parameters, vec![-50]);
+        drop(runtime);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn recovery_publication_preserves_terminal_uncertainties_and_deferred_fifo() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
