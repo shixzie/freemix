@@ -3190,8 +3190,10 @@ back through the sRGB output transform, so the still matches the Program
 picture; a simulated daemon renders the input's current simulated picture.
 Studio's input-bank menu offers Capture still on a frozen tile, sends the
 2.164 request through the session, and shows the returned asset URI (or the
-daemon's refusal) under the action. Remaining gaps: timestamps are still
-bare ticks rather than `fm-frame` timing types. `SW-016` remains planned.
+daemon's refusal) under the action. The reference freeze controller uses
+`fm-frame`'s normalized nanosecond types (`NormalizedTimestamp` source and
+output PTS, `NormalizedDuration` cadence) rather than bare caller ticks.
+`SW-016` is implemented end to end.
 
 Current implementation boundary for video delay (`IN-022`): `fm-video`
 provides a `VideoDelayLine` timed purely by media timestamps that presents the

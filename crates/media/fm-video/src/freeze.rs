@@ -1,7 +1,8 @@
 //! Deterministic per-input freeze/live-pause reference controller.
 //!
-//! Timestamps are integer ticks in one caller-chosen time base shared by the
-//! source and the output cadence. The controller holds at most two source
+//! Timestamps use `fm-frame`'s normalized nanosecond types
+//! ([`NormalizedTimestamp`] and [`NormalizedDuration`]), so the controller
+//! shares one time base with the media pipeline. The controller holds at most two source
 //! frames (the latched freeze frame and the newest live arrival), so memory is
 //! bounded regardless of how long an input stays frozen.
 //!
@@ -23,17 +24,19 @@
 
 use core::fmt;
 
+use fm_frame::{NormalizedDuration, NormalizedTimestamp};
+
 /// One source arrival: frame index, presentation timestamp, payload handle.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceFrame<H> {
     pub index: u64,
-    pub pts: i64,
+    pub pts: NormalizedTimestamp,
     pub payload: H,
 }
 
 impl<H> SourceFrame<H> {
     #[must_use]
-    pub const fn new(index: u64, pts: i64, payload: H) -> Self {
+    pub const fn new(index: u64, pts: NormalizedTimestamp, payload: H) -> Self {
         Self {
             index,
             pts,
@@ -54,9 +57,9 @@ pub enum OutputOrigin {
 /// One output-cadence frame.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutputFrame<H> {
-    pub pts: i64,
+    pub pts: NormalizedTimestamp,
     pub source_index: u64,
-    pub source_pts: i64,
+    pub source_pts: NormalizedTimestamp,
     pub payload: H,
     pub origin: OutputOrigin,
 }
@@ -79,16 +82,16 @@ pub enum FreezeState {
 /// Explicit freeze controller failures. Failed calls leave state unchanged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FreezeError {
-    NonPositiveFrameDuration {
-        duration: i64,
+    FrameDurationTooLong {
+        nanos: u64,
     },
     SourceIndexNotIncreasing {
         previous: u64,
         actual: u64,
     },
     SourcePtsNotIncreasing {
-        previous: i64,
-        actual: i64,
+        previous: NormalizedTimestamp,
+        actual: NormalizedTimestamp,
     },
     /// The requested boundary is at or before a frame already received.
     BoundaryAlreadyPassed {
@@ -109,19 +112,19 @@ pub enum FreezeError {
 impl fmt::Display for FreezeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NonPositiveFrameDuration { duration } => {
-                write!(
-                    formatter,
-                    "output frame duration {duration} must be positive"
-                )
-            }
+            Self::FrameDurationTooLong { nanos } => write!(
+                formatter,
+                "output frame duration {nanos} ns exceeds the controller's range"
+            ),
             Self::SourceIndexNotIncreasing { previous, actual } => write!(
                 formatter,
                 "source frame index {actual} does not follow {previous}"
             ),
             Self::SourcePtsNotIncreasing { previous, actual } => write!(
                 formatter,
-                "source PTS {actual} does not increase past {previous}"
+                "source PTS {} does not increase past {}",
+                actual.as_nanos(),
+                previous.as_nanos()
             ),
             Self::BoundaryAlreadyPassed {
                 requested,
@@ -166,18 +169,18 @@ pub struct FreezeController<H> {
 }
 
 impl<H: Clone> FreezeController<H> {
-    /// Creates a live controller emitting on a cadence of `frame_duration`
-    /// ticks.
+    /// Creates a live controller emitting on a cadence of `frame_duration`.
     ///
     /// # Errors
     ///
-    /// Returns [`FreezeError::NonPositiveFrameDuration`] for `frame_duration <= 0`.
-    pub const fn new(frame_duration: i64) -> Result<Self, FreezeError> {
-        if frame_duration <= 0 {
-            return Err(FreezeError::NonPositiveFrameDuration {
-                duration: frame_duration,
+    /// Returns [`FreezeError::FrameDurationTooLong`] when the duration does
+    /// not fit the controller's signed nanosecond range.
+    pub const fn new(frame_duration: NormalizedDuration) -> Result<Self, FreezeError> {
+        let Ok(frame_duration) = i64::try_from(frame_duration.as_nanos()) else {
+            return Err(FreezeError::FrameDurationTooLong {
+                nanos: frame_duration.as_nanos(),
             });
-        }
+        };
         Ok(Self {
             frame_duration,
             state: FreezeState::Live,
@@ -197,13 +200,16 @@ impl<H: Clone> FreezeController<H> {
     }
 
     #[must_use]
-    pub const fn frame_duration(&self) -> i64 {
-        self.frame_duration
+    pub fn frame_duration(&self) -> NormalizedDuration {
+        NormalizedDuration::from_nanos(
+            u64::try_from(self.frame_duration).expect("a controller duration is positive"),
+        )
+        .expect("a controller duration is nonzero")
     }
 
     #[must_use]
-    pub const fn last_output_pts(&self) -> Option<i64> {
-        self.last_output_pts
+    pub fn last_output_pts(&self) -> Option<NormalizedTimestamp> {
+        self.last_output_pts.map(NormalizedTimestamp::from_nanos)
     }
 
     /// Source frames replaced before they were emitted (including every
@@ -286,16 +292,17 @@ impl<H: Clone> FreezeController<H> {
                     actual: frame.index,
                 });
             }
-            if frame.pts <= previous_pts {
+            if frame.pts.as_nanos() <= previous_pts {
                 return Err(FreezeError::SourcePtsNotIncreasing {
-                    previous: previous_pts,
+                    previous: NormalizedTimestamp::from_nanos(previous_pts),
                     actual: frame.pts,
                 });
             }
         }
-        self.last_source = Some((frame.index, frame.pts));
+        let source_pts = frame.pts.as_nanos();
+        self.last_source = Some((frame.index, source_pts));
         if self.origin.is_none() {
-            self.origin = Some(frame.pts);
+            self.origin = Some(source_pts);
         }
         if let FreezeState::FreezePending { at_index } = self.state
             && frame.index >= at_index
@@ -337,7 +344,7 @@ impl<H: Clone> FreezeController<H> {
                     _ => self.live_output_pts(latched.pts)?,
                 };
                 let output = OutputFrame {
-                    pts,
+                    pts: NormalizedTimestamp::from_nanos(pts),
                     source_index: latched.index,
                     source_pts: latched.pts,
                     payload: latched.payload.clone(),
@@ -357,7 +364,7 @@ impl<H: Clone> FreezeController<H> {
                 };
                 self.last_output_pts = Some(pts);
                 Ok(Some(OutputFrame {
-                    pts,
+                    pts: NormalizedTimestamp::from_nanos(pts),
                     source_index: live.index,
                     source_pts: live.pts,
                     payload: live.payload,
@@ -372,17 +379,21 @@ impl<H: Clone> FreezeController<H> {
     /// # Errors
     ///
     /// Returns [`FreezeError::TimestampOverflow`] on arithmetic overflow.
-    pub fn live_output_pts(&self, source_pts: i64) -> Result<i64, FreezeError> {
-        let mapped = self.map_to_cadence(source_pts)?;
-        match self.last_output_pts {
+    pub fn live_output_pts(
+        &self,
+        source_pts: NormalizedTimestamp,
+    ) -> Result<NormalizedTimestamp, FreezeError> {
+        let mapped = self.map_to_cadence(source_pts.as_nanos())?;
+        let pts = match self.last_output_pts {
             Some(last) => {
                 let floor = last
                     .checked_add(self.frame_duration)
                     .ok_or(FreezeError::TimestampOverflow)?;
-                Ok(mapped.max(floor))
+                mapped.max(floor)
             }
-            None => Ok(mapped),
-        }
+            None => mapped,
+        };
+        Ok(NormalizedTimestamp::from_nanos(pts))
     }
 
     /// Rounds `source_pts` up onto the output grid anchored at the first

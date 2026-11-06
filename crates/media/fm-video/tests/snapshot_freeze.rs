@@ -1,5 +1,6 @@
 //! SW-016 reference slice: lossless still snapshots and freeze/live-pause.
 
+use fm_frame::{NormalizedDuration, NormalizedTimestamp};
 use fm_video::{
     BarsColorimetry, BarsPattern, FreezeController, FreezeError, FreezeState, ImageFrame,
     MAX_PNG_RAW_BYTES, OutputFrame, OutputOrigin, PNG_SIGNATURE, PngEncodeError, Rgba8,
@@ -285,12 +286,20 @@ fn png_encoder_reports_explicit_errors() {
 
 const D: i64 = 1000;
 
+fn duration() -> NormalizedDuration {
+    NormalizedDuration::from_nanos(u64::try_from(D).unwrap()).unwrap()
+}
+
+fn ts(nanos: i64) -> NormalizedTimestamp {
+    NormalizedTimestamp::from_nanos(nanos)
+}
+
 fn src(index: u64, pts: i64) -> SourceFrame<u64> {
-    SourceFrame::new(index, pts, index)
+    SourceFrame::new(index, ts(pts), index)
 }
 
 fn summary(frame: &OutputFrame<u64>) -> (i64, u64, OutputOrigin) {
-    (frame.pts, frame.payload, frame.origin)
+    (frame.pts.as_nanos(), frame.payload, frame.origin)
 }
 
 /// Pushes one source frame then emits one output slot.
@@ -306,7 +315,7 @@ fn step(
 #[test]
 fn freeze_latches_exact_boundary_repeats_and_resumes_without_regression() {
     use OutputOrigin::{Frozen, Live};
-    let mut controller = FreezeController::new(D).unwrap();
+    let mut controller = FreezeController::new(duration()).unwrap();
     assert_eq!(step(&mut controller, 0, 5_000), Some((5_000, 0, Live)));
     assert_eq!(step(&mut controller, 1, 6_000), Some((6_000, 1, Live)));
 
@@ -351,7 +360,7 @@ fn freeze_latches_exact_boundary_repeats_and_resumes_without_regression() {
 
 #[test]
 fn freeze_latches_first_frame_after_a_skipped_boundary() {
-    let mut controller = FreezeController::new(D).unwrap();
+    let mut controller = FreezeController::new(duration()).unwrap();
     step(&mut controller, 10, 0);
     controller.request_freeze(12).unwrap();
     // Index 12 never arrives; 13 is the first frame at or after the request.
@@ -367,16 +376,21 @@ fn freeze_latches_first_frame_after_a_skipped_boundary() {
 
 #[test]
 fn output_pts_rounds_onto_cadence_grid_and_is_strictly_increasing() {
-    let mut controller = FreezeController::new(D).unwrap();
+    let mut controller = FreezeController::new(duration()).unwrap();
     // Origin is the first source PTS (250); off-grid PTS round up.
     assert_eq!(step(&mut controller, 0, 250).unwrap().0, 250);
     assert_eq!(step(&mut controller, 1, 1_100).unwrap().0, 1_250);
     assert_eq!(step(&mut controller, 2, 1_300).unwrap().0, 2_250);
     assert_eq!(step(&mut controller, 3, 3_250).unwrap().0, 3_250);
-    assert_eq!(controller.live_output_pts(-750), Ok(4_250));
+    assert_eq!(
+        controller
+            .live_output_pts(ts(-750))
+            .map(NormalizedTimestamp::as_nanos),
+        Ok(4_250)
+    );
 
     // Mixed freeze/resume cycles never regress.
-    let mut last = controller.last_output_pts().unwrap();
+    let mut last = controller.last_output_pts().unwrap().as_nanos();
     let mut pts = 3_250;
     for index in 4..200_u64 {
         pts += if index % 7 == 0 { 2_500 } else { 400 };
@@ -388,16 +402,17 @@ fn output_pts_rounds_onto_cadence_grid_and_is_strictly_increasing() {
             controller.resume().unwrap();
         }
         if let Some(out) = controller.emit().unwrap() {
-            assert!(out.pts >= last + D, "{} after {last}", out.pts);
-            assert_eq!((out.pts - 250).rem_euclid(D), 0, "on grid");
-            last = out.pts;
+            let pts = out.pts.as_nanos();
+            assert!(pts >= last + D, "{pts} after {last}");
+            assert_eq!((pts - 250).rem_euclid(D), 0, "on grid");
+            last = pts;
         }
     }
 }
 
 #[test]
 fn live_emit_without_new_frame_returns_none_and_resume_waits_for_live() {
-    let mut controller = FreezeController::new(D).unwrap();
+    let mut controller = FreezeController::new(duration()).unwrap();
     assert_eq!(controller.emit(), Ok(None));
     step(&mut controller, 0, 0);
     assert_eq!(controller.emit(), Ok(None));
@@ -415,10 +430,10 @@ fn live_emit_without_new_frame_returns_none_and_resume_waits_for_live() {
 #[test]
 fn freeze_controller_reports_explicit_errors_without_state_change() {
     assert_eq!(
-        FreezeController::<u64>::new(0).err(),
-        Some(FreezeError::NonPositiveFrameDuration { duration: 0 })
+        FreezeController::<u64>::new(NormalizedDuration::from_nanos(u64::MAX).unwrap()).err(),
+        Some(FreezeError::FrameDurationTooLong { nanos: u64::MAX })
     );
-    let mut controller = FreezeController::new(D).unwrap();
+    let mut controller = FreezeController::new(duration()).unwrap();
     assert_eq!(controller.resume(), Err(FreezeError::NotFrozen));
     assert_eq!(
         controller.cancel_freeze(),
@@ -461,13 +476,16 @@ fn freeze_controller_reports_explicit_errors_without_state_change() {
         Err(FreezeError::AlreadyFrozen { latched_index: 6 })
     );
 
-    let mut overflow = FreezeController::new(i64::MAX).unwrap();
+    let mut overflow = FreezeController::new(
+        NormalizedDuration::from_nanos(u64::try_from(i64::MAX).unwrap()).unwrap(),
+    )
+    .unwrap();
     overflow.push_source(src(0, i64::MAX - 1)).unwrap();
     overflow.emit().unwrap();
     overflow.request_freeze(1).unwrap();
     overflow.push_source(src(1, i64::MAX)).unwrap();
     assert_eq!(overflow.emit(), Err(FreezeError::TimestampOverflow));
-    assert_eq!(overflow.last_output_pts(), Some(i64::MAX - 1));
+    assert_eq!(overflow.last_output_pts(), Some(ts(i64::MAX - 1)));
 }
 
 #[test]
@@ -476,7 +494,7 @@ fn frozen_snapshot_of_latched_payload_is_lossless() {
     let frames: Vec<std::sync::Arc<ImageFrame>> = (0..4_u8)
         .map(|i| std::sync::Arc::new(solid_color(3, 2, Rgba8::new(i, 2 * i, 3 * i, 255)).unwrap()))
         .collect();
-    let mut controller = FreezeController::new(D).unwrap();
+    let mut controller = FreezeController::new(duration()).unwrap();
     controller.request_freeze(2).unwrap();
     let mut last = None;
     for (index, frame) in frames.iter().enumerate() {
