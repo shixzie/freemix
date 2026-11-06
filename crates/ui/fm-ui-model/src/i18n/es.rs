@@ -1886,6 +1886,65 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Elija hasta dos pantallas que muestren Programa, Vista previa o una salida a pantalla completa, con modo, escalado y HDR",
         ),
     ),
+    (MenuSecondaryMixes, t("Mezclas secundarias…")),
+    (
+        MenuSecondaryMixesHover,
+        t(
+            "Configure hasta quince mezclas junto a Principal, con sus propias fuentes de Programa y Previo, cortes y transiciones temporizadas",
+        ),
+    ),
+    (SecondaryMixesTitle, t("Mezclas secundarias")),
+    (
+        SecondaryMixesNone,
+        t("No hay mezclas secundarias configuradas."),
+    ),
+    (SecondaryMixForm, t("Añadir o editar una mezcla")),
+    (SecondaryMixNumber, t("Número")),
+    (
+        SecondaryMixNumberHover,
+        t("Número de mezcla de 2 a 16; Principal es la mezcla propia del conmutador"),
+    ),
+    (SecondaryMixName, t("Nombre")),
+    (
+        SecondaryMixNameHover,
+        t("El nombre visible de la mezcla, hasta 128 bytes"),
+    ),
+    (SecondaryMixMode, t("Modo")),
+    (SecondaryMixPreviewProgram, t("Previo y Programa")),
+    (SecondaryMixOutputOnly, t("Solo salida")),
+    (SecondaryMixProgram, t("Programa")),
+    (SecondaryMixPreview, t("Previo")),
+    (
+        SecondaryMixSourceHover,
+        t(
+            "Una fuente es input:<id> o mix:<número>; una mezcla puede leer una entrada u otra mezcla",
+        ),
+    ),
+    (SecondaryMixSave, t("Guardar mezcla")),
+    (
+        SecondaryMixSaveHover,
+        t("Guardar esta mezcla como una edición de proyecto bloqueada y deshacible"),
+    ),
+    (SecondaryMixEdit, t("Editar")),
+    (SecondaryMixRemove, t("Quitar")),
+    (
+        SecondaryMixRemoveHover,
+        t("Quitar esta mezcla; primero deben cambiarse las fuentes que la leen"),
+    ),
+    (SecondaryMixCut, t("Corte")),
+    (
+        SecondaryMixCutHover,
+        t("Cortar esta mezcla de Programa a Previo ahora"),
+    ),
+    (SecondaryMixFade, t("Fundido")),
+    (
+        SecondaryMixFadeHover,
+        t("Fundir esta mezcla hacia Previo durante la duración de transición de la consola"),
+    ),
+    (
+        SecondaryMixEditLocked,
+        t("Guardar una mezcla requiere permiso de edición del proyecto."),
+    ),
     (Msg::DisplayOutputsTitle, t("Salidas a pantalla completa")),
     (
         Msg::DisplayOutputsIntro,

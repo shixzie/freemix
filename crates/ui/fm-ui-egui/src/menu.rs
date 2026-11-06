@@ -1397,6 +1397,14 @@ impl StudioShell {
             self.open_display_outputs(intents);
             ui.close();
         }
+        if ui
+            .button(l.text(Msg::MenuSecondaryMixes))
+            .on_hover_text(l.text(Msg::MenuSecondaryMixesHover))
+            .clicked()
+        {
+            self.open_secondary_mixes(state, intents);
+            ui.close();
+        }
         if item(
             ui,
             true,

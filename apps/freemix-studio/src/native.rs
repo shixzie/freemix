@@ -3457,6 +3457,21 @@ fn intent_payload(
                 navigation,
             }
         }
+        StudioIntent::SetSecondaryMix { config } => CommandPayload::SetSecondaryMix {
+            number: config.number,
+            config,
+        },
+        StudioIntent::ClearSecondaryMix { number } => CommandPayload::ClearSecondaryMix { number },
+        StudioIntent::SecondaryMixCut { number } => CommandPayload::SecondaryMixCut { number },
+        StudioIntent::SecondaryMixTransition {
+            number,
+            kind,
+            duration_frames,
+        } => CommandPayload::SecondaryMixTransition {
+            number,
+            kind,
+            duration_frames,
+        },
         StudioIntent::SetDisplayOutput { slot, config } => {
             CommandPayload::SetDisplayOutput { slot, config }
         }

@@ -85,6 +85,7 @@ mod replay_ui;
 mod scene_designer;
 mod screen_capture_ui;
 mod scripts;
+mod secondary_mixes;
 mod selection;
 mod shortcut_keys;
 mod source_sync_ui;
@@ -269,6 +270,22 @@ pub enum StudioIntent {
     /// Chooses the Fade-to-Black curve (SW-004, Protocol 2.48).
     SetFadeToBlackCurve {
         curve: fm_protocol::FadeToBlackCurve,
+    },
+    /// Configures or replaces one secondary mix (IN-023, Protocol 2.158).
+    /// A padlocked, undoable project edit.
+    SetSecondaryMix {
+        config: Box<fm_protocol::WireSecondaryMixConfig>,
+    },
+    /// Removes one secondary mix (IN-023). A project edit.
+    ClearSecondaryMix { number: fm_protocol::WireMixNumber },
+    /// Cuts one secondary mix from Program to Preview (IN-023, Protocol
+    /// 2.159). A live operation.
+    SecondaryMixCut { number: fm_protocol::WireMixNumber },
+    /// Starts a timed transition of one secondary mix (IN-023).
+    SecondaryMixTransition {
+        number: fm_protocol::WireMixNumber,
+        kind: fm_protocol::AutoTransitionKind,
+        duration_frames: u32,
     },
     /// Saves one fullscreen display-output slot (OR-011, Protocol 2.42).
     SetDisplayOutput {
@@ -2364,6 +2381,8 @@ pub struct StudioShell {
     designer: scene_designer::DesignerWindow,
     /// The Fullscreen outputs dialog and its slot drafts (OR-011).
     display_outputs: display_outputs::DisplayOutputsDialog,
+    /// The Secondary mixes dialog and its unsaved form (IN-023).
+    secondary_mixes: secondary_mixes::SecondaryMixesDialog,
     /// The `LiveLAN` viewers window and the PIN being typed (OR-017).
     live_lan: live_lan::LiveLanWindow,
     web_access: web_access::WebAccessWindow,
@@ -3011,6 +3030,7 @@ impl StudioShell {
             self.strip_fx.open(target);
         }
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
+        self.draw_secondary_mixes_window(ui.ctx(), state, &mut intents);
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_web_access_window(ui.ctx(), state, &mut intents);
         self.draw_health_alerts_window(ui.ctx(), state, &mut intents);
@@ -3185,6 +3205,7 @@ impl Default for StudioShell {
             animation: studio_animation::AnimationWindow::default(),
             designer: scene_designer::DesignerWindow::default(),
             display_outputs: display_outputs::DisplayOutputsDialog::default(),
+            secondary_mixes: secondary_mixes::SecondaryMixesDialog::default(),
             live_lan: live_lan::LiveLanWindow::default(),
             web_access: web_access::WebAccessWindow::default(),
             health_alerts: health_alerts::HealthAlertsWindow::default(),
