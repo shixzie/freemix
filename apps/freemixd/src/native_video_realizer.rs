@@ -72,15 +72,17 @@ impl FeedCache {
     /// exists.
     fn load(&self, runtime: &NativeMediaRuntime, feed: fm_model::MixFeed) -> Option<NativeTexture> {
         let bytes = std::fs::read(self.path(feed)).ok()?;
-        let timing = retained_frame_timing(crate::native_clock_domain()).ok()?;
-        let decoded = fm_codec_image::decode_still(
-            &bytes,
-            timing,
-            fm_codec_image::StillDecodeLimits::default(),
-        )
-        .ok()?;
-        let frame = runtime.upload_still_blocking(&decoded.frame).ok()?;
+        let frame = Self::decode(&bytes)?;
+        let frame = runtime.upload_still_blocking(&frame).ok()?;
         Some(frame.into_texture())
+    }
+
+    /// Decodes one cached PNG into the CPU picture the normalizer uploads.
+    fn decode(bytes: &[u8]) -> Option<CpuVideoFrame> {
+        let timing = retained_frame_timing(crate::native_clock_domain()).ok()?;
+        fm_codec_image::decode_still(bytes, timing, fm_codec_image::StillDecodeLimits::default())
+            .ok()
+            .map(|decoded| decoded.frame)
     }
 
     /// Rewrites one feed picture after the first commit and then at most once
@@ -998,5 +1000,33 @@ impl VideoRealizer {
                 VideoCommand::Shutdown => break,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feed_cache_paths_and_png_decode_round_trip() {
+        let cache = FeedCache::new(PathBuf::from("/tmp/feeds"));
+        assert_eq!(
+            cache.path(fm_model::MixFeed::Program),
+            PathBuf::from("/tmp/feeds/program.png")
+        );
+        assert_eq!(
+            cache.path(fm_model::MixFeed::Preview),
+            PathBuf::from("/tmp/feeds/preview.png")
+        );
+
+        let frame = fm_video::solid_color(4, 2, fm_video::Rgba8::new(10, 20, 30, 255)).unwrap();
+        let png = fm_video::encode_png_rgba8_srgb_compressed(&frame).unwrap();
+        let decoded = FeedCache::decode(&png).expect("a cached PNG decodes");
+        assert_eq!(decoded.payload().dimensions().width(), 4);
+        assert_eq!(decoded.payload().dimensions().height(), 2);
+        assert_eq!(
+            decoded.payload().plane(0).unwrap().bytes(),
+            &[10, 20, 30, 255].repeat(8)
+        );
     }
 }
