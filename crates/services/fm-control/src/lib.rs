@@ -3809,6 +3809,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::StopScript { .. }
         | CommandPayload::SecondaryMixCut { .. }
         | CommandPayload::SecondaryMixTransition { .. }
+        | CommandPayload::SecondaryMixFadeToBlack { .. }
         | CommandPayload::SetInputFreeze { .. }
         // A fire needs `transition` like a cue GO or a script run, plus the
         // class of every action it performs (see `action_authority`).
@@ -3938,7 +3939,8 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetSecondaryMix { .. }
         | CommandPayload::ClearSecondaryMix { .. }
         | CommandPayload::SecondaryMixCut { .. }
-        | CommandPayload::SecondaryMixTransition { .. }) => {
+        | CommandPayload::SecondaryMixTransition { .. }
+        | CommandPayload::SecondaryMixFadeToBlack { .. }) => {
             secondary_mix::engine_command(payload).expect("a secondary-mix payload")
         }
         payload @ CommandPayload::SetInputVideoDelay { .. } => {
