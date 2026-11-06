@@ -409,7 +409,7 @@ messages! {
     ViewLayouts => t("Layouts"),
     ViewLayoutsHover => t("Switch to a built-in or saved panel arrangement"),
 
-    ViewSafeAreas => t("Safe areas"),
+    ViewSafeAreas => t("Safe-area guides"),
     ViewSafeAreasHover => t("Draw operator-only action, title, and aspect-ratio guides over Program and Preview; outputs never show them"),
     ViewSafeAction => t("Action safe (93%)"),
     ViewSafeActionHover => t("Draw the 93% action-safe rectangle over the monitor"),

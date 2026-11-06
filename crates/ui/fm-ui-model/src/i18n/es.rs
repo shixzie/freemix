@@ -829,7 +829,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ViewLayoutsHover,
         t("Cambia a una disposición de paneles incorporada o guardada"),
     ),
-    (Msg::ViewSafeAreas, t("Zonas seguras")),
+    (Msg::ViewSafeAreas, t("Guías de zonas seguras")),
     (
         Msg::ViewSafeAreasHover,
         t(
