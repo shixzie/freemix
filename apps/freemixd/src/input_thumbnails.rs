@@ -1565,6 +1565,8 @@ mod tests {
                 target: input_id(1),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         ));
         let work = work(project, 1);
@@ -1609,6 +1611,8 @@ mod tests {
                 target: input_id(1),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         ));
         project.add_scene(Scene {

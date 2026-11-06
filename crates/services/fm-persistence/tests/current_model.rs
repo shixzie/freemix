@@ -1936,6 +1936,8 @@ fn virtual_input_project() -> Project {
                 target: input_id(1),
                 crop: Some(CropRect::new(10, 20, 640, 360)),
                 effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
+                opacity: u8::MAX,
+                mask: None,
             },
         ),
         (
@@ -1945,6 +1947,8 @@ fn virtual_input_project() -> Project {
                 target: input_id(3),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         ),
         (5, "Program feed", InputKind::MixFeed(MixFeed::Program)),
@@ -1993,6 +1997,8 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
             target: input_id(1),
             crop: Some(CropRect::new(10, 20, 640, 360)),
             effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
+            opacity: u8::MAX,
+            mask: None,
         }
     );
     assert_eq!(

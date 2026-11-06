@@ -12974,6 +12974,8 @@ mod tests {
                 target: leaf,
                 crop: Some(fm_model::CropRect::new(0, 0, 2, 2)),
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
             required_capabilities: Vec::new(),
         });
@@ -12996,6 +12998,8 @@ mod tests {
                 target: scene_input,
                 crop: Some(fm_model::CropRect::new(0, 0, 2, 2)),
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
             required_capabilities: Vec::new(),
         });
@@ -13068,6 +13072,8 @@ mod tests {
                     target: leaf,
                     crop: None,
                     effects,
+                    opacity: u8::MAX,
+                    mask: None,
                 },
                 required_capabilities: Vec::new(),
             });
@@ -13235,6 +13241,8 @@ mod tests {
                 target: input(1),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
             required_capabilities: Vec::new(),
         });
@@ -13300,6 +13308,8 @@ mod tests {
                 target: input(1),
                 crop: Some(fm_model::CropRect::new(0, 0, 2, 1)),
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
             required_capabilities: Vec::new(),
         });
@@ -13322,6 +13332,8 @@ mod tests {
                 target: input(2),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
             required_capabilities: Vec::new(),
         });
@@ -13332,6 +13344,8 @@ mod tests {
                 target: input(1),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
             required_capabilities: Vec::new(),
         });

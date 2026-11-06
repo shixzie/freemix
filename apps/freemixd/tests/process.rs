@@ -6728,6 +6728,8 @@ fn a_live_layer_drawing_an_alias_of_its_own_scene_is_a_refused_cycle() {
                 target: domain_input(4),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
             required_capabilities: Vec::new(),
         });

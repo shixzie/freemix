@@ -2340,6 +2340,8 @@ fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
                 target: input_id(97),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         ),
     ] {
@@ -3574,6 +3576,8 @@ fn source_replacement_refuses_a_key_input_that_would_render_a_scene() {
         target: input_id(target),
         crop: None,
         effects: Vec::new(),
+        opacity: u8::MAX,
+        mask: None,
     };
     let mut project = Project::new(project_id(91), "Key source", settings());
     for (id, name, kind) in [

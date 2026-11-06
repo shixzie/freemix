@@ -2985,6 +2985,8 @@ fn live_input_catalogue_changes_sync_the_project_and_refuse_alias_targets() {
             target: test_input_id(3),
             crop: None,
             effects: Vec::new(),
+            opacity: u8::MAX,
+            mask: None,
         },
         required_capabilities: Vec::new(),
     });
@@ -3135,6 +3137,8 @@ fn live_input_catalogue_changes_sync_the_project_and_refuse_alias_targets() {
             target: test_input_id(3),
             crop: None,
             effects: vec![fm_model::LayerEffect::new("saturation", vec![-50])],
+            opacity: u8::MAX,
+            mask: None,
         }
     );
 

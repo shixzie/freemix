@@ -73,6 +73,8 @@ fn alias_with_effects(target: u128, effects: Vec<LayerEffect>) -> InputKind {
         target: input_id(target),
         crop: None,
         effects,
+        opacity: u8::MAX,
+        mask: None,
     }
 }
 

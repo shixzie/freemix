@@ -111,6 +111,8 @@ fn feed_project() -> Project {
             target: input_id(PROGRAM_FEED),
             crop: None,
             effects: Vec::new(),
+            opacity: u8::MAX,
+            mask: None,
         },
     ));
     project.add_scene(Scene {

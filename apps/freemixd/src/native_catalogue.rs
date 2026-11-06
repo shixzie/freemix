@@ -1029,6 +1029,8 @@ mod tests {
                 target: id(1),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         ] {
             let candidate = project(&[(1, generator(SimulatedAudio::Silence)), (2, added.clone())]);
