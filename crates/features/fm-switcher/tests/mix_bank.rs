@@ -1,10 +1,10 @@
 use std::num::NonZeroU128;
 
 use fm_switcher::{
-    MAX_MIX_BANK_INPUTS, MAX_MIX_TRANSITION_DURATION_FRAMES, MAX_PENDING_MIX_EFFECTS,
-    MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MissingMediaFallback, MixBank, MixBankCommand,
-    MixBankError, MixBankEvent, MixConfig, MixEffect, MixId, MixLayer, MixMode, MixSet, MixSource,
-    MixStingerAction, OverlayChannelId, StingerSlotId, TransitionKind,
+    FadeToBlackCurve, FadeToBlackTarget, MAX_MIX_BANK_INPUTS, MAX_MIX_TRANSITION_DURATION_FRAMES,
+    MAX_PENDING_MIX_EFFECTS, MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MissingMediaFallback, MixBank,
+    MixBankCommand, MixBankError, MixBankEvent, MixConfig, MixEffect, MixId, MixLayer, MixMode,
+    MixSet, MixSource, MixStingerAction, OverlayChannelId, StingerSlotId, TransitionKind,
 };
 use fm_types::InputId;
 
