@@ -3167,7 +3167,7 @@ fn live_input_catalogue_changes_sync_the_project_and_refuse_alias_targets() {
             .collect::<Vec<_>>(),
         [1, 2, 3, 5].map(test_input_id)
     );
-    assert_eq!(saver.0.get(), 2);
+    assert_eq!(saver.0.get(), 3);
 }
 
 #[cfg(feature = "native-media")]
