@@ -92,6 +92,33 @@ fn alias_tokens_are_canonical() {
 }
 
 #[test]
+fn alias_opacity_and_mask_round_trip() {
+    let message = command(LiveInputSource::Alias {
+        target: input(1),
+        crop: Some(WireLayerCrop {
+            x: 10,
+            y: 20,
+            width: 640,
+            height: 360,
+        }),
+        effects: Vec::new(),
+        opacity: 128,
+        mask: Some(fm_protocol::WireLayerMask {
+            x: 10,
+            y: 10,
+            width: 320,
+            height: 180,
+            invert: true,
+        }),
+    });
+    let line = encode_line(&message).unwrap();
+    assert!(line.contains("opacity=128"), "{line}");
+    assert!(line.contains("mask_x=10"), "{line}");
+    assert!(line.contains("mask_invert=1"), "{line}");
+    assert_eq!(decode_line(&line).unwrap(), message);
+}
+
+#[test]
 fn an_alias_crop_past_the_source_bound_is_refused() {
     let line = encode_line(&command(LiveInputSource::Alias {
         target: input(1),

@@ -258,6 +258,42 @@ fn alias_effects_are_validated() {
 }
 
 #[test]
+fn alias_masks_must_fit_the_cropped_picture() {
+    let mut project = Project::new(ProjectId::new(NonZeroU128::MIN), "Show", settings());
+    project.add_input(input(1, "Camera", bars()));
+    project.add_input(input(
+        2,
+        "Masked camera",
+        InputKind::Alias {
+            target: input_id(1),
+            crop: Some(CropRect::new(100, 100, 640, 360)),
+            effects: Vec::new(),
+            opacity: 200,
+            mask: Some(crate::RectMask::new(10, 10, 640, 360)),
+        },
+    ));
+    assert!(project.validate().is_ok(), "{:?}", project.validate().err());
+
+    let mut outside = project.clone();
+    outside
+        .replace_input_source(
+            input_id(2),
+            InputKind::Alias {
+                target: input_id(1),
+                crop: Some(CropRect::new(100, 100, 640, 360)),
+                effects: Vec::new(),
+                opacity: 200,
+                mask: Some(crate::RectMask::new(10, 10, 700, 360)),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(errors(&outside).iter().any(|error| {
+        error.field == "kind.alias.mask" && error.kind == ValidationErrorKind::OutOfRange
+    }));
+}
+
+#[test]
 fn validation_rejects_missing_self_and_cyclic_alias_targets() {
     let mut missing = aliased_project();
     missing.add_input(input(4, "Dangling", alias(99, None)));
