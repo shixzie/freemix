@@ -1760,6 +1760,10 @@ pub(crate) fn command_base_ticks(
         | CommandPayload::SecondaryMixCut { .. }
         | CommandPayload::SecondaryMixTransition { .. }
         | CommandPayload::SecondaryMixFadeToBlack { .. }
+        | CommandPayload::SecondaryMixStartTBar { .. }
+        | CommandPayload::SecondaryMixSetTBarPosition { .. }
+        | CommandPayload::SecondaryMixCommitTBar { .. }
+        | CommandPayload::SecondaryMixCancelTBar { .. }
         | CommandPayload::SetInputVideoDelay { .. }
         | CommandPayload::SetAliasEffects { .. }
         | CommandPayload::SetInputFreeze { .. }
