@@ -70,6 +70,8 @@ fn add_alias(project: &mut Project, value: u128, target: u128, crop: Option<fm_m
             target: input(target),
             crop,
             effects: Vec::new(),
+            opacity: u8::MAX,
+            mask: None,
         },
         required_capabilities: Vec::new(),
     });
