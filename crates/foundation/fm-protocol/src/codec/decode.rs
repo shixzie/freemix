@@ -982,6 +982,11 @@ fn decode_command_payload(
             kind: super::transition::decode_auto_transition_kind(fields.required("kind")?, "kind")?,
             duration_frames: fields.parse_required("duration_frames")?,
         },
+        "secondary_mix_fade_to_black" => CommandPayload::SecondaryMixFadeToBlack {
+            number: super::secondary_mix::decode_number(fields)?,
+            active: fields.boolean("active")?,
+            duration_frames: fields.parse_required("duration_frames")?,
+        },
         "set_input_video_delay" => {
             let entry = super::video_delay::decode_entry(fields)?;
             CommandPayload::SetInputVideoDelay {

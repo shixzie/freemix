@@ -920,6 +920,16 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("kind", kind.token())?;
             record.field("duration_frames", duration_frames)?;
         }
+        CommandPayload::SecondaryMixFadeToBlack {
+            number,
+            active,
+            duration_frames,
+        } => {
+            record.field("payload", "secondary_mix_fade_to_black")?;
+            record.field("number", number)?;
+            record.field("active", u8::from(*active))?;
+            record.field("duration_frames", duration_frames)?;
+        }
         CommandPayload::SetInputVideoDelay { input, frames } => {
             record.field("payload", "set_input_video_delay")?;
             super::video_delay::encode_entry(

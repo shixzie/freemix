@@ -71,6 +71,16 @@ fn live_secondary_mix_commands_round_trip() {
         kind: AutoTransitionKind::Fade,
         duration_frames: 30,
     });
+    round_trip(CommandPayload::SecondaryMixFadeToBlack {
+        number: number(2),
+        active: true,
+        duration_frames: 30,
+    });
+    round_trip(CommandPayload::SecondaryMixFadeToBlack {
+        number: number(2),
+        active: false,
+        duration_frames: 15,
+    });
 }
 
 #[test]

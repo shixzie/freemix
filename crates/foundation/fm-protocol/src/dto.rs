@@ -2300,6 +2300,13 @@ pub enum CommandPayload {
         kind: AutoTransitionKind,
         duration_frames: u32,
     },
+    /// Fades secondary mix `number` to Black (`active`) or back to Live
+    /// (IN-023). A live operation.
+    SecondaryMixFadeToBlack {
+        number: crate::WireMixNumber,
+        active: bool,
+        duration_frames: u32,
+    },
     /// Sets one input's video delay in frames (Protocol 2.161, IN-022). A
     /// padlocked, undoable project edit.
     SetInputVideoDelay {
