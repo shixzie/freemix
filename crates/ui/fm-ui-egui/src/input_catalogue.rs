@@ -3086,6 +3086,48 @@ mod tests {
         );
         draft.alias_effects = "saturation".into();
         assert_eq!(draft.source(), Err(Msg::AddInputAliasEffectsInvalid.en()));
+
+        draft.alias_effects.clear();
+        draft.alias_crop = true;
+        draft.alias_crop_x = 10;
+        draft.alias_crop_y = 20;
+        draft.alias_crop_width = 640;
+        draft.alias_crop_height = 360;
+        draft.alias_opacity = 128;
+        draft.alias_mask = true;
+        draft.alias_mask_x = 10;
+        draft.alias_mask_y = 20;
+        draft.alias_mask_width = 320;
+        draft.alias_mask_height = 180;
+        draft.alias_mask_invert = true;
+        assert_eq!(
+            draft.source(),
+            Ok(LiveInputSource::Alias {
+                target: wire(1),
+                crop: Some(fm_protocol::WireLayerCrop {
+                    x: 10,
+                    y: 20,
+                    width: 640,
+                    height: 360,
+                }),
+                effects: Vec::new(),
+                opacity: 128,
+                mask: Some(fm_protocol::WireLayerMask {
+                    x: 10,
+                    y: 20,
+                    width: 320,
+                    height: 180,
+                    invert: true,
+                }),
+            })
+        );
+
+        draft.alias_mask_width = 700;
+        assert_eq!(draft.source(), Err(Msg::AddInputAliasMaskInvalid.en()));
+        assert_eq!(
+            draft.source_problem().map(|problem| problem.field),
+            Some(Msg::AddInputAliasMask)
+        );
     }
 
     #[test]
