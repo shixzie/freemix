@@ -277,6 +277,7 @@ impl NativeVideoHandle {
     /// # Errors
     ///
     /// Returns the thread-spawn failure.
+    #[allow(clippy::too_many_arguments)] // registries and options moved to the thread
     pub(crate) fn spawn(
         runtime: Arc<NativeMediaRuntime>,
         playback: NativeSourcePlayback,
