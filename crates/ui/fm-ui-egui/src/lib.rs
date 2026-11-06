@@ -219,6 +219,13 @@ pub enum StudioIntent {
     /// Protocol 2.164); the answer updates
     /// [`StudioUiState::frozen_still`].
     CaptureFrozenStill { input: InputId },
+    /// Reads one alias's current effects (IN-024, Protocol 2.168).
+    RequestAliasEffects { input: InputId },
+    /// Replaces one alias's effects (IN-024). A project edit.
+    SetAliasEffects {
+        input: InputId,
+        effects: Vec<fm_protocol::WireLayerEffect>,
+    },
     /// Maps one raw data row onto a title's template fields (GX-005,
     /// Protocol 2.165).
     SetTitleRow {
@@ -861,6 +868,11 @@ pub struct StudioUiState {
     pub frozen_still: Option<FrozenStillCapture>,
     /// The latest frozen-still request refusal, if any.
     pub frozen_still_error: Option<String>,
+    /// Every alias's current effect list (IN-024), learned by a read or an
+    /// applied edit.
+    pub alias_effects: std::collections::BTreeMap<InputId, Vec<fm_protocol::WireLayerEffect>>,
+    /// The latest alias-effect read refusal, with its input.
+    pub alias_effects_error: Option<(InputId, String)>,
     /// The latest title animation phases (`title_phases`, Protocol 2.90):
     /// what the TITLES timeline strip's playhead follows. `None` until the
     /// daemon sends one.
@@ -989,6 +1001,8 @@ impl StudioUiState {
             clocks_error: None,
             frozen_still: None,
             frozen_still_error: None,
+            alias_effects: std::collections::BTreeMap::new(),
+            alias_effects_error: None,
             title_phases: None,
             replay: None,
             reels: Vec::new(),
