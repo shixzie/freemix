@@ -3103,9 +3103,12 @@ the bank advances it once per frame and reports position/completion events, and
 native realization applies the mix's own interval after its overlays so only
 that mix darkens. The CLI has local and remote
 `secondary-mix-fade-to-black <mix> live|black <frames>`, and Studio's
-Secondary mixes dialog offers To black and To live beside Cut and Fade.
-Remaining gaps: no audio path; overlay fades and T-bar inside a mix are
-absent. `IN-023` remains planned.
+Secondary mixes dialog offers To black and To live beside Cut and Fade. A mix
+overlay channel also fades independently: Overlay On/Off carry a bounded
+duration (zero is a cut), compose a per-frame opacity for that channel, and
+clear a fully faded-out source. Native realization draws each mix overlay at
+its composed opacity, and logical outputs carry the same opacity. Remaining
+gaps: no audio path; T-bar inside a mix is absent. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
