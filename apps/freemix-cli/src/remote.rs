@@ -2996,6 +2996,7 @@ impl CommandCompletion {
             | CommandPayload::SetLiveLan { .. }
             | CommandPayload::SetAlertRule(_)
             | CommandPayload::SetInputVideoDelay { .. }
+            | CommandPayload::SetAliasEffects { .. }
             | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
