@@ -3084,6 +3084,7 @@ impl CommandCompletion {
             | CommandPayload::SetAlertRule(_)
             | CommandPayload::SetInputVideoDelay { .. }
             | CommandPayload::SetAliasEffects { .. }
+            | CommandPayload::SetSafeAreaGuides { .. }
             | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
@@ -3092,7 +3093,6 @@ impl CommandCompletion {
             CommandPayload::SetFadeToBlackOutput { .. }
             | CommandPayload::SetFadeToBlackOutputDuration { .. }
             | CommandPayload::SetFadeToBlackCurve { .. } => Self::FadeToBlackOutput,
-            CommandPayload::SetSafeAreaGuides { .. } => Self::Project,
             CommandPayload::Undo { .. } | CommandPayload::Redo { .. } => Self::History,
             CommandPayload::SetEditLock { .. } => Self::Padlock,
             CommandPayload::TakeTitle { fields, .. } => Self::TitleTake {
