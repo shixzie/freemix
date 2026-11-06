@@ -2107,6 +2107,7 @@ impl Client {
             | CommandPayload::ClearSecondaryMix { .. }
             | CommandPayload::SecondaryMixCut { .. }
             | CommandPayload::SecondaryMixTransition { .. }
+            | CommandPayload::SecondaryMixFadeToBlack { .. }
             | CommandPayload::SetInputVideoDelay { .. }
             | CommandPayload::SetAliasEffects { .. }
             | CommandPayload::SetInputFreeze { .. }
