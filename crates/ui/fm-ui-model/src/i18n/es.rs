@@ -10941,6 +10941,40 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AddInputAliasCropInvalid,
         t("El ancho y el alto del recorte deben ser al menos 1 y como máximo 16384 píxeles"),
     ),
+    (Msg::AliasEffectsAction, t("Efectos del alias…")),
+    (
+        Msg::AliasEffectsActionHover,
+        t(
+            "Leer y reemplazar los efectos propios de esta entrada alias; las demás entradas no tienen",
+        ),
+    ),
+    (
+        Msg::AliasEffectsDraftHover,
+        t(
+            "Efectos separados por espacios: levels:0,255 brightness_contrast:10,0 saturation:20 sharpen:100 flip:1,0 deinterlace:0",
+        ),
+    ),
+    (Msg::AliasEffectsApply, t("Aplicar efectos")),
+    (
+        Msg::AliasEffectsApplyHover,
+        t(
+            "Reemplazar los efectos del alias de forma atómica como una edición de proyecto deshacible",
+        ),
+    ),
+    (Msg::AliasEffectsRead, t("Leer actuales")),
+    (
+        Msg::AliasEffectsReadHover,
+        t("Pedir al servidor la lista de efectos actual de este alias"),
+    ),
+    (Msg::AliasEffectsClose, t("Cerrar")),
+    (
+        Msg::AliasEffectsCloseHover,
+        t("Cerrar el editor de efectos del alias sin aplicar"),
+    ),
+    (
+        Msg::AliasEffectsInvalid,
+        t("Los efectos deben ser como máximo ocho entradas válidas nombre:parámetros"),
+    ),
     (Msg::AddInputAliasEffects, t("Efectos")),
     (
         Msg::AddInputAliasEffectsHint,
