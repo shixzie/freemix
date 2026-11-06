@@ -535,7 +535,7 @@ pub(crate) const COLOUR_PRESETS: [(Msg, Color32); 8] = [
 ];
 
 /// Parses space-separated `name:parameter,parameter` alias effect tokens.
-fn parse_alias_effects(value: &str) -> Result<Vec<fm_protocol::WireLayerEffect>, Msg> {
+pub(crate) fn parse_alias_effects(value: &str) -> Result<Vec<fm_protocol::WireLayerEffect>, Msg> {
     let mut effects = Vec::new();
     for token in value.split_whitespace() {
         if effects.len() == fm_protocol::MAX_SCENE_LAYER_EFFECTS {
