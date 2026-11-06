@@ -82,6 +82,7 @@ mod preferences;
 mod preset_files;
 mod recorder_tracks;
 mod replay_ui;
+mod safe_areas;
 mod scene_designer;
 mod screen_capture_ui;
 mod scripts;
@@ -2347,6 +2348,9 @@ pub struct StudioShell {
     alias_effects_invalid: bool,
     stinger_editor: stinger_config::StingerEditor,
     layout: ConsoleLayout,
+    /// This console's operator safe-area guides (SW-014); local to the
+    /// console and never part of Program or any output.
+    safe_area_guides: safe_areas::SafeAreaGuides,
     show_shortcuts: bool,
     show_about: bool,
     toasts: toasts::ToastQueue,
@@ -2515,6 +2519,12 @@ impl StudioShell {
     /// Replaces the console layout, for example with the one restored
     /// from preferences. A layout flagged [`ConsoleLayout::rejected`] is
     /// announced on the next frame.
+    /// This console's operator safe-area guides (SW-014).
+    #[must_use]
+    pub(crate) const fn safe_area_guides(&self) -> safe_areas::SafeAreaGuides {
+        self.safe_area_guides
+    }
+
     pub fn set_layout(&mut self, layout: ConsoleLayout) {
         self.layout = layout;
     }
@@ -3197,6 +3207,7 @@ impl Default for StudioShell {
             alias_effects_invalid: false,
             stinger_editor: stinger_config::StingerEditor::default(),
             layout: ConsoleLayout::default(),
+            safe_area_guides: safe_areas::SafeAreaGuides::default(),
             show_shortcuts: false,
             show_about: false,
             toasts: toasts::ToastQueue::default(),

@@ -776,6 +776,50 @@ impl StudioShell {
         ui.menu_button(l.text(Msg::ViewLayouts), |ui| self.layouts_menu(ui))
             .response
             .on_hover_text(l.text(Msg::ViewLayoutsHover));
+        ui.menu_button(l.text(Msg::ViewSafeAreas), |ui| {
+            ui.checkbox(
+                &mut self.safe_area_guides.action,
+                l.text(Msg::ViewSafeAction),
+            )
+            .on_hover_text(l.text(Msg::ViewSafeActionHover));
+            ui.checkbox(&mut self.safe_area_guides.title, l.text(Msg::ViewSafeTitle))
+                .on_hover_text(l.text(Msg::ViewSafeTitleHover));
+            ui.separator();
+            ui.checkbox(
+                &mut self.safe_area_guides.center_4_3,
+                l.text(Msg::ViewSafe43),
+            )
+            .on_hover_text(l.text(Msg::ViewSafe43Hover));
+            ui.checkbox(
+                &mut self.safe_area_guides.center_16_9,
+                l.text(Msg::ViewSafe169),
+            )
+            .on_hover_text(l.text(Msg::ViewSafe169Hover));
+            ui.checkbox(
+                &mut self.safe_area_guides.center_9_16,
+                l.text(Msg::ViewSafe916),
+            )
+            .on_hover_text(l.text(Msg::ViewSafe916Hover));
+            ui.separator();
+            if ui
+                .add_enabled(
+                    !self.safe_area_guides.is_empty(),
+                    Button::new(l.text(Msg::ViewSafeOff)),
+                )
+                .on_hover_text(l.text(Msg::ViewSafeOffHover))
+                .clicked()
+            {
+                self.safe_area_guides = crate::safe_areas::SafeAreaGuides {
+                    action: false,
+                    title: false,
+                    center_4_3: false,
+                    center_16_9: false,
+                    center_9_16: false,
+                };
+            }
+        })
+        .response
+        .on_hover_text(l.text(Msg::ViewSafeAreasHover));
         ui.checkbox(&mut self.layout.show_status_bar, l.text(Msg::ViewStatusBar))
             .on_hover_text(l.text(Msg::ViewStatusBarHover));
         ui.separator();

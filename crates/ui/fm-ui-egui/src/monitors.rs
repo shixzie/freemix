@@ -431,6 +431,7 @@ pub(crate) fn draw_monitor(
     shape: WellShape,
     picture: Option<MonitorPicture>,
     native_runtime: bool,
+    safe_areas: crate::safe_areas::SafeAreaGuides,
 ) {
     let WellShape {
         width,
@@ -580,11 +581,14 @@ pub(crate) fn draw_monitor(
             tint,
         );
     }
+    crate::safe_areas::draw_guides(&painter, canvas_area, safe_areas, canvas);
     let live = caption.picture == PictureMode::Live;
     let center = video.center();
     let title_size = (width / 22.0).clamp(15.0, 30.0);
     if !live {
-        draw_safe_area(&painter, canvas_area);
+        if safe_areas.is_empty() {
+            draw_safe_area(&painter, canvas_area);
+        }
         let (title, size, title_color) = match &routing {
             Some(routing) => (routing.realized.1.as_str(), title_size, text_dim_color()),
             None => (

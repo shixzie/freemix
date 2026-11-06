@@ -829,6 +829,43 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ViewLayoutsHover,
         t("Cambia a una disposición de paneles incorporada o guardada"),
     ),
+    (Msg::ViewSafeAreas, t("Zonas seguras")),
+    (
+        Msg::ViewSafeAreasHover,
+        t(
+            "Dibuja guías de acción, título y relación de aspecto solo para el operador sobre Programa y Previo; las salidas nunca las muestran",
+        ),
+    ),
+    (Msg::ViewSafeAction, t("Acción segura (93%)")),
+    (
+        Msg::ViewSafeActionHover,
+        t("Dibujar el rectángulo de acción segura del 93% sobre el monitor"),
+    ),
+    (Msg::ViewSafeTitle, t("Título seguro (90%)")),
+    (
+        Msg::ViewSafeTitleHover,
+        t("Dibujar el rectángulo de título seguro del 90% sobre el monitor"),
+    ),
+    (Msg::ViewSafe43, t("Recorte 4:3")),
+    (
+        Msg::ViewSafe43Hover,
+        t("Dibujar el mayor rectángulo 4:3 centrado en el lienzo"),
+    ),
+    (Msg::ViewSafe169, t("Recorte 16:9")),
+    (
+        Msg::ViewSafe169Hover,
+        t("Dibujar el mayor rectángulo 16:9 centrado en el lienzo"),
+    ),
+    (Msg::ViewSafe916, t("Recorte 9:16")),
+    (
+        Msg::ViewSafe916Hover,
+        t("Dibujar el mayor rectángulo 9:16 centrado en el lienzo"),
+    ),
+    (Msg::ViewSafeOff, t("Ocultar todas las guías")),
+    (
+        Msg::ViewSafeOffHover,
+        t("Apagar todas las guías de zonas seguras del operador"),
+    ),
     (Msg::LayoutBuiltInHover, t("Diseño incorporado: {what}")),
     (Msg::LayoutSavedHeading, t("Diseños guardados")),
     (Msg::LayoutSavedNone, t("Aún no hay diseños guardados")),
