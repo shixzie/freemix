@@ -1562,7 +1562,7 @@ pub(super) fn run(
                 .iter()
                 .flatten()
                 .filter_map(|slot| slot.as_ref().ok())
-                .map(|plan| crate::sim_audio::SimulatedOutputAudioPlan {
+                .map(|plan| fm_sim::SimulatedOutputAudioPlan {
                     output: plan.output,
                     audio: plan.audio,
                 })
