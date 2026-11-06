@@ -392,7 +392,7 @@ pub(crate) fn restore_scenes(show: &mut ShowState, project: &fm_model::Project) 
         } = input.kind
         {
             show.set_input_alias(input.id, target)?;
-            show.set_alias_effects_unchecked(input.id, effects);
+            show.set_alias_effects_unchecked(input.id, effects.clone());
         }
     }
     for input in project.inputs() {
