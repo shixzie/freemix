@@ -105,8 +105,8 @@ commands = ["cargo test -p fm-video --test video_delay", "cargo test -p fm-sim -
 [[tests]]
 id = "accept-in-023"
 state = "present"
-paths = ["crates/features/fm-switcher/tests/mix_bank.rs", "apps/freemix-cli/tests/e2e.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/src/secondary_mixes.rs", "crates/services/fm-daemon-native/src/native_media.rs"]
-commands = ["cargo test -p fm-switcher --test mix_bank", "cargo test -p freemix-cli --test e2e", "cargo test -p freemix-studio --test studio"]
+paths = ["crates/features/fm-switcher/tests/mix_bank.rs", "crates/features/fm-switcher/tests/logical_outputs.rs", "crates/features/fm-switcher/src/logical_output.rs", "apps/freemix-cli/tests/e2e.rs", "apps/freemix-studio/tests/studio.rs", "crates/ui/fm-ui-egui/src/secondary_mixes.rs", "crates/services/fm-daemon-native/src/native_media.rs"]
+commands = ["cargo test -p fm-switcher --test mix_bank", "cargo test -p fm-switcher --test logical_outputs", "cargo test -p freemix-cli --test e2e", "cargo test -p freemix-studio --test studio"]
 [[tests]]
 id = "accept-in-024"
 state = "present"
