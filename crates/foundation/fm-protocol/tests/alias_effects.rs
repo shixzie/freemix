@@ -4,8 +4,8 @@ use core::num::NonZeroU128;
 
 use fm_protocol::{
     AliasEffectsRequest, AliasEffectsResponse, CURRENT_PROTOCOL_VERSION, CommandMessage,
-    CommandPayload, EventMessage, EventPayload, WireInputId, WireLayerEffect, WireMessage,
-    decode_line, encode_line,
+    CommandPayload, EditHistoryStatus, EngineIdentity, EventCursor, EventMessage, EventPayload,
+    WireInputId, WireLayerEffect, WireMessage, decode_line, encode_line,
 };
 
 fn input(value: u128) -> WireInputId {
@@ -43,15 +43,15 @@ fn alias_effect_edit_and_event_round_trip() {
     assert_eq!(decode_line(&line).unwrap(), command);
 
     let event = WireMessage::Event(EventMessage {
-        cursor: fm_protocol::EventCursor {
-            engine: fm_protocol::EngineIdentity {
+        cursor: EventCursor {
+            engine: EngineIdentity {
                 engine_id: "engine".into(),
                 state_epoch: 1,
                 log_id: "log".into(),
             },
-            sequence: 3,
             revision: 4,
         },
+        edit_history: EditHistoryStatus::EMPTY,
         payload: EventPayload::InputAliasEffectsChanged {
             input: input(4),
             effects: effects(),
