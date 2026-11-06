@@ -3439,6 +3439,74 @@ impl Engine {
         self.mix_bank.schedule_effect(effect, targets).map(drop)
     }
 
+    /// Starts a manual T-bar transition of secondary mix `number` (IN-023).
+    ///
+    /// # Errors
+    ///
+    /// Returns the bank's refusal: an unknown or output-only mix, a Stinger
+    /// kind, or another transition already in flight.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if `number` is not a valid mix number, which the model
+    /// guarantees by construction.
+    pub fn start_secondary_mix_t_bar(
+        &mut self,
+        number: fm_model::MixNumber,
+        kind: fm_switcher::TransitionKind,
+    ) -> Result<(), fm_switcher::MixBankError> {
+        let mix = fm_switcher::MixId::new(number.number()).expect("a validated mix number");
+        self.mix_bank
+            .apply(fm_switcher::MixBankCommand::StartTBar { mix, kind })
+            .map(drop)
+    }
+
+    /// Moves secondary mix `number`'s active T-bar to `position` (IN-023).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fm_switcher::MixBankError::NoTBar`] when none is active.
+    pub fn set_secondary_mix_t_bar_position(
+        &mut self,
+        number: fm_model::MixNumber,
+        position: fm_switcher::TBarPosition,
+    ) -> Result<(), fm_switcher::MixBankError> {
+        let mix = fm_switcher::MixId::new(number.number()).expect("a validated mix number");
+        self.mix_bank
+            .apply(fm_switcher::MixBankCommand::SetTBarPosition { mix, position })
+            .map(drop)
+    }
+
+    /// Commits secondary mix `number`'s T-bar (IN-023).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fm_switcher::MixBankError::NoTBar`] when none is active.
+    pub fn commit_secondary_mix_t_bar(
+        &mut self,
+        number: fm_model::MixNumber,
+    ) -> Result<(), fm_switcher::MixBankError> {
+        let mix = fm_switcher::MixId::new(number.number()).expect("a validated mix number");
+        self.mix_bank
+            .apply(fm_switcher::MixBankCommand::CommitTBar(mix))
+            .map(drop)
+    }
+
+    /// Cancels secondary mix `number`'s T-bar (IN-023).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fm_switcher::MixBankError::NoTBar`] when none is active.
+    pub fn cancel_secondary_mix_t_bar(
+        &mut self,
+        number: fm_model::MixNumber,
+    ) -> Result<(), fm_switcher::MixBankError> {
+        let mix = fm_switcher::MixId::new(number.number()).expect("a validated mix number");
+        self.mix_bank
+            .apply(fm_switcher::MixBankCommand::CancelTBar(mix))
+            .map(drop)
+    }
+
     /// Fades secondary mix `number` to Black (`active`) or back to Live
     /// (IN-023), using the show's Fade-to-Black curve.
     ///

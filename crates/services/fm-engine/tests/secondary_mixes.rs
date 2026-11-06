@@ -429,3 +429,54 @@ fn a_mix_overlay_fades_in_through_the_engine_bank() {
         255
     );
 }
+
+#[test]
+fn a_secondary_mix_t_bar_scrubs_and_commits() {
+    use fm_switcher::{TBarPosition, TransitionKind};
+
+    let mut engine = engine();
+    assert!(execute(
+        &mut engine,
+        "set",
+        EngineCommand::SetSecondaryMix {
+            number: mix(2),
+            config: Some(Box::new(preview_config())),
+        },
+    ));
+    engine.tick().unwrap();
+
+    engine
+        .start_secondary_mix_t_bar(mix(2), TransitionKind::Fade)
+        .unwrap();
+    let start = engine.tick().unwrap();
+    let t_bar = mix_frame(&start);
+    assert_eq!(
+        t_bar.secondary,
+        Some(fm_switcher::MixLayer::Input(input(2)))
+    );
+    assert_eq!(t_bar.mix_numerator, 0);
+    assert_eq!(t_bar.mix_denominator, u32::from(TBarPosition::MAX));
+
+    engine
+        .set_secondary_mix_t_bar_position(mix(2), TBarPosition::new(5_000).unwrap())
+        .unwrap();
+    let half = engine.tick().unwrap();
+    assert_eq!(mix_frame(&half).mix_numerator, 5_000);
+
+    engine.commit_secondary_mix_t_bar(mix(2)).unwrap();
+    let committed = engine.tick().unwrap();
+    let t_bar = mix_frame(&committed);
+    assert_eq!(t_bar.primary, fm_switcher::MixLayer::Input(input(2)));
+    assert_eq!(t_bar.secondary, None);
+    assert_eq!(t_bar.preview, Some(fm_switcher::MixLayer::Input(input(1))));
+
+    engine
+        .start_secondary_mix_t_bar(mix(2), TransitionKind::Slide)
+        .unwrap();
+    engine.cancel_secondary_mix_t_bar(mix(2)).unwrap();
+    let cancelled = engine.tick().unwrap();
+    assert_eq!(
+        mix_frame(&cancelled).primary,
+        fm_switcher::MixLayer::Input(input(2))
+    );
+}
