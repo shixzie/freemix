@@ -333,3 +333,60 @@ fn a_mix_referenced_by_another_cannot_be_removed_first() {
     ));
     assert!(engine.show().secondary_mix(mix(2)).is_none());
 }
+
+#[test]
+fn a_secondary_mix_fades_to_black_and_back_independently() {
+    use fm_switcher::{FadeToBlackPosition, FadeToBlackTarget};
+
+    let mut engine = engine();
+    assert!(execute(
+        &mut engine,
+        "set",
+        EngineCommand::SetSecondaryMix {
+            number: mix(2),
+            config: Some(Box::new(preview_config())),
+        },
+    ));
+    engine.tick().unwrap();
+
+    assert!(execute(
+        &mut engine,
+        "black",
+        EngineCommand::SecondaryMixFadeToBlack {
+            number: mix(2),
+            active: true,
+            duration_frames: 2,
+        },
+    ));
+    let first = engine.tick().unwrap();
+    assert_eq!(
+        mix_frame(&first).fade_to_black.target(),
+        FadeToBlackTarget::Black
+    );
+    engine.tick().unwrap();
+    let black = engine.tick().unwrap();
+    let frame = mix_frame(&black).fade_to_black;
+    assert_eq!(frame.interval_start(), FadeToBlackPosition::BLACK);
+    assert_eq!(frame.interval_end(), FadeToBlackPosition::BLACK);
+
+    assert!(execute(
+        &mut engine,
+        "live",
+        EngineCommand::SecondaryMixFadeToBlack {
+            number: mix(2),
+            active: false,
+            duration_frames: 2,
+        },
+    ));
+    let first = engine.tick().unwrap();
+    assert_eq!(
+        mix_frame(&first).fade_to_black.target(),
+        FadeToBlackTarget::Live
+    );
+    engine.tick().unwrap();
+    let live = engine.tick().unwrap();
+    assert_eq!(
+        mix_frame(&live).fade_to_black,
+        fm_switcher::FadeToBlackFrame::LIVE
+    );
+}

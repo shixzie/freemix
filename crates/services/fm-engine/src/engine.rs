@@ -534,6 +534,13 @@ pub enum EngineCommand {
         kind: fm_switcher::TransitionKind,
         duration_frames: u32,
     },
+    /// Fades secondary mix `number` to Black (`active`) or back to Live
+    /// (IN-023). A live operation realized on acceptance.
+    SecondaryMixFadeToBlack {
+        number: fm_model::MixNumber,
+        active: bool,
+        duration_frames: u32,
+    },
     /// Sets one input's video delay in frames (IN-022). A project edit, undone
     /// by restoring the previous delay.
     SetInputVideoDelay {
@@ -3127,6 +3134,14 @@ impl Engine {
                     self.transition_secondary_mix(*number, *kind, *duration_frames)
                         .map_err(crate::EngineError::MixBank)?;
                 }
+                EngineCommand::SecondaryMixFadeToBlack {
+                    number,
+                    active,
+                    duration_frames,
+                } => {
+                    self.fade_secondary_mix_to_black(*number, *active, *duration_frames)
+                        .map_err(crate::EngineError::MixBank)?;
+                }
                 _ => {}
             }
             if let Some(kind) = runtime_transition_kind(self.commands.state(), &command)
@@ -3404,6 +3419,35 @@ impl Engine {
                 mix,
                 kind,
                 duration_frames,
+            })
+            .map(drop)
+    }
+
+    /// Fades secondary mix `number` to Black (`active`) or back to Live
+    /// (IN-023), using the show's Fade-to-Black curve.
+    ///
+    /// # Errors
+    ///
+    /// Returns the bank's refusal: an unknown mix, or a duration outside the
+    /// Fade-to-Black bound.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if `number` is not a valid mix number, which the model
+    /// guarantees by construction.
+    pub fn fade_secondary_mix_to_black(
+        &mut self,
+        number: fm_model::MixNumber,
+        active: bool,
+        duration_frames: u32,
+    ) -> Result<(), fm_switcher::MixBankError> {
+        let mix = fm_switcher::MixId::new(number.number()).expect("a validated mix number");
+        self.mix_bank
+            .apply(fm_switcher::MixBankCommand::FadeToBlack {
+                mix,
+                target: fm_switcher::FadeToBlackTarget::from_active(active),
+                duration_frames,
+                curve: self.realized_switcher.fade_to_black_curve(),
             })
             .map(drop)
     }
@@ -4406,7 +4450,9 @@ impl EngineMutation {
         // Live mix operations act on the runtime bank, not the desired show.
         if matches!(
             &self.command,
-            EngineCommand::SecondaryMixCut { .. } | EngineCommand::SecondaryMixTransition { .. }
+            EngineCommand::SecondaryMixCut { .. }
+                | EngineCommand::SecondaryMixTransition { .. }
+                | EngineCommand::SecondaryMixFadeToBlack { .. }
         ) {
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
@@ -5232,6 +5278,7 @@ impl EngineMutation {
             | EngineCommand::SetInputFreeze { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
+            | EngineCommand::SecondaryMixFadeToBlack { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -5929,6 +5976,7 @@ fn apply_runtime(
             | EngineCommand::SetInputFreeze { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
+            | EngineCommand::SecondaryMixFadeToBlack { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -6140,6 +6188,7 @@ fn apply_runtime(
         | EngineCommand::SetInputVideoDelay { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
+        | EngineCommand::SecondaryMixFadeToBlack { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -6350,6 +6399,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetInputFreeze { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
+        | EngineCommand::SecondaryMixFadeToBlack { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -6400,6 +6450,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetInputFreeze { .. })
         && !matches!(command, EngineCommand::SecondaryMixCut { .. })
         && !matches!(command, EngineCommand::SecondaryMixTransition { .. })
+        && !matches!(command, EngineCommand::SecondaryMixFadeToBlack { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
         && !matches!(command, EngineCommand::SetAlertRule(_))
         && !matches!(command, EngineCommand::Replay(_))
