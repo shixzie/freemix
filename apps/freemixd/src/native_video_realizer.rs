@@ -16,7 +16,7 @@
 
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         mpsc::{Receiver, SyncSender, sync_channel},
