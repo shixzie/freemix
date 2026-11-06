@@ -228,6 +228,8 @@ pub fn run(command: Command) -> AppResult<()> {
             target,
             crop,
             effects,
+            opacity,
+            mask,
         } => add_alias_input(
             &path,
             input_id(input)?,
@@ -235,6 +237,8 @@ pub fn run(command: Command) -> AppResult<()> {
             input_id(target)?,
             crop,
             effects,
+            opacity,
+            mask,
         )?,
         Command::MixFeedInputAdd {
             path,

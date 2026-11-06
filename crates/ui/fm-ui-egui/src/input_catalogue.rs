@@ -3022,6 +3022,8 @@ mod tests {
                 target: wire(1),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             })
         );
 
@@ -3041,6 +3043,8 @@ mod tests {
                     height: 360,
                 }),
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             })
         );
 
@@ -3076,6 +3080,8 @@ mod tests {
                         parameters: vec![10, -5],
                     },
                 ],
+                opacity: u8::MAX,
+                mask: None,
             })
         );
         draft.alias_effects = "saturation".into();
