@@ -71,6 +71,8 @@ fn alias_effects_can_be_replaced_undone_and_redone() {
                 target: input(1),
                 crop: None,
                 effects: initial.clone(),
+                opacity: u8::MAX,
+                mask: None,
             },
         },
     );
@@ -125,6 +127,8 @@ fn a_non_alias_or_invalid_effect_list_is_refused() {
                 target: input(1),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         },
     );
