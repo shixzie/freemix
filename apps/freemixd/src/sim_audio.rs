@@ -159,13 +159,6 @@ impl SimulatedAudioRuntime {
         rendered_any.then(|| self.plane.take_meters())
     }
 
-    /// `output`'s audio map rendered by the last polled frame, or `None` when
-    /// its map was Master or Bus (SW-012/IN-023).
-    #[must_use]
-    pub fn output_planes(&self, output: fm_types::OutputId) -> Option<&[Vec<f32>]> {
-        self.plane.output_planes(output)
-    }
-
     /// Re-applies `project` when its revision changed.
     fn sync(&mut self, project: &Project, revision: u64) -> Result<(), SimulatedAudioError> {
         if self.revision == Some(revision) {
