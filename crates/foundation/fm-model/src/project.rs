@@ -335,6 +335,41 @@ pub enum ReplaceInputError {
     SceneKeyInput(InputId),
 }
 
+/// Why replacing one alias's effect list was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AliasEffectError {
+    /// The show has no input with this id.
+    UnknownInput(InputId),
+    /// The input is not an alias.
+    NotAlias(InputId),
+    /// The list exceeds [`LayerEffect::MAX_EFFECTS_PER_LAYER`].
+    TooManyEffects,
+    /// One descriptor breaks the [`LayerEffect`] table.
+    InvalidEffect {
+        index: usize,
+        reason: LayerEffectError,
+    },
+}
+
+impl std::fmt::Display for AliasEffectError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+            Self::NotAlias(input) => write!(formatter, "input {input} is not an alias"),
+            Self::TooManyEffects => write!(
+                formatter,
+                "an alias carries at most {} effects",
+                LayerEffect::MAX_EFFECTS_PER_LAYER
+            ),
+            Self::InvalidEffect { index, reason } => {
+                write!(formatter, "alias effect {index} is invalid: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AliasEffectError {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RelinkMediaInputError {
     UnknownInput(InputId),
@@ -4486,6 +4521,46 @@ impl Project {
                     reason,
                 })?;
         }
+        Ok(())
+    }
+
+    /// Replaces one alias input's ordered effect list (IN-024).
+    ///
+    /// The list is validated as a whole before the alias changes, so a
+    /// refusal leaves every effect exactly as it was.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AliasEffectError::UnknownInput`] for an input outside the
+    /// project, [`AliasEffectError::NotAlias`] for a non-alias input,
+    /// [`AliasEffectError::TooManyEffects`] beyond the layer bound, and
+    /// [`AliasEffectError::InvalidEffect`] for a descriptor outside its
+    /// parameter table.
+    pub fn set_alias_effects(
+        &mut self,
+        input: InputId,
+        effects: Vec<LayerEffect>,
+    ) -> Result<(), AliasEffectError> {
+        let position = self
+            .inputs
+            .iter()
+            .position(|candidate| candidate.id == input)
+            .ok_or(AliasEffectError::UnknownInput(input))?;
+        let InputKind::Alias {
+            effects: current, ..
+        } = &mut self.inputs[position].kind
+        else {
+            return Err(AliasEffectError::NotAlias(input));
+        };
+        if effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER {
+            return Err(AliasEffectError::TooManyEffects);
+        }
+        for (index, effect) in effects.iter().enumerate() {
+            effect
+                .validate()
+                .map_err(|reason| AliasEffectError::InvalidEffect { index, reason })?;
+        }
+        *current = effects;
         Ok(())
     }
 
