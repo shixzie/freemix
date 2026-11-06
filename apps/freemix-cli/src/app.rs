@@ -8527,6 +8527,16 @@ Usage:
   freemix-cli remote-ftb-output <127.0.0.1:port> <output> <affected:on|off> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb-output-duration <127.0.0.1:port> <output> <frames:1..=3600|none> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb-curve <127.0.0.1:port> <linear|ease> [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mixes <show.freemix>
+  freemix-cli secondary-mix-set <show.freemix> <mix:2..=16> <name> <preview_program|output_only> <program:input:ID|mix:N> [preview:input:ID|mix:N] [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mix-clear <show.freemix> <mix:2..=16> [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mix-cut <show.freemix> <mix:2..=16> [--key <key>] [--expect <revision>]
+  freemix-cli secondary-mix-transition <show.freemix> <mix:2..=16> <fade|wipe|slide|zoom|merge|...> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mixes <127.0.0.1:port>
+  freemix-cli remote-secondary-mix-set <127.0.0.1:port> <mix:2..=16> <name> <preview_program|output_only> <program:input:ID|mix:N> [preview:input:ID|mix:N] [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mix-clear <127.0.0.1:port> <mix:2..=16> [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mix-cut <127.0.0.1:port> <mix:2..=16> [--key <key>] [--expect <revision>]
+  freemix-cli remote-secondary-mix-transition <127.0.0.1:port> <mix:2..=16> <kind> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-set <127.0.0.1:port> <slot:1|2> <spec as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-clear <127.0.0.1:port> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-list <127.0.0.1:port>
