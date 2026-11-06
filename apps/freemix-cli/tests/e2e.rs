@@ -172,6 +172,14 @@ impl FakeRemoteServer {
         Self { address, worker }
     }
 
+    /// Serves one alias-effect read (IN-024, Protocol 2.168).
+    fn start_alias_effects(effects: Vec<fm_protocol::WireLayerEffect>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || serve_alias_effects(&listener, &effects));
+        Self { address, worker }
+    }
+
     /// Serves one frozen-still request with a real 4x3 PNG (SW-016).
     fn start_frozen_still() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1251,6 +1259,31 @@ fn serve_frozen_still(listener: &TcpListener) {
             height: 3,
             asset_uri: "asset://frozen-1.png".into(),
             path: "assets/frozen-1.png".into(),
+        }),
+    );
+}
+
+fn serve_alias_effects(listener: &TcpListener, effects: &[fm_protocol::WireLayerEffect]) {
+    let engine = EngineIdentity {
+        engine_id: "project-42".into(),
+        state_epoch: 1,
+        log_id: "fake-remote-log".into(),
+    };
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_role(read_message(&mut reader), Role::Viewer);
+    write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+    let WireMessage::AliasEffectsRequest(request) = read_message(&mut reader) else {
+        panic!("expected an alias_effects_request");
+    };
+    write_message(
+        &mut writer,
+        &WireMessage::AliasEffectsResponse(fm_protocol::AliasEffectsResponse {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request.request_id,
+            input: request.input,
+            effects: effects.to_vec(),
         }),
     );
 }
@@ -8538,6 +8571,66 @@ fn remote_alias_input_add_sends_the_exact_source() {
         "0",
     ]);
     assert_success(&output);
+    server.finish();
+}
+
+/// IN-024, Protocol 2.168: replacing an existing alias's effects.
+#[test]
+fn remote_alias_effects_sends_the_replacement_list() {
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-alias-effects",
+        payload: CommandPayload::SetAliasEffects {
+            input: input(3),
+            effects: vec![fm_protocol::WireLayerEffect {
+                name: "saturation".into(),
+                parameters: vec![-50],
+            }],
+        },
+        event: EventPayload::InputAliasEffectsChanged {
+            input: input(3),
+            effects: vec![fm_protocol::WireLayerEffect {
+                name: "saturation".into(),
+                parameters: vec![-50],
+            }],
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-alias-effects",
+        &server.address(),
+        "3",
+        "saturation:-50",
+        "--key",
+        "remote-alias-effects",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
+/// IN-024, Protocol 2.168: reading an alias's current effects.
+#[test]
+fn remote_alias_effects_get_prints_the_current_list() {
+    let server = FakeRemoteServer::start_alias_effects(vec![
+        fm_protocol::WireLayerEffect {
+            name: "levels".into(),
+            parameters: vec![16, 235],
+        },
+        fm_protocol::WireLayerEffect {
+            name: "flip".into(),
+            parameters: vec![1, 0],
+        },
+    ]);
+    let output = invoke(&["remote-alias-effects-get", &server.address(), "3"]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("alias-effects: input=3 effects=levels:16,235 flip:1,0"),
+        "{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
     server.finish();
 }
 
