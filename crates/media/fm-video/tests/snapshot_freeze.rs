@@ -450,8 +450,8 @@ fn freeze_controller_reports_explicit_errors_without_state_change() {
     assert_eq!(
         controller.push_source(src(6, 100)),
         Err(FreezeError::SourcePtsNotIncreasing {
-            previous: 100,
-            actual: 100
+            previous: ts(100),
+            actual: ts(100)
         })
     );
     assert_eq!(
@@ -502,7 +502,7 @@ fn frozen_snapshot_of_latched_payload_is_lossless() {
         controller
             .push_source(SourceFrame::new(
                 index,
-                i64::try_from(index).unwrap() * D,
+                ts(i64::try_from(index).unwrap() * D),
                 frame.clone(),
             ))
             .unwrap();
