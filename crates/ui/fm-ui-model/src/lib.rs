@@ -708,6 +708,11 @@ pub enum DurableChange {
         /// The configuration of an added screen capture input (IN-011).
         screen_capture: Option<Box<fm_protocol::ScreenCaptureConfig>>,
     },
+    /// One alias's ordered effects after an edit, undo, or redo (IN-024).
+    AliasEffectsChanged {
+        input: InputId,
+        effects: Vec<fm_protocol::WireLayerEffect>,
+    },
     /// An input removed with its strip and padlock.
     InputRemoved {
         input: InputId,
@@ -1034,6 +1039,12 @@ impl DurableProjectEvent {
                     config,
                 }
             }
+            EventPayload::InputAliasEffectsChanged { input, effects } => {
+                DurableChange::AliasEffectsChanged {
+                    input: input.to_domain(),
+                    effects,
+                }
+            }
             EventPayload::InputRemoved { input } => DurableChange::InputRemoved {
                 input: input.to_domain(),
             },
@@ -1314,6 +1325,8 @@ pub struct ProjectState {
     /// Every highlight reel (OR-013), ascending by id, kept current by
     /// `reel_changed` and `reel_removed`.
     reels: Vec<fm_protocol::ReelStatus>,
+    /// Every alias input's ordered effects (IN-024), from a read or event.
+    alias_effects: BTreeMap<InputId, Vec<fm_protocol::WireLayerEffect>>,
     desired_overlays: Vec<OverlayStatus>,
     realized_overlays: Vec<OverlayStatus>,
     switcher: SwitcherState,
@@ -1441,6 +1454,12 @@ pub struct ProjectState {
 }
 
 impl ProjectState {
+    /// `input`'s replicated alias effect list, empty when unknown.
+    #[must_use]
+    pub fn alias_effects(&self, input: InputId) -> &[fm_protocol::WireLayerEffect] {
+        self.alias_effects.get(&input).map_or(&[], Vec::as_slice)
+    }
+
     /// The show's own health alert rule settings, in rule order (Protocol
     /// 2.112); a rule without one uses its default.
     #[must_use]
@@ -3521,6 +3540,7 @@ impl ClientModel {
             streams: snapshot.streams,
             recordings: snapshot.recordings,
             reels: Vec::new(),
+            alias_effects: BTreeMap::new(),
             desired_overlays: snapshot.desired_overlays,
             realized_overlays: snapshot.realized_overlays,
             switcher: snapshot.switcher,
@@ -5156,6 +5176,17 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::InputAdded { .. } | DurableChange::InputRemoved { .. } => {
             return validate_input_catalogue_change(change, state);
         }
+        DurableChange::AliasEffectsChanged { input, effects } => {
+            if !state.inputs.contains(input) {
+                return Err(ModelError::UnknownInput(*input));
+            }
+            if effects.len() > fm_protocol::MAX_SCENE_LAYER_EFFECTS
+                || effects.iter().any(|effect| !effect.is_valid())
+            {
+                return Err(ModelError::InvalidInputNames);
+            }
+            return Ok(());
+        }
         DurableChange::InputLifecycleChanged { operation, added } => {
             return input_lifecycle::validate(operation, added, state);
         }
@@ -5604,6 +5635,9 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 .position(|candidate| *candidate == input)
                 .expect("validated rename input must exist");
             state.input_names[index] = name;
+        }
+        DurableChange::AliasEffectsChanged { input, effects } => {
+            state.alias_effects.insert(input, effects);
         }
         DurableChange::InputAdded {
             input,
