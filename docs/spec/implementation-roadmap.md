@@ -3122,9 +3122,18 @@ and offers Start, Set, Commit, and Cancel. Each mix frame now also carries a
 `MixAudio` route: the Program source, a transition or T-bar crossfade with its
 exact numerator/denominator, and nested mixes at the same one-frame delay as
 video, with frame zero silent. Logical outputs with follow-video audio carry
-that route as `AudioSource::Mix`. Remaining gap: the output audio renderer
-still does not consume logical-output audio routes (the SW-012 audio path), so
-a secondary mix's samples are not heard yet. `IN-023` remains planned.
+that route as `AudioSource::Mix`, and the native output renderer now renders
+those routes to samples: a Mix map mixes its Program source or its exact
+transition/T-bar crossfade, follows nested mix reads through a bounded
+sixteen-frame history for the one-frame delay, applies the output's own
+Fade-to-Black trajectory, and publishes the block per output. An Input map
+renders that input's program samples, and a Silent map renders silence. The
+daemon's capture path prefers a logical output's block for that output before
+its Master, live, or own-duration fallback, so streams, recorders, and the
+`LiveLAN` viewer hear the routed audio. Remaining gaps: the simulated daemon
+still renders only its Master block, and `AudioMap::Bus` logical outputs keep
+the AU-002 output-aux-bus path instead of resolving the bus named in the plan.
+`IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
