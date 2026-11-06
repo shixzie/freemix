@@ -1555,12 +1555,26 @@ pub(super) fn run(
             let program = control.realized_program_frame();
             let revision = control.revision();
             let resets = control.take_loudness_resets();
+            let routing = control.realized_logical_outputs();
+            let mix_frame = control.realized_mix_frame().clone();
+            let output_plans = routing
+                .outputs
+                .iter()
+                .flatten()
+                .filter_map(|slot| slot.as_ref().ok())
+                .map(|plan| crate::sim_audio::SimulatedOutputAudioPlan {
+                    output: plan.output,
+                    audio: plan.audio,
+                })
+                .collect::<Vec<_>>();
             audio.set_frozen_inputs(control.show().frozen_inputs());
             drop(control);
             if let Some(meters) = audio.poll(
                 durable.project(),
                 revision,
                 program,
+                &output_plans,
+                &mix_frame,
                 resets,
                 true,
                 Instant::now(),

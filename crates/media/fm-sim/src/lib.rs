@@ -9,8 +9,8 @@ mod source;
 
 pub use audio_plane::{
     SIMULATED_TONE_LEVEL_DBFS, SimulatedAudioConfig, SimulatedAudioError, SimulatedAudioMeters,
-    SimulatedAudioPlane, SimulatedAudioStrip, SimulatedGroupState, SimulatedStripState,
-    SimulatedTone,
+    SimulatedAudioPlane, SimulatedAudioStrip, SimulatedGroupState, SimulatedOutputAudioPlan,
+    SimulatedStripState, SimulatedTone,
 };
 pub use error::{MediaSourceError, PipelineConfigError, RegistryError, RenderError, VideoError};
 pub use fm_video::{ImageFrame, Rgba8};

@@ -2569,6 +2569,19 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.realized_switcher().program_frame()
     }
 
+    /// The logical outputs' routing for the current realized show state
+    /// (SW-012/IN-023); the simulated audio plane renders their maps.
+    #[must_use]
+    pub fn realized_logical_outputs(&self) -> fm_switcher::OutputRoutingFrame {
+        self.engine.realized_logical_outputs()
+    }
+
+    /// The secondary-mix frame most recently advanced (IN-023).
+    #[must_use]
+    pub const fn realized_mix_frame(&self) -> &fm_switcher::MixBankFrame {
+        self.engine.secondary_mix_frame()
+    }
+
     /// Returns the only `(list, frame)` a `cue_advance` is accepted for, or
     /// `None` while no cue waits (see [`Engine::cue_advance_frame`]).
     #[must_use]

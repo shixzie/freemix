@@ -21,7 +21,8 @@ use fm_frame::ClockDomainId;
 use fm_model::{AudioGroupNumber, InputKind, Project, SimulatedAudio};
 use fm_sim::{
     SimulatedAudioConfig, SimulatedAudioError, SimulatedAudioMeters, SimulatedAudioPlane,
-    SimulatedAudioStrip, SimulatedGroupState, SimulatedStripState, SimulatedTone,
+    SimulatedAudioStrip, SimulatedGroupState, SimulatedOutputAudioPlan, SimulatedStripState,
+    SimulatedTone,
 };
 use fm_switcher::ProgramFrame;
 use fm_types::strip_dsp::StripDspTarget;
@@ -101,6 +102,8 @@ impl SimulatedAudioRuntime {
         project: &Project,
         revision: u64,
         program_frame: ProgramFrame,
+        outputs: &[SimulatedOutputAudioPlan],
+        mixes: &fm_switcher::MixBankFrame,
         resets: Vec<StripDspTarget>,
         demand: bool,
         now: Instant,
@@ -133,7 +136,11 @@ impl SimulatedAudioRuntime {
             } else {
                 self.pending_resets.iter().copied().collect()
             };
-            if self.plane.render(program_frame, frame, &resets).is_ok() {
+            if self
+                .plane
+                .render_with_outputs(program_frame, frame, &resets, outputs, mixes)
+                .is_ok()
+            {
                 rendered_any = true;
                 if !resets_applied {
                     self.pending_resets.clear();
@@ -150,6 +157,13 @@ impl SimulatedAudioRuntime {
             self.anchor_at = now;
         }
         rendered_any.then(|| self.plane.take_meters())
+    }
+
+    /// `output`'s audio map rendered by the last polled frame, or `None` when
+    /// its map was Master or Bus (SW-012/IN-023).
+    #[must_use]
+    pub fn output_planes(&self, output: fm_types::OutputId) -> Option<&[Vec<f32>]> {
+        self.plane.output_planes(output)
     }
 
     /// Re-applies `project` when its revision changed.

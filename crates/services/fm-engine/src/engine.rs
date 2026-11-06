@@ -3409,6 +3409,16 @@ impl Engine {
         &self.last_mix_frame
     }
 
+    /// The logical outputs' routing for the current realized show state
+    /// (SW-012/IN-023).
+    ///
+    /// Unlike a tick's [`FrameResult::logical_outputs`], this resolves against
+    /// the last advanced secondary-mix frame without advancing the engine.
+    #[must_use]
+    pub fn realized_logical_outputs(&self) -> fm_switcher::OutputRoutingFrame {
+        crate::logical_output::frame(self.commands.state(), &self.last_mix_frame)
+    }
+
     /// Cuts secondary mix `number` from Program to Preview (IN-023).
     ///
     /// # Errors
