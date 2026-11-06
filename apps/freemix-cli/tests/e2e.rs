@@ -8775,6 +8775,86 @@ fn remote_secondary_mix_fade_to_black_sends_the_live_command() {
     server.finish();
 }
 
+/// IN-023, Protocol 2.171: every secondary-mix T-bar command sends its exact
+/// live operation.
+#[test]
+fn remote_secondary_mix_t_bar_commands_send_live_operations() {
+    let number = fm_protocol::WireMixNumber::new(2).unwrap();
+    let start = FakeRemoteServer::start_accept_only(
+        Role::Operator,
+        CommandPayload::SecondaryMixStartTBar {
+            number,
+            kind: fm_protocol::AutoTransitionKind::Slide,
+        },
+        "remote-secondary-mix-tbar-start",
+    );
+    let output = invoke(&[
+        "remote-secondary-mix-tbar-start",
+        &start.address(),
+        "2",
+        "slide",
+        "--key",
+        "remote-secondary-mix-tbar-start",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    start.finish();
+
+    let position = fm_protocol::ManualTransitionPosition::new(5_000).unwrap();
+    let moved = FakeRemoteServer::start_accept_only(
+        Role::Operator,
+        CommandPayload::SecondaryMixSetTBarPosition { number, position },
+        "remote-secondary-mix-tbar-position",
+    );
+    let output = invoke(&[
+        "remote-secondary-mix-tbar-position",
+        &moved.address(),
+        "2",
+        "5000",
+        "--key",
+        "remote-secondary-mix-tbar-position",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    moved.finish();
+
+    let commit = FakeRemoteServer::start_accept_only(
+        Role::Operator,
+        CommandPayload::SecondaryMixCommitTBar { number },
+        "remote-secondary-mix-tbar-commit",
+    );
+    let output = invoke(&[
+        "remote-secondary-mix-tbar-commit",
+        &commit.address(),
+        "2",
+        "--key",
+        "remote-secondary-mix-tbar-commit",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    commit.finish();
+
+    let cancel = FakeRemoteServer::start_accept_only(
+        Role::Operator,
+        CommandPayload::SecondaryMixCancelTBar { number },
+        "remote-secondary-mix-tbar-cancel",
+    );
+    let output = invoke(&[
+        "remote-secondary-mix-tbar-cancel",
+        &cancel.address(),
+        "2",
+        "--key",
+        "remote-secondary-mix-tbar-cancel",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    cancel.finish();
+}
+
 /// IN-023: the local CLI configures, lists, cuts, transitions, and clears a
 /// secondary mix.
 #[test]

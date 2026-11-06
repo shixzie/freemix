@@ -258,6 +258,37 @@ fn secondary_mix_intents_map_to_the_wire_commands() {
             duration_frames: 12,
         }
     );
+    assert_eq!(
+        studio_intent_payload(
+            StudioIntent::SecondaryMixTBarStart {
+                number,
+                kind: fm_protocol::AutoTransitionKind::Slide,
+            },
+            None,
+        )
+        .unwrap(),
+        CommandPayload::SecondaryMixStartTBar {
+            number,
+            kind: fm_protocol::AutoTransitionKind::Slide,
+        }
+    );
+    let position = fm_protocol::ManualTransitionPosition::new(5_000).unwrap();
+    assert_eq!(
+        studio_intent_payload(
+            StudioIntent::SecondaryMixTBarPosition { number, position },
+            None,
+        )
+        .unwrap(),
+        CommandPayload::SecondaryMixSetTBarPosition { number, position }
+    );
+    assert_eq!(
+        studio_intent_payload(StudioIntent::SecondaryMixTBarCommit { number }, None).unwrap(),
+        CommandPayload::SecondaryMixCommitTBar { number }
+    );
+    assert_eq!(
+        studio_intent_payload(StudioIntent::SecondaryMixTBarCancel { number }, None).unwrap(),
+        CommandPayload::SecondaryMixCancelTBar { number }
+    );
 }
 
 #[test]
