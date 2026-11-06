@@ -3328,9 +3328,13 @@ feed's last committed Program and Preview picture into the project bundle as
 at clean shutdown, and restores them at startup as working textures, so a
 restarted daemon shows the last bus picture until the next commit instead of
 black. Simulated daemons rebuild feed thumbnails from their live monitor
-taps. Remaining gaps: aliases do not yet carry independent shortcuts.
-`IN-024` remains planned only for shortcuts; `IN-025` is implemented end to
-end.
+taps. Aliases are first-class inputs for project shortcuts and the numbered
+console key profile: the input menu's Create shortcut action starts a project
+shortcut draft whose action puts that input (including an alias) on Preview,
+and the operator binds a key or OSC name and saves it under the same
+validation and padlock as any shortcut. Aliases therefore carry independent
+shortcut bindings through the one shortcut set. `IN-024` and `IN-025` are
+implemented end to end.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
