@@ -8,13 +8,13 @@ rust-version.workspace = true
 [dependencies]
 flate2 = "1"
 fm-animation = { path = "../../foundation/fm-animation" }
+fm-frame = { path = "../fm-frame" }
 fm-types = { path = "../../foundation/fm-types" }
 
 [dev-dependencies]
 flate2 = "1"
 fm-audio = { path = "../fm-audio" }
 fm-clock = { path = "../fm-clock" }
-fm-frame = { path = "../fm-frame" }
 
 [lints]
 workspace = true
