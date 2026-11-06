@@ -578,6 +578,19 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Replaces one alias's effects on the daemon (IN-024).
+    RemoteAliasEffects {
+        address: SocketAddr,
+        input: u128,
+        effects: Vec<fm_model::LayerEffect>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Reads one alias's effects from the daemon (IN-024).
+    RemoteAliasEffectsGet {
+        address: SocketAddr,
+        input: u128,
+    },
     /// Adds a Program or Preview feed on the daemon (IN-025, Protocol 2.162).
     RemoteMixFeedInputAdd {
         address: SocketAddr,
@@ -2595,6 +2608,36 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 key,
                 expected_revision,
             })
+        }
+        "remote-alias-effects" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let first = required(&mut arguments, "effects")?;
+            let mut effects = Vec::new();
+            let mut rest = arguments.peekable();
+            if first != "none" {
+                effects.push(effect_token(&first)?);
+            }
+            while let Some(value) = rest.next_if(|value| !value.starts_with("--")) {
+                if first == "none" {
+                    return Err(ArgsError::UnexpectedArgument(value));
+                }
+                effects.push(effect_token(&value)?);
+            }
+            let (key, expected_revision) = command_options(rest)?;
+            Ok(Command::RemoteAliasEffects {
+                address,
+                input,
+                effects,
+                key,
+                expected_revision,
+            })
+        }
+        "remote-alias-effects-get" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::RemoteAliasEffectsGet { address, input })
         }
         "remote-mix-feed-input-add" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;

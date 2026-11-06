@@ -276,6 +276,30 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::RemoteAliasEffects {
+            address,
+            input,
+            effects,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetAliasEffects {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                effects: effects
+                    .iter()
+                    .map(|effect| fm_protocol::WireLayerEffect {
+                        name: effect.name.clone(),
+                        parameters: effect.parameters.clone(),
+                    })
+                    .collect(),
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteAliasEffectsGet { address, input } => {
+            remote::alias_effects(address, input_id(input)?)?;
+        }
         Command::RemoteMixFeedInputAdd {
             address,
             input,
@@ -7949,6 +7973,8 @@ Usage:
       --rung.
   freemix-cli scene-input-add <show.freemix> <nonzero-input-id> <nonzero-scene-id> <name>
   freemix-cli alias-input-add <show.freemix> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height]
+  freemix-cli remote-alias-effects <address> <alias-input-id> none|<name>[:<p>,...]... [--key <idempotency-key>] [--expect <revision>]
+  freemix-cli remote-alias-effects-get <address> <alias-input-id>
   freemix-cli remote-alias-input-add <address> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height] [--key <idempotency-key>] [--expect <revision>]
   freemix-cli mix-feed-input-add <show.freemix> <nonzero-input-id> <name> program|preview
   freemix-cli remote-mix-feed-input-add <address> <nonzero-input-id> <name> program|preview [--key <idempotency-key>] [--expect <revision>]
