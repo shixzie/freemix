@@ -149,7 +149,6 @@ impl StudioShell {
                 self.secondary_mixes.draft.preview = format!("input:{}", second.get().get());
             }
         }
-        intents.push(StudioIntent::RequestClocks);
     }
 
     /// Draws the Secondary mixes dialog when open.

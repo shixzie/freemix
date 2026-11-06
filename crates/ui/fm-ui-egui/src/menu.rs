@@ -1402,7 +1402,7 @@ impl StudioShell {
             .on_hover_text(l.text(Msg::MenuSecondaryMixesHover))
             .clicked()
         {
-            self.open_secondary_mixes(state, intents);
+            self.open_secondary_mixes(state);
             ui.close();
         }
         if item(
