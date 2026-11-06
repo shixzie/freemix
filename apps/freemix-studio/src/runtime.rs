@@ -165,6 +165,12 @@ pub struct StudioRuntime {
     still_request: Option<(String, std::time::Instant)>,
     /// The latest frozen-still refusal or request failure.
     still_error: Option<String>,
+    /// Every alias's current effects, from reads and locally applied edits.
+    alias_effects: std::collections::BTreeMap<fm_types::InputId, Vec<fm_protocol::WireLayerEffect>>,
+    /// The alias-effect read awaiting an answer, with its input and send time.
+    alias_effects_request: Option<(String, fm_types::InputId, std::time::Instant)>,
+    /// The latest alias-effect read refusal, with its input.
+    alias_effects_error: Option<(fm_types::InputId, String)>,
     /// The supervised project bundle, when Studio owns the daemon.
     project_bundle: Option<PathBuf>,
     /// Each recorder slot's authored track map, read from the bundle.
@@ -264,6 +270,9 @@ impl StudioRuntime {
             frozen_still: None,
             still_request: None,
             still_error: None,
+            alias_effects: std::collections::BTreeMap::new(),
+            alias_effects_request: None,
+            alias_effects_error: None,
             project_bundle,
             record_track_maps,
             record_track_documents,
@@ -813,6 +822,108 @@ impl StudioRuntime {
     #[must_use]
     pub(crate) fn frozen_still_error(&self) -> Option<&str> {
         self.still_error.as_deref()
+    }
+
+    /// Every alias's current effects learned by a read or an applied edit.
+    #[must_use]
+    pub(crate) fn alias_effects(
+        &self,
+    ) -> &std::collections::BTreeMap<fm_types::InputId, Vec<fm_protocol::WireLayerEffect>> {
+        &self.alias_effects
+    }
+
+    /// The latest alias-effect read refusal, with its input.
+    #[must_use]
+    pub(crate) fn alias_effects_error(&self) -> Option<(fm_types::InputId, &str)> {
+        self.alias_effects_error
+            .as_ref()
+            .map(|(input, message)| (*input, message.as_str()))
+    }
+
+    /// Asks the daemon for `input`'s current effect list (IN-024, Protocol
+    /// 2.168) without blocking; the answer arrives as
+    /// [`SessionEvent::AliasEffectsResponse`].
+    pub(crate) fn request_alias_effects(&mut self, input: fm_types::InputId) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        if !self.session.is_connected() {
+            self.alias_effects_error =
+                Some((input, "the control connection is not ready".to_owned()));
+            return false;
+        }
+        if let Some((_, pending, sent_at)) = &self.alias_effects_request {
+            if *pending == input && sent_at.elapsed() < std::time::Duration::from_secs(5) {
+                return false;
+            }
+            if sent_at.elapsed() < std::time::Duration::from_secs(5) {
+                return false;
+            }
+            self.alias_effects_request = None;
+        }
+        let request_id = format!(
+            "studio-alias-effects-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let sent = self.transport == ControlTransport::Tcp
+            && self
+                .session
+                .send_alias_effects_request(fm_protocol::AliasEffectsRequest {
+                    protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                    request_id: request_id.clone(),
+                    input: fm_protocol::WireInputId::from_domain(input),
+                })
+                .is_ok();
+        if sent {
+            self.alias_effects_request = Some((request_id, input, std::time::Instant::now()));
+            self.alias_effects_error = None;
+        } else {
+            self.alias_effects_error = Some((
+                input,
+                "the alias-effects request could not be sent".to_owned(),
+            ));
+        }
+        sent
+    }
+
+    /// Applies the daemon's alias-effect answer.
+    pub(crate) fn apply_alias_effects_response(
+        &mut self,
+        response: &fm_protocol::AliasEffectsResponse,
+    ) {
+        if self
+            .alias_effects_request
+            .as_ref()
+            .is_some_and(|(request_id, _, _)| request_id == &response.request_id)
+        {
+            self.alias_effects_request = None;
+        }
+        self.alias_effects
+            .insert(response.input.to_domain(), response.effects.clone());
+        self.alias_effects_error = None;
+    }
+
+    /// Records an alias-effect refusal naming `request_id`, when it is the
+    /// read this runtime awaits.
+    pub(crate) fn apply_alias_effects_error(&mut self, request_id: &str, message: String) {
+        if let Some((_, input, _)) = &self.alias_effects_request
+            && request_id
+                == self
+                    .alias_effects_request
+                    .as_ref()
+                    .map(|(id, _, _)| id.as_str())
+                    .unwrap_or_default()
+        {
+            self.alias_effects_error = Some((*input, message));
+            self.alias_effects_request = None;
+        }
+    }
+
+    /// Records effects this Studio just applied, before the event arrives.
+    pub(crate) fn set_alias_effects(
+        &mut self,
+        input: fm_types::InputId,
+        effects: Vec<fm_protocol::WireLayerEffect>,
+    ) {
+        self.alias_effects.insert(input, effects);
     }
 
     /// Asks the daemon to export frozen `input`'s latched picture as a PNG
