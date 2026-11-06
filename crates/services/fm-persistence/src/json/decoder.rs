@@ -118,6 +118,7 @@ struct EditLocks {
 }
 
 impl ProjectDto {
+    #[allow(clippy::too_many_lines)] // one field per project section
     fn parse(value: Value) -> Result<Self, DecodeError> {
         let mut object = Object::new(value, "project")?;
         let id = ProjectId::new(object.nonzero_u128("id")?);
