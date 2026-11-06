@@ -3436,7 +3436,7 @@ impl Engine {
         effect: fm_switcher::MixEffect,
         targets: fm_switcher::MixSet,
     ) -> Result<(), fm_switcher::MixBankError> {
-        self.mix_bank.schedule_effect(effect, targets)
+        self.mix_bank.schedule_effect(effect, targets).map(drop)
     }
 
     /// Fades secondary mix `number` to Black (`active`) or back to Live
