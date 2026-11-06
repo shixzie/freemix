@@ -502,9 +502,12 @@ fn transitions_between_mix_sources_resolve_both_layers_to_previous_frame() {
     );
     assert_eq!(
         m4.secondary,
-        Some(MixLayer::Mix {
-            mix: mix(2),
-            frame: 0,
+        Some(MixOverlay {
+            source: MixLayer::Mix {
+                mix: mix(2),
+                frame: 0,
+            },
+            opacity: u8::MAX,
         })
     );
 }
@@ -524,6 +527,7 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
             MixEffect::OverlayOn {
                 channel,
                 source: src(6),
+                duration_frames: 0,
             },
             targets,
         ),
@@ -531,6 +535,7 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
             effect: MixEffect::OverlayOn {
                 channel,
                 source: src(6),
+                duration_frames: 0,
             },
             targets,
             apply_frame: 1,
@@ -545,7 +550,10 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
     for target in [mix(2), mix(7)] {
         assert_eq!(
             frame1.mix(target).unwrap().overlays[channel.index()],
-            Some(MixLayer::Input(input(6)))
+            Some(MixOverlay {
+                source: MixLayer::Input(input(6)),
+                opacity: u8::MAX,
+            })
         );
     }
     assert_eq!(frame1.mix(MixId::MAIN).unwrap().overlays, [None; 8]);
@@ -555,6 +563,7 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
             effect: MixEffect::OverlayOn {
                 channel,
                 source: src(6),
+                duration_frames: 0,
             },
             targets,
             frame: 1,
@@ -562,12 +571,21 @@ fn overlay_effect_applies_to_all_targets_at_the_next_boundary() {
     );
     assert_eq!(bank.pending_effects(), 0);
 
-    bank.schedule_effect(MixEffect::OverlayOff { channel }, MixSet::single(mix(7)))
-        .unwrap();
+    bank.schedule_effect(
+        MixEffect::OverlayOff {
+            channel,
+            duration_frames: 0,
+        },
+        MixSet::single(mix(7)),
+    )
+    .unwrap();
     let (frame2, _) = bank.advance_frame();
     assert_eq!(
         frame2.mix(mix(2)).unwrap().overlays[channel.index()],
-        Some(MixLayer::Input(input(6)))
+        Some(MixOverlay {
+            source: MixLayer::Input(input(6)),
+            opacity: u8::MAX,
+        })
     );
     assert_eq!(frame2.mix(mix(7)).unwrap().overlays[channel.index()], None);
 }
@@ -577,12 +595,21 @@ fn effect_scheduling_validates_targets_and_bounds() {
     let mut bank = bank();
     let channel = OverlayChannelId::new(1).unwrap();
     assert_eq!(
-        bank.schedule_effect(MixEffect::OverlayOff { channel }, MixSet::EMPTY),
+        bank.schedule_effect(
+            MixEffect::OverlayOff {
+                channel,
+                duration_frames: 0,
+            },
+            MixSet::EMPTY
+        ),
         Err(MixBankError::EmptyTargetSet)
     );
     assert_eq!(
         bank.schedule_effect(
-            MixEffect::OverlayOff { channel },
+            MixEffect::OverlayOff {
+                channel,
+                duration_frames: 0,
+            },
             MixSet::from_mixes([MixId::MAIN, mix(9)]),
         ),
         Err(MixBankError::UnknownMix(mix(9)))
@@ -592,6 +619,7 @@ fn effect_scheduling_validates_targets_and_bounds() {
             MixEffect::OverlayOn {
                 channel,
                 source: src(42),
+                duration_frames: 0,
             },
             MixSet::single(MixId::MAIN),
         ),
@@ -599,14 +627,20 @@ fn effect_scheduling_validates_targets_and_bounds() {
     );
     for _ in 0..MAX_PENDING_MIX_EFFECTS {
         bank.schedule_effect(
-            MixEffect::OverlayOff { channel },
+            MixEffect::OverlayOff {
+                channel,
+                duration_frames: 0,
+            },
             MixSet::single(MixId::MAIN),
         )
         .unwrap();
     }
     assert_eq!(
         bank.schedule_effect(
-            MixEffect::OverlayOff { channel },
+            MixEffect::OverlayOff {
+                channel,
+                duration_frames: 0,
+            },
             MixSet::single(MixId::MAIN)
         ),
         Err(MixBankError::PendingEffectsFull {
@@ -714,6 +748,7 @@ fn removed_target_rejects_pending_effect() {
     let effect = MixEffect::OverlayOn {
         channel,
         source: src(5),
+        duration_frames: 0,
     };
     let targets = MixSet::from_mixes([MixId::MAIN, mix(2)]);
     bank.schedule_effect(effect, targets).unwrap();
@@ -747,6 +782,7 @@ fn identical_command_sequences_produce_identical_frames() {
             MixEffect::OverlayOn {
                 channel: OverlayChannelId::new(4).unwrap(),
                 source: src(6),
+                duration_frames: 0,
             },
             MixSet::from_mixes([mix(2), mix(3)]),
         )
@@ -928,6 +964,7 @@ fn a_mix_overlay_reads_the_upstream_mix_one_frame_late() {
         MixEffect::OverlayOn {
             channel,
             source: MixSource::Mix(mix(2)),
+            duration_frames: 0,
         },
         MixSet::single(mix(3)),
     )
@@ -936,9 +973,12 @@ fn a_mix_overlay_reads_the_upstream_mix_one_frame_late() {
     let (frame1, events) = bank.advance_frame();
     assert_eq!(
         frame1.mix(mix(3)).unwrap().overlays[channel.index()],
-        Some(MixLayer::Mix {
-            mix: mix(2),
-            frame: 0,
+        Some(MixOverlay {
+            source: MixLayer::Mix {
+                mix: mix(2),
+                frame: 0,
+            },
+            opacity: u8::MAX,
         })
     );
     assert!(events.contains(&MixBankEvent::OverlayChanged {
@@ -952,9 +992,12 @@ fn a_mix_overlay_reads_the_upstream_mix_one_frame_late() {
     let (frame2, _) = bank.advance_frame();
     assert_eq!(
         frame2.mix(mix(3)).unwrap().overlays[channel.index()],
-        Some(MixLayer::Mix {
-            mix: mix(2),
-            frame: 1,
+        Some(MixOverlay {
+            source: MixLayer::Mix {
+                mix: mix(2),
+                frame: 1,
+            },
+            opacity: u8::MAX,
         })
     );
 }
@@ -969,6 +1012,7 @@ fn mix_overlays_participate_in_routing_cycle_checks() {
         MixEffect::OverlayOn {
             channel,
             source: MixSource::Mix(mix(2)),
+            duration_frames: 0,
         },
         MixSet::single(mix(3)),
     )
@@ -991,6 +1035,7 @@ fn mix_overlays_participate_in_routing_cycle_checks() {
             MixEffect::OverlayOn {
                 channel,
                 source: MixSource::Mix(mix(3)),
+                duration_frames: 0,
             },
             MixSet::single(mix(3)),
         ),
@@ -1051,4 +1096,96 @@ fn fade_to_black_is_independent_inside_each_mix() {
         completed_frame.mix(mix(3)).unwrap().fade_to_black,
         fm_switcher::FadeToBlackFrame::LIVE
     );
+}
+
+#[test]
+fn mix_overlay_channels_fade_in_and_out() {
+    let mut bank = bank();
+    let channel = OverlayChannelId::new(1).unwrap();
+    let target = MixSet::single(MixId::MAIN);
+    bank.schedule_effect(
+        MixEffect::OverlayOn {
+            channel,
+            source: src(5),
+            duration_frames: 4,
+        },
+        target,
+    )
+    .unwrap();
+
+    let (frame0, _) = bank.advance_frame();
+    assert_eq!(
+        frame0.mix(MixId::MAIN).unwrap().overlays[channel.index()]
+            .unwrap()
+            .opacity,
+        63
+    );
+    let (frame1, _) = bank.advance_frame();
+    assert_eq!(
+        frame1.mix(MixId::MAIN).unwrap().overlays[channel.index()]
+            .unwrap()
+            .opacity,
+        127
+    );
+    let (frame2, _) = bank.advance_frame();
+    assert_eq!(
+        frame2.mix(MixId::MAIN).unwrap().overlays[channel.index()]
+            .unwrap()
+            .opacity,
+        191
+    );
+    let (frame3, _) = bank.advance_frame();
+    assert_eq!(
+        frame3.mix(MixId::MAIN).unwrap().overlays[channel.index()]
+            .unwrap()
+            .opacity,
+        255
+    );
+
+    bank.schedule_effect(
+        MixEffect::OverlayOff {
+            channel,
+            duration_frames: 2,
+        },
+        target,
+    )
+    .unwrap();
+    let (fade0, _) = bank.advance_frame();
+    assert_eq!(
+        fade0.mix(MixId::MAIN).unwrap().overlays[channel.index()]
+            .unwrap()
+            .opacity,
+        128
+    );
+    let (fade1, events) = bank.advance_frame();
+    assert_eq!(
+        fade1.mix(MixId::MAIN).unwrap().overlays[channel.index()],
+        None
+    );
+    assert!(events.contains(&MixBankEvent::OverlayChanged {
+        mix: MixId::MAIN,
+        channel,
+        source: None,
+    }));
+}
+
+#[test]
+fn mix_overlay_fade_duration_is_bounded() {
+    let mut bank = bank();
+    let channel = OverlayChannelId::new(1).unwrap();
+    assert_eq!(
+        bank.schedule_effect(
+            MixEffect::OverlayOn {
+                channel,
+                source: src(5),
+                duration_frames: fm_switcher::MAX_OVERLAY_TRANSITION_DURATION_FRAMES + 1,
+            },
+            MixSet::single(MixId::MAIN),
+        ),
+        Err(MixBankError::InvalidOverlayDuration {
+            duration_frames: fm_switcher::MAX_OVERLAY_TRANSITION_DURATION_FRAMES + 1,
+            maximum: fm_switcher::MAX_OVERLAY_TRANSITION_DURATION_FRAMES,
+        })
+    );
+    assert_eq!(bank.pending_effects(), 0);
 }
