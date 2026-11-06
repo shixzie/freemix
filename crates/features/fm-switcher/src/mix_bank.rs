@@ -1264,6 +1264,7 @@ impl MixBank {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per mix effect
     fn apply_effect(&mut self, mix: MixId, effect: MixEffect, events: &mut Vec<MixBankEvent>) {
         match effect {
             MixEffect::OverlayOn {
