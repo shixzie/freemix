@@ -177,6 +177,15 @@ struct NativeAliasCrop {
     opacity: u8,
 }
 
+/// An alias's own layer state, merged into a scene layer that draws it
+/// (IN-024).
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeAliasLayer {
+    effects: Vec<fm_model::LayerEffect>,
+    mask: Option<fm_model::RectMask>,
+    opacity: u8,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NativeScenePlan {
     id: SceneId,
@@ -204,9 +213,9 @@ struct NativeScenePlan {
     /// scenes' drawn-layer count it was checked against: the same model
     /// under the same budget is not rebuilt (and rejected) again each frame.
     rejected: Option<(Arc<fm_model::Scene>, usize)>,
-    /// Each alias input's own effects, merged ahead of a scene layer's
-    /// effects when the layer draws that alias (IN-024).
-    alias_effects: BTreeMap<InputId, Vec<fm_model::LayerEffect>>,
+    /// Each alias input's own layer state, merged into a scene layer that
+    /// draws it (IN-024).
+    alias_layers: BTreeMap<InputId, NativeAliasLayer>,
 }
 
 #[cfg(test)]
@@ -219,11 +228,11 @@ thread_local! {
 /// `model` with each alias layer's own effects merged ahead of the layer's
 /// effects (IN-024). A layer drawing the alias applies them in order; the
 /// alias crop, when any, already selected the layer's picture.
-fn scene_with_alias_effects(
+fn scene_with_alias_layers(
     model: &fm_model::Scene,
-    alias_effects: &BTreeMap<InputId, Vec<fm_model::LayerEffect>>,
+    alias_layers: &BTreeMap<InputId, NativeAliasLayer>,
 ) -> fm_model::Scene {
-    if alias_effects.is_empty() {
+    if alias_layers.is_empty() {
         return model.clone();
     }
     let mut model = model.clone();
@@ -231,12 +240,17 @@ fn scene_with_alias_effects(
         let SourceRef::Input(input) = layer.source else {
             continue;
         };
-        let Some(effects) = alias_effects.get(&input) else {
+        let Some(alias) = alias_layers.get(&input) else {
             continue;
         };
-        let mut merged = effects.clone();
+        let mut merged = alias.effects.clone();
         merged.append(&mut layer.effects);
         layer.effects = merged;
+        if let Some(mask) = alias.mask {
+            layer.mask = Some(mask);
+        }
+        layer.opacity =
+            u8::try_from(u16::from(layer.opacity) * u16::from(alias.opacity) / 255).unwrap_or(0);
     }
     model
 }
@@ -468,13 +482,13 @@ impl NativeScenePlan {
             .find(|scene| scene.input == frame.program.primary)
             .or_else(|| candidates.clone().next());
         let posed = match pose {
-            Some(pose) => std::borrow::Cow::Owned(scene_with_alias_effects(
+            Some(pose) => std::borrow::Cow::Owned(scene_with_alias_layers(
                 &self.model.posed(pose.frame.sample, width, height),
-                &self.alias_effects,
+                &self.alias_layers,
             )),
-            None if has_grades => std::borrow::Cow::Owned(scene_with_alias_effects(
+            None if has_grades => std::borrow::Cow::Owned(scene_with_alias_layers(
                 &resolved_scene(&self.model),
-                &self.alias_effects,
+                &self.alias_layers,
             )),
             None => return std::borrow::Cow::Borrowed(&self.composition),
         };
@@ -682,8 +696,8 @@ pub struct NativeProjectPlan {
     feeds: BTreeMap<InputId, fm_model::MixFeed>,
     /// Every cropped alias and the concrete picture its crop selects (IN-024).
     alias_crops: BTreeMap<InputId, NativeAliasCrop>,
-    /// Each alias input's own effects (IN-024).
-    alias_effects: BTreeMap<InputId, Vec<fm_model::LayerEffect>>,
+    /// Each alias input's own layer state (IN-024).
+    alias_layers: BTreeMap<InputId, NativeAliasLayer>,
     peak_rgba16f_targets: usize,
     transient_rgba16f_bytes: u64,
     grades: NativeProjectGrades,
@@ -807,7 +821,7 @@ impl NativeProjectPlan {
         let dimensions = project.settings().video.dimensions;
         let mut feeds = BTreeMap::new();
         let mut alias_crops = BTreeMap::new();
-        let mut alias_effects = BTreeMap::new();
+        let mut alias_layers = BTreeMap::new();
         for input in project.inputs() {
             let (concrete, crop, effects, mask, opacity) = resolve_alias_target(input.id, &inputs)?;
             if let InputKind::MixFeed(feed) = &concrete.kind {
@@ -828,8 +842,15 @@ impl NativeProjectPlan {
                     opacity,
                 });
             }
-            if !effects.is_empty() {
-                alias_effects.insert(input.id, effects);
+            if !effects.is_empty() || mask.is_some() || opacity != u8::MAX {
+                alias_layers.insert(
+                    input.id,
+                    NativeAliasLayer {
+                        effects,
+                        mask,
+                        opacity,
+                    },
+                );
             }
         }
         let black_scene = (!feeds.is_empty())
@@ -990,7 +1011,7 @@ impl NativeProjectPlan {
             }
             let composition = native_scene_composition(
                 scene_id,
-                &scene_with_alias_effects(&resolved_scene(model), &alias_effects),
+                &scene_with_alias_layers(&resolved_scene(model), &alias_layers),
                 &layer_tokens,
                 &key_tokens,
                 dimensions.width(),
@@ -1023,7 +1044,7 @@ impl NativeProjectPlan {
                     .collect(),
                 black_scene,
                 rejected: None,
-                alias_effects: alias_effects.clone(),
+                alias_layers: alias_layers.clone(),
             });
         }
 
@@ -1071,7 +1092,7 @@ impl NativeProjectPlan {
                     sources: Vec::new(),
                     black_scene: None,
                     rejected: None,
-                    alias_effects: BTreeMap::new(),
+                    alias_layers: BTreeMap::new(),
                 },
             );
         }
@@ -1148,7 +1169,7 @@ impl NativeProjectPlan {
             black_scene,
             feeds,
             alias_crops,
-            alias_effects,
+            alias_layers,
             audio_routes,
             audio_strips: project
                 .input_audio_strips()
@@ -1244,8 +1265,13 @@ impl NativeProjectPlan {
         self.alias_crops.get(&input).copied()
     }
 
-    fn alias_effects(&self, input: InputId) -> &[fm_model::LayerEffect] {
-        self.alias_effects.get(&input).map_or(&[], Vec::as_slice)
+    fn alias_layer(&self, input: InputId) -> &NativeAliasLayer {
+        static EMPTY: NativeAliasLayer = NativeAliasLayer {
+            effects: Vec::new(),
+            mask: None,
+            opacity: u8::MAX,
+        };
+        self.alias_layers.get(&input).unwrap_or(&EMPTY)
     }
 
     /// The crop a cropped alias applies, in project pixels (IN-024).
@@ -1750,10 +1776,10 @@ impl NativeProjectPlan {
                 });
                 key_tokens.push(token);
             }
-            let alias_effects = self.alias_effects.clone();
+            let alias_layers = self.alias_layers.clone();
             let Ok(composition) = native_scene_composition(
                 plan.id,
-                &scene_with_alias_effects(&resolved_scene(&drawn), &alias_effects),
+                &scene_with_alias_layers(&resolved_scene(&drawn), &alias_layers),
                 &tokens,
                 &key_tokens,
                 width,
@@ -8484,7 +8510,7 @@ impl NativeMediaRuntime {
                 .crop_project_texture(
                     project.dimensions,
                     alias.crop,
-                    project.alias_effects(*input),
+                    project.alias_layer(*input).effects.as_slice(),
                     alias.mask,
                     alias.opacity,
                     true,
@@ -8522,7 +8548,7 @@ impl NativeMediaRuntime {
                 .crop_project_texture(
                     project.dimensions,
                     alias.crop,
-                    project.alias_effects(*input),
+                    project.alias_layer(*input).effects.as_slice(),
                     alias.mask,
                     alias.opacity,
                     true,
@@ -10030,7 +10056,7 @@ impl NativeMediaRuntime {
                     .crop_project_texture(
                         project.dimensions,
                         alias.crop,
-                        project.alias_effects(*input),
+                        project.alias_layer(*input).effects.as_slice(),
                         alias.mask,
                         alias.opacity,
                         false,
