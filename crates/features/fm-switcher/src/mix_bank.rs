@@ -34,7 +34,7 @@ use crate::{
     FadeToBlackController, FadeToBlackCurve, FadeToBlackError, FadeToBlackFrame,
     FadeToBlackPosition, FadeToBlackRequest, FadeToBlackTarget,
     MAX_OVERLAY_TRANSITION_DURATION_FRAMES, MissingMediaFallback, OVERLAY_CHANNEL_COUNT,
-    OverlayChannelId, StingerSlotId, TransitionKind,
+    OverlayChannelId, StingerSlotId, TBarPosition, TransitionKind,
 };
 
 /// Number of secondary mixes addressable beside the Main mix.
@@ -213,8 +213,17 @@ pub struct MixState {
     program: MixSource,
     preview: Option<MixSource>,
     transition: Option<MixTransition>,
+    t_bar: Option<MixTBarState>,
     overlays: [Option<MixOverlayState>; OVERLAY_CHANNEL_COUNT],
     fade_to_black: FadeToBlackController,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MixTBarState {
+    kind: TransitionKind,
+    from: MixSource,
+    to: MixSource,
+    position: TBarPosition,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -305,6 +314,14 @@ impl MixState {
         self.fade_to_black
     }
 
+    #[must_use]
+    pub const fn t_bar_position(&self) -> Option<TBarPosition> {
+        match self.t_bar {
+            Some(t_bar) => Some(t_bar.position),
+            None => None,
+        }
+    }
+
     fn references(&self) -> impl Iterator<Item = MixSource> + '_ {
         [Some(self.program), self.preview]
             .into_iter()
@@ -389,6 +406,20 @@ pub enum MixBankCommand {
         kind: TransitionKind,
         duration_frames: u32,
     },
+    /// Starts a manual T-bar transition of one Preview/Program mix.
+    StartTBar {
+        mix: MixId,
+        kind: TransitionKind,
+    },
+    /// Moves a mix's active T-bar to an absolute position.
+    SetTBarPosition {
+        mix: MixId,
+        position: TBarPosition,
+    },
+    /// Completes a mix's T-bar and swaps Program with Preview.
+    CommitTBar(MixId),
+    /// Cancels a mix's T-bar without changing Program or Preview.
+    CancelTBar(MixId),
     /// Fades one mix independently to Black or back to Live.
     FadeToBlack {
         mix: MixId,
@@ -471,6 +502,19 @@ pub enum MixBankEvent {
         slot: StingerSlotId,
         fallback: MissingMediaFallback,
     },
+    TBarStarted {
+        mix: MixId,
+        kind: TransitionKind,
+        from: MixSource,
+        to: MixSource,
+    },
+    TBarPositionChanged {
+        mix: MixId,
+        position: TBarPosition,
+    },
+    TBarCancelled {
+        mix: MixId,
+    },
     FadeToBlackStarted {
         mix: MixId,
         from: FadeToBlackPosition,
@@ -536,6 +580,10 @@ pub enum MixBankError {
     },
     /// A Stinger effect names a slot with no media configured.
     UnconfiguredStinger(StingerSlotId),
+    /// A mix has no manual T-bar in flight.
+    NoTBar(MixId),
+    /// A Stinger is taken with its own command, not a mix T-bar.
+    UnsupportedManualTransitionKind(MixId),
     /// A mix's Fade-to-Black request was invalid.
     FadeToBlack {
         mix: MixId,
@@ -617,6 +665,10 @@ impl core::fmt::Display for MixBankError {
                 "the media of Stinger {} is not configured",
                 slot.number()
             ),
+            Self::NoTBar(mix) => write!(formatter, "{mix} has no T-bar in progress"),
+            Self::UnsupportedManualTransitionKind(mix) => {
+                write!(formatter, "{mix} T-bar cannot scrub a Stinger")
+            }
             Self::FadeToBlack { mix, error } => {
                 write!(formatter, "{mix} Fade-to-Black is invalid: {error}")
             }
@@ -852,6 +904,71 @@ impl MixBank {
                     to: source,
                     duration_frames,
                 }])
+            }
+            MixBankCommand::StartTBar { mix, kind } => {
+                let state = self.require_idle(mix)?;
+                if state.preview.is_none() {
+                    return Err(MixBankError::PreviewUnavailable(mix));
+                }
+                if matches!(kind, TransitionKind::Stinger(_)) {
+                    return Err(MixBankError::UnsupportedManualTransitionKind(mix));
+                }
+                let from = state.program;
+                let to = state.preview.expect("validated Preview/Program mix");
+                self.state_mut(mix).t_bar = Some(MixTBarState {
+                    kind,
+                    from,
+                    to,
+                    position: TBarPosition::START,
+                });
+                Ok(vec![MixBankEvent::TBarStarted {
+                    mix,
+                    kind,
+                    from,
+                    to,
+                }])
+            }
+            MixBankCommand::SetTBarPosition { mix, position } => {
+                let state = self.require_mix(mix)?;
+                let Some(mut t_bar) = state.t_bar else {
+                    return Err(MixBankError::NoTBar(mix));
+                };
+                t_bar.position = position;
+                self.state_mut(mix).t_bar = Some(t_bar);
+                Ok(vec![MixBankEvent::TBarPositionChanged { mix, position }])
+            }
+            MixBankCommand::CommitTBar(mix) => {
+                let state = self.require_mix(mix)?;
+                let Some(t_bar) = state.t_bar else {
+                    return Err(MixBankError::NoTBar(mix));
+                };
+                let state = self.state_mut(mix);
+                state.t_bar = None;
+                let previous = state.program;
+                state.program = t_bar.to;
+                if state.preview.is_some() {
+                    state.preview = Some(t_bar.from);
+                }
+                Ok(vec![
+                    MixBankEvent::ProgramChanged {
+                        mix,
+                        previous,
+                        program: t_bar.to,
+                    },
+                    MixBankEvent::TransitionCompleted {
+                        mix,
+                        kind: t_bar.kind,
+                        program: t_bar.to,
+                    },
+                ])
+            }
+            MixBankCommand::CancelTBar(mix) => {
+                let state = self.require_mix(mix)?;
+                if state.t_bar.is_none() {
+                    return Err(MixBankError::NoTBar(mix));
+                }
+                self.state_mut(mix).t_bar = None;
+                Ok(vec![MixBankEvent::TBarCancelled { mix }])
             }
             MixBankCommand::FadeToBlack {
                 mix,
@@ -1388,7 +1505,7 @@ impl MixBank {
 
     fn require_idle(&self, mix: MixId) -> Result<&MixState, MixBankError> {
         let state = self.require_mix(mix)?;
-        if state.transition.is_some() {
+        if state.transition.is_some() || state.t_bar.is_some() {
             return Err(MixBankError::TransitionInProgress(mix));
         }
         Ok(state)
@@ -1410,6 +1527,7 @@ fn new_mix_state(config: MixConfig) -> MixState {
         program,
         preview,
         transition: None,
+        t_bar: None,
         overlays: [None; OVERLAY_CHANNEL_COUNT],
         fade_to_black: FadeToBlackController::default(),
     }
@@ -1442,6 +1560,24 @@ const fn resolve(source: MixSource, frame: u64) -> MixLayer {
 
 fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
     let preview = state.preview.map(|source| resolve(source, frame));
+    if let Some(t_bar) = state.t_bar {
+        return MixFrame {
+            mix,
+            primary: resolve(t_bar.from, frame),
+            secondary: Some(resolve(t_bar.to, frame)),
+            transition_kind: Some(t_bar.kind),
+            mix_numerator: u32::from(t_bar.position.basis_points()),
+            mix_denominator: u32::from(TBarPosition::MAX),
+            preview,
+            overlays: state.overlays.map(|overlay| {
+                overlay.map(|overlay| MixOverlay {
+                    source: resolve(overlay.source, frame),
+                    opacity: overlay.frame_opacity(),
+                })
+            }),
+            fade_to_black: state.fade_to_black.frame(),
+        };
+    }
     match state.transition {
         Some(transition) => MixFrame {
             mix,
