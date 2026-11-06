@@ -2962,6 +2962,29 @@ pub fn execute(
     remote.execute(payload, key, expected_revision, completion)
 }
 
+/// Executes one live command and prints the current status once the daemon
+/// accepts it. Unlike [`execute`], it does not wait for a durable event:
+/// a secondary-mix cut or transition changes live mix-bank state without a
+/// project event, and the daemon reports the new state on the next snapshot.
+///
+/// # Errors
+///
+/// Returns the same connection, protocol, or refusal failure as [`execute`].
+pub fn execute_live(
+    address: SocketAddr,
+    payload: CommandPayload,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Operator)?;
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    remote.send_command(payload, key, expected_revision)?;
+    remote.print_status()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandCompletion {
     Project,
@@ -3039,6 +3062,8 @@ impl CommandCompletion {
             | CommandPayload::SetTitleRow { .. }
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
+            | CommandPayload::SetSecondaryMix { .. }
+            | CommandPayload::ClearSecondaryMix { .. }
             | CommandPayload::SetNetworkStream { .. }
             | CommandPayload::SetCaptureSettings { .. }
             | CommandPayload::SetStreamTarget { .. }

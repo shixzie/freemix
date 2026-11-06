@@ -1954,7 +1954,7 @@ pub fn run(command: Command) -> AppResult<()> {
             number,
             key,
             expected_revision,
-        } => remote::execute(
+        } => remote::execute_live(
             address,
             fm_protocol::CommandPayload::SecondaryMixCut { number },
             key,
@@ -1985,7 +1985,7 @@ pub fn run(command: Command) -> AppResult<()> {
             duration_frames,
             key,
             expected_revision,
-        } => remote::execute(
+        } => remote::execute_live(
             address,
             fm_protocol::CommandPayload::SecondaryMixTransition {
                 number,
