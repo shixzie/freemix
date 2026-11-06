@@ -8629,7 +8629,7 @@ fn remote_alias_effects_get_prints_the_current_list() {
         stdout(&output).contains("alias-effects: input=3 effects=levels:16,235 flip:1,0"),
         "{}\n{}",
         stdout(&output),
-        stderr(&output)
+        String::from_utf8_lossy(&output.stderr)
     );
     server.finish();
 }
