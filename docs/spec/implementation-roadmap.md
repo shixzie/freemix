@@ -3301,12 +3301,17 @@ set, the daemon folds it into the stored project, and the CLI has
 `remote-alias-input-add` and `remote-mix-feed-input-add`. Protocol 2.167 adds
 an optional encoded effect list to `kind=alias`; the CLI accepts repeated
 `--effect name:parameters`, and project schema 110 persists the effects on the
-alias. Studio's Add input dialog offers Alias (with an input picker, an
+alias. Protocol 2.168 adds post-add editing: `set_alias_effects` replaces an
+existing alias's ordered list as a padlocked, undoable project edit,
+`input_alias_effects_changed` replicates it, and `alias_effects_request`/
+`alias_effects_response` read the current list. The CLI has
+`remote-alias-effects` and `remote-alias-effects-get`, and Studio's tile menu
+opens an alias-effect editor that reads the current list, accepts the same
+space-separated effect tokens, and applies it atomically. Studio's Add input dialog offers Alias (with an input picker, an
 optional project-pixel crop, a nonempty/16384-bound check, and a space-separated
 effect field) and Feed (Program or Preview). Remaining gaps: aliases do not
-yet carry independent shortcuts or layer state, effects cannot be edited after
-the alias is added, and feed persistence is limited to the stored project
-input. `IN-024` and `IN-025` remain planned.
+yet carry independent shortcuts or layer state, and feed persistence is
+limited to the stored project input. `IN-024` and `IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
