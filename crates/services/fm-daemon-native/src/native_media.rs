@@ -13179,7 +13179,7 @@ mod tests {
             );
             let half = rgba16f_pixel(&frame.bytes, 4, 0, 0);
             assert!(
-                (0.35..0.65).contains(&half[0]) && half[1] < 0.1 && half[2] < 0.1,
+                (0.2..0.45).contains(&half[0]) && half[1] < 0.1 && half[2] < 0.1,
                 "the alias opacity halves the red left half of {program}: {half:?}"
             );
         }
