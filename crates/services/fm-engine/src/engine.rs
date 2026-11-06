@@ -5229,7 +5229,6 @@ impl EngineMutation {
             | EngineCommand::SetSecondaryMix { .. }
             | EngineCommand::SetInputVideoDelay { .. }
             | EngineCommand::SetAliasEffects { .. }
-            | EngineCommand::SetAliasEffects { .. }
             | EngineCommand::SetInputFreeze { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
@@ -5927,7 +5926,6 @@ fn apply_runtime(
             | EngineCommand::SetSecondaryMix { .. }
             | EngineCommand::SetInputVideoDelay { .. }
             | EngineCommand::SetAliasEffects { .. }
-            | EngineCommand::SetAliasEffects { .. }
             | EngineCommand::SetInputFreeze { .. }
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
@@ -6140,7 +6138,6 @@ fn apply_runtime(
         | EngineCommand::SetLogicalOutput { .. }
         | EngineCommand::SetSecondaryMix { .. }
         | EngineCommand::SetInputVideoDelay { .. }
-        | EngineCommand::SetAliasEffects { .. }
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SetLiveLan(_)
