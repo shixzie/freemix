@@ -13324,6 +13324,29 @@ mod tests {
             "the mix overlay draws the other mix's blue Program: {pixel:?}"
         );
 
+        // A half-faded overlay blends the blue Program over the red base.
+        let mut dimmed = mix_two_frame;
+        dimmed.overlays[0].as_mut().unwrap().opacity = 128;
+        frame.secondary_mixes.mixes[0] = dimmed;
+        let blended = block_on(runtime.render_mix_texture(
+            playback.registry(),
+            &BTreeMap::new(),
+            &plan,
+            &BTreeMap::new(),
+            &frame,
+            green.texture(),
+            mix_two,
+            &mut Vec::new(),
+            NativeFeedFrames::default(),
+        ))
+        .unwrap();
+        let blended = block_on(runtime.diagnostic_readback(&blended)).unwrap();
+        let pixel = rgba16f_pixel(&blended.bytes, 4, 0, 0);
+        assert!(
+            pixel[0] > 0.1 && pixel[2] > 0.1,
+            "the half-opacity overlay blends red and blue: {pixel:?}"
+        );
+
         // Fade-to-Black inside Mix 2 covers its background and overlay.
         let mut faded = mix_two_frame;
         faded.fade_to_black =
