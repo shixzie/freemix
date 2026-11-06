@@ -1609,9 +1609,14 @@ status, and both the offline PPM renderer and the native project planner map
 the persisted stack into compositor descriptors in order. Live protocol
 mutation (`scene_layer_effects_set`, Protocol 2.43), Studio's EFFECTS
 inspector, native GPU effect execution, and the native grade pass (`SW-019`)
-have since landed, and a deinterlace layer effect (blend fields, or keep the
-top or bottom field; Protocol 2.117) runs on both paths. Remaining gaps: no
-Web effect surface and no motion-adaptive deinterlace. The
+have since landed, and a deinterlace layer effect (blend fields, keep the
+top or bottom field, or motion-adaptive; Protocol 2.117) runs on both paths.
+The motion-adaptive mode predicts each pixel from its same-field vertical
+neighbours and falls back to the inter-field blend when any channel differs
+from that prediction by less than 32, so still areas stay smooth and moving
+detail keeps one field's vertical resolution without combing; the CPU
+reference and the native shader implement the same integer arithmetic.
+Remaining gap: no Web effect surface. The
 scope session is still unsurfaced: no scope renderer, monitoring-point frame
 tap, overlay, telemetry, or scope persistence exists. Item 8 therefore remains
 incomplete, and `SW-007`/`SW-010` remain planned.
