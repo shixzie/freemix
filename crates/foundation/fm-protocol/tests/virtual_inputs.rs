@@ -38,6 +38,8 @@ fn alias_and_feed_add_commands_round_trip() {
         target: input(1),
         crop: None,
         effects: Vec::new(),
+        opacity: u8::MAX,
+        mask: None,
     });
     round_trip(LiveInputSource::Alias {
         target: input(2),
@@ -51,6 +53,8 @@ fn alias_and_feed_add_commands_round_trip() {
             name: "saturation".into(),
             parameters: vec![-25],
         }],
+        opacity: u8::MAX,
+        mask: None,
     });
     round_trip(LiveInputSource::ProgramFeed);
     round_trip(LiveInputSource::PreviewFeed);
@@ -67,6 +71,8 @@ fn alias_tokens_are_canonical() {
             height: 4,
         }),
         effects: Vec::new(),
+        opacity: u8::MAX,
+        mask: None,
     }))
     .unwrap();
     for field in [
@@ -96,6 +102,8 @@ fn an_alias_crop_past_the_source_bound_is_refused() {
             height: 4,
         }),
         effects: Vec::new(),
+        opacity: u8::MAX,
+        mask: None,
     }))
     .unwrap();
     let past = line.replace("crop_width=3", "crop_width=16384");
@@ -111,6 +119,8 @@ fn an_alias_crop_past_the_source_bound_is_refused() {
             height: 1,
         }),
         effects: Vec::new(),
+        opacity: u8::MAX,
+        mask: None,
     });
     assert!(encode_line(&invalid).is_err());
 
@@ -124,6 +134,8 @@ fn an_alias_crop_past_the_source_bound_is_refused() {
             height: 16_384,
         }),
         effects: Vec::new(),
+        opacity: u8::MAX,
+        mask: None,
     });
 }
 
@@ -138,6 +150,8 @@ fn an_incomplete_or_empty_alias_crop_is_refused() {
             height: 4,
         }),
         effects: Vec::new(),
+        opacity: u8::MAX,
+        mask: None,
     }))
     .unwrap();
     for damaged in [
@@ -165,6 +179,8 @@ fn alias_effects_round_trip_and_are_bounded() {
         target: input(1),
         crop: None,
         effects: effects.clone(),
+        opacity: u8::MAX,
+        mask: None,
     });
 
     let invalid = command(LiveInputSource::Alias {
@@ -174,6 +190,8 @@ fn alias_effects_round_trip_and_are_bounded() {
             name: "posterize".into(),
             parameters: vec![4],
         }],
+        opacity: u8::MAX,
+        mask: None,
     });
     assert!(encode_line(&invalid).is_err());
 
@@ -187,6 +205,8 @@ fn alias_effects_round_trip_and_are_bounded() {
             };
             fm_protocol::MAX_SCENE_LAYER_EFFECTS + 1
         ],
+        opacity: u8::MAX,
+        mask: None,
     });
     assert!(encode_line(&too_many).is_err());
 }

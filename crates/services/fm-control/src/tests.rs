@@ -2915,6 +2915,8 @@ fn alias_and_feed_add_sources_map_to_the_engine() {
                 name: "saturation".into(),
                 parameters: vec![-50],
             }],
+            opacity: u8::MAX,
+            mask: None,
         }),
         fm_engine::EngineInputSource::Alias {
             target: input(1),
@@ -2927,6 +2929,8 @@ fn alias_and_feed_add_sources_map_to_the_engine() {
             target: WireInputId::from_domain(input(2)),
             crop: None,
             effects: Vec::new(),
+            opacity: u8::MAX,
+            mask: None,
         }),
         fm_engine::EngineInputSource::Alias {
             target: input(2),
@@ -2952,6 +2956,8 @@ fn alias_and_feed_add_sources_map_to_the_engine() {
             target: WireInputId::from_domain(input(4)),
             crop: None,
             effects: Vec::new(),
+            opacity: u8::MAX,
+            mask: None,
         }
     );
 }

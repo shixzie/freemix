@@ -8542,6 +8542,8 @@ fn remote_alias_input_add_sends_the_exact_source() {
                     name: "saturation".into(),
                     parameters: vec![-50],
                 }],
+                opacity: u8::MAX,
+                mask: None,
             },
         },
         event: EventPayload::InputAdded {
