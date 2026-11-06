@@ -832,6 +832,7 @@ impl MixBank {
     ///
     /// Returns [`MixBankError`] and leaves the bank unchanged when the
     /// command is invalid for the current state.
+    #[allow(clippy::too_many_lines)] // one arm per bank command
     pub fn apply(&mut self, command: MixBankCommand) -> Result<Vec<MixBankEvent>, MixBankError> {
         match command {
             MixBankCommand::AddMix { mix, config } => self.add_mix(mix, config),
@@ -914,7 +915,9 @@ impl MixBank {
                     return Err(MixBankError::UnsupportedManualTransitionKind(mix));
                 }
                 let from = state.program;
-                let to = state.preview.expect("validated Preview/Program mix");
+                let Some(to) = state.preview else {
+                    return Err(MixBankError::PreviewUnavailable(mix));
+                };
                 self.state_mut(mix).t_bar = Some(MixTBarState {
                     kind,
                     from,
