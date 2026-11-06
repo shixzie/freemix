@@ -1982,3 +1982,52 @@ pub(crate) fn realized_stream_state(
         Some(DestinationState::Live) => StreamRealizedState::Live,
     }
 }
+
+#[cfg(all(test, feature = "native-media"))]
+mod capture_audio_tests {
+    use core::num::NonZeroU128;
+
+    use fm_frame::{
+        AudioBlock, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
+        NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimeBase,
+    };
+    use fm_types::{ChannelLayout, OutputId, SampleRate};
+
+    use super::CaptureAudio;
+
+    fn block(level: f32) -> AudioBlock {
+        let timing = MediaTiming::new(
+            OriginalTimestamp::new(MediaTimestamp::new(0), TimeBase::new(1, 48_000).unwrap()),
+            NormalizedTimestamp::from_nanos(0),
+            NormalizedDuration::from_nanos(20_833).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+            SequenceNumber::new(0),
+        )
+        .unwrap();
+        let layout = ChannelLayout::stereo();
+        let channels = layout.channels().len();
+        AudioBlock::new(
+            timing,
+            SampleRate::new(48_000).unwrap(),
+            layout,
+            vec![vec![level; 2]; channels],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_logical_output_route_replaces_the_master_capture_audio() {
+        let routed = OutputId::new(NonZeroU128::new(7).unwrap());
+        let other = OutputId::new(NonZeroU128::new(8).unwrap());
+        let routed_block = block(0.7);
+        let audio = CaptureAudio {
+            faded: block(0.1),
+            live: None,
+            excluded: &[],
+            overrides: &[],
+            per_output: &[(routed, routed_block)],
+        };
+        assert_eq!(audio.for_output(Some(routed), &[]).sample(0, 0), Some(0.7));
+        assert_eq!(audio.for_output(Some(other), &[]).sample(0, 0), Some(0.1));
+    }
+}
