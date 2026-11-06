@@ -103,7 +103,7 @@ source_rate=30000%2F1001\tfault=-";
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 171));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 172));
 }
 
 #[test]

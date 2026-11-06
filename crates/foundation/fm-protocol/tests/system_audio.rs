@@ -80,7 +80,7 @@ fn monitor() -> SystemAudioConfig {
 
 #[test]
 fn the_current_protocol_is_2_68() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 171));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 172));
 }
 
 #[test]

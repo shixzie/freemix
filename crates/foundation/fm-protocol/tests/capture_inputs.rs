@@ -113,7 +113,7 @@ const SETTINGS: &str = "format=1920x1080%4030000%2F1001%3Ayuyv%3Atff\taudio=alsa
 
 #[test]
 fn the_current_protocol_is_2_47() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 171));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 172));
 }
 
 #[test]

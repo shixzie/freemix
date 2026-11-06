@@ -181,7 +181,7 @@ fn malformed_plugin_chains_are_refused() {
     assert!(PluginParameter::name_is_valid("gain_db"));
     assert!(!PluginParameter::name_is_valid("has space"));
     assert_eq!(
-        ProtocolVersion::new(2, 171),
+        ProtocolVersion::new(2, 172),
         fm_protocol::CURRENT_PROTOCOL_VERSION
     );
 }
