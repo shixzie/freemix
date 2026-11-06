@@ -3264,8 +3264,9 @@ endpoints of an active Program transition (including an alias or scene
 endpoint), so a feed entering as the transition's secondary still reports its
 own delayed bus. The CLI authors both
 kinds offline with `alias-input-add` (including an optional
-`--crop x,y,width,height`) and `mix-feed-input-add`, refusing missing targets,
-self/cyclic chains, and malformed crops without saving. Its `render`,
+`--crop x,y,width,height`, `--opacity`, `--mask`, and repeated `--effect`)
+and `mix-feed-input-add`, refusing missing targets, self/cyclic chains, and
+malformed crops or masks without saving. Its `render`,
 `transition-render-frame`, and scene rendering commands consume the resolver:
 an alias draws its chain's concrete leaf or scene under the alias's own crop,
 a mix feed draws black before any tick is committed, and scene layers resolve

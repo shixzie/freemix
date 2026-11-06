@@ -7990,10 +7990,10 @@ Usage:
       destination's video_bitrate_kbps. Every other destination refuses
       --rung.
   freemix-cli scene-input-add <show.freemix> <nonzero-input-id> <nonzero-scene-id> <name>
-  freemix-cli alias-input-add <show.freemix> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height]
+  freemix-cli alias-input-add <show.freemix> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height] [--opacity 0-255] [--mask x,y,width,height[,on|off]] [--effect name:parameters]...
   freemix-cli remote-alias-effects <address> <alias-input-id> none|<name>[:<p>,...]... [--key <idempotency-key>] [--expect <revision>]
   freemix-cli remote-alias-effects-get <address> <alias-input-id>
-  freemix-cli remote-alias-input-add <address> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height] [--key <idempotency-key>] [--expect <revision>]
+  freemix-cli remote-alias-input-add <address> <nonzero-input-id> <name> <nonzero-target-input-id> [--crop x,y,width,height] [--opacity 0-255] [--mask x,y,width,height[,on|off]] [--effect name:parameters]... [--key <idempotency-key>] [--expect <revision>]
   freemix-cli mix-feed-input-add <show.freemix> <nonzero-input-id> <name> program|preview
   freemix-cli remote-mix-feed-input-add <address> <nonzero-input-id> <name> program|preview [--key <idempotency-key>] [--expect <revision>]
   freemix-cli scene-input-duplicate <show.freemix> <source-scene-id> <new-scene-id> <new-input-id> <scene-name> <input-name>

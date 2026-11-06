@@ -5866,7 +5866,8 @@ fn parse_scene_input_add(
     })
 }
 
-/// `alias-input-add <project> <input> <name> <target> [--crop x,y,width,height]`
+/// `alias-input-add <project> <input> <name> <target> [--crop x,y,width,height]
+/// [--opacity 0-255] [--mask x,y,width,height[,on|off]] [--effect name:params]...`
 /// (IN-024).
 /// One alias mask token `x,y,width,height[,invert]`.
 fn alias_mask(value: &str) -> Result<fm_model::RectMask, ArgsError> {
