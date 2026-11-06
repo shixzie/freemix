@@ -2306,6 +2306,8 @@ pub struct StudioShell {
     alias_effects_open: Option<InputId>,
     alias_effects_draft: String,
     alias_effects_loaded: Option<InputId>,
+    /// Whether the last Apply parsed no valid effect list (IN-024).
+    alias_effects_invalid: bool,
     stinger_editor: stinger_config::StingerEditor,
     layout: ConsoleLayout,
     show_shortcuts: bool,
@@ -3152,6 +3154,7 @@ impl Default for StudioShell {
             alias_effects_open: None,
             alias_effects_draft: String::new(),
             alias_effects_loaded: None,
+            alias_effects_invalid: false,
             stinger_editor: stinger_config::StingerEditor::default(),
             layout: ConsoleLayout::default(),
             show_shortcuts: false,

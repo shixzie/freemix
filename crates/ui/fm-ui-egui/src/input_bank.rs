@@ -869,6 +869,7 @@ impl StudioShell {
         ) {
             self.alias_effects_open = Some(input);
             self.alias_effects_loaded = None;
+            self.alias_effects_invalid = false;
             self.alias_effects_draft.clear();
             intents.push(StudioIntent::RequestAliasEffects { input });
         }
@@ -895,11 +896,10 @@ impl StudioShell {
                 {
                     match parse_alias_effects(&self.alias_effects_draft) {
                         Ok(effects) => {
+                            self.alias_effects_invalid = false;
                             intents.push(StudioIntent::SetAliasEffects { input, effects });
                         }
-                        Err(_) => {
-                            self.alias_effects_draft.push_str("\u{0}");
-                        }
+                        Err(_) => self.alias_effects_invalid = true,
                     }
                 }
                 if ui
@@ -908,6 +908,7 @@ impl StudioShell {
                     .clicked()
                 {
                     self.alias_effects_loaded = None;
+                    self.alias_effects_invalid = false;
                     intents.push(StudioIntent::RequestAliasEffects { input });
                 }
                 if ui
@@ -918,6 +919,13 @@ impl StudioShell {
                     self.alias_effects_open = None;
                 }
             });
+            if self.alias_effects_invalid {
+                ui.label(
+                    RichText::new(l.text(Msg::AliasEffectsInvalid))
+                        .small()
+                        .color(AMBER),
+                );
+            }
             if let Some((_, message)) = state
                 .alias_effects_error
                 .as_ref()
