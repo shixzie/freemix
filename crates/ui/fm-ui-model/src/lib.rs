@@ -5456,6 +5456,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         | DurableChange::ReelChanged { .. }
         | DurableChange::ReelRemoved { .. }
         | DurableChange::FadeToBlackCurveChanged { .. }
+        | DurableChange::SafeAreaGuidesChanged { .. }
         | DurableChange::SecondaryMixChanged { .. }
         | DurableChange::InputVideoDelayChanged { .. }
         | DurableChange::InputFreezeChanged { .. }
@@ -5486,7 +5487,6 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidPagedChange(input))
             };
         }
-        DurableChange::SafeAreaGuidesChanged { .. } => return Ok(()),
         DurableChange::TransitionFavoriteChanged { slot, .. } => {
             return if (1..=TRANSITION_FAVORITE_COUNT).contains(&usize::from(*slot)) {
                 Ok(())
