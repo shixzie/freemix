@@ -3810,6 +3810,10 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SecondaryMixCut { .. }
         | CommandPayload::SecondaryMixTransition { .. }
         | CommandPayload::SecondaryMixFadeToBlack { .. }
+        | CommandPayload::SecondaryMixStartTBar { .. }
+        | CommandPayload::SecondaryMixSetTBarPosition { .. }
+        | CommandPayload::SecondaryMixCommitTBar { .. }
+        | CommandPayload::SecondaryMixCancelTBar { .. }
         | CommandPayload::SetInputFreeze { .. }
         // A fire needs `transition` like a cue GO or a script run, plus the
         // class of every action it performs (see `action_authority`).
