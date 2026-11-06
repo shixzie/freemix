@@ -3086,10 +3086,13 @@ and transition progress. Studio's Output ▸ Secondary mixes… dialog lists the
 same live state, offers CUT and FADE on every mix, and edits a mix's number,
 name, mode, Program, and Preview sources through `set_secondary_mix` or clears
 it. Local live mix controls run on the simulated engine and are not persisted,
-because the bank's live state is runtime state. Remaining gaps: no audio path;
-stinger effects still do not check slot readiness or fallback, and overlay
-fades, mix-sourced overlays, T-bar, and Fade-to-Black inside a mix are absent.
-`IN-023` remains planned.
+because the bank's live state is runtime state. A Stinger effect scheduled on
+one or more mixes carries the slot's readiness decision: an unconfigured slot
+refuses the whole effect, a ready clip is refused when its cut point exceeds
+the requested duration, and a missing clip applies the slot's configured Cut,
+Fade, or Keep Program fallback to every target, with a per-target fallback
+event. Remaining gaps: no audio path; overlay fades, mix-sourced overlays,
+T-bar, and Fade-to-Black inside a mix are absent. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
