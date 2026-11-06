@@ -3318,11 +3318,11 @@ alias layer state on `input_add`: `opacity` plus optional `mask_x`/`mask_y`/
 them beside the effects. The CLI has `remote-alias-effects` and
 `remote-alias-effects-get`; `alias-input-add` and `remote-alias-input-add`
 accept `--opacity` and `--mask x,y,width,height[,on|off]`. Studio's Add input
-dialog offers opacity and an optional bounded/invertible mask, and its tile
-menu opens an alias-effect editor that reads the current list, accepts the
-same space-separated effect tokens, and applies it atomically. Studio's Add input dialog offers Alias (with an input picker, an
-optional project-pixel crop, a nonempty/16384-bound check, and a space-separated
-effect field) and Feed (Program or Preview). The native realizer writes each
+dialog offers Alias (an input picker, an optional bounded project-pixel crop,
+opacity, an optional bounded/invertible mask, and a space-separated effect
+field) and Feed (Program or Preview); its tile menu opens an alias-effect
+editor that reads the current list and applies the same tokens atomically.
+The native realizer writes each
 feed's last committed Program and Preview picture into the project bundle as
 `feed-cache/program.png` and `feed-cache/preview.png` on the first commit and
 at clean shutdown, and restores them at startup as working textures, so a
