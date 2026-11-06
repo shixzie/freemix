@@ -3079,10 +3079,17 @@ resolves logical outputs against it; `cut_secondary_mix` and
 logical output's secondary-mix background: a single input, black, a nested
 mix, or a running transition, followed by the mix's full-frame overlay
 channels; a Program background still reads the shared Program transition.
-Remaining gaps: no Studio or CLI surface for live cuts and transitions and no
-audio path; stinger effects still do
-not check slot readiness or fallback, and overlay fades, mix-sourced overlays,
-T-bar, and Fade-to-Black inside a mix are absent. `IN-023` remains planned.
+The CLI has `secondary-mixes`, `secondary-mix-set`, `secondary-mix-clear`,
+`secondary-mix-cut`, and `secondary-mix-transition` with `remote-` forms;
+the remote list prints every configured mix beside its live Program/Preview
+and transition progress. Studio's Output ▸ Secondary mixes… dialog lists the
+same live state, offers CUT and FADE on every mix, and edits a mix's number,
+name, mode, Program, and Preview sources through `set_secondary_mix` or clears
+it. Local live mix controls run on the simulated engine and are not persisted,
+because the bank's live state is runtime state. Remaining gaps: no audio path;
+stinger effects still do not check slot readiness or fallback, and overlay
+fades, mix-sourced overlays, T-bar, and Fade-to-Black inside a mix are absent.
+`IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
 chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
