@@ -62,6 +62,8 @@ pub enum EngineInputSource {
         target: InputId,
         crop: Option<fm_model::CropRect>,
         effects: Vec<fm_model::LayerEffect>,
+        opacity: u8,
+        mask: Option<fm_model::RectMask>,
     },
     /// The Program or Preview bus as a one-frame-delayed input (IN-025).
     MixFeed(fm_model::MixFeed),

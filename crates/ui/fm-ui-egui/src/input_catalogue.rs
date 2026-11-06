@@ -514,6 +514,14 @@ pub(crate) struct AddInputDraft {
     pub(crate) alias_crop_height: u32,
     /// Space-separated alias effect tokens (IN-024).
     pub(crate) alias_effects: String,
+    /// Alias-local opacity and optional mask (IN-024).
+    pub(crate) alias_opacity: u8,
+    pub(crate) alias_mask: bool,
+    pub(crate) alias_mask_x: u32,
+    pub(crate) alias_mask_y: u32,
+    pub(crate) alias_mask_width: u32,
+    pub(crate) alias_mask_height: u32,
+    pub(crate) alias_mask_invert: bool,
     /// Whether a feed shows Program (`true`) or Preview (IN-025).
     pub(crate) feed_program: bool,
     /// The name field takes keyboard focus once, when the dialog opens.
@@ -625,6 +633,13 @@ impl AddInputDraft {
             alias_crop_width: 1_920,
             alias_crop_height: 1_080,
             alias_effects: String::new(),
+            alias_opacity: u8::MAX,
+            alias_mask: false,
+            alias_mask_x: 0,
+            alias_mask_y: 0,
+            alias_mask_width: 1_920,
+            alias_mask_height: 1_080,
+            alias_mask_invert: false,
             feed_program: true,
             focus_pending: true,
             locale: tracker.locale,
@@ -683,6 +698,14 @@ impl AddInputDraft {
                     ),
                     crop,
                     effects: parse_alias_effects(&self.alias_effects).map_err(Msg::en)?,
+                    opacity: self.alias_opacity,
+                    mask: self.alias_mask.then_some(fm_protocol::WireLayerMask {
+                        x: self.alias_mask_x,
+                        y: self.alias_mask_y,
+                        width: self.alias_mask_width,
+                        height: self.alias_mask_height,
+                        invert: self.alias_mask_invert,
+                    }),
                 }
             }
             NewInputKind::MixFeed if self.feed_program => LiveInputSource::ProgramFeed,
@@ -727,6 +750,30 @@ impl AddInputDraft {
                         reason: Msg::AddInputAliasEffectsInvalid.en(),
                         prompt: false,
                     });
+                }
+                if self.alias_mask {
+                    let (width, height) = if self.alias_crop {
+                        (self.alias_crop_width, self.alias_crop_height)
+                    } else {
+                        (16_384, 16_384)
+                    };
+                    let fits = self.alias_mask_width > 0
+                        && self.alias_mask_height > 0
+                        && self
+                            .alias_mask_x
+                            .checked_add(self.alias_mask_width)
+                            .is_some_and(|right| right <= width)
+                        && self
+                            .alias_mask_y
+                            .checked_add(self.alias_mask_height)
+                            .is_some_and(|bottom| bottom <= height);
+                    if !fits {
+                        return Some(FieldProblem {
+                            field: Msg::AddInputAliasMask,
+                            reason: Msg::AddInputAliasMaskInvalid.en(),
+                            prompt: false,
+                        });
+                    }
                 }
                 return None;
             }
@@ -1541,6 +1588,58 @@ impl StudioShell {
                                     .hint_text(l.text(Msg::AddInputAliasEffectsHint)),
                             )
                             .on_hover_text(l.text(Msg::AddInputAliasEffectsHint));
+                        }
+                        if draft.kind == NewInputKind::Alias {
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label(l.text(Msg::AddInputAliasOpacity));
+                                ui.add(
+                                    egui::DragValue::new(&mut draft.alias_opacity)
+                                        .range(0..=u8::MAX),
+                                )
+                                .hint(l.text(Msg::AddInputAliasOpacityHover), "");
+                            });
+                            ui.checkbox(
+                                &mut draft.alias_mask,
+                                l.text(Msg::AddInputAliasMaskEnable),
+                            )
+                            .on_hover_text(l.text(Msg::AddInputAliasMaskEnableHover));
+                            if draft.alias_mask {
+                                let max = fm_protocol::MAX_SOURCE_CROP_SIDE;
+                                ui.horizontal(|ui| {
+                                    ui.label(l.text(Msg::AddInputAliasMaskX));
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.alias_mask_x)
+                                            .range(0..=max),
+                                    )
+                                    .hint(l.text(Msg::AddInputAliasMaskHover), "");
+                                    ui.label(l.text(Msg::AddInputAliasMaskY));
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.alias_mask_y)
+                                            .range(0..=max),
+                                    )
+                                    .hint(l.text(Msg::AddInputAliasMaskHover), "");
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label(l.text(Msg::AddInputAliasMaskWidth));
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.alias_mask_width)
+                                            .range(0..=max),
+                                    )
+                                    .hint(l.text(Msg::AddInputAliasMaskHover), "");
+                                    ui.label(l.text(Msg::AddInputAliasMaskHeight));
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.alias_mask_height)
+                                            .range(0..=max),
+                                    )
+                                    .hint(l.text(Msg::AddInputAliasMaskHover), "");
+                                });
+                                ui.checkbox(
+                                    &mut draft.alias_mask_invert,
+                                    l.text(Msg::AddInputAliasMaskInvert),
+                                )
+                                .on_hover_text(l.text(Msg::AddInputAliasMaskInvertHover));
+                            }
                         }
                         if draft.kind == NewInputKind::MixFeed {
                             ui.add_space(6.0);

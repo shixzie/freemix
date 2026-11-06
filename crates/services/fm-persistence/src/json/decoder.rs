@@ -647,6 +647,13 @@ fn parse_input_kind(value: Value) -> Result<InputKind, DecodeError> {
             crop: parse_optional(object.take("crop")?, parse_crop)?,
             effects: parse_optional(object.take("effects")?, parse_layer_effects)?
                 .unwrap_or_default(),
+            opacity: parse_optional(object.take("opacity")?, |value| match value {
+                Value::Number(value) => u8::try_from(value)
+                    .map_err(|_| unknown_enum("alias opacity", &value.to_string())),
+                _ => Err(unknown_enum("alias opacity", "not a number")),
+            })?
+            .unwrap_or(u8::MAX),
+            mask: parse_optional(object.take("mask")?, parse_mask)?,
         },
         "mix_feed" => InputKind::MixFeed(match object.string("feed")?.as_str() {
             "program" => MixFeed::Program,

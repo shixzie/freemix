@@ -878,6 +878,8 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
             target,
             crop,
             effects,
+            opacity,
+            mask,
         } => {
             write!(
                 output,
@@ -896,7 +898,19 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
             }
             output.push_str(", \"effects\": [");
             write_effect_list(output, effects);
-            output.push_str("]}");
+            write!(output, "], \"opacity\": {opacity}, \"mask\": ")
+                .expect("writing to a string cannot fail");
+            if let Some(mask) = mask {
+                write!(
+                    output,
+                    "{{\"x\": {}, \"y\": {}, \"width\": {}, \"height\": {}, \"invert\": {}}}",
+                    mask.x, mask.y, mask.width, mask.height, mask.invert,
+                )
+                .expect("writing to a string cannot fail");
+            } else {
+                output.push_str("null");
+            }
+            output.push('}');
         }
         InputKind::MixFeed(feed) => {
             let feed = match feed {

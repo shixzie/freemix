@@ -566,6 +566,8 @@ pub enum Command {
         target: u128,
         crop: Option<CropRect>,
         effects: Vec<fm_model::LayerEffect>,
+        opacity: u8,
+        mask: Option<fm_model::RectMask>,
     },
     /// Adds an alias on the daemon (IN-024, Protocol 2.162).
     RemoteAliasInputAdd {
@@ -575,6 +577,8 @@ pub enum Command {
         target: u128,
         crop: Option<CropRect>,
         effects: Vec<fm_model::LayerEffect>,
+        opacity: u8,
+        mask: Option<fm_model::RectMask>,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -2571,6 +2575,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let target = number(&required(&mut arguments, "target input")?, "target input")?;
             let mut crop = None;
             let mut effects = Vec::new();
+            let mut opacity = u8::MAX;
+            let mut mask = None;
             let mut key = None;
             let mut expected_revision = None;
             while let Some(option) = arguments.next() {
@@ -2582,6 +2588,12 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                         crop = Some(alias_crop(&required(&mut arguments, "crop")?)?);
                     }
                     "--effect" => effects.push(effect_token(&required(&mut arguments, "effect")?)?),
+                    "--opacity" => {
+                        opacity = number(&required(&mut arguments, "opacity")?, "opacity")?;
+                    }
+                    "--mask" => {
+                        mask = Some(alias_mask(&required(&mut arguments, "mask")?)?);
+                    }
                     "--key" => {
                         let value = required(&mut arguments, "idempotency key")?;
                         if value.trim().is_empty() {
@@ -2605,6 +2617,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 target,
                 crop,
                 effects,
+                opacity,
+                mask,
                 key,
                 expected_revision,
             })
@@ -5854,6 +5868,28 @@ fn parse_scene_input_add(
 
 /// `alias-input-add <project> <input> <name> <target> [--crop x,y,width,height]`
 /// (IN-024).
+/// One alias mask token `x,y,width,height[,invert]`.
+fn alias_mask(value: &str) -> Result<fm_model::RectMask, ArgsError> {
+    let parts: Vec<&str> = value.split(',').collect();
+    if parts.len() != 4 && parts.len() != 5 {
+        return Err(ArgsError::InvalidNumber {
+            field: "mask",
+            value: value.to_owned(),
+        });
+    }
+    let mask = fm_model::RectMask::new(
+        number(parts[0], "mask x")?,
+        number(parts[1], "mask y")?,
+        number(parts[2], "mask width")?,
+        number(parts[3], "mask height")?,
+    );
+    if parts.len() == 5 {
+        Ok(mask.inverted(boolean_choice(parts[4], "mask invert")?))
+    } else {
+        Ok(mask)
+    }
+}
+
 fn parse_alias_input_add(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -5863,6 +5899,8 @@ fn parse_alias_input_add(
     let target = number(&required(&mut arguments, "target input")?, "target input")?;
     let mut crop = None;
     let mut effects = Vec::new();
+    let mut opacity = u8::MAX;
+    let mut mask = None;
     while let Some(option) = arguments.next() {
         match option.as_str() {
             "--crop" => {
@@ -5872,6 +5910,12 @@ fn parse_alias_input_add(
                 crop = Some(alias_crop(&required(&mut arguments, "crop")?)?);
             }
             "--effect" => effects.push(effect_token(&required(&mut arguments, "effect")?)?),
+            "--opacity" => {
+                opacity = number(&required(&mut arguments, "opacity")?, "opacity")?;
+            }
+            "--mask" => {
+                mask = Some(alias_mask(&required(&mut arguments, "mask")?)?);
+            }
             _ => return Err(ArgsError::UnknownOption(option)),
         }
     }
@@ -5882,6 +5926,8 @@ fn parse_alias_input_add(
         target,
         crop,
         effects,
+        opacity,
+        mask,
     })
 }
 

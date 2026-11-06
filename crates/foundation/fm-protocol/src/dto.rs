@@ -937,6 +937,10 @@ pub enum LiveInputSource {
         target: crate::WireInputId,
         crop: Option<crate::WireLayerCrop>,
         effects: Vec<crate::WireLayerEffect>,
+        /// Opacity after the crop and effects, 0..=255.
+        opacity: u8,
+        /// The alias's own mask in its cropped picture's coordinates.
+        mask: Option<crate::WireLayerMask>,
     },
     /// The Program bus as a one-frame-delayed input (IN-025):
     /// `kind=program_feed`.

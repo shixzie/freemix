@@ -679,10 +679,14 @@ fn append_inputs(
                 target,
                 crop,
                 effects,
+                opacity,
+                mask,
             } => InputKind::Alias {
                 target: maps.inputs[target],
                 crop: *crop,
                 effects: effects.clone(),
+                opacity: *opacity,
+                mask: *mask,
             },
             // Title assets keep their exact keys (see `append_title_assets`).
             InputKind::Color

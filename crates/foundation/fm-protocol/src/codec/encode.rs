@@ -1182,6 +1182,8 @@ fn encode_input_catalogue_command(
                     target,
                     crop,
                     effects,
+                    opacity,
+                    mask,
                 } => {
                     if let Some(crop) = crop
                         && !crop.fits_source()
@@ -1204,6 +1206,14 @@ fn encode_input_catalogue_command(
                             "effects",
                             super::scene_layout::encode_effect_list(effects)?,
                         )?;
+                    }
+                    record.field("opacity", opacity)?;
+                    if let Some(mask) = mask {
+                        record.field("mask_x", mask.x)?;
+                        record.field("mask_y", mask.y)?;
+                        record.field("mask_width", mask.width)?;
+                        record.field("mask_height", mask.height)?;
+                        record.field("mask_invert", u8::from(mask.invert))?;
                     }
                     Ok(())
                 }

@@ -1237,6 +1237,8 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                 target,
                 crop,
                 effects,
+                mask,
+                ..
             } => {
                 if *target == input.id {
                     errors.push(ValidationError {
@@ -1264,6 +1266,26 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                     errors.push(ValidationError {
                         entity,
                         field: "kind.alias.effects",
+                        kind: ValidationErrorKind::OutOfRange,
+                    });
+                }
+                if mask.is_some_and(|mask| {
+                    let (width, height) =
+                        crop.map_or((16_384, 16_384), |crop| (crop.width, crop.height));
+                    mask.width == 0
+                        || mask.height == 0
+                        || mask
+                            .x
+                            .checked_add(mask.width)
+                            .is_none_or(|right| right > width)
+                        || mask
+                            .y
+                            .checked_add(mask.height)
+                            .is_none_or(|bottom| bottom > height)
+                }) {
+                    errors.push(ValidationError {
+                        entity,
+                        field: "kind.alias.mask",
                         kind: ValidationErrorKind::OutOfRange,
                     });
                 }

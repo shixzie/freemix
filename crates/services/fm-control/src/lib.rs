@@ -4311,6 +4311,8 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
             target,
             crop,
             effects,
+            opacity,
+            mask,
         } => EngineInputSource::Alias {
             target: target.to_domain(),
             crop: crop.map(|crop| fm_model::CropRect::new(crop.x, crop.y, crop.width, crop.height)),
@@ -4320,6 +4322,11 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
                     fm_model::LayerEffect::new(effect.name.clone(), effect.parameters.clone())
                 })
                 .collect(),
+            opacity: *opacity,
+            mask: mask.map(|mask| {
+                fm_model::RectMask::new(mask.x, mask.y, mask.width, mask.height)
+                    .inverted(mask.invert)
+            }),
         },
         LiveInputSource::ProgramFeed => EngineInputSource::MixFeed(fm_model::MixFeed::Program),
         LiveInputSource::PreviewFeed => EngineInputSource::MixFeed(fm_model::MixFeed::Preview),
@@ -4351,6 +4358,8 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
             target,
             crop,
             effects,
+            opacity,
+            mask,
         } => LiveInputSource::Alias {
             target: WireInputId::from_domain(*target),
             crop: crop.map(|crop| fm_protocol::WireLayerCrop {
@@ -4366,6 +4375,14 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
                     parameters: effect.parameters.clone(),
                 })
                 .collect(),
+            opacity: *opacity,
+            mask: mask.map(|mask| fm_protocol::WireLayerMask {
+                x: mask.x,
+                y: mask.y,
+                width: mask.width,
+                height: mask.height,
+                invert: mask.invert,
+            }),
         },
         EngineInputSource::MixFeed(fm_model::MixFeed::Program) => LiveInputSource::ProgramFeed,
         EngineInputSource::MixFeed(fm_model::MixFeed::Preview) => LiveInputSource::PreviewFeed,

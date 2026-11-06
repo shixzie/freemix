@@ -526,16 +526,22 @@ impl ThumbnailRenderer {
         let mut resolved = input;
         let mut alias_crop = None;
         let mut alias_effects: Vec<fm_model::LayerEffect> = Vec::new();
+        let mut alias_mask = None;
+        let mut alias_opacity = u8::MAX;
         let mut hops = 0;
         while let InputKind::Alias {
             target,
             crop,
             effects,
+            mask,
+            opacity,
         } = &resolved.kind
         {
             if hops == 0 {
                 alias_crop = *crop;
                 alias_effects.clone_from(effects);
+                alias_mask = *mask;
+                alias_opacity = *opacity;
             }
             hops += 1;
             if hops > work.project.inputs().len() {
@@ -563,6 +569,7 @@ impl ThumbnailRenderer {
                     fm_compositor::ReferenceEffect::from_descriptor(&descriptor).ok()?;
                 picture = fm_compositor::apply_reference_effect(&picture, reference).ok()?;
             }
+            picture = apply_alias_mask_opacity(&picture, alias_mask, alias_opacity)?;
             let graded = match work.grades.input(input.id) {
                 Some(grade) => fm_compositor::apply_grade(&picture, grade).ok()?,
                 None => picture,
@@ -946,7 +953,37 @@ fn opaque(picture: &ImageFrame) -> ImageFrame {
 /// alpha, so a source with transparency (a title, a still with a
 /// transparent background) shows as Program shows it alone, not as the
 /// undefined straight colour under its transparent pixels.
-pub(crate) fn over_black(picture: &ImageFrame) -> ImageFrame {
+/// Applies an alias mask and opacity to its cropped picture (IN-024).
+fn apply_alias_mask_opacity(
+    picture: &ImageFrame,
+    mask: Option<fm_model::RectMask>,
+    opacity: u8,
+) -> Option<ImageFrame> {
+    if mask.is_none() && opacity == u8::MAX {
+        return Some(picture.clone());
+    }
+    let mut pixels = picture.pixels().to_vec();
+    let stride = picture.stride();
+    for y in 0..picture.height() {
+        for x in 0..picture.width() {
+            let inside = mask.is_some_and(|mask| {
+                x >= mask.x
+                    && y >= mask.y
+                    && x < mask.x.saturating_add(mask.width)
+                    && y < mask.y.saturating_add(mask.height)
+            });
+            if mask.is_some_and(|mask| inside == mask.invert) {
+                continue;
+            }
+            let offset = usize::try_from(y).ok()? * stride + usize::try_from(x).ok()? * 4 + 3;
+            let alpha = u16::from(*pixels.get(offset)?);
+            *pixels.get_mut(offset)? = u8::try_from(alpha * u16::from(opacity) / 255).ok()?;
+        }
+    }
+    ImageFrame::new(picture.width(), picture.height(), stride, pixels).ok()
+}
+
+fn over_black(picture: &ImageFrame) -> ImageFrame {
     let mut pixels = picture.pixels().to_vec();
     for pixel in pixels.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);

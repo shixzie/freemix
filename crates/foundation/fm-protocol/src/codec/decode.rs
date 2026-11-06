@@ -1921,10 +1921,41 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
                 .map(|value| super::scene_layout::decode_effect_list(&value))
                 .transpose()?
                 .unwrap_or_default();
+            let opacity = fields.optional("opacity").map_or(Ok(u8::MAX), |value| {
+                value.parse::<u8>().map_err(|_| CodecError::InvalidField {
+                    field: "opacity",
+                    value: value.clone(),
+                })
+            })?;
+            let mask = match (
+                fields.optional("mask_x"),
+                fields.optional("mask_y"),
+                fields.optional("mask_width"),
+                fields.optional("mask_height"),
+            ) {
+                (None, None, None, None) => None,
+                (Some(x), Some(y), Some(width), Some(height)) => Some(crate::WireLayerMask {
+                    x: crop_dimension("mask_x", x)?,
+                    y: crop_dimension("mask_y", y)?,
+                    width: crop_dimension("mask_width", width)?,
+                    height: crop_dimension("mask_height", height)?,
+                    invert: fields
+                        .optional("mask_invert")
+                        .is_some_and(|value| value == "1"),
+                }),
+                _ => {
+                    return Err(CodecError::InvalidField {
+                        field: "mask_x",
+                        value: "incomplete mask".to_owned(),
+                    });
+                }
+            };
             Ok(LiveInputSource::Alias {
                 target,
                 crop,
                 effects,
+                opacity,
+                mask,
             })
         }
         _ => Err(CodecError::InvalidField {

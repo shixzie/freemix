@@ -249,6 +249,8 @@ pub fn run(command: Command) -> AppResult<()> {
             target,
             crop,
             effects,
+            opacity,
+            mask,
             key,
             expected_revision,
         } => remote::execute(
@@ -271,6 +273,14 @@ pub fn run(command: Command) -> AppResult<()> {
                             parameters: effect.parameters.clone(),
                         })
                         .collect(),
+                    opacity,
+                    mask: mask.map(|mask| fm_protocol::WireLayerMask {
+                        x: mask.x,
+                        y: mask.y,
+                        width: mask.width,
+                        height: mask.height,
+                        invert: mask.invert,
+                    }),
                 },
             },
             key,
@@ -4188,6 +4198,8 @@ fn add_alias_input(
     target: InputId,
     crop: Option<CropRect>,
     effects: Vec<LayerEffect>,
+    opacity: u8,
+    mask: Option<fm_model::RectMask>,
 ) -> AppResult<()> {
     add_project_input(
         path,
@@ -4198,6 +4210,8 @@ fn add_alias_input(
                 target,
                 crop,
                 effects,
+                opacity,
+                mask,
             },
             required_capabilities: Vec::new(),
         },

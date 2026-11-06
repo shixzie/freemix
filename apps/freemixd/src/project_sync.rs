@@ -258,6 +258,8 @@ pub(crate) fn sync_project_inputs(
                 target,
                 crop,
                 effects,
+                opacity,
+                mask,
             } => {
                 project
                     .add_input_checked(fm_model::Input {
@@ -277,6 +279,11 @@ pub(crate) fn sync_project_inputs(
                                     )
                                 })
                                 .collect(),
+                            opacity: *opacity,
+                            mask: mask.map(|mask| {
+                                fm_model::RectMask::new(mask.x, mask.y, mask.width, mask.height)
+                                    .inverted(mask.invert)
+                            }),
                         },
                         required_capabilities: Vec::new(),
                     })

@@ -1083,7 +1083,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(110);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(111);
 
 /// Maximum stored scoreboard documents on one project (GX-003).
 pub const MAX_SCOREBOARDS: usize = 256;
@@ -5640,6 +5640,11 @@ pub enum InputKind {
         target: InputId,
         crop: Option<CropRect>,
         effects: Vec<LayerEffect>,
+        /// The alias's own opacity, applied after its crop and effects.
+        opacity: u8,
+        /// The alias's own rectangular mask in its cropped picture's
+        /// coordinates, or the project frame's when it has no crop.
+        mask: Option<RectMask>,
     },
     /// The Program or Preview bus fed back as a source, delayed by exactly one
     /// frame: on tick `n` it shows the bus frame committed at the end of tick

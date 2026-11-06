@@ -173,6 +173,8 @@ enum NativeAliasSource {
 struct NativeAliasCrop {
     source: NativeAliasSource,
     crop: [u32; 4],
+    mask: Option<fm_model::RectMask>,
+    opacity: u8,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -807,16 +809,13 @@ impl NativeProjectPlan {
         let mut alias_crops = BTreeMap::new();
         let mut alias_effects = BTreeMap::new();
         for input in project.inputs() {
-            let (concrete, crop, effects) = resolve_alias_target(input.id, &inputs)?;
+            let (concrete, crop, effects, mask, opacity) = resolve_alias_target(input.id, &inputs)?;
             if let InputKind::MixFeed(feed) = &concrete.kind {
                 feeds.insert(input.id, *feed);
             }
-            let crop = crop.unwrap_or_else(|| {
-                fm_model::CropRect::new(0, 0, dimensions.width(), dimensions.height())
-            });
-            if crop != fm_model::CropRect::new(0, 0, dimensions.width(), dimensions.height())
-                || !effects.is_empty()
-            {
+            let full_crop = fm_model::CropRect::new(0, 0, dimensions.width(), dimensions.height());
+            let crop = crop.unwrap_or(full_crop);
+            if crop != full_crop || !effects.is_empty() || mask.is_some() || opacity != u8::MAX {
                 let source = match &concrete.kind {
                     InputKind::Scene { scene_id, .. } => NativeAliasSource::Scene(*scene_id),
                     InputKind::MixFeed(feed) => NativeAliasSource::Feed(*feed),
@@ -825,6 +824,8 @@ impl NativeProjectPlan {
                 alias_crops.entry(input.id).or_insert(NativeAliasCrop {
                     source,
                     crop: [crop.x, crop.y, crop.width, crop.height],
+                    mask,
+                    opacity,
                 });
             }
             if !effects.is_empty() {
@@ -840,7 +841,7 @@ impl NativeProjectPlan {
             .map(|input| {
                 let route = match &input.kind {
                     InputKind::Alias { .. } => {
-                        let (concrete, _, _) = resolve_alias_target(input.id, &inputs)?;
+                        let (concrete, _, _, _, _) = resolve_alias_target(input.id, &inputs)?;
                         match &concrete.kind {
                             InputKind::Scene { scene_id, .. } => NativeVideoRoute::Scene(*scene_id),
                             InputKind::MixFeed(_) => NativeVideoRoute::Scene(
@@ -2100,6 +2101,8 @@ fn resolve_alias_target<'a>(
         &'a fm_model::Input,
         Option<fm_model::CropRect>,
         Vec<fm_model::LayerEffect>,
+        Option<fm_model::RectMask>,
+        u8,
     ),
     NativeProjectPlanError,
 > {
@@ -2109,9 +2112,15 @@ fn resolve_alias_target<'a>(
         .get(&input)
         .copied()
         .ok_or(NativeProjectPlanError::MissingInput(input))?;
-    let (crop, effects) = match &requested.kind {
-        InputKind::Alias { crop, effects, .. } => (*crop, effects.clone()),
-        _ => (None, Vec::new()),
+    let (crop, effects, mask, opacity) = match &requested.kind {
+        InputKind::Alias {
+            crop,
+            effects,
+            mask,
+            opacity,
+            ..
+        } => (*crop, effects.clone(), *mask, *opacity),
+        _ => (None, Vec::new(), None, u8::MAX),
     };
     let mut current = input;
     let mut seen = BTreeSet::new();
@@ -2125,7 +2134,7 @@ fn resolve_alias_target<'a>(
             .ok_or(NativeProjectPlanError::MissingInput(current))?;
         match &model.kind {
             InputKind::Alias { target, .. } => current = *target,
-            _ => return Ok((model, crop, effects)),
+            _ => return Ok((model, crop, effects, mask, opacity)),
         }
     }
 }
@@ -2154,7 +2163,7 @@ fn resolve_scene_source(
 ) -> Result<NativeSceneSource, NativeProjectPlanError> {
     match source {
         SourceRef::Input(input) => {
-            let (model, crop, _effects) = resolve_alias_target(input, inputs)?;
+            let (model, crop, _effects, _mask, _opacity) = resolve_alias_target(input, inputs)?;
             let source = match &model.kind {
                 InputKind::Scene { scene_id, .. } => {
                     if !scenes.contains_key(scene_id) {
@@ -8476,6 +8485,9 @@ impl NativeMediaRuntime {
                     project.dimensions,
                     alias.crop,
                     project.alias_effects(*input),
+                    alias.mask,
+                    alias.opacity,
+                    true,
                     target,
                 )
                 .await?;
@@ -8511,6 +8523,9 @@ impl NativeMediaRuntime {
                     project.dimensions,
                     alias.crop,
                     project.alias_effects(*input),
+                    alias.mask,
+                    alias.opacity,
+                    true,
                     target,
                 )
                 .await?;
@@ -9971,13 +9986,16 @@ impl NativeMediaRuntime {
             for (index, (_, source)) in scene.sources.iter().enumerate() {
                 let NativeSceneSource::Alias {
                     input,
-                    source,
-                    crop,
+                    source: alias_source,
+                    ..
                 } = source
                 else {
                     continue;
                 };
-                let target = match source {
+                let Some(alias) = project.alias_crop(*input) else {
+                    continue;
+                };
+                let target = match alias_source {
                     NativeAliasSource::Leaf(leaf) => graded
                         .get(leaf)
                         .map_or_else(
@@ -10011,8 +10029,11 @@ impl NativeMediaRuntime {
                 let texture = self
                     .crop_project_texture(
                         project.dimensions,
-                        *crop,
+                        alias.crop,
                         project.alias_effects(*input),
+                        alias.mask,
+                        alias.opacity,
+                        false,
                         target,
                     )
                     .await?;
@@ -11338,12 +11359,15 @@ impl NativeMediaRuntime {
         dimensions: VideoDimensions,
         crop: [u32; 4],
         effects: &[fm_model::LayerEffect],
+        mask: Option<fm_model::RectMask>,
+        opacity: u8,
+        opaque_background: bool,
         texture: &NativeTexture,
     ) -> Result<NativeTexture, NativeSourceRenderError> {
         let mut scene = CompositorScene::new(
             dimensions.width(),
             dimensions.height(),
-            CompositorRgba8::new(0, 0, 0, u8::MAX),
+            CompositorRgba8::new(0, 0, 0, if opaque_background { u8::MAX } else { 0 }),
         )
         .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
         let mut layer = SourceLayer::new(
@@ -11359,7 +11383,14 @@ impl NativeMediaRuntime {
         )
         .with_crop(fm_compositor::CropRect::new(
             crop[0], crop[1], crop[2], crop[3],
-        ));
+        ))
+        .with_opacity(opacity);
+        if let Some(mask) = mask {
+            layer = layer.with_mask(
+                CompositorRectMask::new(mask.x, mask.y, mask.width, mask.height)
+                    .inverted(mask.invert),
+            );
+        }
         for effect in effects {
             layer = layer.with_effect(CompositorEffect::new(
                 effect.name.clone(),

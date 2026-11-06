@@ -10941,6 +10941,36 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AddInputAliasCropInvalid,
         t("El ancho y el alto del recorte deben ser al menos 1 y como máximo 16384 píxeles"),
     ),
+    (Msg::AddInputAliasOpacity, t("Opacidad")),
+    (
+        Msg::AddInputAliasOpacityHover,
+        t("Opacidad propia del alias tras su recorte y efectos, de 0 a 255"),
+    ),
+    (Msg::AddInputAliasMaskEnable, t("Enmascarar el alias")),
+    (
+        Msg::AddInputAliasMaskEnableHover,
+        t("Conservar solo un rectángulo de la imagen del alias"),
+    ),
+    (Msg::AddInputAliasMaskX, t("Máscara x")),
+    (Msg::AddInputAliasMaskY, t("Máscara y")),
+    (Msg::AddInputAliasMaskWidth, t("Ancho de máscara")),
+    (Msg::AddInputAliasMaskHeight, t("Alto de máscara")),
+    (Msg::AddInputAliasMask, t("Máscara")),
+    (
+        Msg::AddInputAliasMaskHover,
+        t(
+            "Rectángulo de máscara en coordenadas de la imagen del alias; debe ser no vacío y caber en el recorte o la fuente",
+        ),
+    ),
+    (
+        Msg::AddInputAliasMaskInvalid,
+        t("El ancho y el alto de la máscara deben ser al menos 1 y caber en el recorte del alias"),
+    ),
+    (Msg::AddInputAliasMaskInvert, t("Invertir máscara")),
+    (
+        Msg::AddInputAliasMaskInvertHover,
+        t("Ocultar el rectángulo y mostrar el resto de la imagen del alias"),
+    ),
     (Msg::AliasEffectsAction, t("Efectos del alias…")),
     (
         Msg::AliasEffectsActionHover,
