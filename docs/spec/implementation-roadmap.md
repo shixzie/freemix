@@ -3282,8 +3282,12 @@ composite running even when no display asks for it. A cropped alias's own crop
 is composed in project pixels for Program, Preview, overlays, key/fill, and
 scene layers, whether its target is a leaf, a scene, or a feed; only the
 requested alias's crop applies, as in the model resolver, and scene ordering
-follows a cropped alias of a scene. The CLI scene renderer composes cropped aliases the same
-way: the alias crop is applied to the rendered source, a layer crop inside that region is translated, and a mask, key, or
+follows a cropped alias of a scene. An alias's own ordered effects apply
+after its crop and before the effects of a layer that draws it, in direct
+Program, Preview, overlay, key/fill, thumbnail, and scene-layer pictures; the
+native realizer bakes them into the alias crop composition and merges them
+ahead of scene-layer effects, and the CPU scene renderers do the same. The
+CLI scene renderer composes cropped aliases the same way: the alias crop is applied to the rendered source, a layer crop inside that region is translated, and a mask, key, or
 layer crop reaching outside the alias crop is refused by layer number rather
 than drawing a wrong picture. Input and scene thumbnails follow alias chains
 (and a scene thumbnail draws alias layers), and a feed input's own thumbnail
@@ -3294,12 +3298,15 @@ adds live authoring: `input_add` carries `kind=alias` (with `target` and an
 optional project-pixel crop) or `kind=program_feed`/`kind=preview_feed`, the
 engine adds the virtual input while keeping it out of the replaceable-source
 set, the daemon folds it into the stored project, and the CLI has
-`remote-alias-input-add` and `remote-mix-feed-input-add`. Studio's Add input
-dialog offers Alias (with an input picker, an optional project-pixel crop, and
-a nonempty/16384-bound check) and Feed (Program or Preview). Remaining gaps:
-aliases do not yet carry independent effects, shortcuts, or layer state, and
-no data source drives a mapped row through the protocol. `IN-024` and
-`IN-025` remain planned.
+`remote-alias-input-add` and `remote-mix-feed-input-add`. Protocol 2.167 adds
+an optional encoded effect list to `kind=alias`; the CLI accepts repeated
+`--effect name:parameters`, and project schema 110 persists the effects on the
+alias. Studio's Add input dialog offers Alias (with an input picker, an
+optional project-pixel crop, a nonempty/16384-bound check, and a space-separated
+effect field) and Feed (Program or Preview). Remaining gaps: aliases do not
+yet carry independent shortcuts or layer state, effects cannot be edited after
+the alias is added, and feed persistence is limited to the stored project
+input. `IN-024` and `IN-025` remain planned.
 
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
