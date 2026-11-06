@@ -5176,10 +5176,10 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::InputAdded { .. } | DurableChange::InputRemoved { .. } => {
             return validate_input_catalogue_change(change, state);
         }
-        DurableChange::AliasEffectsChanged { input, effects } => {
-            if !state.inputs.contains(input) {
-                return Err(ModelError::UnknownInput(*input));
-            }
+        DurableChange::AliasEffectsChanged { effects, .. } => {
+            // A command client may apply the event before any snapshot names
+            // the input; the effects map tolerates that and a later snapshot
+            // resets it.
             if effects.len() > fm_protocol::MAX_SCENE_LAYER_EFFECTS
                 || effects.iter().any(|effect| !effect.is_valid())
             {
