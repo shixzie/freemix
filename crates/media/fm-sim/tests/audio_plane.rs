@@ -242,6 +242,7 @@ fn frozen_inputs_are_silent_until_unfrozen() {
 /// IN-023/SW-012: the simulated plane renders logical-output audio maps,
 /// including a secondary-mix crossfade and silence.
 #[test]
+#[allow(clippy::too_many_lines)] // master, silence, and a crossfade in one render
 fn output_audio_renders_mix_crossfades_master_and_silence() {
     use fm_sim::SimulatedOutputAudioPlan;
     use fm_switcher::{AudioSource, MixAudio, MixAudioSource, MixBankFrame};
