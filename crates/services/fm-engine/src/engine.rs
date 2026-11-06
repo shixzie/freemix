@@ -541,6 +541,24 @@ pub enum EngineCommand {
         active: bool,
         duration_frames: u32,
     },
+    /// Starts a manual T-bar transition of secondary mix `number` (IN-023).
+    SecondaryMixStartTBar {
+        number: fm_model::MixNumber,
+        kind: fm_switcher::TransitionKind,
+    },
+    /// Moves secondary mix `number`'s T-bar to an absolute position (IN-023).
+    SecondaryMixSetTBarPosition {
+        number: fm_model::MixNumber,
+        position: fm_switcher::TBarPosition,
+    },
+    /// Completes secondary mix `number`'s T-bar (IN-023).
+    SecondaryMixCommitTBar {
+        number: fm_model::MixNumber,
+    },
+    /// Cancels secondary mix `number`'s T-bar (IN-023).
+    SecondaryMixCancelTBar {
+        number: fm_model::MixNumber,
+    },
     /// Sets one input's video delay in frames (IN-022). A project edit, undone
     /// by restoring the previous delay.
     SetInputVideoDelay {
@@ -3142,6 +3160,22 @@ impl Engine {
                     self.fade_secondary_mix_to_black(*number, *active, *duration_frames)
                         .map_err(crate::EngineError::MixBank)?;
                 }
+                EngineCommand::SecondaryMixStartTBar { number, kind } => {
+                    self.start_secondary_mix_t_bar(*number, *kind)
+                        .map_err(crate::EngineError::MixBank)?;
+                }
+                EngineCommand::SecondaryMixSetTBarPosition { number, position } => {
+                    self.set_secondary_mix_t_bar_position(*number, *position)
+                        .map_err(crate::EngineError::MixBank)?;
+                }
+                EngineCommand::SecondaryMixCommitTBar { number } => {
+                    self.commit_secondary_mix_t_bar(*number)
+                        .map_err(crate::EngineError::MixBank)?;
+                }
+                EngineCommand::SecondaryMixCancelTBar { number } => {
+                    self.cancel_secondary_mix_t_bar(*number)
+                        .map_err(crate::EngineError::MixBank)?;
+                }
                 _ => {}
             }
             if let Some(kind) = runtime_transition_kind(self.commands.state(), &command)
@@ -4552,6 +4586,18 @@ impl EngineMutation {
             EngineCommand::SecondaryMixCut { .. }
                 | EngineCommand::SecondaryMixTransition { .. }
                 | EngineCommand::SecondaryMixFadeToBlack { .. }
+                | EngineCommand::SecondaryMixStartTBar { .. }
+                | EngineCommand::SecondaryMixSetTBarPosition { .. }
+                | EngineCommand::SecondaryMixCommitTBar { .. }
+                | EngineCommand::SecondaryMixCancelTBar { .. }
+                | EngineCommand::SecondaryMixStartTBar { .. }
+                | EngineCommand::SecondaryMixSetTBarPosition { .. }
+                | EngineCommand::SecondaryMixCommitTBar { .. }
+                | EngineCommand::SecondaryMixCancelTBar { .. }
+                | EngineCommand::SecondaryMixStartTBar { .. }
+                | EngineCommand::SecondaryMixSetTBarPosition { .. }
+                | EngineCommand::SecondaryMixCommitTBar { .. }
+                | EngineCommand::SecondaryMixCancelTBar { .. }
         ) {
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
@@ -5378,6 +5424,14 @@ impl EngineMutation {
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SecondaryMixFadeToBlack { .. }
+            | EngineCommand::SecondaryMixStartTBar { .. }
+            | EngineCommand::SecondaryMixSetTBarPosition { .. }
+            | EngineCommand::SecondaryMixCommitTBar { .. }
+            | EngineCommand::SecondaryMixCancelTBar { .. }
+            | EngineCommand::SecondaryMixStartTBar { .. }
+            | EngineCommand::SecondaryMixSetTBarPosition { .. }
+            | EngineCommand::SecondaryMixCommitTBar { .. }
+            | EngineCommand::SecondaryMixCancelTBar { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -6076,6 +6130,14 @@ fn apply_runtime(
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SecondaryMixFadeToBlack { .. }
+            | EngineCommand::SecondaryMixStartTBar { .. }
+            | EngineCommand::SecondaryMixSetTBarPosition { .. }
+            | EngineCommand::SecondaryMixCommitTBar { .. }
+            | EngineCommand::SecondaryMixCancelTBar { .. }
+            | EngineCommand::SecondaryMixStartTBar { .. }
+            | EngineCommand::SecondaryMixSetTBarPosition { .. }
+            | EngineCommand::SecondaryMixCommitTBar { .. }
+            | EngineCommand::SecondaryMixCancelTBar { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -6288,6 +6350,10 @@ fn apply_runtime(
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SecondaryMixFadeToBlack { .. }
+        | EngineCommand::SecondaryMixStartTBar { .. }
+        | EngineCommand::SecondaryMixSetTBarPosition { .. }
+        | EngineCommand::SecondaryMixCommitTBar { .. }
+        | EngineCommand::SecondaryMixCancelTBar { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -6499,6 +6565,10 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SecondaryMixCut { .. }
         | EngineCommand::SecondaryMixTransition { .. }
         | EngineCommand::SecondaryMixFadeToBlack { .. }
+        | EngineCommand::SecondaryMixStartTBar { .. }
+        | EngineCommand::SecondaryMixSetTBarPosition { .. }
+        | EngineCommand::SecondaryMixCommitTBar { .. }
+        | EngineCommand::SecondaryMixCancelTBar { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
@@ -6550,6 +6620,10 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SecondaryMixCut { .. })
         && !matches!(command, EngineCommand::SecondaryMixTransition { .. })
         && !matches!(command, EngineCommand::SecondaryMixFadeToBlack { .. })
+        && !matches!(command, EngineCommand::SecondaryMixStartTBar { .. })
+        && !matches!(command, EngineCommand::SecondaryMixSetTBarPosition { .. })
+        && !matches!(command, EngineCommand::SecondaryMixCommitTBar { .. })
+        && !matches!(command, EngineCommand::SecondaryMixCancelTBar { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
         && !matches!(command, EngineCommand::SetAlertRule(_))
         && !matches!(command, EngineCommand::Replay(_))
