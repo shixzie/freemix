@@ -3096,8 +3096,15 @@ stores it as a route, rejects self-reference and cycles through overlays as
 well as Program, Preview, and running transitions, and composes the upstream
 mix one frame late like every other mix read. Native realization resolves a
 mix-sourced overlay through the same recursive mix composition (with cycle
-protection) and draws it full-frame above the mix's background. Remaining
-gaps: no audio path; overlay fades, T-bar, and Fade-to-Black inside a mix are
+protection) and draws it full-frame above the mix's background. Each mix also
+owns an exact Fade-to-Black controller: `secondary_mix_fade_to_black`
+(Protocol 2.170) fades one mix to Black or back to Live with the show's curve,
+the bank advances it once per frame and reports position/completion events, and
+native realization applies the mix's own interval after its overlays so only
+that mix darkens. The CLI has local and remote
+`secondary-mix-fade-to-black <mix> live|black <frames>`, and Studio's
+Secondary mixes dialog offers To black and To live beside Cut and Fade.
+Remaining gaps: no audio path; overlay fades and T-bar inside a mix are
 absent. `IN-023` remains planned.
 
 Current implementation boundary for keying (`SW-008`): beyond the existing
