@@ -88,6 +88,8 @@ fn alias_and_feed_add_intents_map_to_the_wire() {
                     height: 1080,
                 }),
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         },
         Some(&view),
@@ -107,6 +109,8 @@ fn alias_and_feed_add_intents_map_to_the_wire() {
                     height: 1080,
                 }),
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         }
     );
