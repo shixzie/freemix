@@ -925,6 +925,12 @@ pub enum EngineEvent {
         frames: u32,
         audio_delay_samples: u32,
     },
+    /// One alias input's ordered effects were replaced (IN-024); the state
+    /// is read from [`ShowState::alias_effects`].
+    InputAliasEffectsChanged {
+        input: InputId,
+        effects: Vec<fm_model::LayerEffect>,
+    },
     /// One input's freeze changed (SW-016); the state is read from
     /// [`ShowState::is_input_frozen`].
     InputFreezeChanged {
