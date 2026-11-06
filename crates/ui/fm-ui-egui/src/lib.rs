@@ -2301,6 +2301,11 @@ pub struct StudioShell {
     /// cues aimed at the selected input act on it.
     selected_input: Option<InputId>,
     rename_draft: Option<RenameDraft>,
+    /// The input whose alias-effect editor is open, its draft text, and the
+    /// input the draft was last loaded for (IN-024).
+    alias_effects_open: Option<InputId>,
+    alias_effects_draft: String,
+    alias_effects_loaded: Option<InputId>,
     stinger_editor: stinger_config::StingerEditor,
     layout: ConsoleLayout,
     show_shortcuts: bool,
@@ -3144,6 +3149,9 @@ impl Default for StudioShell {
             t_bar_kind: ManualTransitionKind::Fade,
             selected_input: None,
             rename_draft: None,
+            alias_effects_open: None,
+            alias_effects_draft: String::new(),
+            alias_effects_loaded: None,
             stinger_editor: stinger_config::StingerEditor::default(),
             layout: ConsoleLayout::default(),
             show_shortcuts: false,
