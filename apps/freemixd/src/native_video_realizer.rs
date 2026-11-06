@@ -15,14 +15,13 @@
 //! the realizer is the next stage.
 
 use std::{
-    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc,
         mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use fm_clock::ClockTime;
@@ -42,23 +41,16 @@ use crate::native_slides::NativeSlides;
 use crate::native_sources::retained_frame_timing;
 use crate::{NativeMonitorTap, NativeTapCounters};
 
-/// How often a committed feed picture is rewritten to the bundle cache.
-const FEED_CACHE_INTERVAL: Duration = Duration::from_secs(2);
-
 /// The last committed Program and Preview feed pictures, persisted in the
 /// project bundle so a restarted daemon shows them until the next commit
 /// (IN-025).
 struct FeedCache {
     directory: PathBuf,
-    written: BTreeMap<fm_model::MixFeed, Instant>,
 }
 
 impl FeedCache {
-    fn new(directory: PathBuf) -> Self {
-        Self {
-            directory,
-            written: BTreeMap::new(),
-        }
+    const fn new(directory: PathBuf) -> Self {
+        Self { directory }
     }
 
     fn path(&self, feed: fm_model::MixFeed) -> PathBuf {
@@ -85,23 +77,15 @@ impl FeedCache {
             .map(|decoded| decoded.frame)
     }
 
-    /// Rewrites one feed picture after the first commit and then at most once
-    /// per [`FEED_CACHE_INTERVAL`]. Failures leave the previous file in place
-    /// and never fail the frame.
+    /// Rewrites one feed picture. Called on the first commit and at clean
+    /// shutdown, so steady-state composition never pays a readback. Failures
+    /// leave the previous file in place and never fail the frame.
     fn store(
-        &mut self,
+        &self,
         runtime: &NativeMediaRuntime,
         feed: fm_model::MixFeed,
         texture: &NativeTexture,
     ) {
-        let now = Instant::now();
-        if self
-            .written
-            .get(&feed)
-            .is_some_and(|written| now.duration_since(*written) < FEED_CACHE_INTERVAL)
-        {
-            return;
-        }
         let Ok(still) = runtime.capture_texture_still_blocking(texture) else {
             return;
         };
@@ -110,10 +94,8 @@ impl FeedCache {
         }
         let path = self.path(feed);
         let temporary = path.with_extension("png.tmp");
-        if std::fs::write(&temporary, &still.png).is_ok()
-            && std::fs::rename(&temporary, &path).is_ok()
-        {
-            self.written.insert(feed, now);
+        if std::fs::write(&temporary, &still.png).is_ok() {
+            let _ = std::fs::rename(&temporary, &path);
         }
     }
 }
@@ -817,7 +799,9 @@ impl VideoRealizer {
                                         .runtime
                                         .copy_feed_texture_blocking(job.plan.dimensions(), texture)
                                         .map_err(VideoError::Render)?;
-                                    if let Some(cache) = self.feed_cache.as_mut() {
+                                    if self.feed_program.is_none()
+                                        && let Some(cache) = self.feed_cache.as_ref()
+                                    {
                                         cache.store(
                                             &self.runtime,
                                             fm_model::MixFeed::Program,
@@ -997,7 +981,17 @@ impl VideoRealizer {
                 VideoCommand::SlideshowRetainedBytes { reply } => {
                     let _ = reply.send(self.slides.retained_bytes());
                 }
-                VideoCommand::Shutdown => break,
+                VideoCommand::Shutdown => {
+                    if let Some(cache) = self.feed_cache.as_ref() {
+                        if let Some(texture) = self.feed_program.as_ref() {
+                            cache.store(&self.runtime, fm_model::MixFeed::Program, texture);
+                        }
+                        if let Some(texture) = self.feed_preview.as_ref() {
+                            cache.store(&self.runtime, fm_model::MixFeed::Preview, texture);
+                        }
+                    }
+                    break;
+                }
             }
         }
     }

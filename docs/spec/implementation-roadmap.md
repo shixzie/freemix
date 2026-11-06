@@ -3313,8 +3313,8 @@ space-separated effect tokens, and applies it atomically. Studio's Add input dia
 optional project-pixel crop, a nonempty/16384-bound check, and a space-separated
 effect field) and Feed (Program or Preview). The native realizer writes each
 feed's last committed Program and Preview picture into the project bundle as
-`feed-cache/program.png` and `feed-cache/preview.png` (at most one rewrite
-every two seconds) and restores them at startup as working textures, so a
+`feed-cache/program.png` and `feed-cache/preview.png` on the first commit and
+at clean shutdown, and restores them at startup as working textures, so a
 restarted daemon shows the last bus picture until the next commit instead of
 black. Simulated daemons rebuild feed thumbnails from their live monitor
 taps. Remaining gaps: aliases do not yet carry independent shortcuts or layer
