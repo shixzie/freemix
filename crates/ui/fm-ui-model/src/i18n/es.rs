@@ -1941,6 +1941,20 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::SecondaryMixFadeHover,
         t("Fundir esta mezcla hacia Previo durante la duración de transición de la consola"),
     ),
+    (Msg::SecondaryMixFadeBlack, t("A negro")),
+    (
+        Msg::SecondaryMixFadeBlackHover,
+        t(
+            "Fundir toda la imagen de esta mezcla a negro durante la duración de transición de la consola",
+        ),
+    ),
+    (Msg::SecondaryMixFadeLive, t("A directo")),
+    (
+        Msg::SecondaryMixFadeLiveHover,
+        t(
+            "Fundir toda la imagen de esta mezcla desde negro durante la duración de transición de la consola",
+        ),
+    ),
     (
         Msg::SecondaryMixEditLocked,
         t("Guardar una mezcla requiere permiso de edición del proyecto."),

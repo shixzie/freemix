@@ -221,6 +221,32 @@ impl StudioShell {
                                 duration_frames: frames,
                             });
                         }
+                        let to_black = ui
+                            .add_enabled(
+                                state.can_transition,
+                                egui::Button::new(l.text(Msg::SecondaryMixFadeBlack)),
+                            )
+                            .on_hover_text(l.text(Msg::SecondaryMixFadeBlackHover));
+                        if to_black.clicked() {
+                            intents.push(StudioIntent::SecondaryMixFadeToBlack {
+                                number: config.number,
+                                active: true,
+                                duration_frames: frames,
+                            });
+                        }
+                        let to_live = ui
+                            .add_enabled(
+                                state.can_transition,
+                                egui::Button::new(l.text(Msg::SecondaryMixFadeLive)),
+                            )
+                            .on_hover_text(l.text(Msg::SecondaryMixFadeLiveHover));
+                        if to_live.clicked() {
+                            intents.push(StudioIntent::SecondaryMixFadeToBlack {
+                                number: config.number,
+                                active: false,
+                                duration_frames: frames,
+                            });
+                        }
                         let edit = ui.button(l.text(Msg::SecondaryMixEdit));
                         if edit.clicked() {
                             self.secondary_mixes.draft = SecondaryMixDraft::from_config(config);

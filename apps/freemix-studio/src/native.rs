@@ -3472,6 +3472,15 @@ fn intent_payload(
             kind,
             duration_frames,
         },
+        StudioIntent::SecondaryMixFadeToBlack {
+            number,
+            active,
+            duration_frames,
+        } => CommandPayload::SecondaryMixFadeToBlack {
+            number,
+            active,
+            duration_frames,
+        },
         StudioIntent::SetDisplayOutput { slot, config } => {
             CommandPayload::SetDisplayOutput { slot, config }
         }

@@ -287,6 +287,12 @@ pub enum StudioIntent {
         kind: fm_protocol::AutoTransitionKind,
         duration_frames: u32,
     },
+    /// Fades one secondary mix to Black (`active`) or back to Live (IN-023).
+    SecondaryMixFadeToBlack {
+        number: fm_protocol::WireMixNumber,
+        active: bool,
+        duration_frames: u32,
+    },
     /// Saves one fullscreen display-output slot (OR-011, Protocol 2.42).
     SetDisplayOutput {
         slot: fm_protocol::DisplayOutputSlot,
