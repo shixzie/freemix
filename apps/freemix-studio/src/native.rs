@@ -1503,6 +1503,7 @@ fn run_worker(
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::RequestClocks
                 | StudioIntent::CaptureFrozenStill { .. }
+                | StudioIntent::RequestAliasEffects { .. }
                 | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::SaveRecorderTrackMap { .. }
                 | StudioIntent::SaveRecorderTrackLimits { .. }
@@ -1576,6 +1577,10 @@ fn run_worker(
                     runtime.apply_frozen_still_response(&response);
                     true
                 }
+                Ok(Some(SessionEvent::AliasEffectsResponse { response })) => {
+                    runtime.apply_alias_effects_response(&response);
+                    true
+                }
                 Ok(Some(SessionEvent::ServerError(error)))
                     if error
                         .request_id
@@ -1583,6 +1588,18 @@ fn run_worker(
                         .is_some_and(|id| id.starts_with("studio-frozen-still-")) =>
                 {
                     runtime.apply_frozen_still_error(
+                        error.request_id.as_deref().unwrap_or_default(),
+                        error.error.message.clone(),
+                    );
+                    true
+                }
+                Ok(Some(SessionEvent::ServerError(error)))
+                    if error
+                        .request_id
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("studio-alias-effects-")) =>
+                {
+                    runtime.apply_alias_effects_error(
                         error.request_id.as_deref().unwrap_or_default(),
                         error.error.message.clone(),
                     );
@@ -1643,6 +1660,7 @@ fn run_worker(
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::RequestClocks
                 | StudioIntent::CaptureFrozenStill { .. }
+                | StudioIntent::RequestAliasEffects { .. }
                 | StudioIntent::RefreshRecorderTracks
                 | StudioIntent::SaveRecorderTrackMap { .. }
                 | StudioIntent::SaveRecorderTrackLimits { .. }
@@ -1768,6 +1786,14 @@ fn handle_preview_request(
     if let StudioIntent::PagedPage(request) = request {
         if !recovery.active() {
             runtime.request_paged_page(request);
+        }
+        return true;
+    }
+    // An alias's current effects (IN-024, Protocol 2.168) are read only
+    // while connected; the answer updates the editor's list.
+    if let StudioIntent::RequestAliasEffects { input } = request {
+        if !recovery.active() {
+            runtime.request_alias_effects(input);
         }
         return true;
     }
@@ -2242,6 +2268,10 @@ fn handle_heartbeat_timeout(
                             runtime.apply_frozen_still_response(response);
                             Some(true)
                         }
+                        SessionEvent::AliasEffectsResponse { response } => {
+                            runtime.apply_alias_effects_response(response);
+                            Some(true)
+                        }
                         SessionEvent::ServerError(error)
                             if error
                                 .request_id
@@ -2249,6 +2279,18 @@ fn handle_heartbeat_timeout(
                                 .is_some_and(|id| id.starts_with("studio-frozen-still-")) =>
                         {
                             runtime.apply_frozen_still_error(
+                                error.request_id.as_deref().unwrap_or_default(),
+                                error.error.message.clone(),
+                            );
+                            Some(true)
+                        }
+                        SessionEvent::ServerError(error)
+                            if error
+                                .request_id
+                                .as_deref()
+                                .is_some_and(|id| id.starts_with("studio-alias-effects-")) =>
+                        {
+                            runtime.apply_alias_effects_error(
                                 error.request_id.as_deref().unwrap_or_default(),
                                 error.error.message.clone(),
                             );
@@ -3049,6 +3091,13 @@ fn intent_payload(
             values,
             keep_live,
         },
+        StudioIntent::SetAliasEffects { input, effects } => CommandPayload::SetAliasEffects {
+            input: WireInputId::from_domain(input),
+            effects,
+        },
+        StudioIntent::RequestAliasEffects { .. } => {
+            return Err("An alias-effects read is not a command".to_owned());
+        }
         StudioIntent::SetInputVideoDelay { input, frames } => CommandPayload::SetInputVideoDelay {
             input: WireInputId::from_domain(input),
             frames,
@@ -3771,6 +3820,10 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
             state.clocks_error = runtime.clocks_error().map(str::to_owned);
             state.frozen_still = runtime.frozen_still().cloned();
             state.frozen_still_error = runtime.frozen_still_error().map(str::to_owned);
+            state.alias_effects = runtime.alias_effects().clone();
+            state.alias_effects_error = runtime
+                .alias_effects_error()
+                .map(|(input, message)| (input, message.to_owned()));
             state.recording_desired = recording_desired_slots(view);
         }
         state.view = view;
