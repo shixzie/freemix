@@ -2,9 +2,9 @@ use std::num::NonZeroU128;
 
 use fm_switcher::{
     MAX_MIX_BANK_INPUTS, MAX_MIX_TRANSITION_DURATION_FRAMES, MAX_PENDING_MIX_EFFECTS,
-    MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MixBank, MixBankCommand, MixBankError, MixBankEvent,
-    MixConfig, MixEffect, MixId, MixLayer, MixMode, MixSet, MixSource, OverlayChannelId,
-    StingerSlotId, TransitionKind,
+    MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MissingMediaFallback, MixBank, MixBankCommand,
+    MixBankError, MixBankEvent, MixConfig, MixEffect, MixId, MixLayer, MixMode, MixSet, MixSource,
+    MixStingerAction, OverlayChannelId, StingerSlotId, TransitionKind,
 };
 use fm_types::InputId;
 
@@ -626,6 +626,9 @@ fn stinger_effect_starts_synchronized_transitions_in_every_target() {
     let effect = MixEffect::Stinger {
         slot,
         duration_frames: 2,
+        action: MixStingerAction::Play {
+            cut_point_frames: 1,
+        },
     };
     bank.schedule_effect(effect, targets).unwrap();
 
@@ -668,6 +671,9 @@ fn stinger_effect_is_all_or_nothing_at_the_boundary() {
     let effect = MixEffect::Stinger {
         slot,
         duration_frames: 5,
+        action: MixStingerAction::Play {
+            cut_point_frames: 1,
+        },
     };
 
     // Output-only targets cannot run a Preview-to-Program stinger.
@@ -748,4 +754,168 @@ fn identical_command_sequences_produce_identical_frames() {
         (0..6).map(|_| bank.advance_frame()).collect()
     }
     assert_eq!(run(), run());
+}
+
+#[test]
+fn stinger_effect_applies_cut_fallback_to_every_target() {
+    let mut bank = bank();
+    add_pp(&mut bank, 3, src(5), src(6));
+    let slot = StingerSlotId::new(2).unwrap();
+    let targets = MixSet::from_mixes([MixId::MAIN, mix(3)]);
+    let effect = MixEffect::Stinger {
+        slot,
+        duration_frames: 4,
+        action: MixStingerAction::Fallback(MissingMediaFallback::Cut),
+    };
+    bank.schedule_effect(effect, targets).unwrap();
+
+    let (frame, events) = bank.advance_frame();
+    for (target, program, preview) in [(MixId::MAIN, src(2), src(1)), (mix(3), src(6), src(5))] {
+        let composed = frame.mix(target).unwrap();
+        assert_eq!(composed.transition_kind, None);
+        assert_eq!(
+            composed.primary,
+            MixLayer::Input(match program {
+                MixSource::Input(input) => input,
+                MixSource::Mix(_) => unreachable!(),
+            })
+        );
+        assert_eq!(
+            composed.preview,
+            Some(MixLayer::Input(match preview {
+                MixSource::Input(input) => input,
+                MixSource::Mix(_) => unreachable!(),
+            }))
+        );
+        assert!(events.contains(&MixBankEvent::StingerFallbackApplied {
+            mix: target,
+            slot,
+            fallback: MissingMediaFallback::Cut,
+        }));
+        assert!(events.contains(&MixBankEvent::ProgramChanged {
+            mix: target,
+            previous: preview,
+            program,
+        }));
+    }
+    assert_eq!(
+        events.last(),
+        Some(&MixBankEvent::EffectApplied {
+            effect,
+            targets,
+            frame: 0,
+        })
+    );
+}
+
+#[test]
+fn stinger_effect_fades_or_keeps_program_when_media_is_missing() {
+    let mut bank = bank();
+    add_pp(&mut bank, 3, src(5), src(6));
+    let slot = StingerSlotId::new(1).unwrap();
+    let targets = MixSet::from_mixes([MixId::MAIN, mix(3)]);
+
+    let fade = MixEffect::Stinger {
+        slot,
+        duration_frames: 4,
+        action: MixStingerAction::Fallback(MissingMediaFallback::Fade),
+    };
+    bank.schedule_effect(fade, targets).unwrap();
+    let (frame, events) = bank.advance_frame();
+    for target in [MixId::MAIN, mix(3)] {
+        let composed = frame.mix(target).unwrap();
+        assert_eq!(composed.transition_kind, Some(TransitionKind::Fade));
+        assert_eq!((composed.mix_numerator, composed.mix_denominator), (0, 4));
+    }
+    assert!(events.contains(&MixBankEvent::StingerFallbackApplied {
+        mix: MixId::MAIN,
+        slot,
+        fallback: MissingMediaFallback::Fade,
+    }));
+
+    // Settle the fades, then Keep Program leaves every Program untouched.
+    for _ in 0..4 {
+        bank.advance_frame();
+    }
+    let programs: Vec<_> = [MixId::MAIN, mix(3)]
+        .into_iter()
+        .map(|target| bank.frame(0).unwrap().mix(target).unwrap().primary)
+        .collect();
+    let keep = MixEffect::Stinger {
+        slot,
+        duration_frames: 4,
+        action: MixStingerAction::Fallback(MissingMediaFallback::KeepProgram),
+    };
+    bank.schedule_effect(keep, targets).unwrap();
+    let (frame, events) = bank.advance_frame();
+    for (target, program) in [MixId::MAIN, mix(3)].into_iter().zip(programs) {
+        assert_eq!(frame.mix(target).unwrap().primary, program);
+        assert!(events.contains(&MixBankEvent::StingerFallbackApplied {
+            mix: target,
+            slot,
+            fallback: MissingMediaFallback::KeepProgram,
+        }));
+    }
+}
+
+#[test]
+fn an_unconfigured_stinger_or_short_clip_is_refused_whole() {
+    let mut bank = bank();
+    let slot = StingerSlotId::new(4).unwrap();
+    let targets = MixSet::single(MixId::MAIN);
+    assert_eq!(
+        bank.schedule_effect(
+            MixEffect::Stinger {
+                slot,
+                duration_frames: 4,
+                action: MixStingerAction::Unconfigured,
+            },
+            targets,
+        ),
+        Err(MixBankError::UnconfiguredStinger(slot))
+    );
+    assert_eq!(
+        bank.schedule_effect(
+            MixEffect::Stinger {
+                slot,
+                duration_frames: 4,
+                action: MixStingerAction::Play {
+                    cut_point_frames: 5,
+                },
+            },
+            targets,
+        ),
+        Err(MixBankError::StingerCutPointOutOfRange {
+            slot,
+            cut_point_frames: 5,
+            duration_frames: 4,
+        })
+    );
+    assert_eq!(bank.pending_effects(), 0);
+    assert_eq!(
+        bank.frame(0)
+            .unwrap()
+            .mix(MixId::MAIN)
+            .unwrap()
+            .transition_kind,
+        None
+    );
+}
+
+#[test]
+fn a_stinger_fallback_still_needs_a_preview_bus() {
+    let mut bank = bank();
+    add_pp(&mut bank, 2, src(3), src(4));
+    add_output_only(&mut bank, 3, src(5));
+    let slot = StingerSlotId::new(1).unwrap();
+    let effect = MixEffect::Stinger {
+        slot,
+        duration_frames: 4,
+        action: MixStingerAction::Fallback(MissingMediaFallback::Cut),
+    };
+    assert_eq!(
+        bank.schedule_effect(effect, MixSet::from_mixes([mix(2), mix(3)])),
+        Err(MixBankError::PreviewUnavailable(mix(3)))
+    );
+    assert_eq!(bank.pending_effects(), 0);
 }

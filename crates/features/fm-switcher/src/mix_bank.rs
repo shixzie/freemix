@@ -31,8 +31,8 @@
 use fm_types::InputId;
 
 use crate::{
-    MAX_OVERLAY_TRANSITION_DURATION_FRAMES, OVERLAY_CHANNEL_COUNT, OverlayChannelId, StingerSlotId,
-    TransitionKind,
+    MAX_OVERLAY_TRANSITION_DURATION_FRAMES, MissingMediaFallback, OVERLAY_CHANNEL_COUNT,
+    OverlayChannelId, StingerSlotId, TransitionKind,
 };
 
 /// Number of secondary mixes addressable beside the Main mix.
@@ -256,6 +256,19 @@ impl MixState {
     }
 }
 
+/// What a Stinger effect does when its slot's media is not ready.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MixStingerAction {
+    /// The clip is ready: start a Stinger transition. The cut point must fit
+    /// inside the requested duration.
+    Play { cut_point_frames: u32 },
+    /// The clip is missing: apply the slot's configured fallback to every
+    /// target instead of a Stinger transition.
+    Fallback(MissingMediaFallback),
+    /// No slot is configured: refuse the whole effect.
+    Unconfigured,
+}
+
 /// Overlay or Stinger action applied to a set of mixes at a frame boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MixEffect {
@@ -266,10 +279,12 @@ pub enum MixEffect {
     OverlayOff {
         channel: OverlayChannelId,
     },
-    /// Starts a stinger-labelled Preview-to-Program transition in each target.
+    /// Starts a stinger-labelled Preview-to-Program transition in each target,
+    /// or applies the slot's missing-media fallback.
     Stinger {
         slot: StingerSlotId,
         duration_frames: u32,
+        action: MixStingerAction,
     },
 }
 
@@ -369,6 +384,12 @@ pub enum MixBankEvent {
         frame: u64,
         error: MixBankError,
     },
+    /// A Stinger effect target lacked ready media and applied its fallback.
+    StingerFallbackApplied {
+        mix: MixId,
+        slot: StingerSlotId,
+        fallback: MissingMediaFallback,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -413,6 +434,14 @@ pub enum MixBankError {
     EmptyTargetSet,
     PendingEffectsFull {
         maximum: usize,
+    },
+    /// A Stinger effect names a slot with no media configured.
+    UnconfiguredStinger(StingerSlotId),
+    /// A ready clip's cut point does not fit inside the effect duration.
+    StingerCutPointOutOfRange {
+        slot: StingerSlotId,
+        cut_point_frames: u32,
+        duration_frames: u32,
     },
 }
 
@@ -472,6 +501,20 @@ impl core::fmt::Display for MixBankError {
                     "at most {maximum} effects may wait for a frame boundary"
                 )
             }
+            Self::UnconfiguredStinger(slot) => write!(
+                formatter,
+                "the media of Stinger {} is not configured",
+                slot.number()
+            ),
+            Self::StingerCutPointOutOfRange {
+                slot,
+                cut_point_frames,
+                duration_frames,
+            } => write!(
+                formatter,
+                "Stinger {} cut point {cut_point_frames} exceeds duration {duration_frames}",
+                slot.number()
+            ),
         }
     }
 }
@@ -1002,8 +1045,24 @@ impl MixBank {
                     self.require_mix(mix)?;
                 }
                 MixEffect::Stinger {
-                    duration_frames, ..
-                } => self.validate_preview_transition(mix, duration_frames)?,
+                    slot,
+                    duration_frames,
+                    action,
+                } => {
+                    if matches!(action, MixStingerAction::Unconfigured) {
+                        return Err(MixBankError::UnconfiguredStinger(*slot));
+                    }
+                    self.validate_preview_transition(mix, duration_frames)?;
+                    if let MixStingerAction::Play { cut_point_frames } = action
+                        && cut_point_frames > duration_frames
+                    {
+                        return Err(MixBankError::StingerCutPointOutOfRange {
+                            slot: *slot,
+                            cut_point_frames: *cut_point_frames,
+                            duration_frames: *duration_frames,
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -1030,11 +1089,44 @@ impl MixBank {
             MixEffect::Stinger {
                 slot,
                 duration_frames,
-            } => events.push(self.start_preview_transition(
-                mix,
-                TransitionKind::Stinger(slot),
-                duration_frames,
-            )),
+                action,
+            } => match action {
+                MixStingerAction::Play { .. } => events.push(self.start_preview_transition(
+                    mix,
+                    TransitionKind::Stinger(slot),
+                    duration_frames,
+                )),
+                MixStingerAction::Fallback(fallback) => {
+                    events.push(MixBankEvent::StingerFallbackApplied {
+                        mix,
+                        slot,
+                        fallback,
+                    });
+                    match fallback {
+                        MissingMediaFallback::Cut => {
+                            let state = self.state_mut(mix);
+                            let previous = state.program;
+                            let preview = state.preview.expect("validated Preview/Program mix");
+                            state.program = preview;
+                            state.preview = Some(previous);
+                            events.push(MixBankEvent::ProgramChanged {
+                                mix,
+                                previous,
+                                program: preview,
+                            });
+                        }
+                        MissingMediaFallback::Fade => events.push(self.start_preview_transition(
+                            mix,
+                            TransitionKind::Fade,
+                            duration_frames,
+                        )),
+                        MissingMediaFallback::KeepProgram => {}
+                    }
+                }
+                MixStingerAction::Unconfigured => {
+                    unreachable!("an unconfigured Stinger is refused before the boundary")
+                }
+            },
         }
     }
 
