@@ -912,6 +912,11 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 &mut |name, value| record.field_string(name, value),
             )?;
         }
+        CommandPayload::SetAliasEffects { input, effects } => {
+            record.field("payload", "set_alias_effects")?;
+            record.field("input", input)?;
+            record.field_string("effects", super::scene_layout::encode_effect_list(effects)?)?;
+        }
         CommandPayload::SetInputFreeze { input, frozen } => {
             record.field("payload", "set_input_freeze")?;
             record.field("input", input)?;
@@ -3167,6 +3172,11 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("input", input)?;
             record.field("frames", frames)?;
             record.field("audio_delay_samples", audio_delay_samples)?;
+        }
+        EventPayload::InputAliasEffectsChanged { input, effects } => {
+            record.field("event", "input_alias_effects_changed")?;
+            record.field("input", input)?;
+            record.field_string("effects", super::scene_layout::encode_effect_list(effects)?)?;
         }
         EventPayload::InputFreezeChanged { input, frozen } => {
             record.field("event", "input_freeze_changed")?;

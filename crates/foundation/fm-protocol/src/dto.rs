@@ -2285,6 +2285,12 @@ pub enum CommandPayload {
         input: WireInputId,
         frames: u32,
     },
+    /// Replaces one alias input's ordered effects (IN-024). A padlocked,
+    /// undoable project edit.
+    SetAliasEffects {
+        input: WireInputId,
+        effects: Vec<crate::WireLayerEffect>,
+    },
     /// Freezes or resumes one input's picture (Protocol 2.161, SW-016). A
     /// live operation, neither padlocked nor undoable.
     SetInputFreeze {
@@ -3084,6 +3090,11 @@ pub enum EventPayload {
         input: WireInputId,
         frames: u32,
         audio_delay_samples: u32,
+    },
+    /// One alias input's ordered effects were replaced (IN-024).
+    InputAliasEffectsChanged {
+        input: WireInputId,
+        effects: Vec<crate::WireLayerEffect>,
     },
     /// One input's freeze changed (Protocol 2.161, SW-016).
     InputFreezeChanged {

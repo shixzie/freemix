@@ -964,6 +964,10 @@ fn decode_command_payload(
             input: fields.input("input")?,
             frozen: fields.boolean("frozen")?,
         },
+        "set_alias_effects" => CommandPayload::SetAliasEffects {
+            input: fields.input("input")?,
+            effects: super::scene_layout::decode_effect_list(&fields.required("effects")?)?,
+        },
         replay if replay.starts_with("replay_") => {
             CommandPayload::Replay(super::replay::decode_operation(replay, fields)?.ok_or_else(
                 || CodecError::InvalidField {
@@ -3200,6 +3204,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "input_freeze_changed" => EventPayload::InputFreezeChanged {
             input: fields.input("input")?,
             frozen: fields.boolean("frozen")?,
+        },
+        "input_alias_effects_changed" => EventPayload::InputAliasEffectsChanged {
+            input: fields.input("input")?,
+            effects: super::scene_layout::decode_effect_list(&fields.required("effects")?)?,
         },
         "scene_layout_changed" => {
             let operation = fields.required("operation")?;
