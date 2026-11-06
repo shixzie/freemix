@@ -19311,6 +19311,142 @@ mod tests {
         assert!(last_components[0] > last_components[2] && last_components[1] > last_components[2]);
         assert_eq!(restarted.bytes, first.bytes);
     }
+
+    fn output_plan(
+        slot: u8,
+        output: u128,
+        audio: fm_switcher::AudioSource,
+    ) -> fm_switcher::OutputRenderPlan {
+        fm_switcher::OutputRenderPlan {
+            slot: fm_switcher::LogicalOutputSlot::new(slot).unwrap(),
+            output: OutputId::new(NonZeroU128::new(output).unwrap()),
+            video: fm_switcher::OutputVideo::Background(fm_switcher::BackgroundPlan {
+                primary: fm_switcher::FeedLayer::Input(input(1)),
+                secondary: None,
+                transition_kind: None,
+                mix_numerator: 0,
+                mix_denominator: 1,
+                fade_to_black: fm_switcher::FadeToBlackPosition::LIVE,
+            }),
+            overlays: Vec::new(),
+            audio,
+        }
+    }
+
+    #[test]
+    fn logical_output_audio_renders_mix_routes_with_crossfades_and_delay() {
+        let program = input(1);
+        let a = input(2);
+        let b = input(3);
+        let mut master = audio_test_master(&[(program, 0.1), (a, 0.2), (b, 0.4)], 3);
+        let mix_two = fm_switcher::MixId::new(2).unwrap();
+        let mix_three = fm_switcher::MixId::new(3).unwrap();
+        let route = fm_switcher::MixAudio {
+            primary: fm_switcher::MixAudioSource::Input(a),
+            secondary: Some(fm_switcher::MixAudioSource::Input(b)),
+            numerator: 1,
+            denominator: 2,
+        };
+        let mix =
+            |number: fm_switcher::MixId, audio: fm_switcher::MixAudio| fm_switcher::MixFrame {
+                mix: number,
+                primary: fm_switcher::MixLayer::Input(a),
+                secondary: None,
+                transition_kind: None,
+                mix_numerator: 0,
+                mix_denominator: 1,
+                preview: None,
+                overlays: [None; fm_switcher::OVERLAY_CHANNEL_COUNT],
+                fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
+                audio,
+            };
+        let mut first = frame_result(0, program, None);
+        first.secondary_mixes = fm_switcher::MixBankFrame {
+            frame: 0,
+            mixes: vec![
+                mix(mix_two, route),
+                mix(
+                    mix_three,
+                    fm_switcher::MixAudio {
+                        primary: fm_switcher::MixAudioSource::Input(b),
+                        secondary: None,
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                ),
+            ],
+        };
+        first.logical_outputs = fm_switcher::OutputRoutingFrame {
+            outputs: std::array::from_fn(|index| match index {
+                0 => Some(Ok(output_plan(1, 7, fm_switcher::AudioSource::Mix(route)))),
+                1 => Some(Ok(output_plan(2, 8, fm_switcher::AudioSource::Silent))),
+                _ => None,
+            }),
+            render_order: Vec::new(),
+        };
+
+        assert!(master.service_next_frame().unwrap());
+        master.render_frame_audio(&first).unwrap();
+        let outputs = master.take_logical_output_audio();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].0, OutputId::new(NonZeroU128::new(7).unwrap()));
+        for sample in outputs[0].1.plane(0).unwrap() {
+            assert_sample_exact(*sample, 0.3);
+        }
+        assert_eq!(outputs[1].0, OutputId::new(NonZeroU128::new(8).unwrap()));
+        assert!(
+            outputs[1]
+                .1
+                .plane(0)
+                .unwrap()
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+
+        let mut second = frame_result(1, program, None);
+        second.secondary_mixes = fm_switcher::MixBankFrame {
+            frame: 1,
+            mixes: vec![mix(
+                mix_two,
+                fm_switcher::MixAudio {
+                    primary: fm_switcher::MixAudioSource::Mix {
+                        mix: mix_three,
+                        frame: 0,
+                    },
+                    secondary: None,
+                    numerator: 0,
+                    denominator: 1,
+                },
+            )],
+        };
+        second.logical_outputs = fm_switcher::OutputRoutingFrame {
+            outputs: std::array::from_fn(|index| {
+                (index == 0).then(|| {
+                    Ok(output_plan(
+                        1,
+                        7,
+                        fm_switcher::AudioSource::Mix {
+                            primary: fm_switcher::MixAudioSource::Mix {
+                                mix: mix_three,
+                                frame: 0,
+                            },
+                            secondary: None,
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                    ))
+                })
+            }),
+            render_order: Vec::new(),
+        };
+        assert!(master.service_next_frame().unwrap());
+        master.render_frame_audio(&second).unwrap();
+        let outputs = master.take_logical_output_audio();
+        assert_eq!(outputs.len(), 1);
+        for sample in outputs[0].1.plane(0).unwrap() {
+            assert_sample_exact(*sample, 0.4);
+        }
+    }
 }
 
 /// The newest CPU frame every source of a playback holds (GX-011 exact
@@ -19844,141 +19980,5 @@ mod pushed_audio_mapping_tests {
             &map_pushed_audio(&discrete, &planes, &stereo, 1),
             &[&[0.25], &[-0.5]],
         );
-    }
-
-    fn output_plan(
-        slot: u8,
-        output: u128,
-        audio: fm_switcher::AudioSource,
-    ) -> fm_switcher::OutputRenderPlan {
-        fm_switcher::OutputRenderPlan {
-            slot: fm_switcher::LogicalOutputSlot::new(slot).unwrap(),
-            output: OutputId::new(NonZeroU128::new(output).unwrap()),
-            video: fm_switcher::OutputVideo::Background(fm_switcher::BackgroundPlan {
-                primary: fm_switcher::FeedLayer::Input(input(1)),
-                secondary: None,
-                transition_kind: None,
-                mix_numerator: 0,
-                mix_denominator: 1,
-                fade_to_black: fm_switcher::FadeToBlackPosition::LIVE,
-            }),
-            overlays: Vec::new(),
-            audio,
-        }
-    }
-
-    #[test]
-    fn logical_output_audio_renders_mix_routes_with_crossfades_and_delay() {
-        let program = input(1);
-        let a = input(2);
-        let b = input(3);
-        let mut master = audio_test_master(&[(program, 0.1), (a, 0.2), (b, 0.4)], 3);
-        let mix_two = fm_switcher::MixId::new(2).unwrap();
-        let mix_three = fm_switcher::MixId::new(3).unwrap();
-        let route = fm_switcher::MixAudio {
-            primary: fm_switcher::MixAudioSource::Input(a),
-            secondary: Some(fm_switcher::MixAudioSource::Input(b)),
-            numerator: 1,
-            denominator: 2,
-        };
-        let mix =
-            |number: fm_switcher::MixId, audio: fm_switcher::MixAudio| fm_switcher::MixFrame {
-                mix: number,
-                primary: fm_switcher::MixLayer::Input(a),
-                secondary: None,
-                transition_kind: None,
-                mix_numerator: 0,
-                mix_denominator: 1,
-                preview: None,
-                overlays: [None; fm_switcher::OVERLAY_CHANNEL_COUNT],
-                fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
-                audio,
-            };
-        let mut first = frame_result(0, program, None);
-        first.secondary_mixes = fm_switcher::MixBankFrame {
-            frame: 0,
-            mixes: vec![
-                mix(mix_two, route),
-                mix(
-                    mix_three,
-                    fm_switcher::MixAudio {
-                        primary: fm_switcher::MixAudioSource::Input(b),
-                        secondary: None,
-                        numerator: 0,
-                        denominator: 1,
-                    },
-                ),
-            ],
-        };
-        first.logical_outputs = fm_switcher::OutputRoutingFrame {
-            outputs: std::array::from_fn(|index| match index {
-                0 => Some(Ok(output_plan(1, 7, fm_switcher::AudioSource::Mix(route)))),
-                1 => Some(Ok(output_plan(2, 8, fm_switcher::AudioSource::Silent))),
-                _ => None,
-            }),
-            render_order: Vec::new(),
-        };
-
-        assert!(master.service_next_frame().unwrap());
-        master.render_frame_audio(&first).unwrap();
-        let outputs = master.take_logical_output_audio();
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs[0].0, OutputId::new(NonZeroU128::new(7).unwrap()));
-        for sample in outputs[0].1.plane(0).unwrap() {
-            assert_sample_exact(*sample, 0.3);
-        }
-        assert_eq!(outputs[1].0, OutputId::new(NonZeroU128::new(8).unwrap()));
-        assert!(
-            outputs[1]
-                .1
-                .plane(0)
-                .unwrap()
-                .iter()
-                .all(|sample| *sample == 0.0)
-        );
-
-        let mut second = frame_result(1, program, None);
-        second.secondary_mixes = fm_switcher::MixBankFrame {
-            frame: 1,
-            mixes: vec![mix(
-                mix_two,
-                fm_switcher::MixAudio {
-                    primary: fm_switcher::MixAudioSource::Mix {
-                        mix: mix_three,
-                        frame: 0,
-                    },
-                    secondary: None,
-                    numerator: 0,
-                    denominator: 1,
-                },
-            )],
-        };
-        second.logical_outputs = fm_switcher::OutputRoutingFrame {
-            outputs: std::array::from_fn(|index| {
-                (index == 0).then(|| {
-                    Ok(output_plan(
-                        1,
-                        7,
-                        fm_switcher::AudioSource::Mix {
-                            primary: fm_switcher::MixAudioSource::Mix {
-                                mix: mix_three,
-                                frame: 0,
-                            },
-                            secondary: None,
-                            numerator: 0,
-                            denominator: 1,
-                        },
-                    ))
-                })
-            }),
-            render_order: Vec::new(),
-        };
-        assert!(master.service_next_frame().unwrap());
-        master.render_frame_audio(&second).unwrap();
-        let outputs = master.take_logical_output_audio();
-        assert_eq!(outputs.len(), 1);
-        for sample in outputs[0].1.plane(0).unwrap() {
-            assert_sample_exact(*sample, 0.4);
-        }
     }
 }
