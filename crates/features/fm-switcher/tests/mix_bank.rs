@@ -837,10 +837,7 @@ fn stinger_effect_fades_or_keeps_program_when_media_is_missing() {
     for _ in 0..4 {
         bank.advance_frame();
     }
-    let programs: Vec<_> = [MixId::MAIN, mix(3)]
-        .into_iter()
-        .map(|target| bank.frame(0).unwrap().mix(target).unwrap().primary)
-        .collect();
+    let programs = [src(2), src(6)];
     let keep = MixEffect::Stinger {
         slot,
         duration_frames: 4,
@@ -849,7 +846,13 @@ fn stinger_effect_fades_or_keeps_program_when_media_is_missing() {
     bank.schedule_effect(keep, targets).unwrap();
     let (frame, events) = bank.advance_frame();
     for (target, program) in [MixId::MAIN, mix(3)].into_iter().zip(programs) {
-        assert_eq!(frame.mix(target).unwrap().primary, program);
+        assert_eq!(
+            frame.mix(target).unwrap().primary,
+            MixLayer::Input(match program {
+                MixSource::Input(input) => input,
+                MixSource::Mix(_) => unreachable!(),
+            })
+        );
         assert!(events.contains(&MixBankEvent::StingerFallbackApplied {
             mix: target,
             slot,
@@ -892,14 +895,8 @@ fn an_unconfigured_stinger_or_short_clip_is_refused_whole() {
         })
     );
     assert_eq!(bank.pending_effects(), 0);
-    assert_eq!(
-        bank.frame(0)
-            .unwrap()
-            .mix(MixId::MAIN)
-            .unwrap()
-            .transition_kind,
-        None
-    );
+    let (frame, _) = bank.advance_frame();
+    assert_eq!(frame.mix(MixId::MAIN).unwrap().transition_kind, None);
 }
 
 #[test]
