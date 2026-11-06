@@ -4590,14 +4590,6 @@ impl EngineMutation {
                 | EngineCommand::SecondaryMixSetTBarPosition { .. }
                 | EngineCommand::SecondaryMixCommitTBar { .. }
                 | EngineCommand::SecondaryMixCancelTBar { .. }
-                | EngineCommand::SecondaryMixStartTBar { .. }
-                | EngineCommand::SecondaryMixSetTBarPosition { .. }
-                | EngineCommand::SecondaryMixCommitTBar { .. }
-                | EngineCommand::SecondaryMixCancelTBar { .. }
-                | EngineCommand::SecondaryMixStartTBar { .. }
-                | EngineCommand::SecondaryMixSetTBarPosition { .. }
-                | EngineCommand::SecondaryMixCommitTBar { .. }
-                | EngineCommand::SecondaryMixCancelTBar { .. }
         ) {
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
@@ -5428,10 +5420,6 @@ impl EngineMutation {
             | EngineCommand::SecondaryMixSetTBarPosition { .. }
             | EngineCommand::SecondaryMixCommitTBar { .. }
             | EngineCommand::SecondaryMixCancelTBar { .. }
-            | EngineCommand::SecondaryMixStartTBar { .. }
-            | EngineCommand::SecondaryMixSetTBarPosition { .. }
-            | EngineCommand::SecondaryMixCommitTBar { .. }
-            | EngineCommand::SecondaryMixCancelTBar { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
@@ -6130,10 +6118,6 @@ fn apply_runtime(
             | EngineCommand::SecondaryMixCut { .. }
             | EngineCommand::SecondaryMixTransition { .. }
             | EngineCommand::SecondaryMixFadeToBlack { .. }
-            | EngineCommand::SecondaryMixStartTBar { .. }
-            | EngineCommand::SecondaryMixSetTBarPosition { .. }
-            | EngineCommand::SecondaryMixCommitTBar { .. }
-            | EngineCommand::SecondaryMixCancelTBar { .. }
             | EngineCommand::SecondaryMixStartTBar { .. }
             | EngineCommand::SecondaryMixSetTBarPosition { .. }
             | EngineCommand::SecondaryMixCommitTBar { .. }

@@ -244,6 +244,10 @@ impl EngineCommand {
             | Self::SecondaryMixCut { .. }
             | Self::SecondaryMixTransition { .. }
             | Self::SecondaryMixFadeToBlack { .. }
+            | Self::SecondaryMixStartTBar { .. }
+            | Self::SecondaryMixSetTBarPosition { .. }
+            | Self::SecondaryMixCommitTBar { .. }
+            | Self::SecondaryMixCancelTBar { .. }
             | Self::PlaylistControl(_)
             | Self::PlaylistAdvance { .. }
             | Self::RealizePlaylistCue(_)
