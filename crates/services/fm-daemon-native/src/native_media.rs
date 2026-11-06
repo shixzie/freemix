@@ -10997,22 +10997,19 @@ impl NativeMediaRuntime {
             .overlays
             .iter()
             .flatten()
-            .filter_map(|layer| match layer {
-                fm_switcher::MixLayer::Input(input) => Some(NativeProgramOverlay {
-                    source: NativeOverlaySource::Input(*input),
-                    opacity: u8::MAX,
+            .filter_map(|overlay| {
+                let source = match overlay.source {
+                    fm_switcher::MixLayer::Input(input) => NativeOverlaySource::Input(input),
+                    fm_switcher::MixLayer::Mix { mix, .. } => NativeOverlaySource::Mix(mix),
+                    fm_switcher::MixLayer::Black => return None,
+                };
+                Some(NativeProgramOverlay {
+                    source,
+                    opacity: overlay.opacity,
                     position: OverlayPositionPreset::FullFrame,
                     border: OverlayBorderPreset::None,
                     motion: None,
-                }),
-                fm_switcher::MixLayer::Mix { mix, .. } => Some(NativeProgramOverlay {
-                    source: NativeOverlaySource::Mix(*mix),
-                    opacity: u8::MAX,
-                    position: OverlayPositionPreset::FullFrame,
-                    border: OverlayBorderPreset::None,
-                    motion: None,
-                }),
-                fm_switcher::MixLayer::Black => None,
+                })
             })
             .collect::<Vec<_>>();
         let composed = self
@@ -13281,9 +13278,12 @@ mod tests {
             mix_denominator: 1,
             preview: None,
             overlays: std::array::from_fn(|channel| {
-                (channel == 0).then_some(MixLayer::Mix {
-                    mix: overlay_mix,
-                    frame: 0,
+                (channel == 0).then_some(fm_switcher::MixOverlay {
+                    source: MixLayer::Mix {
+                        mix: overlay_mix,
+                        frame: 0,
+                    },
+                    opacity: u8::MAX,
                 })
             }),
             fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,

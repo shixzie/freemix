@@ -882,15 +882,15 @@ fn mix_overlays(frame: &MixFrame) -> Vec<OverlayLayer> {
     OverlayChannelId::ALL
         .into_iter()
         .zip(frame.overlays)
-        .filter_map(|(channel, source)| {
-            let source = source?;
-            if source == MixLayer::Black {
+        .filter_map(|(channel, overlay)| {
+            let overlay = overlay?;
+            if overlay.source == MixLayer::Black {
                 return None;
             }
             Some(OverlayLayer {
                 channel,
-                source,
-                opacity: u8::MAX,
+                source: overlay.source,
+                opacity: overlay.opacity,
                 position: OverlayPositionPreset::FullFrame,
                 border: OverlayBorderPreset::None,
                 motion: None,
