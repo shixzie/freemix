@@ -453,6 +453,8 @@ fn alias_and_feed_inputs_add_without_a_replaceable_source() {
         target: input(1),
         crop: Some(fm_model::CropRect::new(0, 0, 10, 10)),
         effects: vec![fm_model::LayerEffect::new("saturation", vec![-25])],
+        opacity: u8::MAX,
+        mask: None,
     };
     let added = run(&mut engine, "alias", add(4, "Alias", alias.clone()));
     assert_accepted(&added);
@@ -493,6 +495,8 @@ fn alias_and_feed_inputs_add_without_a_replaceable_source() {
                 target: input(99),
                 crop: None,
                 effects: Vec::new(),
+                opacity: u8::MAX,
+                mask: None,
             },
         ),
     );
