@@ -1226,7 +1226,7 @@ impl MixBank {
     }
 }
 
-const fn new_mix_state(config: MixConfig) -> MixState {
+fn new_mix_state(config: MixConfig) -> MixState {
     let (program, preview) = match config {
         MixConfig::PreviewProgram { program, preview } => (program, Some(preview)),
         MixConfig::OutputOnly { program } => (program, None),
@@ -1279,6 +1279,7 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             overlays: state
                 .overlays
                 .map(|source| source.map(|source| resolve(source, frame))),
+            fade_to_black: state.fade_to_black.frame(),
         },
         None => MixFrame {
             mix,
@@ -1291,6 +1292,7 @@ fn compose(mix: MixId, state: &MixState, frame: u64) -> MixFrame {
             overlays: state
                 .overlays
                 .map(|source| source.map(|source| resolve(source, frame))),
+            fade_to_black: state.fade_to_black.frame(),
         },
     }
 }
