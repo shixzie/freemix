@@ -45,11 +45,28 @@ impl Default for SecondaryMixDraft {
 }
 
 /// The Secondary mixes dialog's open state and unsaved form.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SecondaryMixesDialog {
     pub(crate) open: bool,
     pub(crate) draft: SecondaryMixDraft,
     pub(crate) error: Option<String>,
+    /// The mix the manual T-bar controls act on.
+    pub(crate) tbar_mix: Option<WireMixNumber>,
+    pub(crate) tbar_kind: AutoTransitionKind,
+    pub(crate) tbar_position: u16,
+}
+
+impl Default for SecondaryMixesDialog {
+    fn default() -> Self {
+        Self {
+            open: false,
+            draft: SecondaryMixDraft::default(),
+            error: None,
+            tbar_mix: None,
+            tbar_kind: AutoTransitionKind::Fade,
+            tbar_position: 0,
+        }
+    }
 }
 
 impl SecondaryMixDraft {
@@ -318,6 +335,97 @@ impl StudioShell {
                     }
                     if !state.can_edit_project {
                         ui.label(RichText::new(l.text(Msg::SecondaryMixEditLocked)).small());
+                    }
+                });
+                ui.separator();
+                ui.label(section_label(l.text(Msg::SecondaryMixTBar)));
+                let dialog = &mut self.secondary_mixes;
+                if dialog.tbar_mix.is_none()
+                    || !mixes
+                        .iter()
+                        .any(|config| Some(config.number) == dialog.tbar_mix)
+                {
+                    dialog.tbar_mix = mixes.first().map(|config| config.number);
+                }
+                ui.horizontal(|ui| {
+                    ComboBox::from_label(l.text(Msg::SecondaryMixTBarMix))
+                        .selected_text(
+                            dialog
+                                .tbar_mix
+                                .map_or_else(|| "-".to_owned(), |mix| mix.number().to_string()),
+                        )
+                        .show_ui(ui, |ui| {
+                            for config in mixes {
+                                ui.selectable_value(
+                                    &mut dialog.tbar_mix,
+                                    Some(config.number),
+                                    format!("{} — {}", config.number.number(), config.name),
+                                );
+                            }
+                        });
+                    ComboBox::from_label(l.text(Msg::SecondaryMixTBarKind))
+                        .selected_text(dialog.tbar_kind.token())
+                        .show_ui(ui, |ui| {
+                            for kind in AutoTransitionKind::ALL {
+                                ui.selectable_value(&mut dialog.tbar_kind, kind, kind.token());
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label(l.text(Msg::SecondaryMixTBarPosition));
+                    ui.add(egui::DragValue::new(&mut dialog.tbar_position).range(0..=10_000))
+                        .on_hover_text(l.text(Msg::SecondaryMixTBarPositionHover));
+                });
+                let target = dialog.tbar_mix;
+                ui.horizontal(|ui| {
+                    let start = ui
+                        .add_enabled(
+                            state.can_transition && target.is_some(),
+                            egui::Button::new(l.text(Msg::SecondaryMixTBarStart)),
+                        )
+                        .on_hover_text(l.text(Msg::SecondaryMixTBarStartHover));
+                    if start.clicked()
+                        && let Some(number) = target
+                    {
+                        intents.push(StudioIntent::SecondaryMixTBarStart {
+                            number,
+                            kind: dialog.tbar_kind,
+                        });
+                    }
+                    let set = ui
+                        .add_enabled(
+                            state.can_transition && target.is_some(),
+                            egui::Button::new(l.text(Msg::SecondaryMixTBarSet)),
+                        )
+                        .on_hover_text(l.text(Msg::SecondaryMixTBarSetHover));
+                    if set.clicked()
+                        && let Some(number) = target
+                        && let Some(position) =
+                            fm_protocol::ManualTransitionPosition::new(dialog.tbar_position)
+                    {
+                        intents.push(StudioIntent::SecondaryMixTBarPosition { number, position });
+                    }
+                    let commit = ui
+                        .add_enabled(
+                            state.can_transition && target.is_some(),
+                            egui::Button::new(l.text(Msg::SecondaryMixTBarCommit)),
+                        )
+                        .on_hover_text(l.text(Msg::SecondaryMixTBarCommitHover));
+                    if commit.clicked()
+                        && let Some(number) = target
+                    {
+                        intents.push(StudioIntent::SecondaryMixTBarCommit { number });
+                    }
+                    let cancel = ui
+                        .add_enabled(
+                            state.can_transition && target.is_some(),
+                            egui::Button::new(l.text(Msg::SecondaryMixTBarCancel)),
+                        )
+                        .on_hover_text(l.text(Msg::SecondaryMixTBarCancelHover));
+                    if cancel.clicked()
+                        && let Some(number) = target
+                    {
+                        intents.push(StudioIntent::SecondaryMixTBarCancel { number });
                     }
                 });
                 if let Some(error) = &self.secondary_mixes.error {

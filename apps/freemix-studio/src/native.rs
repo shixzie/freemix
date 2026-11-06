@@ -3481,6 +3481,18 @@ fn intent_payload(
             active,
             duration_frames,
         },
+        StudioIntent::SecondaryMixTBarStart { number, kind } => {
+            CommandPayload::SecondaryMixStartTBar { number, kind }
+        }
+        StudioIntent::SecondaryMixTBarPosition { number, position } => {
+            CommandPayload::SecondaryMixSetTBarPosition { number, position }
+        }
+        StudioIntent::SecondaryMixTBarCommit { number } => {
+            CommandPayload::SecondaryMixCommitTBar { number }
+        }
+        StudioIntent::SecondaryMixTBarCancel { number } => {
+            CommandPayload::SecondaryMixCancelTBar { number }
+        }
         StudioIntent::SetDisplayOutput { slot, config } => {
             CommandPayload::SetDisplayOutput { slot, config }
         }

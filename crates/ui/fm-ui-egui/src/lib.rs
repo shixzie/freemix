@@ -293,6 +293,20 @@ pub enum StudioIntent {
         active: bool,
         duration_frames: u32,
     },
+    /// Starts one secondary mix's manual T-bar (IN-023).
+    SecondaryMixTBarStart {
+        number: fm_protocol::WireMixNumber,
+        kind: fm_protocol::AutoTransitionKind,
+    },
+    /// Moves one secondary mix's T-bar (IN-023).
+    SecondaryMixTBarPosition {
+        number: fm_protocol::WireMixNumber,
+        position: fm_protocol::ManualTransitionPosition,
+    },
+    /// Commits one secondary mix's T-bar (IN-023).
+    SecondaryMixTBarCommit { number: fm_protocol::WireMixNumber },
+    /// Cancels one secondary mix's T-bar (IN-023).
+    SecondaryMixTBarCancel { number: fm_protocol::WireMixNumber },
     /// Saves one fullscreen display-output slot (OR-011, Protocol 2.42).
     SetDisplayOutput {
         slot: fm_protocol::DisplayOutputSlot,
