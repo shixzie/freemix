@@ -15,12 +15,14 @@
 //! the realizer is the next stage.
 
 use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use fm_clock::ClockTime;
@@ -37,7 +39,82 @@ use freemixd::native_media::{
 
 use crate::native_replay::{ReplayFormat, ReplayPlayers};
 use crate::native_slides::NativeSlides;
+use crate::native_sources::retained_frame_timing;
 use crate::{NativeMonitorTap, NativeTapCounters};
+
+/// How often a committed feed picture is rewritten to the bundle cache.
+const FEED_CACHE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// The last committed Program and Preview feed pictures, persisted in the
+/// project bundle so a restarted daemon shows them until the next commit
+/// (IN-025).
+struct FeedCache {
+    directory: PathBuf,
+    written: BTreeMap<fm_model::MixFeed, Instant>,
+}
+
+impl FeedCache {
+    fn new(directory: PathBuf) -> Self {
+        Self {
+            directory,
+            written: BTreeMap::new(),
+        }
+    }
+
+    fn path(&self, feed: fm_model::MixFeed) -> PathBuf {
+        self.directory.join(match feed {
+            fm_model::MixFeed::Program => "program.png",
+            fm_model::MixFeed::Preview => "preview.png",
+        })
+    }
+
+    /// Loads one cached feed picture as a working texture, if a valid file
+    /// exists.
+    fn load(&self, runtime: &NativeMediaRuntime, feed: fm_model::MixFeed) -> Option<NativeTexture> {
+        let bytes = std::fs::read(self.path(feed)).ok()?;
+        let timing = retained_frame_timing(crate::native_clock_domain()).ok()?;
+        let decoded = fm_codec_image::decode_still(
+            &bytes,
+            timing,
+            fm_codec_image::StillDecodeLimits::default(),
+        )
+        .ok()?;
+        let frame = runtime.upload_still_blocking(&decoded.frame).ok()?;
+        Some(frame.into_texture())
+    }
+
+    /// Rewrites one feed picture after the first commit and then at most once
+    /// per [`FEED_CACHE_INTERVAL`]. Failures leave the previous file in place
+    /// and never fail the frame.
+    fn store(
+        &mut self,
+        runtime: &NativeMediaRuntime,
+        feed: fm_model::MixFeed,
+        texture: &NativeTexture,
+    ) {
+        let now = Instant::now();
+        if self
+            .written
+            .get(&feed)
+            .is_some_and(|written| now.duration_since(*written) < FEED_CACHE_INTERVAL)
+        {
+            return;
+        }
+        let Ok(still) = runtime.capture_texture_still_blocking(texture) else {
+            return;
+        };
+        if std::fs::create_dir_all(&self.directory).is_err() {
+            return;
+        }
+        let path = self.path(feed);
+        let temporary = path.with_extension("png.tmp");
+        if std::fs::write(&temporary, &still.png).is_ok()
+            && std::fs::rename(&temporary, &path).is_ok()
+        {
+            self.written.insert(feed, now);
+        }
+    }
+}
 
 /// One compose's inputs.
 pub(crate) struct VideoRenderJob {
@@ -223,6 +300,7 @@ impl NativeVideoHandle {
         slides: NativeSlides,
         replay: ReplayFormat,
         monitor: NativeMonitorTap,
+        feed_cache: Option<PathBuf>,
         name: &str,
     ) -> std::io::Result<Self> {
         let (commands, receiver) = sync_channel(4);
@@ -240,7 +318,14 @@ impl NativeVideoHandle {
                     grades: PreparedGrades(None),
                     feed_program: None,
                     feed_preview: None,
+                    feed_cache: feed_cache.map(FeedCache::new),
                 };
+                if let Some(cache) = realizer.feed_cache.as_ref() {
+                    realizer.feed_program =
+                        cache.load(&realizer.runtime, fm_model::MixFeed::Program);
+                    realizer.feed_preview =
+                        cache.load(&realizer.runtime, fm_model::MixFeed::Preview);
+                }
                 realizer.run(&receiver);
             })?;
         Ok(Self {
@@ -628,6 +713,8 @@ struct VideoRealizer {
     /// tick (IN-025).
     feed_program: Option<NativeTexture>,
     feed_preview: Option<NativeTexture>,
+    /// The bundle cache restored and updated by this realizer (IN-025).
+    feed_cache: Option<FeedCache>,
 }
 
 impl VideoRealizer {
@@ -724,14 +811,18 @@ impl VideoRealizer {
                                                 NativeSourceRenderError::ResourceBounds,
                                             ))?,
                                     };
-                                    self.feed_program = Some(
-                                        self.runtime
-                                            .copy_feed_texture_blocking(
-                                                job.plan.dimensions(),
-                                                texture,
-                                            )
-                                            .map_err(VideoError::Render)?,
-                                    );
+                                    let copy = self
+                                        .runtime
+                                        .copy_feed_texture_blocking(job.plan.dimensions(), texture)
+                                        .map_err(VideoError::Render)?;
+                                    if let Some(cache) = self.feed_cache.as_mut() {
+                                        cache.store(
+                                            &self.runtime,
+                                            fm_model::MixFeed::Program,
+                                            &copy,
+                                        );
+                                    }
+                                    self.feed_program = Some(copy);
                                 }
                                 Ok(frame)
                             })
@@ -781,7 +872,12 @@ impl VideoRealizer {
                             .runtime
                             .copy_feed_texture_blocking(job.plan.dimensions(), texture)
                         {
-                            Ok(copy) => self.feed_preview = Some(copy),
+                            Ok(copy) => {
+                                if let Some(cache) = self.feed_cache.as_mut() {
+                                    cache.store(&self.runtime, fm_model::MixFeed::Preview, &copy);
+                                }
+                                self.feed_preview = Some(copy);
+                            }
                             Err(error) => result = Err(VideoError::Render(error)),
                         }
                     }

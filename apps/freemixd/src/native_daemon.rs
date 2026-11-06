@@ -475,6 +475,7 @@ impl NativeDaemon {
             slides,
             replay_format,
             monitor,
+            Some(store.root().join("feed-cache")),
             "freemix-video-realizer",
         )?;
         #[cfg(target_os = "macos")]
