@@ -387,8 +387,12 @@ pub(crate) fn restore_scenes(show: &mut ShowState, project: &fm_model::Project) 
         show.set_scene(scene.clone(), dimensions.width(), dimensions.height());
     }
     for input in project.inputs() {
-        if let fm_model::InputKind::Alias { target, .. } = input.kind {
+        if let fm_model::InputKind::Alias {
+            target, effects, ..
+        } = input.kind
+        {
             show.set_input_alias(input.id, target)?;
+            show.set_alias_effects_unchecked(input.id, effects);
         }
     }
     for input in project.inputs() {

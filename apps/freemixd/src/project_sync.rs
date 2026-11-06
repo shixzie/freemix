@@ -324,6 +324,31 @@ pub(crate) fn sync_project_inputs(
             })
             .map_err(|error| AppFailure(format!("input {input} could not be added: {error}")))?;
     }
+    // Alias effect edits (IN-024) are engine state like video delays: mirror
+    // the authoritative list so add, undo, redo, and restart stay exact.
+    for (&input, effects) in show.alias_effects_map() {
+        let Some(current) = project
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == input)
+        else {
+            continue;
+        };
+        if let fm_model::InputKind::Alias {
+            effects: current, ..
+        } = &current.kind
+            && current == effects
+        {
+            continue;
+        }
+        project
+            .set_alias_effects(input, effects.clone())
+            .map_err(|error| {
+                AppFailure(format!(
+                    "input {input}'s alias effects could not be set: {error}"
+                ))
+            })?;
+    }
     Ok(())
 }
 
