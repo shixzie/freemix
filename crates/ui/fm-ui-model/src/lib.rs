@@ -1537,6 +1537,35 @@ impl ProjectState {
         self.screen_capture_inputs.get(&input)
     }
 
+    /// Every configured secondary mix, ascending by number (Protocol
+    /// 2.158, IN-023).
+    #[must_use]
+    pub fn secondary_mixes(&self) -> &[fm_protocol::WireSecondaryMixConfig] {
+        &self.secondary_mixes
+    }
+
+    /// One configured secondary mix by number.
+    #[must_use]
+    pub fn secondary_mix(
+        &self,
+        number: fm_protocol::WireMixNumber,
+    ) -> Option<&fm_protocol::WireSecondaryMixConfig> {
+        self.secondary_mixes
+            .iter()
+            .find(|config| config.number == number)
+    }
+
+    /// One configured mix's live Program/Preview and transition progress.
+    #[must_use]
+    pub fn secondary_mix_state(
+        &self,
+        number: fm_protocol::WireMixNumber,
+    ) -> Option<&fm_protocol::WireSecondaryMixState> {
+        self.secondary_mix_states
+            .iter()
+            .find(|state| state.number == number)
+    }
+
     /// Returns every configured display-output slot (Protocol 2.42).
     #[must_use]
     pub const fn display_outputs(

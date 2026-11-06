@@ -184,6 +184,56 @@ pub fn clock_control(
     }
 }
 
+/// Lists the daemon's configured secondary mixes and their live states
+/// (IN-023, Protocol 2.158/2.159).
+pub fn secondary_mixes(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    if state.secondary_mixes().is_empty() {
+        println!("SecondaryMixes=none");
+    }
+    for config in state.secondary_mixes() {
+        let live = state.secondary_mix_state(config.number);
+        println!(
+            "secondary-mix: number={} name={} mode={} program={} preview={} live_program={} live_preview={} transition={}/{}",
+            config.number.number(),
+            config.name,
+            wire_secondary_mix_mode_token(config.mode),
+            wire_secondary_mix_source_text(config.program),
+            config
+                .preview
+                .map_or_else(|| "-".to_owned(), wire_secondary_mix_source_text),
+            live.and_then(|state| state.program)
+                .map_or_else(|| "-".to_owned(), wire_secondary_mix_source_text),
+            live.and_then(|state| state.preview)
+                .map_or_else(|| "-".to_owned(), wire_secondary_mix_source_text),
+            live.map_or(0, |state| state.numerator),
+            live.map_or(0, |state| state.denominator),
+        );
+    }
+    Ok(())
+}
+
+fn wire_secondary_mix_mode_token(mode: fm_protocol::WireSecondaryMixMode) -> &'static str {
+    match mode {
+        fm_protocol::WireSecondaryMixMode::PreviewProgram => "preview_program",
+        fm_protocol::WireSecondaryMixMode::OutputOnly => "output_only",
+    }
+}
+
+fn wire_secondary_mix_source_text(source: fm_protocol::WireSecondaryMixSource) -> String {
+    match source {
+        fm_protocol::WireSecondaryMixSource::Input(input) => {
+            format!("input:{}", input.get().get())
+        }
+        fm_protocol::WireSecondaryMixSource::Mix(number) => format!("mix:{}", number.number()),
+    }
+}
+
 /// Lists the daemon's display-output slots with their presenter state
 /// (OR-011).
 pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {

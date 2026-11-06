@@ -1845,6 +1845,156 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::SecondaryMixList { path } => {
+            let project = inspect_engine(&path)?;
+            if project.project.secondary_mixes().is_empty() {
+                println!("SecondaryMixes=none");
+            }
+            for config in project.project.secondary_mixes() {
+                println!(
+                    "secondary-mix: number={} name={} mode={} program={} preview={}",
+                    config.number.number(),
+                    config.name,
+                    model_secondary_mix_mode_token(config.mode),
+                    model_secondary_mix_source_text(config.program),
+                    config
+                        .preview
+                        .map_or_else(|| "-".to_owned(), model_secondary_mix_source_text),
+                );
+            }
+        }
+        Command::RemoteSecondaryMixList { address } => remote::secondary_mixes(address)?,
+        Command::SecondaryMixSet {
+            path,
+            number,
+            name,
+            mode,
+            program,
+            preview,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetSecondaryMix {
+                number: model_secondary_mix_number(number),
+                config: Some(Box::new(model_secondary_mix(
+                    number, name, mode, program, preview,
+                ))),
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixSet {
+            address,
+            number,
+            name,
+            mode,
+            program,
+            preview,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetSecondaryMix {
+                number,
+                config: Box::new(fm_protocol::WireSecondaryMixConfig {
+                    number,
+                    name,
+                    mode,
+                    program,
+                    preview,
+                }),
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::SecondaryMixClear {
+            path,
+            number,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetSecondaryMix {
+                number: model_secondary_mix_number(number),
+                config: None,
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixClear {
+            address,
+            number,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::ClearSecondaryMix { number },
+            key,
+            expected_revision,
+        )?,
+        Command::SecondaryMixCut {
+            path,
+            number,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SecondaryMixCut {
+                number: model_secondary_mix_number(number),
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixCut {
+            address,
+            number,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SecondaryMixCut { number },
+            key,
+            expected_revision,
+        )?,
+        Command::SecondaryMixTransition {
+            path,
+            number,
+            kind,
+            duration_frames,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SecondaryMixTransition {
+                number: model_secondary_mix_number(number),
+                kind: fm_control::domain_transition_kind(kind),
+                duration_frames,
+            },
+            duration_frames,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSecondaryMixTransition {
+            address,
+            number,
+            kind,
+            duration_frames,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SecondaryMixTransition {
+                number,
+                kind,
+                duration_frames,
+            },
+            key,
+            expected_revision,
+        )?,
         Command::DisplayOutputList { path } => {
             let project = inspect_engine(&path)?;
             // A local project has no presenter: every slot waits for one.
@@ -5314,6 +5464,58 @@ fn load_engine(path: &Path) -> AppResult<ProjectEngine> {
 }
 
 /// Restores an engine for reporting only, without opening the journal.
+fn model_secondary_mix_number(number: fm_protocol::WireMixNumber) -> fm_model::MixNumber {
+    fm_model::MixNumber::new(number.number()).expect("a validated wire mix number")
+}
+
+fn model_secondary_mix(
+    number: fm_protocol::WireMixNumber,
+    name: String,
+    mode: fm_protocol::WireSecondaryMixMode,
+    program: fm_protocol::WireSecondaryMixSource,
+    preview: Option<fm_protocol::WireSecondaryMixSource>,
+) -> fm_model::SecondaryMixConfig {
+    fm_model::SecondaryMixConfig {
+        number: model_secondary_mix_number(number),
+        name,
+        mode: match mode {
+            fm_protocol::WireSecondaryMixMode::PreviewProgram => {
+                fm_model::SecondaryMixMode::PreviewProgram
+            }
+            fm_protocol::WireSecondaryMixMode::OutputOnly => fm_model::SecondaryMixMode::OutputOnly,
+        },
+        program: model_secondary_mix_source(program),
+        preview: preview.map(model_secondary_mix_source),
+    }
+}
+
+fn model_secondary_mix_source(
+    source: fm_protocol::WireSecondaryMixSource,
+) -> fm_model::SecondaryMixSource {
+    match source {
+        fm_protocol::WireSecondaryMixSource::Input(input) => {
+            fm_model::SecondaryMixSource::Input(input.to_domain())
+        }
+        fm_protocol::WireSecondaryMixSource::Mix(number) => {
+            fm_model::SecondaryMixSource::Mix(model_secondary_mix_number(number))
+        }
+    }
+}
+
+fn model_secondary_mix_mode_token(mode: fm_model::SecondaryMixMode) -> &'static str {
+    match mode {
+        fm_model::SecondaryMixMode::PreviewProgram => "preview_program",
+        fm_model::SecondaryMixMode::OutputOnly => "output_only",
+    }
+}
+
+fn model_secondary_mix_source_text(source: fm_model::SecondaryMixSource) -> String {
+    match source {
+        fm_model::SecondaryMixSource::Input(input) => format!("input:{}", input.get().get()),
+        fm_model::SecondaryMixSource::Mix(number) => format!("mix:{}", number.number()),
+    }
+}
+
 pub(crate) fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
     restore_project_engine(path, &inspect_stored_project(path)?)
 }

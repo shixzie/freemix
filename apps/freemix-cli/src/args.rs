@@ -1552,6 +1552,78 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Lists the configured secondary mixes (IN-023).
+    SecondaryMixList {
+        path: PathBuf,
+    },
+    /// Lists the daemon's configured secondary mixes and live states.
+    RemoteSecondaryMixList {
+        address: SocketAddr,
+    },
+    /// Configures or replaces one secondary mix (IN-023, Protocol 2.158).
+    SecondaryMixSet {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        name: String,
+        mode: fm_protocol::WireSecondaryMixMode,
+        program: fm_protocol::WireSecondaryMixSource,
+        preview: Option<fm_protocol::WireSecondaryMixSource>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixSet {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        name: String,
+        mode: fm_protocol::WireSecondaryMixMode,
+        program: fm_protocol::WireSecondaryMixSource,
+        preview: Option<fm_protocol::WireSecondaryMixSource>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Removes one secondary mix (IN-023).
+    SecondaryMixClear {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixClear {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Cuts one secondary mix from Program to Preview (IN-023).
+    SecondaryMixCut {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixCut {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Starts a timed transition of one secondary mix (IN-023).
+    SecondaryMixTransition {
+        path: PathBuf,
+        number: fm_protocol::WireMixNumber,
+        kind: fm_protocol::AutoTransitionKind,
+        duration_frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteSecondaryMixTransition {
+        address: SocketAddr,
+        number: fm_protocol::WireMixNumber,
+        kind: fm_protocol::AutoTransitionKind,
+        duration_frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Lists the configured display-output slots and their state.
     DisplayOutputList {
         path: PathBuf,
@@ -3165,6 +3237,16 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-display-output-clear"
         | "remote-display-output-list"
         | "remote-display-inventory") => parse_display_output(display, arguments),
+        secondary @ ("secondary-mixes"
+        | "remote-secondary-mixes"
+        | "secondary-mix-set"
+        | "remote-secondary-mix-set"
+        | "secondary-mix-clear"
+        | "remote-secondary-mix-clear"
+        | "secondary-mix-cut"
+        | "remote-secondary-mix-cut"
+        | "secondary-mix-transition"
+        | "remote-secondary-mix-transition") => parse_secondary_mix(secondary, arguments),
         delay @ ("input-video-delay" | "remote-input-video-delay") => {
             parse_input_video_delay(delay, arguments)
         }
@@ -7458,6 +7540,178 @@ fn parse_display_output(
             }
         }
         _ => return Err(ArgsError::UnknownCommand(command.to_owned())),
+    })
+}
+
+/// `secondary-mixes`, `secondary-mix-set|clear|cut|transition`, and their
+/// `remote-` forms (IN-023, Protocol 2.158/2.159).
+fn parse_secondary_mix(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let action = command.strip_prefix("remote-").unwrap_or(command);
+    Ok(match action {
+        "secondary-mixes" => match (path, address) {
+            (Some(path), _) => {
+                reject_extra(&mut arguments)?;
+                Command::SecondaryMixList { path }
+            }
+            (None, Some(address)) => {
+                reject_extra(&mut arguments)?;
+                Command::RemoteSecondaryMixList { address }
+            }
+            (None, None) => unreachable!("a secondary-mix command names a target"),
+        },
+        "secondary-mix-set" => {
+            let number = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
+            let name = nonblank(&mut arguments, "mix name")?;
+            let mode = secondary_mix_mode(&required(&mut arguments, "mix mode")?)?;
+            let program = secondary_mix_source(&required(&mut arguments, "program source")?)?;
+            let preview = match mode {
+                fm_protocol::WireSecondaryMixMode::PreviewProgram => Some(secondary_mix_source(
+                    &required(&mut arguments, "preview source")?,
+                )?),
+                fm_protocol::WireSecondaryMixMode::OutputOnly => None,
+            };
+            let (key, expected_revision) = command_options(arguments)?;
+            match (path, address) {
+                (Some(path), _) => Command::SecondaryMixSet {
+                    path,
+                    number,
+                    name,
+                    mode,
+                    program,
+                    preview,
+                    key,
+                    expected_revision,
+                },
+                (None, Some(address)) => Command::RemoteSecondaryMixSet {
+                    address,
+                    number,
+                    name,
+                    mode,
+                    program,
+                    preview,
+                    key,
+                    expected_revision,
+                },
+                (None, None) => unreachable!("a secondary-mix command names a target"),
+            }
+        }
+        "secondary-mix-clear" | "secondary-mix-cut" => {
+            let number = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
+            let (key, expected_revision) = command_options(arguments)?;
+            match (action, path, address) {
+                ("secondary-mix-clear", Some(path), _) => Command::SecondaryMixClear {
+                    path,
+                    number,
+                    key,
+                    expected_revision,
+                },
+                ("secondary-mix-clear", None, Some(address)) => Command::RemoteSecondaryMixClear {
+                    address,
+                    number,
+                    key,
+                    expected_revision,
+                },
+                ("secondary-mix-cut", Some(path), _) => Command::SecondaryMixCut {
+                    path,
+                    number,
+                    key,
+                    expected_revision,
+                },
+                ("secondary-mix-cut", None, Some(address)) => Command::RemoteSecondaryMixCut {
+                    address,
+                    number,
+                    key,
+                    expected_revision,
+                },
+                _ => unreachable!("a secondary-mix command names a target"),
+            }
+        }
+        "secondary-mix-transition" => {
+            let number = secondary_mix_number(&required(&mut arguments, "mix number")?)?;
+            let kind = auto_transition_kind(&required(&mut arguments, "transition kind")?)?;
+            let duration_frames = number(&required(&mut arguments, "frames")?, "frames")?;
+            let (key, expected_revision) = command_options(arguments)?;
+            match (path, address) {
+                (Some(path), _) => Command::SecondaryMixTransition {
+                    path,
+                    number,
+                    kind,
+                    duration_frames,
+                    key,
+                    expected_revision,
+                },
+                (None, Some(address)) => Command::RemoteSecondaryMixTransition {
+                    address,
+                    number,
+                    kind,
+                    duration_frames,
+                    key,
+                    expected_revision,
+                },
+                (None, None) => unreachable!("a secondary-mix command names a target"),
+            }
+        }
+        _ => return Err(ArgsError::UnknownCommand(command.to_owned())),
+    })
+}
+
+fn secondary_mix_number(value: &str) -> Result<fm_protocol::WireMixNumber, ArgsError> {
+    let number = number::<u8>(value, "mix number")?;
+    fm_protocol::WireMixNumber::new(number).ok_or(ArgsError::InvalidChoice {
+        field: "mix number",
+        value: value.to_owned(),
+    })
+}
+
+fn secondary_mix_mode(value: &str) -> Result<fm_protocol::WireSecondaryMixMode, ArgsError> {
+    match value {
+        "preview_program" => Ok(fm_protocol::WireSecondaryMixMode::PreviewProgram),
+        "output_only" => Ok(fm_protocol::WireSecondaryMixMode::OutputOnly),
+        _ => Err(ArgsError::InvalidChoice {
+            field: "mix mode",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+fn secondary_mix_source(value: &str) -> Result<fm_protocol::WireSecondaryMixSource, ArgsError> {
+    if let Some(input) = value.strip_prefix("input:") {
+        let input = number::<u128>(input, "input")?;
+        let input = core::num::NonZeroU128::new(input).ok_or(ArgsError::InvalidNumber {
+            field: "input",
+            value: value.to_owned(),
+        })?;
+        return Ok(fm_protocol::WireSecondaryMixSource::Input(
+            fm_protocol::WireInputId::new(input),
+        ));
+    }
+    if let Some(mix) = value.strip_prefix("mix:") {
+        return Ok(fm_protocol::WireSecondaryMixSource::Mix(
+            secondary_mix_number(mix)?,
+        ));
+    }
+    Err(ArgsError::InvalidChoice {
+        field: "mix source",
+        value: value.to_owned(),
+    })
+}
+
+fn auto_transition_kind(value: &str) -> Result<fm_protocol::AutoTransitionKind, ArgsError> {
+    fm_protocol::AutoTransitionKind::from_token(value).ok_or(ArgsError::InvalidChoice {
+        field: "transition kind",
+        value: value.to_owned(),
     })
 }
 
