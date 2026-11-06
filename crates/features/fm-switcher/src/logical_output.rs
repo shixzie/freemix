@@ -503,7 +503,7 @@ pub enum OutputVideo {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OverlayLayer {
     pub channel: OverlayChannelId,
-    pub source: InputId,
+    pub source: crate::MixSource,
     pub opacity: u8,
     pub position: OverlayPositionPreset,
     pub border: OverlayBorderPreset,
@@ -867,7 +867,7 @@ fn main_overlays(switcher: &SwitcherState) -> Vec<OverlayLayer> {
             let visible = (state.is_active() || state.is_transitioning()) && state.opacity() > 0;
             visible.then_some(OverlayLayer {
                 channel,
-                source,
+                source: crate::MixSource::Input(source),
                 opacity: state.opacity(),
                 position: state.position(),
                 border: state.border(),

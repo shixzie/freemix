@@ -1038,7 +1038,7 @@ impl MixBank {
             match effect {
                 MixEffect::OverlayOn { source, .. } => {
                     self.require_mix(mix)?;
-                    self.validate_route(mix, *source)?;
+                    self.validate_route(mix, source)?;
                 }
                 MixEffect::OverlayOff { .. } => {
                     self.require_mix(mix)?;

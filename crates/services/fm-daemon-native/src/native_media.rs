@@ -1918,7 +1918,10 @@ struct NativeProgramOverlay {
 /// One overlay layer resolved for a logical output (SW-012).
 const fn plan_overlay(layer: &fm_switcher::OverlayLayer) -> NativeProgramOverlay {
     NativeProgramOverlay {
-        source: NativeOverlaySource::Input(layer.source),
+        source: match layer.source {
+            fm_switcher::MixSource::Input(input) => NativeOverlaySource::Input(input),
+            fm_switcher::MixSource::Mix(mix) => NativeOverlaySource::Mix(mix),
+        },
         opacity: layer.opacity,
         position: layer.position,
         border: layer.border,
@@ -10372,7 +10375,10 @@ impl NativeMediaRuntime {
                     }
                 }
             }
-            extra_inputs.extend(plan.overlays.iter().map(|layer| layer.source));
+            extra_inputs.extend(plan.overlays.iter().filter_map(|layer| match layer.source {
+                fm_switcher::MixSource::Input(input) => Some(input),
+                fm_switcher::MixSource::Mix(_) => None,
+            }));
         }
         extra_inputs.extend(overlay_sets.iter().flatten().filter_map(
             |overlay| match overlay.source {
